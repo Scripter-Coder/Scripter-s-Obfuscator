@@ -397,7 +397,6 @@ function updateUIForUser(user) {
     currentUser = user;
     setCurrentUser(user);
     
-    // Show user info in navbar
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -445,10 +444,11 @@ function updateUIForUser(user) {
     var plansSection = document.querySelector('.plans-section');
     
     if (homePage) homePage.style.display = 'none';
-    if (dashboard) dashboard.classList.add('show');
+    if (dashboard) dashboard.style.display = 'block';
+    dashboard.classList.add('show');
     if (plansSection) plansSection.style.display = 'none';
     
-    // ===== SHOW TABS =====
+    // Show tabs
     showTabs();
     
     var dashUsername = document.getElementById('dashUsername');
@@ -539,16 +539,29 @@ function logout() {
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
+    var tabsNav = document.getElementById('tabsNav');
     
     if (signupBtn) signupBtn.style.display = 'inline-block';
     if (loginBtn) loginBtn.style.display = 'inline-block';
     if (navbarUser) navbarUser.classList.remove('show');
     if (adminBtn) adminBtn.style.display = 'none';
     if (usersBtn) usersBtn.style.display = 'none';
+    if (tabsNav) tabsNav.style.display = 'none';
     
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
+    dashboard.style.display = 'none';
     if (plansSection) plansSection.style.display = 'block';
+    
+    // Clear tab contents
+    var tabDashboard = document.getElementById('tab-dashboard');
+    if (tabDashboard) tabDashboard.innerHTML = '';
+    
+    // Show all tab contents as hidden
+    var contents = document.querySelectorAll('.tab-content');
+    for (var i = 0; i < contents.length; i++) {
+        contents[i].style.display = 'none';
+    }
     
     showNotification('Logged Out', 'You have been logged out successfully.', 'info');
     console.log('👋 Logged out');
@@ -1432,18 +1445,22 @@ function showTabs() {
         tabsNav.style.display = 'flex';
     }
     
+    // Hide original dashboard, show it in tab
     var dashboardContent = document.getElementById('dashboard');
     var tabDashboard = document.getElementById('tab-dashboard');
     
     if (dashboardContent && tabDashboard) {
+        // Clone the dashboard content into the tab
         if (!tabDashboard.hasChildNodes() || tabDashboard.children.length === 0) {
-            while (dashboardContent.firstChild) {
-                tabDashboard.appendChild(dashboardContent.firstChild);
-            }
-            dashboardContent.style.display = 'none';
+            var clone = dashboardContent.cloneNode(true);
+            clone.style.display = 'block';
+            tabDashboard.appendChild(clone);
         }
+        // Keep original hidden but keep it in DOM for reference
+        dashboardContent.style.display = 'none';
     }
     
+    // Show dashboard tab by default
     switchTab('dashboard');
 }
 
@@ -1884,9 +1901,9 @@ function viewScript(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     
-    var scriptCode = script.code || '';
-    var loaderCode = 'loadstring([[' + scriptCode + ']])()';
-    var displayCode = scriptCode.length > 100 ? scriptCode.substring(0, 100) + '...' : scriptCode;
+// Inside viewScript function, replace the loader section:
+var scriptCode = script.code || '';
+var loaderCode = 'loadstring([[' + scriptCode + ']])()';
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -1935,12 +1952,14 @@ function viewScript(projectId, scriptId) {
 function copyLoader(loaderId) {
     var projects = loadProjects();
     var scriptCode = null;
+    var scriptName = '';
     
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].scripts) {
             for (var j = 0; j < projects[i].scripts.length; j++) {
                 if (projects[i].scripts[j].loaderId === loaderId) {
                     scriptCode = projects[i].scripts[j].code;
+                    scriptName = projects[i].scripts[j].name;
                     break;
                 }
             }
@@ -1953,11 +1972,12 @@ function copyLoader(loaderId) {
         return;
     }
     
+    // Copy the actual script code as a loadstring
     var fullLoader = 'loadstring([[' + scriptCode + ']])()';
     
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(fullLoader).then(function() {
-            showNotification('Copied!', 'Script code copied to clipboard!', 'success');
+            showNotification('Copied!', 'Script "' + scriptName + '" copied to clipboard!', 'success');
         }).catch(function() {
             fallbackCopy(fullLoader);
         });
