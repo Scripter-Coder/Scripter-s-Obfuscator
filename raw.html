@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raw Script</title>
+</head>
+<body>
+    <pre id="content"></pre>
+    <script>
+        // ============ RAW SCRIPT ACCESS CONTROL ============
+        // Only the owner knows this key
+        const OWNER_KEY = 'test';
+        
+        // Get script ID from URL
+        var params = new URLSearchParams(window.location.search);
+        var scriptId = params.get('id');
+        var userKey = params.get('key');
+        
+        // Check if user has owner key
+        var isOwner = (userKey === OWNER_KEY);
+        
+        // If not owner, show "Not Allowed"
+        if (!isOwner) {
+            document.getElementById('content').textContent = 'Not Allowed';
+            document.body.style.background = '#1a0000';
+            document.body.style.color = '#ff4444';
+            document.body.style.display = 'flex';
+            document.body.style.justifyContent = 'center';
+            document.body.style.alignItems = 'center';
+            document.body.style.height = '100vh';
+            document.body.style.fontFamily = 'monospace';
+            document.body.style.fontSize = '24px';
+            document.body.style.margin = '0';
+            return;
+        }
+        
+        // Load scripts from localStorage
+        function loadScripts() {
+            try {
+                var data = localStorage.getItem('scriptStore');
+                if (data) {
+                    return JSON.parse(data);
+                }
+            } catch (e) {}
+            return {};
+        }
+        
+        var scriptStore = loadScripts();
+        var scriptCode = scriptStore[scriptId];
+        
+        if (scriptCode) {
+            document.getElementById('content').textContent = scriptCode;
+            document.body.style.background = '#0a0a0f';
+            document.body.style.color = '#66ccff';
+            document.body.style.fontFamily = 'monospace';
+            document.body.style.fontSize = '14px';
+            document.body.style.padding = '20px';
+            document.body.style.margin = '0';
+            document.body.style.whiteSpace = 'pre-wrap';
+            document.body.style.wordBreak = 'break-all';
+        } else {
+            document.getElementById('content').textContent = 'Script not found';
+            document.body.style.background = '#1a0000';
+            document.body.style.color = '#ff4444';
+            document.body.style.display = 'flex';
+            document.body.style.justifyContent = 'center';
+            document.body.style.alignItems = 'center';
+            document.body.style.height = '100vh';
+            document.body.style.fontFamily = 'monospace';
+            document.body.style.fontSize = '24px';
+            document.body.style.margin = '0';
+        }
+    </script>
+</body>
+</html>
