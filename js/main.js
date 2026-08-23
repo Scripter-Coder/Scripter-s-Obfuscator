@@ -501,13 +501,21 @@ function updateStat(name, used, max) {
     var bar = document.getElementById(name + 'Bar');
     
     if (usedEl) usedEl.textContent = used;
-    // FIXED: Display ∞ for Infinity, otherwise show the number
+    
+    // FIXED: Properly display max value
     if (maxEl) {
-        maxEl.textContent = max === Infinity ? '∞' : max;
+        if (max === Infinity || max === 'Infinity') {
+            maxEl.textContent = '∞';
+        } else {
+            maxEl.textContent = max;
+        }
     }
     
     if (bar) {
-        var percentage = (max === Infinity || max === 0) ? 0 : (used / max) * 100;
+        var percentage = 0;
+        if (max > 0 && max !== Infinity) {
+            percentage = (used / max) * 100;
+        }
         bar.style.width = Math.min(percentage, 100) + '%';
         
         bar.className = 'fill';
