@@ -48,14 +48,13 @@ const PLAN_CONFIGS = {
     }
 };
 
-// ============ DATABASE FUNCTIONS (localStorage) ============
+// ============ DATABASE FUNCTIONS ============
 function loadUsers() {
     try {
         const data = localStorage.getItem('users');
         if (data) {
             users = JSON.parse(data);
         } else {
-            // Create demo users
             users = {
                 'demo@example.com': {
                     id: 'user_1',
@@ -393,7 +392,6 @@ function updateUIForUser(user) {
     currentUser = user;
     setCurrentUser(user);
     
-    // Show user info in navbar
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -418,28 +416,24 @@ function updateUIForUser(user) {
     if (userName) userName.textContent = user.username;
     if (userPlan) userPlan.textContent = user.plan || 'Basic';
     
-    // Show admin button ONLY if username is "Scripter"
     if (adminBtn && user.username === 'Scripter') {
         adminBtn.style.display = 'inline-block';
     } else if (adminBtn) {
         adminBtn.style.display = 'none';
     }
     
-    // Show users button for Scripter
     if (usersBtn && user.username === 'Scripter') {
         usersBtn.style.display = 'inline-block';
     } else if (usersBtn) {
         usersBtn.style.display = 'none';
     }
     
-    // Apply theme
     if (user.theme) {
         applyTheme(user.theme);
         var themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = user.theme;
     }
     
-    // Show dashboard
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -448,7 +442,6 @@ function updateUIForUser(user) {
     if (dashboard) dashboard.classList.add('show');
     if (plansSection) plansSection.style.display = 'none';
     
-    // Update dashboard header
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
@@ -483,29 +476,26 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     
-    // Update stats - FIXED: Display Infinity as ∞
-// Update stats - FIXED: Properly display values
-if (user.stats) {
-    var stats = user.stats;
-    // Projects
-    document.getElementById('projectsUsed').textContent = stats.projects.used;
-    document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
-    updateBar('projects', stats.projects.used, stats.projects.max);
+    if (user.stats) {
+        var stats = user.stats;
+        document.getElementById('projectsUsed').textContent = stats.projects.used;
+        document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
+        updateBar('projects', stats.projects.used, stats.projects.max);
+        
+        document.getElementById('keysUsed').textContent = stats.keys.used;
+        document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
+        updateBar('keys', stats.keys.used, stats.keys.max);
+        
+        document.getElementById('scriptsUsed').textContent = stats.scripts.used;
+        document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
+        updateBar('scripts', stats.scripts.used, stats.scripts.max);
+        
+        document.getElementById('storageUsed').textContent = stats.fileSize.used;
+        document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
+        updateBar('storage', stats.fileSize.used, stats.fileSize.max);
+    }
     
-    // Keys
-    document.getElementById('keysUsed').textContent = stats.keys.used;
-    document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
-    updateBar('keys', stats.keys.used, stats.keys.max);
-    
-    // Scripts
-    document.getElementById('scriptsUsed').textContent = stats.scripts.used;
-    document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
-    updateBar('scripts', stats.scripts.used, stats.scripts.max);
-    
-    // Storage
-    document.getElementById('storageUsed').textContent = stats.fileSize.used;
-    document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
-    updateBar('storage', stats.fileSize.used, stats.fileSize.max);
+    console.log('✅ Dashboard shown for user:', user.username);
 }
 
 function updateBar(name, used, max) {
@@ -523,38 +513,6 @@ function updateBar(name, used, max) {
         bar.classList.add('danger');
     } else if (percentage > 70) {
         bar.classList.add('warning');
-    }
-}
-    
-function updateStat(name, used, max) {
-    var usedEl = document.getElementById(name + 'Used');
-    var maxEl = document.getElementById(name + 'Max');
-    var bar = document.getElementById(name + 'Bar');
-    
-    if (usedEl) usedEl.textContent = used;
-    
-    // FIXED: Properly display max value
-    if (maxEl) {
-        if (max === Infinity || max === 'Infinity') {
-            maxEl.textContent = '∞';
-        } else {
-            maxEl.textContent = max;
-        }
-    }
-    
-    if (bar) {
-        var percentage = 0;
-        if (max > 0 && max !== Infinity) {
-            percentage = (used / max) * 100;
-        }
-        bar.style.width = Math.min(percentage, 100) + '%';
-        
-        bar.className = 'fill';
-        if (percentage > 90) {
-            bar.classList.add('danger');
-        } else if (percentage > 70) {
-            bar.classList.add('warning');
-        }
     }
 }
 
@@ -1019,150 +977,6 @@ function filterUsers() {
     renderUserList();
 }
 
-// ============ IMAGE UPLOAD FUNCTIONS ============
-function uploadProfileImage() {
-    var input = document.getElementById('profileImageInput');
-    if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file first.', 'error');
-        return;
-    }
-    
-    var file = input.files[0];
-    
-    if (file.size > 2 * 1024 * 1024) {
-        showNotification('Error', 'Profile image size must be less than 2MB.', 'error');
-        return;
-    }
-    
-    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
-    if (!validTypes.includes(file.type)) {
-        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
-        return;
-    }
-    
-    var reader = new FileReader();
-    
-    reader.onload = function(e) {
-        try {
-            var imageData = e.target.result;
-            
-            for (var key in users) {
-                if (users[key].id === currentUser.id) {
-                    users[key].profileImage = imageData;
-                    saveUsers();
-                    
-                    var userData = { ...users[key] };
-                    delete userData.password;
-                    updateUIForUser(userData);
-                    
-                    showNotification('Success', 'Profile image updated successfully!', 'success');
-                    input.value = '';
-                    break;
-                }
-            }
-        } catch (error) {
-            showNotification('Error', 'Failed to save image: ' + error.message, 'error');
-        }
-    };
-    
-    reader.onerror = function() {
-        showNotification('Error', 'Failed to read image file.', 'error');
-    };
-    
-    reader.readAsDataURL(file);
-}
-
-function uploadBannerImage() {
-    var input = document.getElementById('bannerImageInput');
-    if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file first.', 'error');
-        return;
-    }
-    
-    var file = input.files[0];
-    
-    if (file.size > 5 * 1024 * 1024) {
-        showNotification('Error', 'Banner image size must be less than 5MB.', 'error');
-        return;
-    }
-    
-    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
-    if (!validTypes.includes(file.type)) {
-        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
-        return;
-    }
-    
-    var reader = new FileReader();
-    
-    reader.onload = function(e) {
-        try {
-            var imageData = e.target.result;
-            
-            for (var key in users) {
-                if (users[key].id === currentUser.id) {
-                    users[key].bannerImage = imageData;
-                    saveUsers();
-                    
-                    var userData = { ...users[key] };
-                    delete userData.password;
-                    updateUIForUser(userData);
-                    
-                    showNotification('Success', 'Banner image updated successfully!', 'success');
-                    input.value = '';
-                    break;
-                }
-            }
-        } catch (error) {
-            showNotification('Error', 'Failed to save banner: ' + error.message, 'error');
-        }
-    };
-    
-    reader.onerror = function() {
-        showNotification('Error', 'Failed to read image file.', 'error');
-    };
-    
-    reader.readAsDataURL(file);
-}
-
-function changeTheme(themeName) {
-    if (!currentUser) return;
-    
-    for (var key in users) {
-        if (users[key].id === currentUser.id) {
-            users[key].theme = themeName;
-            saveUsers();
-            applyTheme(themeName);
-            showNotification('Theme Changed', 'Theme updated to ' + themeName.charAt(0).toUpperCase() + themeName.slice(1), 'success', 1500);
-            break;
-        }
-    }
-}
-
-function exportUsers() {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can export users.', 'error');
-        return;
-    }
-    
-    var exportData = {};
-    for (var key in users) {
-        var user = { ...users[key] };
-        delete user.password;
-        exportData[key] = user;
-    }
-    
-    var json = JSON.stringify(exportData, null, 2);
-    var blob = new Blob([json], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'users_export_' + new Date().toISOString().slice(0,10) + '.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    
-    showNotification('Exported', 'User data exported successfully!', 'success');
-}
-
 // ============ CHANGE USER PLAN ============
 function changeUserPlan(email) {
     if (!currentUser || currentUser.username !== 'Scripter') {
@@ -1305,7 +1119,7 @@ function confirmChangePlan(email) {
     }
 }
 
-// ============ CHANGE OWN PLAN (Admin Panel) ============
+// ============ CHANGE OWN PLAN ============
 function changeOwnPlan() {
     if (!currentUser) {
         showNotification('Error', 'Please login first.', 'error');
@@ -1438,6 +1252,150 @@ function confirmOwnPlanChange() {
     userData.stats.fileSize.max = config.fileSize;
     delete userData.password;
     updateUIForUser(userData);
+}
+
+// ============ IMAGE UPLOAD FUNCTIONS ============
+function uploadProfileImage() {
+    var input = document.getElementById('profileImageInput');
+    if (!input || !input.files || input.files.length === 0) {
+        showNotification('Error', 'Please select an image file first.', 'error');
+        return;
+    }
+    
+    var file = input.files[0];
+    
+    if (file.size > 2 * 1024 * 1024) {
+        showNotification('Error', 'Profile image size must be less than 2MB.', 'error');
+        return;
+    }
+    
+    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
+        return;
+    }
+    
+    var reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            var imageData = e.target.result;
+            
+            for (var key in users) {
+                if (users[key].id === currentUser.id) {
+                    users[key].profileImage = imageData;
+                    saveUsers();
+                    
+                    var userData = { ...users[key] };
+                    delete userData.password;
+                    updateUIForUser(userData);
+                    
+                    showNotification('Success', 'Profile image updated successfully!', 'success');
+                    input.value = '';
+                    break;
+                }
+            }
+        } catch (error) {
+            showNotification('Error', 'Failed to save image: ' + error.message, 'error');
+        }
+    };
+    
+    reader.onerror = function() {
+        showNotification('Error', 'Failed to read image file.', 'error');
+    };
+    
+    reader.readAsDataURL(file);
+}
+
+function uploadBannerImage() {
+    var input = document.getElementById('bannerImageInput');
+    if (!input || !input.files || input.files.length === 0) {
+        showNotification('Error', 'Please select an image file first.', 'error');
+        return;
+    }
+    
+    var file = input.files[0];
+    
+    if (file.size > 5 * 1024 * 1024) {
+        showNotification('Error', 'Banner image size must be less than 5MB.', 'error');
+        return;
+    }
+    
+    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
+        return;
+    }
+    
+    var reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            var imageData = e.target.result;
+            
+            for (var key in users) {
+                if (users[key].id === currentUser.id) {
+                    users[key].bannerImage = imageData;
+                    saveUsers();
+                    
+                    var userData = { ...users[key] };
+                    delete userData.password;
+                    updateUIForUser(userData);
+                    
+                    showNotification('Success', 'Banner image updated successfully!', 'success');
+                    input.value = '';
+                    break;
+                }
+            }
+        } catch (error) {
+            showNotification('Error', 'Failed to save banner: ' + error.message, 'error');
+        }
+    };
+    
+    reader.onerror = function() {
+        showNotification('Error', 'Failed to read image file.', 'error');
+    };
+    
+    reader.readAsDataURL(file);
+}
+
+function changeTheme(themeName) {
+    if (!currentUser) return;
+    
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].theme = themeName;
+            saveUsers();
+            applyTheme(themeName);
+            showNotification('Theme Changed', 'Theme updated to ' + themeName.charAt(0).toUpperCase() + themeName.slice(1), 'success', 1500);
+            break;
+        }
+    }
+}
+
+function exportUsers() {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can export users.', 'error');
+        return;
+    }
+    
+    var exportData = {};
+    for (var key in users) {
+        var user = { ...users[key] };
+        delete user.password;
+        exportData[key] = user;
+    }
+    
+    var json = JSON.stringify(exportData, null, 2);
+    var blob = new Blob([json], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'users_export_' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    showNotification('Exported', 'User data exported successfully!', 'success');
 }
 
 // ============ AUTO-LOGIN CHECK ============
