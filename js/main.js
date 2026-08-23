@@ -1425,7 +1425,33 @@ function saveProjects(projects) {
     }
 }
 
-// ============ TAB SWITCHING ==========
+// ============ SHOW TABS ============
+function showTabs() {
+    var tabsNav = document.getElementById('tabsNav');
+    if (tabsNav) {
+        tabsNav.style.display = 'flex';
+    }
+    
+    // Move dashboard content into the dashboard tab
+    var dashboardContent = document.getElementById('dashboard');
+    var tabDashboard = document.getElementById('tab-dashboard');
+    if (dashboardContent && tabDashboard) {
+        // Only move if not already moved
+        if (!tabDashboard.hasChildNodes() || tabDashboard.children.length === 0) {
+            // Clone the dashboard content
+            while (dashboardContent.firstChild) {
+                tabDashboard.appendChild(dashboardContent.firstChild);
+            }
+            // Keep original dashboard hidden
+            dashboardContent.style.display = 'none';
+        }
+    }
+    
+    // Show dashboard tab by default
+    switchTab('dashboard');
+}
+
+// ============ TAB SWITCHING ============
 function switchTab(tabName) {
     var btns = document.querySelectorAll('.tab-btn');
     for (var i = 0; i < btns.length; i++) {
@@ -1448,22 +1474,6 @@ function switchTab(tabName) {
     if (tabName === 'scripts') {
         renderProjects();
     }
-}
-
-function showTabs() {
-    var tabsNav = document.getElementById('tabsNav');
-    if (tabsNav) {
-        tabsNav.style.display = 'flex';
-    }
-    var dashboardContent = document.getElementById('dashboard');
-    var tabDashboard = document.getElementById('tab-dashboard');
-    if (dashboardContent && tabDashboard) {
-        tabDashboard.innerHTML = '';
-        while (dashboardContent.firstChild) {
-            tabDashboard.appendChild(dashboardContent.firstChild);
-        }
-    }
-    switchTab('dashboard');
 }
 
 // ============ CREATE PROJECT ==========
@@ -1588,11 +1598,11 @@ function renderProjects() {
                             <span style="background:rgba(255,255,255,0.05); color:#8888aa; padding:2px 12px; border-radius:12px; font-size:11px;">📜 ${scriptCount} scripts</span>
                         </div>
                     </div>
-                    <div style="display:flex; gap:8px; flex-shrink:0;">
-                        <button onclick="viewProject('${project.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">📜 Scripts</button>
-                        <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">➕ Script</button>
-                        <button onclick="editProject('${project.id}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️</button>
-                        <button onclick="deleteProject('${project.id}')" class="btn btn-danger" style="padding:4px 12px; font-size:11px;">🗑️</button>
+<div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
+    <button onclick="viewProject('${project.id}')" class="btn-sm btn-sm-primary">📜 View Scripts</button>
+    <button onclick="openCreateScript('${project.id}')" class="btn-sm btn-sm-primary">➕ New Script</button>
+    <button onclick="editProject('${project.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
+    <button onclick="deleteProject('${project.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
                     </div>
                 </div>
             </div>
@@ -1636,11 +1646,11 @@ function viewProject(projectId) {
                         <strong style="color:#fff;">${script.name}</strong>
                         <p style="color:#8888aa; font-size:12px; margin:4px 0 0;">${script.description || 'No description'}</p>
                     </div>
-                    <div style="display:flex; gap:8px;">
-                        <button onclick="viewScript('${project.id}','${script.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">👁️ View</button>
-                        <button onclick="editScript('${project.id}','${script.id}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️</button>
-                        <button onclick="deleteScript('${project.id}','${script.id}')" class="btn btn-danger" style="padding:4px 12px; font-size:11px;">🗑️</button>
-                    </div>
+<div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
+    <button onclick="viewScript('${project.id}','${script.id}')" class="btn-sm btn-sm-primary">👁️ View</button>
+    <button onclick="editScript('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
+    <button onclick="deleteScript('${project.id}','${script.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
+</div>
                 </div>
             `;
         }
@@ -1877,8 +1887,13 @@ function viewScript(projectId, scriptId) {
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
-    var loaderCode = 'loadstring(game:HttpGet("https://your-api.com/load/' + script.loaderId + '"))()';
+
+    // Inside viewScript function, replace the loader code section:
+    var scriptCode = script.code || '';
+    var loaderCode = 'loadstring([[' + scriptCode + ']])()';
+
+    // For the display, show both options
+    var displayCode = scriptCode.length > 100 ? scriptCode.substring(0, 100) + '...' : scriptCode;
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2428,6 +2443,56 @@ document.addEventListener('DOMContentLoaded', function() {
     
     console.log('📊 Users loaded:', Object.keys(users).length);
 });
+
+// ============ SCRIPT LOADER API ============
+function getScriptLoader(loaderId) {
+    var projects = loadProjects();
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].loaderId === loaderId) {
+                    return projects[i].scripts[j].code;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// ============ FIXED COPY LOADER ============
+function copyLoader(loaderId) {
+    // Create a unique URL for this script - you'll need to host this on your server
+    var loaderCode = 'loadstring(game:HttpGet("https://your-api.com/load/' + loaderId + '"))()';
+    
+    // For demo, we'll just copy the code directly
+    var scriptCode = getScriptLoader(loaderId);
+    if (scriptCode) {
+        // Actually, for real use, you'd want to host this on a server
+        // For now, we'll show the loader with the direct code
+        var fullLoader = 'loadstring([[' + scriptCode + ']])()';
+        
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(fullLoader).then(function() {
+                showNotification('Copied!', 'Script code copied to clipboard!', 'success');
+            }).catch(function() {
+                fallbackCopy(fullLoader);
+            });
+        } else {
+            fallbackCopy(fullLoader);
+        }
+    } else {
+        // Fallback to the loader ID version
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(loaderCode).then(function() {
+                showNotification('Copied!', 'Loader code copied to clipboard!', 'success');
+            }).catch(function() {
+                fallbackCopy(loaderCode);
+            });
+        } else {
+            fallbackCopy(loaderCode);
+        }
+    }
+}
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
 window.handleSignup = handleSignup;
