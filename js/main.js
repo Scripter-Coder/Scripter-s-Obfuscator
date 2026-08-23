@@ -484,17 +484,48 @@ function updateUIForUser(user) {
     }
     
     // Update stats - FIXED: Display Infinity as ∞
-    if (user.stats) {
-        var stats = user.stats;
-        updateStat('projects', stats.projects.used, stats.projects.max);
-        updateStat('keys', stats.keys.used, stats.keys.max);
-        updateStat('scripts', stats.scripts.used, stats.scripts.max);
-        updateStat('storage', stats.fileSize.used, stats.fileSize.max);
-    }
+// Update stats - FIXED: Properly display values
+if (user.stats) {
+    var stats = user.stats;
+    // Projects
+    document.getElementById('projectsUsed').textContent = stats.projects.used;
+    document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
+    updateBar('projects', stats.projects.used, stats.projects.max);
     
-    console.log('✅ Dashboard shown for user:', user.username);
+    // Keys
+    document.getElementById('keysUsed').textContent = stats.keys.used;
+    document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
+    updateBar('keys', stats.keys.used, stats.keys.max);
+    
+    // Scripts
+    document.getElementById('scriptsUsed').textContent = stats.scripts.used;
+    document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
+    updateBar('scripts', stats.scripts.used, stats.scripts.max);
+    
+    // Storage
+    document.getElementById('storageUsed').textContent = stats.fileSize.used;
+    document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
+    updateBar('storage', stats.fileSize.used, stats.fileSize.max);
 }
 
+function updateBar(name, used, max) {
+    var bar = document.getElementById(name + 'Bar');
+    if (!bar) return;
+    
+    var percentage = 0;
+    if (max > 0 && max !== Infinity) {
+        percentage = (used / max) * 100;
+    }
+    bar.style.width = Math.min(percentage, 100) + '%';
+    
+    bar.className = 'fill';
+    if (percentage > 90) {
+        bar.classList.add('danger');
+    } else if (percentage > 70) {
+        bar.classList.add('warning');
+    }
+}
+    
 function updateStat(name, used, max) {
     var usedEl = document.getElementById(name + 'Used');
     var maxEl = document.getElementById(name + 'Max');
