@@ -117,7 +117,7 @@
         </div>
         
         <!-- ====== TABS NAVIGATION ====== -->
-        <div class="tabs-nav" id="tabsNav" style="display:none; margin-top: 10px; margin-bottom: 20px; display: flex; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px;">
+        <div class="tabs-nav" id="tabsNav" style="display:none; margin-top: 10px; margin-bottom: 20px;">
             <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Dashboard</button>
             <button class="tab-btn" data-tab="scripts" onclick="switchTab('scripts')">📜 Scripts</button>
             <button class="tab-btn" data-tab="keys" onclick="switchTab('keys')">🔑 Keys</button>
@@ -126,7 +126,9 @@
         </div>
 
         <!-- ====== DASHBOARD TAB ====== -->
-        <div class="tab-content" id="tab-dashboard" style="display:block;"></div>
+        <div class="tab-content" id="tab-dashboard" style="display:block;">
+            <!-- Dashboard content will be moved here by JavaScript -->
+        </div>
 
         <!-- ====== SCRIPTS TAB ====== -->
         <div class="tab-content" id="tab-scripts" style="display:none;">
@@ -135,7 +137,7 @@
                     <h2 style="color:#fff; margin:0;">📜 Your Projects</h2>
                     <button class="btn btn-primary" onclick="openCreateProject()">➕ Create Project</button>
                 </div>
-                <div id="projectsList" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:16px;">
+                <div id="projectsList" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px,1fr)); gap:16px;">
                     <p style="color:#8888aa; grid-column:1/-1; text-align:center; padding:40px 0;">No projects yet. Create your first project!</p>
                 </div>
             </div>
