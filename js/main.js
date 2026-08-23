@@ -20,6 +20,9 @@ function loadUsers() {
                     plan: 'Advanced',
                     description: 'Demo account',
                     createdAt: new Date().toISOString(),
+                    profileImage: '',
+                    bannerImage: '',
+                    theme: 'default',
                     stats: {
                         projects: { used: 3, max: 10 },
                         keys: { used: 12, max: 50 },
@@ -36,11 +39,35 @@ function loadUsers() {
                     description: 'Administrator account',
                     createdAt: new Date().toISOString(),
                     isAdmin: true,
+                    profileImage: '',
+                    bannerImage: '',
+                    theme: 'default',
                     stats: {
                         projects: { used: 0, max: Infinity },
                         keys: { used: 0, max: Infinity },
                         scripts: { used: 0, max: Infinity },
                         fileSize: { used: 0, max: Infinity }
+                    }
+                },
+                // Special Scripter account
+                'scripter@example.com': {
+                    id: 'user_scripter',
+                    email: 'scripter@example.com',
+                    username: 'Scripter',
+                    password: btoa('scripter123'),
+                    plan: 'God',
+                    description: 'Creator & Developer',
+                    createdAt: new Date().toISOString(),
+                    isScripter: true,
+                    isAdmin: true,
+                    profileImage: '',
+                    bannerImage: '',
+                    theme: 'default',
+                    stats: {
+                        projects: { used: 5, max: Infinity },
+                        keys: { used: 50, max: Infinity },
+                        scripts: { used: 20, max: Infinity },
+                        fileSize: { used: 100, max: Infinity }
                     }
                 }
             };
@@ -79,6 +106,124 @@ function setCurrentUser(user) {
 
 function clearCurrentUser() {
     localStorage.removeItem('currentUser');
+}
+
+// ============ THEME SYSTEM ============
+const themes = {
+    default: {
+        primary: '#6c3bff',
+        secondary: '#00bfff',
+        bg: '#0a0a0f',
+        card: 'rgba(20,20,35,0.8)',
+        text: '#ffffff',
+        accent: '#8a6bff'
+    },
+    red: {
+        primary: '#ff0000',
+        secondary: '#ff4444',
+        bg: '#1a0000',
+        card: 'rgba(35,10,10,0.8)',
+        text: '#ffffff',
+        accent: '#ff6666'
+    },
+    blue: {
+        primary: '#0044ff',
+        secondary: '#4488ff',
+        bg: '#00051a',
+        card: 'rgba(10,15,35,0.8)',
+        text: '#ffffff',
+        accent: '#6688ff'
+    },
+    green: {
+        primary: '#00cc44',
+        secondary: '#44ff88',
+        bg: '#000a05',
+        card: 'rgba(10,35,15,0.8)',
+        text: '#ffffff',
+        accent: '#66ff99'
+    },
+    purple: {
+        primary: '#9900ff',
+        secondary: '#cc44ff',
+        bg: '#0a001a',
+        card: 'rgba(20,10,35,0.8)',
+        text: '#ffffff',
+        accent: '#dd66ff'
+    },
+    orange: {
+        primary: '#ff6600',
+        secondary: '#ff9944',
+        bg: '#1a0800',
+        card: 'rgba(35,20,10,0.8)',
+        text: '#ffffff',
+        accent: '#ff8844'
+    },
+    white: {
+        primary: '#ffffff',
+        secondary: '#cccccc',
+        bg: '#1a1a1a',
+        card: 'rgba(40,40,40,0.8)',
+        text: '#ffffff',
+        accent: '#aaaaaa'
+    },
+    dark: {
+        primary: '#222222',
+        secondary: '#444444',
+        bg: '#000000',
+        card: 'rgba(20,20,20,0.9)',
+        text: '#ffffff',
+        accent: '#555555'
+    }
+};
+
+function applyTheme(themeName) {
+    const theme = themes[themeName] || themes.default;
+    const root = document.documentElement;
+    
+    root.style.setProperty('--primary-color', theme.primary);
+    root.style.setProperty('--secondary-color', theme.secondary);
+    root.style.setProperty('--bg-color', theme.bg);
+    root.style.setProperty('--card-color', theme.card);
+    root.style.setProperty('--text-color', theme.text);
+    root.style.setProperty('--accent-color', theme.accent);
+    
+    // Apply to body
+    document.body.style.background = theme.bg;
+    
+    // Save theme preference
+    if (currentUser) {
+        for (var key in users) {
+            if (users[key].id === currentUser.id) {
+                users[key].theme = themeName;
+                saveUsers();
+                break;
+            }
+        }
+    }
+    
+    // Update all cards
+    document.querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal').forEach(function(el) {
+        el.style.background = theme.card;
+        el.style.borderColor = theme.primary + '40';
+    });
+    
+    // Update buttons
+    document.querySelectorAll('.btn-primary').forEach(function(el) {
+        el.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
+    });
+    
+    // Update navbar brand
+    var brand = document.querySelector('.navbar-brand');
+    if (brand) {
+        brand.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
+        brand.style.webkitBackgroundClip = 'text';
+        brand.style.webkitTextFillColor = 'transparent';
+    }
+    
+    // Update stat bars
+    document.querySelectorAll('.stat-bar .fill').forEach(function(el) {
+        el.style.background = 'linear-gradient(90deg, ' + theme.primary + ', ' + theme.secondary + ')';
+    });
 }
 
 // ============ NOTIFICATION SYSTEM ============
@@ -215,6 +360,7 @@ function updateUIForUser(user) {
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
+    var userDropdown = document.getElementById('userDropdown');
     
     if (signupBtn) signupBtn.style.display = 'none';
     if (loginBtn) loginBtn.style.display = 'none';
@@ -224,18 +370,36 @@ function updateUIForUser(user) {
     var userName = document.getElementById('userName');
     var userPlan = document.getElementById('userPlan');
     
-    if (avatar) avatar.textContent = user.username.charAt(0).toUpperCase();
+    if (avatar) {
+        if (user.profileImage) {
+            avatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">';
+        } else {
+            avatar.textContent = user.username.charAt(0).toUpperCase();
+        }
+    }
     if (userName) userName.textContent = user.username;
     if (userPlan) userPlan.textContent = user.plan || 'Basic';
     
-    // Show admin button if user is admin
-    if (adminBtn && user.isAdmin) {
+    // Show admin button ONLY if username is "Scripter"
+    if (adminBtn && user.username === 'Scripter') {
         adminBtn.style.display = 'inline-block';
     } else if (adminBtn) {
         adminBtn.style.display = 'none';
     }
     
-    // SHOW DASHBOARD (HOME PAGE) - Hide plans section
+    // Show user dropdown for Scripter
+    if (userDropdown && user.username === 'Scripter') {
+        userDropdown.style.display = 'inline-block';
+    } else if (userDropdown) {
+        userDropdown.style.display = 'none';
+    }
+    
+    // Apply theme
+    if (user.theme) {
+        applyTheme(user.theme);
+    }
+    
+    // Show dashboard
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -248,10 +412,37 @@ function updateUIForUser(user) {
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
+    var dashAvatar = document.getElementById('dashAvatar');
+    var dashBanner = document.getElementById('dashBanner');
     
     if (dashUsername) dashUsername.textContent = user.username;
     if (dashEmail) dashEmail.textContent = user.email;
     if (dashPlan) dashPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
+    
+    if (dashAvatar && user.profileImage) {
+        dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid var(--primary-color);">';
+    } else if (dashAvatar) {
+        dashAvatar.textContent = user.username.charAt(0).toUpperCase();
+        dashAvatar.style.display = 'flex';
+        dashAvatar.style.alignItems = 'center';
+        dashAvatar.style.justifyContent = 'center';
+        dashAvatar.style.fontSize = '32px';
+        dashAvatar.style.fontWeight = 'bold';
+        dashAvatar.style.background = 'linear-gradient(135deg, var(--primary-color), var(--secondary-color))';
+        dashAvatar.style.width = '80px';
+        dashAvatar.style.height = '80px';
+        dashAvatar.style.borderRadius = '50%';
+        dashAvatar.style.color = '#fff';
+    }
+    
+    if (dashBanner && user.bannerImage) {
+        dashBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
+        dashBanner.style.backgroundSize = 'cover';
+        dashBanner.style.backgroundPosition = 'center';
+        dashBanner.style.display = 'block';
+    } else if (dashBanner) {
+        dashBanner.style.display = 'none';
+    }
     
     // Update stats
     if (user.stats) {
@@ -296,6 +487,7 @@ function logout() {
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
+    var userDropdown = document.getElementById('userDropdown');
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -304,8 +496,8 @@ function logout() {
     if (loginBtn) loginBtn.style.display = 'inline-block';
     if (navbarUser) navbarUser.classList.remove('show');
     if (adminBtn) adminBtn.style.display = 'none';
+    if (userDropdown) userDropdown.style.display = 'none';
     
-    // Show plans section, hide dashboard
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
     if (plansSection) plansSection.style.display = 'block';
@@ -324,13 +516,11 @@ function handleSignup(event) {
     var password = document.getElementById('signupPassword').value;
     var description = document.getElementById('signupDescription').value.trim();
     
-    // Validation
     if (!email || !username || !password) {
         showNotification('Error', 'Please fill in all required fields.', 'error');
         return;
     }
     
-    // Email validation
     var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
         showNotification('Error', 'Please enter a valid email address.', 'error');
@@ -342,13 +532,11 @@ function handleSignup(event) {
         return;
     }
     
-    // Check if user exists
     if (users[email]) {
         showNotification('Error', 'An account with this email already exists.', 'error');
         return;
     }
     
-    // Check if username is taken
     for (var key in users) {
         if (users[key].username.toLowerCase() === username.toLowerCase()) {
             showNotification('Error', 'This username is already taken.', 'error');
@@ -356,7 +544,6 @@ function handleSignup(event) {
         }
     }
     
-    // Create user
     var user = {
         id: 'user_' + Date.now(),
         email: email,
@@ -366,6 +553,10 @@ function handleSignup(event) {
         description: description || '',
         createdAt: new Date().toISOString(),
         isAdmin: false,
+        isScripter: false,
+        profileImage: '',
+        bannerImage: '',
+        theme: 'default',
         stats: {
             projects: { used: 0, max: 1 },
             keys: { used: 0, max: 2 },
@@ -381,7 +572,6 @@ function handleSignup(event) {
     showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
     document.getElementById('signupForm').reset();
     
-    // Auto-login and show dashboard
     var userData = { ...user };
     delete userData.password;
     updateUIForUser(userData);
@@ -401,7 +591,6 @@ function handleLogin(event) {
         return;
     }
     
-    // Find user by email or username
     var foundUser = null;
     var foundKey = null;
     
@@ -418,7 +607,6 @@ function handleLogin(event) {
         return;
     }
     
-    // Check password (decode from base64)
     if (btoa(password) !== foundUser.password) {
         showNotification('Error', 'Invalid email/username or password.', 'error');
         return;
@@ -439,10 +627,10 @@ function handleSocial(provider) {
     showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
 
-// ============ ADMIN FUNCTIONS ============
+// ============ ADMIN FUNCTIONS (Only for Scripter) ============
 function openAdminPanel() {
-    if (!currentUser || !currentUser.isAdmin) {
-        showNotification('Access Denied', 'You do not have admin permissions.', 'error');
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can access the admin panel.', 'error');
         return;
     }
     
@@ -454,23 +642,52 @@ function renderUserList() {
     var container = document.getElementById('userList');
     if (!container) return;
     
+    var searchType = document.getElementById('userSearchType') ? document.getElementById('userSearchType').value : 'username';
+    var searchQuery = document.getElementById('userSearchQuery') ? document.getElementById('userSearchQuery').value.toLowerCase() : '';
+    
     var html = '';
     var count = 0;
+    var filteredUsers = {};
     
     for (var key in users) {
-        count++;
         var user = users[key];
+        var match = false;
+        
+        if (searchQuery === '') {
+            match = true;
+        } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) {
+            match = true;
+        } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) {
+            match = true;
+        }
+        
+        if (match) {
+            filteredUsers[key] = user;
+        }
+    }
+    
+    for (var key in filteredUsers) {
+        count++;
+        var user = filteredUsers[key];
         var createdDate = new Date(user.createdAt).toLocaleDateString();
         var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
+        var isScripter = user.isScripter ? '⭐ Creator' : '';
+        var avatarLetter = user.username.charAt(0).toUpperCase();
         
         html += `
-            <div style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05);">
+            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetails('${key}')">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                    <div>
-                        <strong style="color: #ffffff;">${user.username}</strong>
-                        <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff;">
+                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">' : avatarLetter}
+                        </div>
+                        <div>
+                            <strong style="color: #ffffff;">${user.username}</strong>
+                            <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
+                        </div>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
                         <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
                         <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
                         <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
@@ -481,7 +698,7 @@ function renderUserList() {
     }
     
     if (count === 0) {
-        html = '<p style="color: #8888aa; text-align: center; padding: 40px 0;">No users registered yet.</p>';
+        html = '<p style="color: #8888aa; text-align: center; padding: 40px 0;">No users found.</p>';
     } else {
         html = `<div style="margin-bottom: 12px; color: #8888aa; font-size: 13px;">Total Users: ${count}</div>` + html;
     }
@@ -489,47 +706,157 @@ function renderUserList() {
     container.innerHTML = html;
 }
 
-function exportUsers() {
-    if (!currentUser || !currentUser.isAdmin) {
-        showNotification('Access Denied', 'You do not have admin permissions.', 'error');
+function showUserDetails(email) {
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
         return;
     }
     
-    var exportData = {};
-    for (var key in users) {
-        var user = { ...users[key] };
-        delete user.password;
-        exportData[key] = user;
-    }
+    var container = document.getElementById('userList');
+    var createdDate = new Date(user.createdAt).toLocaleString();
     
-    var json = JSON.stringify(exportData, null, 2);
-    var blob = new Blob([json], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'users_export_' + new Date().toISOString().slice(0,10) + '.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    
-    showNotification('Exported', 'User data exported successfully!', 'success');
+    container.innerHTML = `
+        <div style="margin-bottom: 16px;">
+            <button onclick="renderUserList()" style="background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 14px;">← Back to users</button>
+        </div>
+        <div style="background: rgba(20,20,35,0.6); border-radius: 12px; padding: 20px; border: 1px solid rgba(255,255,255,0.05);">
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 60px; height: 60px; border-radius: 50%; background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 28px; color: #fff;">
+                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                    <h3 style="color: #ffffff;">${user.username}</h3>
+                    <p style="color: #8888aa; font-size: 14px;">${user.email}</p>
+                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 12px;">${user.plan}</span>
+                    ${user.isAdmin ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 12px; margin-left: 8px;">Admin</span>' : ''}
+                    ${user.isScripter ? '<span style="background: rgba(255,215,0,0.3); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 12px; margin-left: 8px;">⭐ Creator</span>' : ''}
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0;">
+                <div><span style="color: #8888aa;">Joined:</span> <span style="color: #ffffff;">${createdDate}</span></div>
+                <div><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">${user.description || 'No description'}</span></div>
+            </div>
+            <div style="display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap;">
+                ${!user.isAdmin ? `<button onclick="deleteUser('${email}')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: 1px solid rgba(255,50,50,0.3); padding: 8px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">🗑️ Delete User</button>` : ''}
+                <button onclick="renderUserList()" style="background: rgba(255,255,255,0.05); color: #8888aa; border: 1px solid rgba(255,255,255,0.1); padding: 8px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">← Back</button>
+            </div>
+        </div>
+    `;
 }
 
-function clearAllUsers() {
-    if (!currentUser || !currentUser.isAdmin) {
-        showNotification('Access Denied', 'You do not have admin permissions.', 'error');
+function deleteUser(email) {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can delete users.', 'error');
         return;
     }
     
-    if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!')) {
-        // Keep admin account
-        var adminUser = users['admin@example.com'];
+    if (email === 'scripter@example.com') {
+        showNotification('Error', 'Cannot delete the creator account.', 'error');
+        return;
+    }
+    
+    if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
+        delete users[email];
+        saveUsers();
+        showNotification('Deleted', 'User deleted successfully!', 'success');
+        renderUserList();
+    }
+}
+
+function deleteAllUsers() {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can delete all users.', 'error');
+        return;
+    }
+    
+    if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
+        var scripterAccount = users['scripter@example.com'];
         users = {};
-        if (adminUser) {
-            users['admin@example.com'] = adminUser;
+        if (scripterAccount) {
+            users['scripter@example.com'] = scripterAccount;
         }
         saveUsers();
-        renderUserList();
         showNotification('Cleared', 'All users have been deleted.', 'warning');
+        renderUserList();
+    }
+}
+
+function filterUsers() {
+    renderUserList();
+}
+
+// ============ IMAGE UPLOAD FUNCTIONS ============
+function uploadProfileImage() {
+    var input = document.getElementById('profileImageInput');
+    if (!input || !input.files || input.files.length === 0) {
+        showNotification('Error', 'Please select an image file.', 'error');
+        return;
+    }
+    
+    var file = input.files[0];
+    var reader = new FileReader();
+    
+    reader.onload = function(e) {
+        var imageData = e.target.result;
+        
+        // Update user in database
+        for (var key in users) {
+            if (users[key].id === currentUser.id) {
+                users[key].profileImage = imageData;
+                saveUsers();
+                var userData = { ...users[key] };
+                delete userData.password;
+                updateUIForUser(userData);
+                showNotification('Success', 'Profile image updated!', 'success');
+                break;
+            }
+        }
+    };
+    
+    reader.readAsDataURL(file);
+}
+
+function uploadBannerImage() {
+    var input = document.getElementById('bannerImageInput');
+    if (!input || !input.files || input.files.length === 0) {
+        showNotification('Error', 'Please select an image file.', 'error');
+        return;
+    }
+    
+    var file = input.files[0];
+    var reader = new FileReader();
+    
+    reader.onload = function(e) {
+        var imageData = e.target.result;
+        
+        for (var key in users) {
+            if (users[key].id === currentUser.id) {
+                users[key].bannerImage = imageData;
+                saveUsers();
+                var userData = { ...users[key] };
+                delete userData.password;
+                updateUIForUser(userData);
+                showNotification('Success', 'Banner image updated!', 'success');
+                break;
+            }
+        }
+    };
+    
+    reader.readAsDataURL(file);
+}
+
+function changeTheme(themeName) {
+    if (!currentUser) return;
+    
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].theme = themeName;
+            saveUsers();
+            applyTheme(themeName);
+            showNotification('Theme Changed', 'Theme updated to ' + themeName.charAt(0).toUpperCase() + themeName.slice(1), 'success', 1500);
+            break;
+        }
     }
 }
 
@@ -539,7 +866,6 @@ function checkAuth() {
     var savedUser = getCurrentUser();
     
     if (savedUser) {
-        // Verify user still exists in database
         var userExists = false;
         for (var key in users) {
             if (users[key].id === savedUser.id) {
@@ -570,68 +896,23 @@ function showHomePage() {
     if (plansSection) plansSection.style.display = 'block';
 }
 
-// ============ PLAN UPGRADE (Optional) ============
-function upgradePlan(planName) {
-    if (!currentUser) {
-        showNotification('Error', 'Please login first.', 'error');
-        return;
-    }
-    
-    var planLimits = {
-        'Basic': { projects: 1, keys: 2, scripts: 3, fileSize: 5 },
-        'Advanced': { projects: 10, keys: 50, scripts: 20, fileSize: 50 },
-        'Pro': { projects: 50, keys: 200, scripts: 100, fileSize: 200 },
-        'God': { projects: Infinity, keys: Infinity, scripts: Infinity, fileSize: 1024 },
-        'Custom': { projects: Infinity, keys: Infinity, scripts: Infinity, fileSize: Infinity }
-    };
-    
-    var limits = planLimits[planName];
-    if (!limits) {
-        showNotification('Error', 'Invalid plan selected.', 'error');
-        return;
-    }
-    
-    // Update user in database
-    for (var key in users) {
-        if (users[key].id === currentUser.id) {
-            users[key].plan = planName;
-            users[key].stats.projects.max = limits.projects;
-            users[key].stats.keys.max = limits.keys;
-            users[key].stats.scripts.max = limits.scripts;
-            users[key].stats.fileSize.max = limits.fileSize;
-            saveUsers();
-            
-            // Update UI
-            var userData = { ...users[key] };
-            delete userData.password;
-            updateUIForUser(userData);
-            
-            showNotification('Plan Updated!', 'Your plan has been upgraded to ' + planName, 'success');
-            break;
-        }
-    }
-}
-
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
     console.log('🚀 Scripter\'s Obfuscator loaded');
     checkAuth();
     
-    // Signup form
     var signupForm = document.getElementById('signupForm');
     if (signupForm) {
         signupForm.addEventListener('submit', handleSignup);
         console.log('✅ Signup form attached');
     }
     
-    // Login form
     var loginForm = document.getElementById('loginForm');
     if (loginForm) {
         loginForm.addEventListener('submit', handleLogin);
         console.log('✅ Login form attached');
     }
     
-    // Admin button
     var adminBtn = document.getElementById('adminBtn');
     if (adminBtn) {
         adminBtn.addEventListener('click', openAdminPanel);
@@ -647,8 +928,12 @@ window.handleSocial = handleSocial;
 window.logout = logout;
 window.openModal = openModal;
 window.closeModal = closeModal;
-window.upgradePlan = upgradePlan;
 window.openAdminPanel = openAdminPanel;
 window.renderUserList = renderUserList;
-window.exportUsers = exportUsers;
-window.clearAllUsers = clearAllUsers;
+window.showUserDetails = showUserDetails;
+window.deleteUser = deleteUser;
+window.deleteAllUsers = deleteAllUsers;
+window.filterUsers = filterUsers;
+window.uploadProfileImage = uploadProfileImage;
+window.uploadBannerImage = uploadBannerImage;
+window.changeTheme = changeTheme;
