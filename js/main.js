@@ -1,6 +1,69 @@
 // ============ STATE ============
 let currentUser = null;
 let isLoggedIn = false;
+let users = {};
+
+// ============ DATABASE FUNCTIONS (localStorage) ============
+function loadUsers() {
+    try {
+        const data = localStorage.getItem('users');
+        if (data) {
+            users = JSON.parse(data);
+        } else {
+            // Create demo users
+            users = {
+                'demo@example.com': {
+                    id: 'user_1',
+                    email: 'demo@example.com',
+                    username: 'DemoUser',
+                    password: btoa('demo123'),
+                    plan: 'Advanced',
+                    description: 'Demo account',
+                    createdAt: new Date().toISOString(),
+                    stats: {
+                        projects: { used: 3, max: 10 },
+                        keys: { used: 12, max: 50 },
+                        scripts: { used: 8, max: 20 },
+                        fileSize: { used: 25, max: 50 }
+                    }
+                }
+            };
+            saveUsers();
+        }
+    } catch (error) {
+        console.error('Error loading users:', error);
+        users = {};
+    }
+}
+
+function saveUsers() {
+    try {
+        localStorage.setItem('users', JSON.stringify(users));
+    } catch (error) {
+        console.error('Error saving users:', error);
+    }
+}
+
+function getCurrentUser() {
+    try {
+        const data = localStorage.getItem('currentUser');
+        return data ? JSON.parse(data) : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function setCurrentUser(user) {
+    try {
+        localStorage.setItem('currentUser', JSON.stringify(user));
+    } catch (error) {
+        console.error('Error saving current user:', error);
+    }
+}
+
+function clearCurrentUser() {
+    localStorage.removeItem('currentUser');
+}
 
 // ============ NOTIFICATION SYSTEM ============
 function showNotification(title, message, type, duration) {
@@ -125,6 +188,7 @@ function showPage(page) {
 function updateUIForUser(user) {
     isLoggedIn = true;
     currentUser = user;
+    setCurrentUser(user);
     
     // Show user info in navbar
     document.getElementById('signupBtn').style.display = 'none';
@@ -174,6 +238,7 @@ function updateStat(name, used, max) {
 function logout() {
     isLoggedIn = false;
     currentUser = null;
+    clearCurrentUser();
     
     document.getElementById('signupBtn').style.display = 'inline-block';
     document.getElementById('loginBtn').style.display = 'inline-block';
@@ -186,94 +251,191 @@ function logout() {
 }
 
 // ============ SIGNUP HANDLER ============
-async function handleSignup(event) {
+function handleSignup(event) {
     event.preventDefault();
     
-    var email = document.getElementById('signupEmail').value;
-    var username = document.getElementById('signupUsername').value;
+    var email = document.getElementById('signupEmail').value.trim();
+    var username = document.getElementById('signupUsername').value.trim();
     var password = document.getElementById('signupPassword').value;
-    var description = document.getElementById('signupDescription').value;
+    var description = document.getElementById('signupDescription').value.trim();
+    
+    // Validation
+    if (!email || !username || !password) {
+        showNotification('Error', 'Please fill in all required fields.', 'error');
+        return;
+    }
+    
+    // Email validation
+    var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        showNotification('Error', 'Please enter a valid email address.', 'error');
+        return;
+    }
     
     if (password.length < 6) {
         showNotification('Error', 'Password must be at least 6 characters.', 'error');
         return;
     }
     
-    try {
-        var data = await signup(email, username, password, description);
-        
-        if (data.success) {
-            closeModal('signup');
-            showNotification('Welcome!', 'Account created successfully! Welcome ' + data.user.username, 'success');
-            updateUIForUser(data.user);
-            document.getElementById('signupForm').reset();
-        } else {
-            showNotification('Error', data.message || 'Signup failed', 'error');
-        }
-    } catch (error) {
-        showNotification('Error', 'An error occurred. Please try again.', 'error');
+    // Check if user exists
+    if (users[email]) {
+        showNotification('Error', 'An account with this email already exists.', 'error');
+        return;
     }
+    
+    // Check if username is taken
+    for (var key in users) {
+        if (users[key].username.toLowerCase() === username.toLowerCase()) {
+            showNotification('Error', 'This username is already taken.', 'error');
+            return;
+        }
+    }
+    
+    // Create user
+    var user = {
+        id: 'user_' + Date.now(),
+        email: email,
+        username: username,
+        password: btoa(password), // Simple encoding (not secure, but works for demo)
+        plan: 'Basic',
+        description: description || '',
+        createdAt: new Date().toISOString(),
+        stats: {
+            projects: { used: 0, max: 1 },
+            keys: { used: 0, max: 2 },
+            scripts: { used: 0, max: 3 },
+            fileSize: { used: 0, max: 5 }
+        }
+    };
+    
+    users[email] = user;
+    saveUsers();
+    
+    closeModal('signup');
+    showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
+    document.getElementById('signupForm').reset();
+    
+    // Auto-login
+    var userData = { ...user };
+    delete userData.password;
+    updateUIForUser(userData);
 }
 
 // ============ LOGIN HANDLER ============
-async function handleLogin(event) {
+function handleLogin(event) {
     event.preventDefault();
     
-    var email = document.getElementById('loginEmail').value;
+    var emailOrUsername = document.getElementById('loginEmail').value.trim();
     var password = document.getElementById('loginPassword').value;
     
-    if (!email || !password) {
+    if (!emailOrUsername || !password) {
         showNotification('Error', 'Please fill in all fields.', 'error');
         return;
     }
     
-    try {
-        var data = await login(email, password);
-        
-        if (data.success) {
-            closeModal('login');
-            showNotification('Welcome Back!', 'Logged in successfully!', 'success');
-            updateUIForUser(data.user);
-            document.getElementById('loginForm').reset();
-        } else {
-            showNotification('Error', data.message || 'Login failed', 'error');
+    // Find user by email or username
+    var foundUser = null;
+    var foundKey = null;
+    
+    for (var key in users) {
+        if (key === emailOrUsername || users[key].username.toLowerCase() === emailOrUsername.toLowerCase()) {
+            foundUser = users[key];
+            foundKey = key;
+            break;
         }
-    } catch (error) {
-        showNotification('Error', 'An error occurred. Please try again.', 'error');
     }
+    
+    if (!foundUser) {
+        showNotification('Error', 'Invalid email/username or password.', 'error');
+        return;
+    }
+    
+    // Check password (decode from base64)
+    if (btoa(password) !== foundUser.password) {
+        showNotification('Error', 'Invalid email/username or password.', 'error');
+        return;
+    }
+    
+    closeModal('login');
+    showNotification('Welcome Back!', 'Logged in successfully!', 'success');
+    document.getElementById('loginForm').reset();
+    
+    var userData = { ...foundUser };
+    delete userData.password;
+    updateUIForUser(userData);
 }
 
-// ============ SOCIAL AUTH ============
-function handleSocialSignup(provider) {
-    if (provider === 'google') {
-        window.location.href = getGoogleAuthUrl();
-    } else if (provider === 'discord') {
-        window.location.href = getDiscordAuthUrl();
-    }
-    showNotification('Redirecting', 'Redirecting to ' + provider + '...', 'info');
-}
-
-function handleSocialLogin(provider) {
-    if (provider === 'google') {
-        window.location.href = getGoogleAuthUrl();
-    } else if (provider === 'discord') {
-        window.location.href = getDiscordAuthUrl();
-    }
-    showNotification('Redirecting', 'Redirecting to ' + provider + '...', 'info');
+// ============ SOCIAL AUTH (Demo) ============
+function handleSocial(provider) {
+    showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
 
 // ============ AUTO-LOGIN CHECK ============
-async function checkAuth() {
-    try {
-        var data = await getUser();
-        if (data.success && data.user) {
-            updateUIForUser(data.user);
-            showNotification('Welcome Back!', 'You are already logged in.', 'success', 2000);
-        } else {
+function checkAuth() {
+    loadUsers();
+    var savedUser = getCurrentUser();
+    
+    if (savedUser) {
+        // Verify user still exists in database
+        var userExists = false;
+        for (var key in users) {
+            if (users[key].id === savedUser.id) {
+                userExists = true;
+                var userData = { ...users[key] };
+                delete userData.password;
+                updateUIForUser(userData);
+                break;
+            }
+        }
+        
+        if (!userExists) {
+            clearCurrentUser();
             document.getElementById('homePage').style.display = 'block';
         }
-    } catch (error) {
+    } else {
         document.getElementById('homePage').style.display = 'block';
+    }
+}
+
+// ============ PLAN UPGRADE (Optional) ============
+function upgradePlan(planName) {
+    if (!currentUser) {
+        showNotification('Error', 'Please login first.', 'error');
+        return;
+    }
+    
+    var planLimits = {
+        'Basic': { projects: 1, keys: 2, scripts: 3, fileSize: 5 },
+        'Advanced': { projects: 10, keys: 50, scripts: 20, fileSize: 50 },
+        'Pro': { projects: 50, keys: 200, scripts: 100, fileSize: 200 },
+        'God': { projects: Infinity, keys: Infinity, scripts: Infinity, fileSize: 1024 },
+        'Custom': { projects: Infinity, keys: Infinity, scripts: Infinity, fileSize: Infinity }
+    };
+    
+    var limits = planLimits[planName];
+    if (!limits) {
+        showNotification('Error', 'Invalid plan selected.', 'error');
+        return;
+    }
+    
+    // Update user in database
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].plan = planName;
+            users[key].stats.projects.max = limits.projects;
+            users[key].stats.keys.max = limits.keys;
+            users[key].stats.scripts.max = limits.scripts;
+            users[key].stats.fileSize.max = limits.fileSize;
+            saveUsers();
+            
+            // Update UI
+            var userData = { ...users[key] };
+            delete userData.password;
+            updateUIForUser(userData);
+            
+            showNotification('Plan Updated!', 'Your plan has been upgraded to ' + planName, 'success');
+            break;
+        }
     }
 }
 
@@ -282,22 +444,12 @@ document.addEventListener('DOMContentLoaded', function() {
     checkAuth();
 });
 
-// ============ KEY VERIFICATION ============
-async function verifyUserKey(key) {
-    try {
-        var data = await verifyKey(key);
-        if (data.success) {
-            showNotification('Key Valid', 'Your key has been verified!', 'success');
-            if (data.user) {
-                updateUIForUser(data.user);
-            }
-            return true;
-        } else {
-            showNotification('Invalid Key', data.message || 'This key is not valid.', 'error');
-            return false;
-        }
-    } catch (error) {
-        showNotification('Error', 'Failed to verify key.', 'error');
-        return false;
-    }
-}
+// ============ EXPOSE FUNCTIONS TO GLOBAL ============
+window.handleSignup = handleSignup;
+window.handleLogin = handleLogin;
+window.handleSocial = handleSocial;
+window.logout = logout;
+window.openModal = openModal;
+window.closeModal = closeModal;
+window.showPage = showPage;
+window.upgradePlan = upgradePlan;
