@@ -30,32 +30,11 @@
             <button class="btn btn-white" id="signupBtn" onclick="openModal('signup')">Sign Up</button>
             <button class="btn btn-black" id="loginBtn" onclick="openModal('login')">Log In</button>
             
-            <!-- Admin Button (only visible to Scripter) -->
-            <button class="btn btn-primary" id="adminBtn" onclick="openModal('admin')" style="display:none;">👑 Admin</button>
-            
-            <!-- User Dropdown (only visible to Scripter) -->
-            <div class="dropdown" id="userDropdown" style="display:none;">
-                <button class="btn btn-primary" onclick="toggleDropdown()">👤 Users ▼</button>
-                <div class="dropdown-content" id="dropdownContent">
-                    <div style="padding:4px 8px;">
-                        <select id="userSearchType" onchange="filterUsers()">
-                            <option value="username">Search by Username</option>
-                            <option value="email">Search by Gmail</option>
-                        </select>
-                    </div>
-                    <div style="padding:4px 8px;">
-                        <input type="text" id="userSearchQuery" placeholder="Search..." oninput="filterUsers()">
-                    </div>
-                    <div class="user-list-scroll" id="userList"></div>
-                    <div class="dropdown-divider"></div>
-                    <div style="padding:4px 8px;" class="dropdown-actions">
-                        <button class="btn-danger" onclick="deleteAllUsers()">🗑️ Delete All</button>
-                        <button class="btn-close-dropdown" onclick="toggleDropdown()">Close</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </nav>
+<!-- Users Button (only visible to Scripter) -->
+<button class="btn btn-primary" id="usersBtn" onclick="openUsersPanel()" style="display:none;">👥 Users</button>
+
+<!-- Admin Button (only visible to Scripter) -->
+<button class="btn btn-primary" id="adminBtn" onclick="openModal('admin')" style="display:none;">👑 Admin</button>
 
     <!-- Main Content -->
     <div class="main-content">
