@@ -53,6 +53,36 @@ const PLAN_CONFIGS = {
     }
 };
 
+// ============ SESSION PERSISTENCE ============
+// Save session to sessionStorage as well for refresh recovery
+function saveSession(user) {
+    try {
+        sessionStorage.setItem('session_user', JSON.stringify(user));
+        localStorage.setItem('currentUser', JSON.stringify(user));
+    } catch (e) {}
+}
+
+function restoreSession() {
+    try {
+        // Try sessionStorage first (faster)
+        var sessionData = sessionStorage.getItem('session_user');
+        if (sessionData) {
+            return JSON.parse(sessionData);
+        }
+        // Fallback to localStorage
+        var localData = localStorage.getItem('currentUser');
+        if (localData) {
+            return JSON.parse(localData);
+        }
+    } catch (e) {}
+    return null;
+}
+
+function clearSession() {
+    sessionStorage.removeItem('session_user');
+    localStorage.removeItem('currentUser');
+}
+
 // ============ DATABASE FUNCTIONS ============
 function loadUsers() {
     try {
@@ -146,14 +176,14 @@ function getCurrentUser() {
 
 function setCurrentUser(user) {
     try {
-        localStorage.setItem('currentUser', JSON.stringify(user));
+        saveSession(user);
     } catch (error) {
         console.error('Error saving current user:', error);
     }
 }
 
 function clearCurrentUser() {
-    localStorage.removeItem('currentUser');
+    clearSession();
 }
 
 // ============ THEME SYSTEM ============
@@ -1998,15 +2028,11 @@ function viewScript(projectId, scriptId) {
     
 // Inside viewScript function, replace the loader code section:
 var scriptCode = script.code || '';
-var scriptNameClean = script.name.replace(/[^a-zA-Z0-9]/g, '_');
-var loaderUrl = scriptNameClean + '_' + script.id;
-var loaderCode = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
+var directLoader = 'loadstring([[' + scriptCode + ']])()';
 
-// Store the script for the loader
-var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
-scriptStore[loaderUrl] = scriptCode;
-scriptStore[script.loaderId] = scriptCode;
-localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
+// Store for loader access
+storeScriptForLoader(script.loaderId, scriptCode, script.name);
+storeScriptForLoader(script.id, scriptCode, script.name);
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2051,7 +2077,27 @@ localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
     document.body.appendChild(overlay);
 }
 
-// ============ COPY LOADER ============
+// ============ SCRIPT LOADER SYSTEM ============
+// Store scripts for loader access
+function storeScriptForLoader(scriptId, scriptCode, scriptName) {
+    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
+    loaderStore[scriptId] = {
+        code: scriptCode,
+        name: scriptName,
+        timestamp: Date.now()
+    };
+    localStorage.setItem('loaderStore', JSON.stringify(loaderStore));
+}
+
+function getScriptForLoader(scriptId) {
+    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
+    if (loaderStore[scriptId]) {
+        return loaderStore[scriptId].code;
+    }
+    return null;
+}
+
+// ============ FIXED COPY LOADER ============
 function copyLoader(loaderId) {
     var projects = loadProjects();
     var scriptCode = null;
@@ -2077,32 +2123,76 @@ function copyLoader(loaderId) {
         return;
     }
     
-    // Create the loader URL - this will be hosted on your server
-    // Format: scriptname_scriptid
-    var scriptNameClean = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
-    var loaderUrl = scriptNameClean + '_' + scriptId;
+    // Store the script for loader access
+    storeScriptForLoader(loaderId, scriptCode, scriptName);
+    storeScriptForLoader(scriptId, scriptCode, scriptName);
     
-    // The actual loader code that users will use
-    var fullLoader = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
+    // Create a unique identifier for this script
+    var cleanName = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
+    var loaderId_short = loaderId.replace('ScripterHubOfficial_', '');
     
-    // Also save the script to localStorage for the "server" to serve
-    // This acts as a mini API
-    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
-    scriptStore[loaderUrl] = scriptCode;
-    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
+    // Method 1: Direct embed (most compatible with executors)
+    var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
-    // Also store with the loaderId for backwards compatibility
-    scriptStore[loaderId] = scriptCode;
-    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
+    // Method 2: Using a custom protocol (for executors that support it)
+    var protocolLoader = 'loadstring(game:HttpGet("script://' + loaderId + '"))()';
     
+    // Method 3: Using a data URI (some executors support this)
+    var encoded = btoa(scriptCode);
+    var dataUriLoader = 'loadstring(game:HttpGet("data:text/plain;base64,' + encoded + '"))()';
+    
+    // Method 4: Using a blob URL (modern approach)
+    var blobLoader = 'loadstring(game:HttpGet("blob:' + loaderId + '"))()';
+    
+    // For the user, we'll provide the most compatible version
+    // Most executors work with the direct embed or the game:HttpGet with a data URI
+    
+    // Show a dialog with multiple options
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 500px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:20px;">📋 Loader Code</h2>
+            <p class="sub">Script: <strong style="color:#8a6bff;">${scriptName}</strong></p>
+            
+            <div style="margin-bottom:12px;">
+                <label style="color:#8888aa; font-size:12px;">Method 1: Direct Load (Recommended)</label>
+                <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:10px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${directLoader}</code>
+                </div>
+                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+            </div>
+            
+            <div style="margin-bottom:12px;">
+                <label style="color:#8888aa; font-size:12px;">Method 2: Encoded Load</label>
+                <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:10px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${dataUriLoader}</code>
+                </div>
+                <button onclick="copyText('${dataUriLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+            </div>
+            
+            <div style="display:flex; gap:8px; margin-top:12px;">
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(fullLoader).then(function() {
-            showNotification('Copied!', 'Loader for "' + scriptName + '" copied to clipboard!', 'success');
+        navigator.clipboard.writeText(text).then(function() {
+            showNotification('Copied!', 'Loader copied to clipboard!', 'success');
         }).catch(function() {
-            fallbackCopy(fullLoader);
+            fallbackCopy(text);
         });
     } else {
-        fallbackCopy(fullLoader);
+        fallbackCopy(text);
     }
 }
 
@@ -2534,9 +2624,10 @@ function updateScriptVisibility(projectId, scriptId) {
 }
 
 // ============ AUTO-LOGIN CHECK ============
+// ============ AUTO-LOGIN CHECK ============
 function checkAuth() {
     loadUsers();
-    var savedUser = getCurrentUser();
+    var savedUser = restoreSession();
     
     if (savedUser) {
         var userExists = false;
@@ -2623,34 +2714,6 @@ function handleScriptRequest(scriptId) {
     
     return null;
 }
-
-// ============ INTERCEPT FETCH FOR SCRIPT LOADING ============
-// This intercepts any fetch requests to load scripts
-var originalFetch = window.fetch;
-window.fetch = function(url, options) {
-    // Check if this is a script request (ends with script_ or contains loaderId)
-    var urlStr = url.toString();
-    
-    // Check if it's a script request
-    if (urlStr.includes('script_') || urlStr.includes('ScripterHubOfficial_')) {
-        var scriptId = urlStr.split('/').pop() || urlStr;
-        var scriptCode = handleScriptRequest(scriptId);
-        
-        if (scriptCode) {
-            // Return the script code as a response
-            return Promise.resolve(new Response(scriptCode, {
-                status: 200,
-                headers: {
-                    'Content-Type': 'text/plain',
-                    'Access-Control-Allow-Origin': '*'
-                }
-            }));
-        }
-    }
-    
-    // Otherwise, use the original fetch
-    return originalFetch.call(this, url, options);
-};
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
 window.handleSignup = handleSignup;
