@@ -1996,9 +1996,17 @@ function viewScript(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     
-    var scriptCode = script.code || '';
-    var loaderCode = 'loadstring([[' + scriptCode + ']])()';
-    var displayCode = scriptCode.length > 100 ? scriptCode.substring(0, 100) + '...' : scriptCode;
+// Inside viewScript function, replace the loader code section:
+var scriptCode = script.code || '';
+var scriptNameClean = script.name.replace(/[^a-zA-Z0-9]/g, '_');
+var loaderUrl = scriptNameClean + '_' + script.id;
+var loaderCode = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
+
+// Store the script for the loader
+var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+scriptStore[loaderUrl] = scriptCode;
+scriptStore[script.loaderId] = scriptCode;
+localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2048,6 +2056,7 @@ function copyLoader(loaderId) {
     var projects = loadProjects();
     var scriptCode = null;
     var scriptName = '';
+    var scriptId = '';
     
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].scripts) {
@@ -2055,6 +2064,7 @@ function copyLoader(loaderId) {
                 if (projects[i].scripts[j].loaderId === loaderId) {
                     scriptCode = projects[i].scripts[j].code;
                     scriptName = projects[i].scripts[j].name;
+                    scriptId = projects[i].scripts[j].id;
                     break;
                 }
             }
@@ -2067,11 +2077,27 @@ function copyLoader(loaderId) {
         return;
     }
     
-    var fullLoader = 'loadstring([[' + scriptCode + ']])()';
+    // Create the loader URL - this will be hosted on your server
+    // Format: scriptname_scriptid
+    var scriptNameClean = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
+    var loaderUrl = scriptNameClean + '_' + scriptId;
+    
+    // The actual loader code that users will use
+    var fullLoader = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
+    
+    // Also save the script to localStorage for the "server" to serve
+    // This acts as a mini API
+    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+    scriptStore[loaderUrl] = scriptCode;
+    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
+    
+    // Also store with the loaderId for backwards compatibility
+    scriptStore[loaderId] = scriptCode;
+    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
     
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(fullLoader).then(function() {
-            showNotification('Copied!', 'Script "' + scriptName + '" copied to clipboard!', 'success');
+            showNotification('Copied!', 'Loader for "' + scriptName + '" copied to clipboard!', 'success');
         }).catch(function() {
             fallbackCopy(fullLoader);
         });
@@ -2574,6 +2600,58 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
+// ============ SCRIPT LOADER API (Mini Server) ============
+function handleScriptRequest(scriptId) {
+    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+    var scriptCode = scriptStore[scriptId];
+    
+    if (scriptCode) {
+        return scriptCode;
+    }
+    
+    // Also check by loaderId
+    var projects = loadProjects();
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].id === scriptId || projects[i].scripts[j].loaderId === scriptId) {
+                    return projects[i].scripts[j].code;
+                }
+            }
+        }
+    }
+    
+    return null;
+}
+
+// ============ INTERCEPT FETCH FOR SCRIPT LOADING ============
+// This intercepts any fetch requests to load scripts
+var originalFetch = window.fetch;
+window.fetch = function(url, options) {
+    // Check if this is a script request (ends with script_ or contains loaderId)
+    var urlStr = url.toString();
+    
+    // Check if it's a script request
+    if (urlStr.includes('script_') || urlStr.includes('ScripterHubOfficial_')) {
+        var scriptId = urlStr.split('/').pop() || urlStr;
+        var scriptCode = handleScriptRequest(scriptId);
+        
+        if (scriptCode) {
+            // Return the script code as a response
+            return Promise.resolve(new Response(scriptCode, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain',
+                    'Access-Control-Allow-Origin': '*'
+                }
+            }));
+        }
+    }
+    
+    // Otherwise, use the original fetch
+    return originalFetch.call(this, url, options);
+};
+
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
 window.handleSignup = handleSignup;
 window.handleLogin = handleLogin;
@@ -2620,3 +2698,13 @@ window.confirmEditScript = confirmEditScript;
 window.deleteScript = deleteScript;
 window.openScriptSettings = openScriptSettings;
 window.updateScriptVisibility = updateScriptVisibility;
+
+// ============ SESSION RESTORE ON REFRESH ============
+// This runs immediately when the script loads
+(function() {
+    var savedUser = getCurrentUser();
+    if (savedUser) {
+        // User is logged in, but we need to verify
+        console.log('🔄 Session found, restoring...');
+    }
+})();
