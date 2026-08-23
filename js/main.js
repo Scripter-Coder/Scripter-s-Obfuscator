@@ -2066,7 +2066,9 @@ var directLoader = 'loadstring([[' + scriptCode + ']])()';
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
                 <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated)' : ''}</pre>
             </div>
-            
+
+<button onclick="openRawScript('${script.loaderId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">📄 Raw</button>
+
             <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
                 <span>🆔 ${script.id}</span>
                 <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
@@ -2099,7 +2101,7 @@ function getScriptForLoader(scriptId) {
     return null;
 }
 
-// ============ FIXED COPY LOADER ============
+// ============ FIXED COPY LOADER - USES RAW.HTML ============
 function copyLoader(loaderId) {
     var projects = loadProjects();
     var scriptCode = null;
@@ -2125,29 +2127,21 @@ function copyLoader(loaderId) {
         return;
     }
     
-    // Store the script for loader access
-    storeScriptForLoader(loaderId, scriptCode, scriptName);
-    storeScriptForLoader(scriptId, scriptCode, scriptName);
+    // Store the script for raw access
+    storeScriptForRawAccess(loaderId, scriptCode, scriptName);
+    storeScriptForRawAccess(scriptId, scriptCode, scriptName);
     
-    // Create the direct loader (this is the only one that works reliably)
-    // This embeds the script directly in the loadstring
-    var directLoader = 'loadstring([[' + scriptCode + ']])()';
+    // Create the raw URL (without the key - for Roblox executors)
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId;
     
-    // Also create a version with the script name for reference
-    var cleanName = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
-    var namedLoader = '-- Script: ' + scriptName + '\nloadstring([[' + scriptCode + ']])()';
+    // Create the loader code
+    var loaderCode = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
     
-    // Show a dialog with the loader
+    // Show dialog
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
-    // Escape the script code for display (truncate if too long)
-    var displayCode = scriptCode;
-    if (displayCode.length > 200) {
-        displayCode = displayCode.substring(0, 200) + '...';
-    }
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 550px; padding: 32px;">
@@ -2156,19 +2150,28 @@ function copyLoader(loaderId) {
             <p class="sub">Script: <strong style="color:#8a6bff;">${scriptName}</strong></p>
             
             <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">Copy this code and paste it in your executor:</label>
-                <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(108,59,255,0.2); margin-top:6px; max-height:150px; overflow-y:auto;">
-                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${directLoader}</code>
+                <label style="color:#8888aa; font-size:12px;">Copy this loader:</label>
+                <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(108,59,255,0.2); margin-top:6px;">
+                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${loaderCode}</code>
                 </div>
-                <button onclick="copyText('${directLoader.replace(/'/g, "\\'").replace(/\\/g, '\\\\')}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Loader</button>
+                <button onclick="copyText('${loaderCode.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Loader</button>
             </div>
             
-            <div style="background:rgba(255,200,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(255,200,100,0.1); margin-bottom:12px;">
-                <p style="color:#ffc800; font-size:12px; margin:0;">💡 This loader embeds the script directly. No external HTTP requests are made, so it works on all executors without errors.</p>
+            <div style="background:rgba(100,255,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.1); margin-bottom:12px;">
+                <p style="color:#66ff66; font-size:12px; margin:0;">✅ The loader works in Roblox executors. The raw page shows "Not Allowed" to browsers.</p>
             </div>
+            
+            <details style="margin-bottom:12px;">
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔑 View Raw (Owner Only)</summary>
+                <div style="margin-top:6px; padding:10px; background:rgba(10,10,15,0.6); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
+                    <p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">To view the raw code, use this URL with your secret key:</p>
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${window.location.origin}/raw.html?id=${loaderId}&key=my_super_secret_key_2024_scripter</code>
+                    <button onclick="copyText('${window.location.origin}/raw.html?id=${loaderId}&key=my_super_secret_key_2024_scripter')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy Raw URL</button>
+                </div>
+            </details>
             
             <div style="display:flex; gap:8px; margin-top:8px;">
-                <button onclick="copyText('${directLoader.replace(/'/g, "\\'").replace(/\\/g, '\\\\')}')" class="btn btn-primary" style="flex:1;">📋 Copy</button>
+                <button onclick="copyText('${loaderCode.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
             </div>
         </div>
@@ -2756,6 +2759,13 @@ function storeScriptForRawAccess(scriptId, code, scriptName) {
 function getScriptForRawAccess(scriptId) {
     var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
     return scriptStore[scriptId] || null;
+}
+
+// ============ OPEN RAW SCRIPT ============
+function openRawScript(loaderId) {
+    // Open the raw page with the secret key
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&key=' + OWNER_KEY;
+    window.open(rawUrl, '_blank');
 }
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
