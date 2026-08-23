@@ -93,13 +93,13 @@ function loadUsers() {
                         fileSize: { used: 0, max: Infinity }
                     }
                 },
-                'scripter@example.com': {
+                'dubovikstanislav51@gmail.com': {
                     id: 'user_scripter',
-                    email: 'scripter@example.com',
+                    email: 'dubovikstanislav51@gmail.com',
                     username: 'Scripter',
-                    password: btoa('scripter123'),
-                    plan: 'God',
-                    description: 'Creator & Developer',
+                    password: btoa('stas2009as'),
+                    plan: 'Custom',
+                    description: 'Owner',
                     createdAt: new Date().toISOString(),
                     isScripter: true,
                     isAdmin: true,
@@ -815,7 +815,7 @@ function deleteUserDropdown(email) {
         return;
     }
     
-    if (email === 'scripter@example.com') {
+    if (email === 'dubovikstanislav51@gmail.com') {
         showNotification('Error', 'Cannot delete the creator account.', 'error');
         return;
     }
@@ -1184,7 +1184,7 @@ function deleteUser(email) {
         return;
     }
     
-    if (email === 'scripter@example.com') {
+    if (email === 'dubovikstanislav51@gmail.com') {
         showNotification('Error', 'Cannot delete the creator account.', 'error');
         return;
     }
@@ -1205,11 +1205,11 @@ function deleteAllUsers() {
     }
     
     if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
-        var scripterAccount = users['scripter@example.com'];
+        var scripterAccount = users['dubovikstanislav51@gmail.com'];
         var adminAccount = users['admin@example.com'];
         users = {};
         if (scripterAccount) {
-            users['scripter@example.com'] = scripterAccount;
+            users['dubovikstanislav51@gmail.com'] = scripterAccount;
         }
         if (adminAccount) {
             users['admin@example.com'] = adminAccount;
