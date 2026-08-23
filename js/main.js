@@ -722,9 +722,11 @@ function renderUserList() {
         var createdDate = new Date(user.createdAt).toLocaleDateString();
         var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
         var isScripter = user.isScripter ? '⭐ Creator' : '';
+        // Escape special characters in email for onclick
+        var safeKey = key.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         
         html += `
-            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetailsDropdown('${key}')">
+            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetailsDropdown('${safeKey}')">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
@@ -768,6 +770,7 @@ function showUserDetailsDropdown(email) {
     var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
     var isScripter = user.isScripter ? '⭐ Creator' : '';
     var canDelete = !user.isAdmin && !user.isScripter;
+    var safeEmail = email.replace(/'/g, "\\'").replace(/"/g, '&quot;');
     
     container.innerHTML = `
         <div style="margin-bottom: 12px;">
@@ -797,8 +800,8 @@ function showUserDetailsDropdown(email) {
                 ${user.description ? '<div style="grid-column: span 2;"><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">' + user.description + '</span></div>' : ''}
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                ${canDelete ? '<button onclick="deleteUserDropdown(\'' + email + '\')" style="flex:1; background: rgba(255,50,50,0.2); color: #ff6b6b; border: 1px solid rgba(255,50,50,0.3); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">🗑️ Delete User</button>' : ''}
-                <button onclick="changeUserPlan('${email}')" style="flex:1; background: rgba(108,59,255,0.2); color: #8a6bff; border: 1px solid rgba(108,59,255,0.2); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">📊 Change Plan</button>
+                ${canDelete ? '<button onclick="deleteUserDropdown(\'' + safeEmail + '\')" style="flex:1; background: rgba(255,50,50,0.2); color: #ff6b6b; border: 1px solid rgba(255,50,50,0.3); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">🗑️ Delete User</button>' : ''}
+                <button onclick="changeUserPlan(\'' + safeEmail + '\')" style="flex:1; background: rgba(108,59,255,0.2); color: #8a6bff; border: 1px solid rgba(108,59,255,0.2); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">📊 Change Plan</button>
                 <button onclick="renderUserList()" style="flex:1; background: rgba(255,255,255,0.05); color: #8888aa; border: 1px solid rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 60px;">← Back</button>
             </div>
         </div>
@@ -1232,8 +1235,9 @@ function uploadProfileImage() {
     
     var file = input.files[0];
     
-    if (file.size > 5 * 1024 * 1024) {
-        showNotification('Error', 'Image size must be less than 5MB.', 'error');
+    // Reduce max size for profile to 2MB
+    if (file.size > 2 * 1024 * 1024) {
+        showNotification('Error', 'Profile image size must be less than 2MB.', 'error');
         return;
     }
     
@@ -1284,8 +1288,9 @@ function uploadBannerImage() {
     
     var file = input.files[0];
     
-    if (file.size > 10 * 1024 * 1024) {
-        showNotification('Error', 'Banner image size must be less than 10MB.', 'error');
+    // Reduce max size for banner to 5MB
+    if (file.size > 5 * 1024 * 1024) {
+        showNotification('Error', 'Banner image size must be less than 5MB.', 'error');
         return;
     }
     
