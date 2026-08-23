@@ -1,6 +1,7 @@
 // ============ API CONFIGURATION ============
-const API_URL = 'https://vietpolua.cc.cd/api/v1'; // Your API URL
 const SCRIPT_ID = 'ScripterHub';
+const API_URL = 'https://scripter-obfuscator-api.dubovikstanislav51.workers.dev/api';
+const MASTER_KEY = 'test';
 
 // ============ API FUNCTIONS ============
 async function apiRequest(endpoint, method, data) {
