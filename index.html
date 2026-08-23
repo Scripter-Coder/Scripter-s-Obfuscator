@@ -5,6 +5,265 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Scripter's Obfuscator</title>
     <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* Additional styles for dropdown */
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            right: 0;
+            background: rgba(20, 20, 35, 0.95);
+            backdrop-filter: blur(10px);
+            min-width: 280px;
+            border-radius: 12px;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            max-height: 500px;
+            overflow: hidden;
+        }
+        .dropdown-content.show {
+            display: block;
+        }
+        .dropdown-content input,
+        .dropdown-content select {
+            width: 100%;
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .dropdown-content input:focus,
+        .dropdown-content select:focus {
+            outline: none;
+            border-color: var(--primary-color, #6c3bff);
+        }
+        .dropdown-content .user-item:hover {
+            background: rgba(255, 255, 255, 0.05) !important;
+        }
+        .dropdown-content .user-list-scroll {
+            max-height: 250px;
+            overflow-y: auto;
+        }
+        .dropdown-content .user-list-scroll::-webkit-scrollbar {
+            width: 4px;
+        }
+        .dropdown-content .user-list-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .dropdown-content .user-list-scroll::-webkit-scrollbar-thumb {
+            background: var(--primary-color, #6c3bff);
+            border-radius: 2px;
+        }
+        .dropdown-divider {
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            margin: 6px 0;
+            padding-top: 6px;
+        }
+        .dropdown-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .dropdown-actions button {
+            flex: 1;
+            padding: 6px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .btn-danger {
+            background: rgba(255, 50, 50, 0.2);
+            color: #ff6b6b;
+            border-color: rgba(255, 50, 50, 0.3) !important;
+        }
+        .btn-danger:hover {
+            background: rgba(255, 50, 50, 0.3);
+        }
+        .btn-close-dropdown {
+            background: rgba(255, 255, 255, 0.05);
+            color: #8888aa;
+        }
+        .btn-close-dropdown:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        /* Dashboard banner */
+        .dashboard-banner {
+            width: 100%;
+            height: 150px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--primary-color, #6c3bff), var(--secondary-color, #00bfff));
+            margin-bottom: 16px;
+            position: relative;
+            display: none;
+            background-size: cover;
+            background-position: center;
+        }
+        .dashboard-profile {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .dashboard-avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color, #6c3bff), var(--secondary-color, #00bfff));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            font-weight: bold;
+            color: #fff;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        .dashboard-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .upload-section {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+            padding: 16px;
+            background: rgba(20, 20, 35, 0.6);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .upload-section .upload-group {
+            flex: 1;
+            min-width: 180px;
+        }
+        .upload-section label {
+            color: #8888aa;
+            font-size: 12px;
+            display: block;
+            margin-bottom: 4px;
+        }
+        .upload-section input[type="file"] {
+            display: block;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            padding: 4px;
+            width: 100%;
+            font-size: 12px;
+        }
+        .upload-section .btn-small {
+            margin-top: 4px;
+            padding: 4px 12px;
+            font-size: 12px;
+        }
+        .upload-section select {
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            width: 100%;
+            font-size: 13px;
+        }
+        .upload-section select:focus {
+            outline: none;
+            border-color: var(--primary-color, #6c3bff);
+        }
+        .user-detail-card {
+            background: rgba(20, 20, 35, 0.6);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .user-detail-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .user-detail-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color, #6c3bff), var(--secondary-color, #00bfff));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 28px;
+            color: #fff;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        .user-detail-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .user-detail-info h3 {
+            color: #ffffff;
+            margin: 0;
+        }
+        .user-detail-info p {
+            color: #8888aa;
+            font-size: 14px;
+            margin: 4px 0;
+        }
+        .user-detail-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin: 16px 0;
+        }
+        .user-detail-stats div {
+            color: #8888aa;
+        }
+        .user-detail-stats div span {
+            color: #ffffff;
+        }
+        .user-detail-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+        .back-btn {
+            background: none;
+            border: none;
+            color: var(--primary-color, #6c3bff);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 4px 0;
+        }
+        .back-btn:hover {
+            text-decoration: underline;
+        }
+        @media (max-width: 768px) {
+            .user-detail-stats {
+                grid-template-columns: 1fr;
+            }
+            .upload-section {
+                flex-direction: column;
+            }
+            .upload-section .upload-group {
+                min-width: auto;
+            }
+            .dropdown-content {
+                min-width: 260px;
+                right: -20px;
+            }
+        }
+    </style>
 </head>
 <body>
     <!-- Animated Background -->
@@ -29,8 +288,31 @@
             </div>
             <button class="btn btn-white" id="signupBtn" onclick="openModal('signup')">Sign Up</button>
             <button class="btn btn-black" id="loginBtn" onclick="openModal('login')">Log In</button>
-            <!-- Admin Panel Button (only visible when logged in as admin) -->
+            
+            <!-- Admin Button (only visible to Scripter) -->
             <button class="btn btn-primary" id="adminBtn" onclick="openModal('admin')" style="display:none;">👑 Admin</button>
+            
+            <!-- User Dropdown (only visible to Scripter) -->
+            <div class="dropdown" id="userDropdown" style="display:none;">
+                <button class="btn btn-primary" onclick="toggleDropdown()">👤 Users ▼</button>
+                <div class="dropdown-content" id="dropdownContent">
+                    <div style="padding:4px 8px;">
+                        <select id="userSearchType" onchange="filterUsers()">
+                            <option value="username">Search by Username</option>
+                            <option value="email">Search by Gmail</option>
+                        </select>
+                    </div>
+                    <div style="padding:4px 8px;">
+                        <input type="text" id="userSearchQuery" placeholder="Search..." oninput="filterUsers()">
+                    </div>
+                    <div class="user-list-scroll" id="userList"></div>
+                    <div class="dropdown-divider"></div>
+                    <div style="padding:4px 8px;" class="dropdown-actions">
+                        <button class="btn-danger" onclick="deleteAllUsers()">🗑️ Delete All</button>
+                        <button class="btn-close-dropdown" onclick="toggleDropdown()">Close</button>
+                    </div>
+                </div>
+            </div>
         </div>
     </nav>
 
@@ -42,7 +324,7 @@
             <div class="time" id="currentTime">00:00:00</div>
         </div>
         
-        <!-- Home Page -->
+        <!-- Home Page (Plans) -->
         <div id="homePage">
             <section class="plans-section">
                 <h2>Choose Your Plan</h2>
@@ -112,15 +394,55 @@
             </section>
         </div>
         
-        <!-- Dashboard -->
+        <!-- Dashboard (shown after login) -->
         <div class="dashboard" id="dashboard">
+            <!-- BANNER -->
+            <div class="dashboard-banner" id="dashBanner"></div>
+            
+            <!-- PROFILE -->
+            <div class="dashboard-profile">
+                <div class="dashboard-avatar" id="dashAvatar">U</div>
+                <div>
+                    <h2 style="color:#fff; margin:0;" id="dashUsername">User</h2>
+                    <p style="color:#8888aa; margin:4px 0 0;" id="dashEmail">user@example.com</p>
+                    <span class="plan-display" id="dashPlan" style="display:inline-block; margin-top:4px;">📊 Current Plan: Basic</span>
+                </div>
+            </div>
+            
+            <!-- UPLOAD & THEME SECTION -->
+            <div class="upload-section">
+                <div class="upload-group">
+                    <label>Profile Image</label>
+                    <input type="file" id="profileImageInput" accept="image/*">
+                    <button class="btn btn-primary btn-small" onclick="uploadProfileImage()">Upload</button>
+                </div>
+                <div class="upload-group">
+                    <label>Banner Image</label>
+                    <input type="file" id="bannerImageInput" accept="image/*">
+                    <button class="btn btn-primary btn-small" onclick="uploadBannerImage()">Upload</button>
+                </div>
+                <div class="upload-group">
+                    <label>Theme</label>
+                    <select id="themeSelect" onchange="changeTheme(this.value)">
+                        <option value="default">Default (Purple)</option>
+                        <option value="red">Red</option>
+                        <option value="blue">Blue</option>
+                        <option value="green">Green</option>
+                        <option value="purple">Purple</option>
+                        <option value="orange">Orange</option>
+                        <option value="white">White</option>
+                        <option value="dark">Dark</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- STATS -->
             <div class="dashboard-header">
                 <div>
-                    <div class="welcome">Welcome back, <span id="dashUsername">User</span>!</div>
-                    <div style="color: #8888aa; font-size: 14px; margin-top: 4px;" id="dashEmail">user@example.com</div>
+                    <div class="welcome">Welcome back, <span id="dashUsername2">User</span>!</div>
                 </div>
                 <div>
-                    <span class="plan-display" id="dashPlan">📊 Current Plan: Basic</span>
+                    <span class="plan-display" id="dashPlan2">📊 Current Plan: Basic</span>
                 </div>
             </div>
             
@@ -185,7 +507,7 @@
                     <textarea id="signupDescription" placeholder="Tell us about yourself..."></textarea>
                 </div>
                 
-                <button type="submit" class="btn btn-primary" id="signupSubmitBtn">Sign Up</button>
+                <button type="submit" class="btn btn-primary">Sign Up</button>
                 
                 <div class="modal-divider">or continue with</div>
                 
@@ -214,7 +536,7 @@
                     <input type="password" id="loginPassword" placeholder="Enter your password" required>
                 </div>
                 
-                <button type="submit" class="btn btn-primary" id="loginSubmitBtn">Log In</button>
+                <button type="submit" class="btn btn-primary">Log In</button>
                 
                 <div class="modal-divider">or continue with</div>
                 
@@ -230,40 +552,20 @@
     <div class="modal-overlay" id="adminModal">
         <div class="modal" style="max-width: 700px;">
             <button class="modal-close" onclick="closeModal('admin')">✕</button>
-            <h2>👑 Admin Panel - User Database</h2>
-            <p class="sub">View all registered users</p>
+            <h2>👑 Admin Panel</h2>
+            <p class="sub">Manage all users</p>
             
-            <div id="userListContainer" style="max-height: 400px; overflow-y: auto;">
+            <div id="adminUserList" style="max-height: 400px; overflow-y: auto;">
                 <div id="userList"></div>
             </div>
             
-            <div style="margin-top: 16px; display: flex; gap: 12px;">
+            <div style="margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap;">
                 <button class="btn btn-primary" onclick="exportUsers()">📤 Export Users</button>
-                <button class="btn btn-logout" onclick="clearAllUsers()">🗑️ Clear All Users</button>
+                <button class="btn btn-danger" onclick="deleteAllUsers()">🗑️ Delete All Users</button>
+                <button class="btn btn-close-dropdown" onclick="closeModal('admin')">Close</button>
             </div>
         </div>
     </div>
-
-    <!-- User Dropdown (only for Scripter) -->
-<div class="dropdown" id="userDropdown" style="display:none; position:relative; display:inline-block;">
-    <button class="btn btn-primary" onclick="toggleDropdown()">👤 Users ▼</button>
-    <div class="dropdown-content" id="dropdownContent" style="display:none; position:absolute; right:0; background:rgba(20,20,35,0.95); backdrop-filter:blur(10px); min-width:200px; border-radius:12px; padding:8px; border:1px solid rgba(255,255,255,0.1); z-index:1000;">
-        <div style="padding:8px 12px;">
-            <select id="userSearchType" onchange="filterUsers()" style="width:100%; padding:6px; background:rgba(255,255,255,0.05); color:#fff; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
-                <option value="username">Search by Username</option>
-                <option value="email">Search by Gmail</option>
-            </select>
-        </div>
-        <div style="padding:8px 12px;">
-            <input type="text" id="userSearchQuery" placeholder="Search..." oninput="filterUsers()" style="width:100%; padding:6px; background:rgba(255,255,255,0.05); color:#fff; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
-        </div>
-        <div style="padding:8px 12px; max-height:300px; overflow-y:auto;" id="userList"></div>
-        <div style="padding:8px 12px; border-top:1px solid rgba(255,255,255,0.05); display:flex; gap:8px;">
-            <button onclick="deleteAllUsers()" style="flex:1; background:rgba(255,50,50,0.2); color:#ff6b6b; border:1px solid rgba(255,50,50,0.3); padding:6px; border-radius:6px; cursor:pointer; font-size:12px;">🗑️ Delete All</button>
-            <button onclick="toggleDropdown()" style="flex:1; background:rgba(255,255,255,0.05); color:#8888aa; border:1px solid rgba(255,255,255,0.1); padding:6px; border-radius:6px; cursor:pointer; font-size:12px;">Close</button>
-        </div>
-    </div>
-</div>
 
     <script src="js/main.js"></script>
 </body>
