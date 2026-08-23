@@ -1772,6 +1772,231 @@ body {
     }
 }
 
+/* ===== TABS STYLING ===== */
+.tabs-nav {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.06);
+    padding-bottom: 0;
+    margin-bottom: 24px;
+    background: rgba(15, 15, 25, 0.4);
+    border-radius: 12px 12px 0 0;
+    padding: 6px 6px 0 6px;
+}
+
+.tab-btn {
+    padding: 12px 24px;
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #8888aa;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border-radius: 8px 8px 0 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.tab-btn:hover {
+    color: #ccccff;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tab-btn.active {
+    color: #ffffff;
+    border-bottom-color: #6c3bff;
+    background: rgba(108, 59, 255, 0.08);
+}
+
+.tab-btn.active:hover {
+    background: rgba(108, 59, 255, 0.12);
+}
+
+/* ===== PROJECT CARDS ===== */
+.project-card {
+    background: rgba(20, 20, 35, 0.6);
+    border-radius: 16px;
+    padding: 20px 24px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: all 0.3s ease;
+}
+
+.project-card:hover {
+    border-color: rgba(108, 59, 255, 0.2);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+}
+
+.project-card .project-name {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+}
+
+.project-card .project-desc {
+    color: #8888aa;
+    font-size: 13px;
+    margin: 0 0 10px 0;
+}
+
+.project-card .project-tags {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.project-card .project-tags .tag {
+    padding: 2px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.project-card .project-tags .tag-visibility {
+    background: rgba(108, 59, 255, 0.2);
+    color: #8a6bff;
+}
+
+.project-card .project-tags .tag-type {
+    background: rgba(255, 215, 0, 0.2);
+    color: #ffd700;
+}
+
+.project-card .project-tags .tag-scripts {
+    background: rgba(255, 255, 255, 0.05);
+    color: #8888aa;
+}
+
+.project-card .project-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.project-card .project-actions .btn-sm {
+    padding: 4px 14px;
+    font-size: 12px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.project-card .project-actions .btn-sm-primary {
+    background: linear-gradient(135deg, #6c3bff, #00bfff);
+    color: #fff;
+}
+.project-card .project-actions .btn-sm-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 15px rgba(108, 59, 255, 0.3);
+}
+
+.project-card .project-actions .btn-sm-edit {
+    background: rgba(255, 255, 255, 0.05);
+    color: #8888aa;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.project-card .project-actions .btn-sm-edit:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+}
+
+.project-card .project-actions .btn-sm-danger {
+    background: rgba(255, 50, 50, 0.15);
+    color: #ff6b6b;
+    border: 1px solid rgba(255, 50, 50, 0.2);
+}
+.project-card .project-actions .btn-sm-danger:hover {
+    background: rgba(255, 50, 50, 0.25);
+}
+
+/* ===== SCRIPT ITEMS ===== */
+.script-item {
+    background: rgba(20, 20, 35, 0.6);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.3s ease;
+}
+
+.script-item:hover {
+    border-color: rgba(108, 59, 255, 0.15);
+}
+
+.script-item .script-info {
+    flex: 1;
+}
+
+.script-item .script-info .name {
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 15px;
+}
+
+.script-item .script-info .desc {
+    color: #8888aa;
+    font-size: 12px;
+    margin: 2px 0 0;
+}
+
+.script-item .script-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+    .tabs-nav {
+        gap: 2px;
+        padding: 4px 4px 0 4px;
+    }
+    .tab-btn {
+        padding: 10px 16px;
+        font-size: 13px;
+    }
+    .project-card {
+        padding: 16px 18px;
+    }
+    .project-card .project-actions {
+        gap: 4px;
+    }
+    .project-card .project-actions .btn-sm {
+        padding: 3px 10px;
+        font-size: 11px;
+    }
+    .script-item {
+        padding: 12px 14px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    .script-item .script-actions {
+        width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .tab-btn {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+    #projectsList {
+        grid-template-columns: 1fr !important;
+    }
+}
+
 @media (max-width: 480px) {
     .plans-grid {
         grid-template-columns: 1fr;
