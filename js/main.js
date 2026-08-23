@@ -384,7 +384,7 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// ============ UI UPDATE ============
+// ============ SINGLE updateUIForUser (FIXED) ============
 function updateUIForUser(user) {
     if (!user) return;
     
@@ -392,6 +392,7 @@ function updateUIForUser(user) {
     currentUser = user;
     setCurrentUser(user);
     
+    // Hide signup/login, show user info
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -402,6 +403,7 @@ function updateUIForUser(user) {
     if (loginBtn) loginBtn.style.display = 'none';
     if (navbarUser) navbarUser.classList.add('show');
     
+    // Update avatar, username, plan
     var avatar = document.getElementById('userAvatar');
     var userName = document.getElementById('userName');
     var userPlan = document.getElementById('userPlan');
@@ -416,6 +418,7 @@ function updateUIForUser(user) {
     if (userName) userName.textContent = user.username;
     if (userPlan) userPlan.textContent = user.plan || 'Basic';
     
+    // Admin & Users buttons only for Scripter
     if (adminBtn && user.username === 'Scripter') {
         adminBtn.style.display = 'inline-block';
     } else if (adminBtn) {
@@ -428,12 +431,14 @@ function updateUIForUser(user) {
         usersBtn.style.display = 'none';
     }
     
+    // Apply theme
     if (user.theme) {
         applyTheme(user.theme);
         var themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = user.theme;
     }
     
+    // Show dashboard, hide home page
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -442,6 +447,7 @@ function updateUIForUser(user) {
     if (dashboard) dashboard.classList.add('show');
     if (plansSection) plansSection.style.display = 'none';
     
+    // Update dashboard info
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
@@ -456,6 +462,7 @@ function updateUIForUser(user) {
     if (dashUsername2) dashUsername2.textContent = user.username;
     if (dashPlan2) dashPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     
+    // Dashboard avatar
     if (dashAvatar) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -469,6 +476,7 @@ function updateUIForUser(user) {
         }
     }
     
+    // Dashboard banner
     if (dashBanner && user.bannerImage) {
         dashBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
         dashBanner.style.display = 'block';
@@ -476,22 +484,36 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     
+    // Update stats - FIXED: Properly display values
     if (user.stats) {
         var stats = user.stats;
-        document.getElementById('projectsUsed').textContent = stats.projects.used;
-        document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
+        
+        // Projects
+        var projectsUsed = document.getElementById('projectsUsed');
+        var projectsMax = document.getElementById('projectsMax');
+        if (projectsUsed) projectsUsed.textContent = stats.projects.used;
+        if (projectsMax) projectsMax.textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
         updateBar('projects', stats.projects.used, stats.projects.max);
         
-        document.getElementById('keysUsed').textContent = stats.keys.used;
-        document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
+        // Keys
+        var keysUsed = document.getElementById('keysUsed');
+        var keysMax = document.getElementById('keysMax');
+        if (keysUsed) keysUsed.textContent = stats.keys.used;
+        if (keysMax) keysMax.textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
         updateBar('keys', stats.keys.used, stats.keys.max);
         
-        document.getElementById('scriptsUsed').textContent = stats.scripts.used;
-        document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
+        // Scripts
+        var scriptsUsed = document.getElementById('scriptsUsed');
+        var scriptsMax = document.getElementById('scriptsMax');
+        if (scriptsUsed) scriptsUsed.textContent = stats.scripts.used;
+        if (scriptsMax) scriptsMax.textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
         updateBar('scripts', stats.scripts.used, stats.scripts.max);
         
-        document.getElementById('storageUsed').textContent = stats.fileSize.used;
-        document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
+        // Storage
+        var storageUsed = document.getElementById('storageUsed');
+        var storageMax = document.getElementById('storageMax');
+        if (storageUsed) storageUsed.textContent = stats.fileSize.used;
+        if (storageMax) storageMax.textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
         updateBar('storage', stats.fileSize.used, stats.fileSize.max);
     }
     
