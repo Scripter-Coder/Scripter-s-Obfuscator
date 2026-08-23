@@ -622,12 +622,19 @@ function copyLoader(loaderId) {
         return;
     }
     
+    // Store the script for raw access
     storeScriptForRawAccess(loaderId, scriptCode, scriptName);
     storeScriptForRawAccess(scriptId, scriptCode, scriptName);
     
-    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId;
-    var loaderCode = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
+    // SIMPLE LOADER - Just the direct embed (works everywhere, no HTTP requests)
+    // This is the most reliable method for Roblox executors
+    var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
+    // Also provide the HTTP version for users who want it
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId;
+    var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
+    
+    // Show dialog with both options
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
@@ -640,15 +647,23 @@ function copyLoader(loaderId) {
             <p class="sub">Script: <strong style="color:#8a6bff;">${scriptName}</strong></p>
             
             <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">Copy this loader:</label>
-                <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(108,59,255,0.2); margin-top:6px;">
-                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${loaderCode}</code>
+                <label style="color:#66ff66; font-size:12px;">✅ Recommended (Works on all executors):</label>
+                <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.2); margin-top:4px;">
+                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${directLoader}</code>
                 </div>
-                <button onclick="copyText('${loaderCode.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Loader</button>
+                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Direct Loader</button>
+            </div>
+            
+            <div style="margin-bottom:12px;">
+                <label style="color:#8888aa; font-size:12px;">🔗 HTTP Loader (Requires raw.html to exist):</label>
+                <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
+                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${httpLoader}</code>
+                </div>
+                <button onclick="copyText('${httpLoader.replace(/'/g, "\\'")}')" class="btn btn-close-dropdown" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy HTTP Loader</button>
             </div>
             
             <div style="background:rgba(100,255,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.1); margin-bottom:12px;">
-                <p style="color:#66ff66; font-size:12px; margin:0;">✅ The loader works in Roblox executors. The raw page shows "Not Allowed" to browsers.</p>
+                <p style="color:#66ff66; font-size:12px; margin:0;">💡 The direct loader embeds the script directly. No external requests needed!</p>
             </div>
             
             <details style="margin-bottom:12px;">
@@ -661,7 +676,7 @@ function copyLoader(loaderId) {
             </details>
             
             <div style="display:flex; gap:8px; margin-top:8px;">
-                <button onclick="copyText('${loaderCode.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy</button>
+                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy Direct</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
             </div>
         </div>
@@ -2290,10 +2305,16 @@ function viewScript(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
 
-    storeScriptForLoader(script.loaderId, script.code, script.name);
-    storeScriptForLoader(script.id, script.code, script.name);
-    storeScriptForRawAccess(script.loaderId, script.code, script.name);
-    storeScriptForRawAccess(script.id, script.code, script.name);
+// Inside viewScript function, replace the loader code section:
+var directLoader = 'loadstring([[' + script.code + ']])()';
+var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId;
+var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
+
+// Store for loader access
+storeScriptForLoader(script.loaderId, script.code, script.name);
+storeScriptForLoader(script.id, script.code, script.name);
+storeScriptForRawAccess(script.loaderId, script.code, script.name);
+storeScriptForRawAccess(script.id, script.code, script.name);
 
     var loaderUrl = window.location.origin + '/raw.html?id=' + script.loaderId;
     var loaderCode = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
