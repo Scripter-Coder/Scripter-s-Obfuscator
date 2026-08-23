@@ -86,6 +86,8 @@ function showNotification(title, message, type, duration) {
     type = type || 'info';
     duration = duration || 4000;
     var container = document.getElementById('notificationContainer');
+    if (!container) return;
+    
     var icons = {
         success: '✅',
         error: '❌',
@@ -200,16 +202,6 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// ============ PAGE NAVIGATION ============
-function showPage(page) {
-    if (page === 'home' && isLoggedIn) {
-        var homePage = document.getElementById('homePage');
-        var dashboard = document.getElementById('dashboard');
-        if (homePage) homePage.style.display = 'block';
-        if (dashboard) dashboard.classList.remove('show');
-    }
-}
-
 // ============ UI UPDATE ============
 function updateUIForUser(user) {
     if (!user) return;
@@ -243,11 +235,14 @@ function updateUIForUser(user) {
         adminBtn.style.display = 'none';
     }
     
-    // Show dashboard
+    // SHOW DASHBOARD (HOME PAGE) - Hide plans section
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
+    var plansSection = document.querySelector('.plans-section');
+    
     if (homePage) homePage.style.display = 'none';
     if (dashboard) dashboard.classList.add('show');
+    if (plansSection) plansSection.style.display = 'none';
     
     // Update dashboard header
     var dashUsername = document.getElementById('dashUsername');
@@ -266,6 +261,8 @@ function updateUIForUser(user) {
         updateStat('scripts', stats.scripts.used, stats.scripts.max);
         updateStat('storage', stats.fileSize.used, stats.fileSize.max);
     }
+    
+    console.log('✅ Dashboard shown for user:', user.username);
 }
 
 function updateStat(name, used, max) {
@@ -299,23 +296,28 @@ function logout() {
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
+    var homePage = document.getElementById('homePage');
+    var dashboard = document.getElementById('dashboard');
+    var plansSection = document.querySelector('.plans-section');
     
     if (signupBtn) signupBtn.style.display = 'inline-block';
     if (loginBtn) loginBtn.style.display = 'inline-block';
     if (navbarUser) navbarUser.classList.remove('show');
     if (adminBtn) adminBtn.style.display = 'none';
     
-    var homePage = document.getElementById('homePage');
-    var dashboard = document.getElementById('dashboard');
+    // Show plans section, hide dashboard
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
+    if (plansSection) plansSection.style.display = 'block';
     
     showNotification('Logged Out', 'You have been logged out successfully.', 'info');
+    console.log('👋 Logged out');
 }
 
 // ============ SIGNUP HANDLER ============
 function handleSignup(event) {
     event.preventDefault();
+    console.log('📝 Signup form submitted');
     
     var email = document.getElementById('signupEmail').value.trim();
     var username = document.getElementById('signupUsername').value.trim();
@@ -379,15 +381,17 @@ function handleSignup(event) {
     showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
     document.getElementById('signupForm').reset();
     
-    // Auto-login
+    // Auto-login and show dashboard
     var userData = { ...user };
     delete userData.password;
     updateUIForUser(userData);
+    console.log('✅ User signed up and logged in:', username);
 }
 
 // ============ LOGIN HANDLER ============
 function handleLogin(event) {
     event.preventDefault();
+    console.log('🔑 Login form submitted');
     
     var emailOrUsername = document.getElementById('loginEmail').value.trim();
     var password = document.getElementById('loginPassword').value;
@@ -427,6 +431,7 @@ function handleLogin(event) {
     var userData = { ...foundUser };
     delete userData.password;
     updateUIForUser(userData);
+    console.log('✅ User logged in:', userData.username);
 }
 
 // ============ SOCIAL AUTH (Demo) ============
@@ -548,13 +553,21 @@ function checkAuth() {
         
         if (!userExists) {
             clearCurrentUser();
-            var homePage = document.getElementById('homePage');
-            if (homePage) homePage.style.display = 'block';
+            showHomePage();
         }
     } else {
-        var homePage = document.getElementById('homePage');
-        if (homePage) homePage.style.display = 'block';
+        showHomePage();
     }
+}
+
+function showHomePage() {
+    var homePage = document.getElementById('homePage');
+    var dashboard = document.getElementById('dashboard');
+    var plansSection = document.querySelector('.plans-section');
+    
+    if (homePage) homePage.style.display = 'block';
+    if (dashboard) dashboard.classList.remove('show');
+    if (plansSection) plansSection.style.display = 'block';
 }
 
 // ============ PLAN UPGRADE (Optional) ============
@@ -601,18 +614,21 @@ function upgradePlan(planName) {
 
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('🚀 Scripter\'s Obfuscator loaded');
     checkAuth();
     
     // Signup form
     var signupForm = document.getElementById('signupForm');
     if (signupForm) {
         signupForm.addEventListener('submit', handleSignup);
+        console.log('✅ Signup form attached');
     }
     
     // Login form
     var loginForm = document.getElementById('loginForm');
     if (loginForm) {
         loginForm.addEventListener('submit', handleLogin);
+        console.log('✅ Login form attached');
     }
     
     // Admin button
@@ -620,6 +636,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (adminBtn) {
         adminBtn.addEventListener('click', openAdminPanel);
     }
+    
+    console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
@@ -629,7 +647,6 @@ window.handleSocial = handleSocial;
 window.logout = logout;
 window.openModal = openModal;
 window.closeModal = closeModal;
-window.showPage = showPage;
 window.upgradePlan = upgradePlan;
 window.openAdminPanel = openAdminPanel;
 window.renderUserList = renderUserList;
