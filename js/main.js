@@ -451,6 +451,7 @@ function updateUIForUser(user) {
     // Show tabs
     showTabs();
     
+    // Update dashboard elements
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
@@ -504,7 +505,95 @@ function updateUIForUser(user) {
         updateBar('storage', stats.fileSize.used, stats.fileSize.max);
     }
     
+    // Also update the dashboard tab if it exists
+    updateDashboardTab(user);
+    
     console.log('✅ Dashboard shown for user:', user.username);
+}
+
+function updateDashboardTab(user) {
+    var tabDashboard = document.getElementById('tab-dashboard');
+    if (!tabDashboard) return;
+    
+    // Find elements inside the tab
+    var tabUsername = tabDashboard.querySelector('#dashUsername');
+    var tabEmail = tabDashboard.querySelector('#dashEmail');
+    var tabPlan = tabDashboard.querySelector('#dashPlan');
+    var tabAvatar = tabDashboard.querySelector('#dashAvatar');
+    var tabBanner = tabDashboard.querySelector('#dashBanner');
+    var tabUsername2 = tabDashboard.querySelector('#dashUsername2');
+    var tabPlan2 = tabDashboard.querySelector('#dashPlan2');
+    
+    if (tabUsername) tabUsername.textContent = user.username;
+    if (tabEmail) tabEmail.textContent = user.email;
+    if (tabPlan) tabPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
+    if (tabUsername2) tabUsername2.textContent = user.username;
+    if (tabPlan2) tabPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
+    
+    if (tabAvatar) {
+        if (user.profileImage) {
+            tabAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
+        } else {
+            tabAvatar.textContent = user.username.charAt(0).toUpperCase();
+            tabAvatar.style.display = 'flex';
+            tabAvatar.style.alignItems = 'center';
+            tabAvatar.style.justifyContent = 'center';
+            tabAvatar.style.fontSize = '40px';
+            tabAvatar.style.fontWeight = 'bold';
+        }
+    }
+    
+    if (tabBanner && user.bannerImage) {
+        tabBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
+        tabBanner.style.display = 'block';
+    } else if (tabBanner) {
+        tabBanner.style.display = 'none';
+    }
+    
+    if (user.stats) {
+        var stats = user.stats;
+        var tabProjectsUsed = tabDashboard.querySelector('#projectsUsed');
+        var tabProjectsMax = tabDashboard.querySelector('#projectsMax');
+        var tabKeysUsed = tabDashboard.querySelector('#keysUsed');
+        var tabKeysMax = tabDashboard.querySelector('#keysMax');
+        var tabScriptsUsed = tabDashboard.querySelector('#scriptsUsed');
+        var tabScriptsMax = tabDashboard.querySelector('#scriptsMax');
+        var tabStorageUsed = tabDashboard.querySelector('#storageUsed');
+        var tabStorageMax = tabDashboard.querySelector('#storageMax');
+        
+        if (tabProjectsUsed) tabProjectsUsed.textContent = stats.projects.used;
+        if (tabProjectsMax) tabProjectsMax.textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
+        if (tabKeysUsed) tabKeysUsed.textContent = stats.keys.used;
+        if (tabKeysMax) tabKeysMax.textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
+        if (tabScriptsUsed) tabScriptsUsed.textContent = stats.scripts.used;
+        if (tabScriptsMax) tabScriptsMax.textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
+        if (tabStorageUsed) tabStorageUsed.textContent = stats.fileSize.used;
+        if (tabStorageMax) tabStorageMax.textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
+        
+        // Update bars in tab
+        updateTabBar(tabDashboard, 'projects', stats.projects.used, stats.projects.max);
+        updateTabBar(tabDashboard, 'keys', stats.keys.used, stats.keys.max);
+        updateTabBar(tabDashboard, 'scripts', stats.scripts.used, stats.scripts.max);
+        updateTabBar(tabDashboard, 'storage', stats.fileSize.used, stats.fileSize.max);
+    }
+}
+
+function updateTabBar(container, name, used, max) {
+    var bar = container.querySelector('#' + name + 'Bar');
+    if (!bar) return;
+    
+    var percentage = 0;
+    if (max > 0 && max !== Infinity) {
+        percentage = (used / max) * 100;
+    }
+    bar.style.width = Math.min(percentage, 100) + '%';
+    
+    bar.className = 'fill';
+    if (percentage > 90) {
+        bar.classList.add('danger');
+    } else if (percentage > 70) {
+        bar.classList.add('warning');
+    }
 }
 
 function updateBar(name, used, max) {
@@ -1445,19 +1534,25 @@ function showTabs() {
         tabsNav.style.display = 'flex';
     }
     
-    // Hide original dashboard, show it in tab
+    // Move dashboard content into the dashboard tab
     var dashboardContent = document.getElementById('dashboard');
     var tabDashboard = document.getElementById('tab-dashboard');
     
     if (dashboardContent && tabDashboard) {
-        // Clone the dashboard content into the tab
+        // Only move if not already moved
         if (!tabDashboard.hasChildNodes() || tabDashboard.children.length === 0) {
+            // Clone the dashboard content
             var clone = dashboardContent.cloneNode(true);
             clone.style.display = 'block';
             tabDashboard.appendChild(clone);
         }
         // Keep original hidden but keep it in DOM for reference
         dashboardContent.style.display = 'none';
+    }
+    
+    // Update the tab with current user data
+    if (currentUser) {
+        updateDashboardTab(currentUser);
     }
     
     // Show dashboard tab by default
@@ -1901,9 +1996,9 @@ function viewScript(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     
-// Inside viewScript function, replace the loader section:
-var scriptCode = script.code || '';
-var loaderCode = 'loadstring([[' + scriptCode + ']])()';
+    var scriptCode = script.code || '';
+    var loaderCode = 'loadstring([[' + scriptCode + ']])()';
+    var displayCode = scriptCode.length > 100 ? scriptCode.substring(0, 100) + '...' : scriptCode;
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -1972,7 +2067,6 @@ function copyLoader(loaderId) {
         return;
     }
     
-    // Copy the actual script code as a loadstring
     var fullLoader = 'loadstring([[' + scriptCode + ']])()';
     
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2446,6 +2540,7 @@ function showHomePage() {
     
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
+    dashboard.style.display = 'none';
     if (plansSection) plansSection.style.display = 'block';
 }
 
