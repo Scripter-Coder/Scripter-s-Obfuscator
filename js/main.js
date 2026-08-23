@@ -2,6 +2,7 @@
 let currentUser = null;
 let isLoggedIn = false;
 let users = {};
+let selectedUserEmail = null;
 
 // ============ PLAN CONFIGURATIONS ============
 const PLAN_CONFIGS = {
@@ -384,27 +385,6 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// ============ TOGGLE DROPDOWN ============
-function toggleDropdown() {
-    var content = document.getElementById('dropdownContent');
-    if (content) {
-        var isOpen = content.classList.contains('show');
-        if (!isOpen) {
-            renderUserList();
-        }
-        content.classList.toggle('show');
-    }
-}
-
-// Close dropdown when clicking outside
-document.addEventListener('click', function(e) {
-    var dropdown = document.getElementById('userDropdown');
-    var content = document.getElementById('dropdownContent');
-    if (dropdown && content && !dropdown.contains(e.target)) {
-        content.classList.remove('show');
-    }
-});
-
 // ============ UI UPDATE ============
 function updateUIForUser(user) {
     if (!user) return;
@@ -418,7 +398,7 @@ function updateUIForUser(user) {
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
-    var userDropdown = document.getElementById('userDropdown');
+    var usersBtn = document.getElementById('usersBtn');
     
     if (signupBtn) signupBtn.style.display = 'none';
     if (loginBtn) loginBtn.style.display = 'none';
@@ -445,11 +425,11 @@ function updateUIForUser(user) {
         adminBtn.style.display = 'none';
     }
     
-    // Show user dropdown for Scripter
-    if (userDropdown && user.username === 'Scripter') {
-        userDropdown.style.display = 'inline-block';
-    } else if (userDropdown) {
-        userDropdown.style.display = 'none';
+    // Show users button for Scripter
+    if (usersBtn && user.username === 'Scripter') {
+        usersBtn.style.display = 'inline-block';
+    } else if (usersBtn) {
+        usersBtn.style.display = 'none';
     }
     
     // Apply theme
@@ -503,7 +483,7 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     
-    // Update stats
+    // Update stats - FIXED: Display Infinity as ∞
     if (user.stats) {
         var stats = user.stats;
         updateStat('projects', stats.projects.used, stats.projects.max);
@@ -521,10 +501,13 @@ function updateStat(name, used, max) {
     var bar = document.getElementById(name + 'Bar');
     
     if (usedEl) usedEl.textContent = used;
-    if (maxEl) maxEl.textContent = max;
+    // FIXED: Display ∞ for Infinity, otherwise show the number
+    if (maxEl) {
+        maxEl.textContent = max === Infinity ? '∞' : max;
+    }
     
     if (bar) {
-        var percentage = max > 0 ? (used / max) * 100 : 0;
+        var percentage = (max === Infinity || max === 0) ? 0 : (used / max) * 100;
         bar.style.width = Math.min(percentage, 100) + '%';
         
         bar.className = 'fill';
@@ -546,7 +529,7 @@ function logout() {
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
-    var userDropdown = document.getElementById('userDropdown');
+    var usersBtn = document.getElementById('usersBtn');
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -555,7 +538,7 @@ function logout() {
     if (loginBtn) loginBtn.style.display = 'inline-block';
     if (navbarUser) navbarUser.classList.remove('show');
     if (adminBtn) adminBtn.style.display = 'none';
-    if (userDropdown) userDropdown.style.display = 'none';
+    if (usersBtn) usersBtn.style.display = 'none';
     
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
@@ -686,14 +669,83 @@ function handleSocial(provider) {
     showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
 
-// ============ USER DROPDOWN FUNCTIONS ============
+// ============ USERS PANEL ============
+function openUsersPanel() {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can access the users panel.', 'error');
+        return;
+    }
+    
+    var overlay = document.getElementById('usersPanelOverlay');
+    if (!overlay) {
+        createUsersPanel();
+        overlay = document.getElementById('usersPanelOverlay');
+    }
+    
+    overlay.classList.add('active');
+    selectedUserEmail = null;
+    renderUsersList();
+    updatePanelButtons();
+    document.body.style.overflow = 'hidden';
+}
 
-function renderUserList() {
-    var container = document.getElementById('userList');
+function closeUsersPanel() {
+    var overlay = document.getElementById('usersPanelOverlay');
+    if (overlay) {
+        overlay.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+    selectedUserEmail = null;
+}
+
+function createUsersPanel() {
+    var overlay = document.createElement('div');
+    overlay.className = 'users-panel-overlay';
+    overlay.id = 'usersPanelOverlay';
+    
+    overlay.innerHTML = `
+        <div class="users-panel">
+            <div class="panel-header">
+                <h2>👥 Users List</h2>
+                <button class="panel-close" onclick="closeUsersPanel()">✕</button>
+            </div>
+            
+            <div class="panel-search">
+                <select id="panelSearchType" onchange="renderUsersList()">
+                    <option value="username">Search by Username</option>
+                    <option value="email">Search by Gmail</option>
+                </select>
+                <input type="text" id="panelSearchQuery" placeholder="Search users..." oninput="renderUsersList()">
+            </div>
+            
+            <div class="panel-list" id="panelUserList"></div>
+            
+            <div class="panel-status" id="panelStatus"></div>
+            
+            <div class="panel-actions">
+                <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
+                <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
+                <button class="btn btn-close-dropdown" onclick="closeUsersPanel()">Close</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    overlay.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeUsersPanel();
+        }
+    });
+}
+
+function renderUsersList() {
+    var container = document.getElementById('panelUserList');
+    var statusEl = document.getElementById('panelStatus');
     if (!container) return;
     
-    var searchType = document.getElementById('userSearchType') ? document.getElementById('userSearchType').value : 'username';
-    var searchQuery = document.getElementById('userSearchQuery') ? document.getElementById('userSearchQuery').value.toLowerCase() : '';
+    var searchType = document.getElementById('panelSearchType') ? document.getElementById('panelSearchType').value : 'username';
+    var searchQuery = document.getElementById('panelSearchQuery') ? document.getElementById('panelSearchQuery').value.toLowerCase() : '';
     
     var html = '';
     var count = 0;
@@ -719,404 +771,107 @@ function renderUserList() {
     for (var key in filteredUsers) {
         count++;
         var user = filteredUsers[key];
-        var createdDate = new Date(user.createdAt).toLocaleDateString();
-        var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
-        var isScripter = user.isScripter ? '⭐ Creator' : '';
-        // Escape special characters in email for onclick
+        var isAdmin = user.isAdmin ? 'tag-admin' : 'tag-user';
+        var isScripter = user.isScripter ? 'tag-creator' : '';
+        var roleText = user.isScripter ? '⭐ Creator' : (user.isAdmin ? '👑 Admin' : '👤 User');
+        var isSelected = (selectedUserEmail === key) ? 'selected' : '';
+        var avatarLetter = user.username.charAt(0).toUpperCase();
         var safeKey = key.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         
         html += `
-            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetailsDropdown('${safeKey}')">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
-                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                            <strong style="color: #ffffff;">${user.username}</strong>
-                            <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
-                        </div>
+            <div class="user-list-item ${isSelected}" onclick="selectUser('${safeKey}')">
+                <div class="user-info">
+                    <div class="user-avatar">
+                        ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : avatarLetter}
                     </div>
-                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
-                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
-                        <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
-                        <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
+                    <div class="user-details">
+                        <div class="name">${user.username}</div>
+                        <div class="email">${user.email}</div>
                     </div>
+                </div>
+                <div class="user-tags">
+                    <span class="tag tag-plan">${user.plan}</span>
+                    <span class="tag ${isAdmin} ${isScripter}">${roleText}</span>
                 </div>
             </div>
         `;
     }
     
     if (count === 0) {
-        html = '<p style="color: #8888aa; text-align: center; padding: 20px 0;">No users found.</p>';
-    } else {
-        html = '<div style="margin-bottom: 8px; color: #8888aa; font-size: 12px;">' + count + ' users found</div>' + html;
+        html = '<div style="text-align: center; color: #8888aa; padding: 40px 0;">No users found.</div>';
     }
     
     container.innerHTML = html;
+    if (statusEl) {
+        statusEl.textContent = count + ' users found';
+    }
+    updatePanelButtons();
 }
 
-// ============ SHOW USER DETAILS IN DROPDOWN ============
-function showUserDetailsDropdown(email) {
-    var user = users[email];
+function selectUser(email) {
+    selectedUserEmail = email;
+    renderUsersList();
+    updatePanelButtons();
+}
+
+function updatePanelButtons() {
+    var deleteBtn = document.getElementById('panelDeleteBtn');
+    var planBtn = document.getElementById('panelPlanBtn');
+    var isSelected = selectedUserEmail !== null;
+    var user = isSelected ? users[selectedUserEmail] : null;
+    var canDelete = isSelected && user && !user.isScripter;
+    
+    if (deleteBtn) {
+        deleteBtn.disabled = !canDelete;
+        deleteBtn.style.opacity = canDelete ? '1' : '0.3';
+    }
+    if (planBtn) {
+        planBtn.disabled = !isSelected;
+        planBtn.style.opacity = isSelected ? '1' : '0.3';
+    }
+}
+
+function panelDeleteUser() {
+    if (!selectedUserEmail) {
+        showNotification('Error', 'Please select a user first.', 'error');
+        return;
+    }
+    
+    var user = users[selectedUserEmail];
     if (!user) {
         showNotification('Error', 'User not found.', 'error');
         return;
     }
     
-    var container = document.getElementById('userList');
-    var createdDate = new Date(user.createdAt).toLocaleString();
-    var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
-    var isScripter = user.isScripter ? '⭐ Creator' : '';
-    var canDelete = !user.isAdmin && !user.isScripter;
-    var safeEmail = email.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-    
-    container.innerHTML = `
-        <div style="margin-bottom: 12px;">
-            <button onclick="renderUserList()" style="background: none; border: none; color: #6c3bff; cursor: pointer; font-size: 13px; padding: 4px 0;">← Back to users</button>
-        </div>
-        <div style="background: rgba(20,20,35,0.6); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.05);">
-            <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 12px;">
-                <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 20px; color: #fff; overflow: hidden; flex-shrink: 0;">
-                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
-                </div>
-                <div style="flex: 1; min-width: 0;">
-                    <div style="font-weight: 600; color: #ffffff; font-size: 16px;">${user.username}</div>
-                    <div style="color: #8888aa; font-size: 13px; word-break: break-all;">${user.email}</div>
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;">
-                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 1px 10px; border-radius: 10px; font-size: 11px;">${user.plan}</span>
-                        ${isAdmin ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 1px 10px; border-radius: 10px; font-size: 11px;">Admin</span>' : ''}
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.3); color: #ffd700; padding: 1px 10px; border-radius: 10px; font-size: 11px;">⭐ Creator</span>' : ''}
-                    </div>
-                </div>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: #8888aa; margin-bottom: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.05);">
-                <div><span style="color: #8888aa;">Joined:</span> <span style="color: #ffffff;">${createdDate}</span></div>
-                <div><span style="color: #8888aa;">Projects:</span> <span style="color: #ffffff;">${user.stats.projects.used} / ${user.stats.projects.max === Infinity ? '∞' : user.stats.projects.max}</span></div>
-                <div><span style="color: #8888aa;">Keys:</span> <span style="color: #ffffff;">${user.stats.keys.used} / ${user.stats.keys.max === Infinity ? '∞' : user.stats.keys.max}</span></div>
-                <div><span style="color: #8888aa;">Scripts:</span> <span style="color: #ffffff;">${user.stats.scripts.used} / ${user.stats.scripts.max === Infinity ? '∞' : user.stats.scripts.max}</span></div>
-                <div style="grid-column: span 2;"><span style="color: #8888aa;">Storage:</span> <span style="color: #ffffff;">${user.stats.fileSize.used} / ${user.stats.fileSize.max === Infinity ? '∞' : user.stats.fileSize.max} MB</span></div>
-                ${user.description ? '<div style="grid-column: span 2;"><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">' + user.description + '</span></div>' : ''}
-            </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                ${canDelete ? '<button onclick="deleteUserDropdown(\'' + safeEmail + '\')" style="flex:1; background: rgba(255,50,50,0.2); color: #ff6b6b; border: 1px solid rgba(255,50,50,0.3); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">🗑️ Delete User</button>' : ''}
-                <button onclick="changeUserPlan(\'' + safeEmail + '\')" style="flex:1; background: rgba(108,59,255,0.2); color: #8a6bff; border: 1px solid rgba(108,59,255,0.2); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">📊 Change Plan</button>
-                <button onclick="renderUserList()" style="flex:1; background: rgba(255,255,255,0.05); color: #8888aa; border: 1px solid rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 60px;">← Back</button>
-            </div>
-        </div>
-    `;
-}
-
-// ============ DELETE USER FROM DROPDOWN ============
-function deleteUserDropdown(email) {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can delete users.', 'error');
-        return;
-    }
-    
-    if (email === 'dubovikstanislav51@gmail.com') {
+    if (user.isScripter) {
         showNotification('Error', 'Cannot delete the creator account.', 'error');
         return;
     }
     
-    if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
-        delete users[email];
+    if (confirm('Are you sure you want to delete ' + user.username + '? This cannot be undone!')) {
+        delete users[selectedUserEmail];
         saveUsers();
-        showNotification('Deleted', 'User deleted successfully!', 'success');
-        renderUserList();
+        showNotification('Deleted', user.username + ' has been deleted.', 'success');
+        selectedUserEmail = null;
+        renderUsersList();
+        updatePanelButtons();
         renderAdminUserListFull();
     }
 }
 
-// ============ CHANGE USER PLAN ============
-function changeUserPlan(email) {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can change user plans.', 'error');
+function panelChangePlan() {
+    if (!selectedUserEmail) {
+        showNotification('Error', 'Please select a user first.', 'error');
         return;
     }
     
-    var user = users[email];
+    var user = users[selectedUserEmail];
     if (!user) {
         showNotification('Error', 'User not found.', 'error');
         return;
     }
     
-    // Create modal overlay
-    var overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.display = 'flex';
-    overlay.style.zIndex = '2000';
-    
-    var planOptions = '';
-    for (var plan in PLAN_CONFIGS) {
-        var config = PLAN_CONFIGS[plan];
-        var isCurrent = user.plan === plan ? '✅ ' : '';
-        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-        planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
-    }
-    
-    overlay.innerHTML = `
-        <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            
-            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
-                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
-                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
-                </div>
-                <div>
-                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2>
-                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label style="font-size: 14px;">Select New Plan</label>
-                <select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
-                    ${planOptions}
-                </select>
-            </div>
-            
-            <!-- Plan Preview Card -->
-            <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="previewPlanName">Basic</span>
-                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="previewPlanPrice">$0/month</span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>📁 Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
-                    <span>🔑 Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
-                    <span>📜 Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
-                    <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
-                </div>
-            </div>
-            
-            <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
-                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
-            </div>
-        </div>
-    `;
-    
-    document.body.appendChild(overlay);
-    
-    // Update plan preview on selection change
-    var select = overlay.querySelector('#newPlanSelect');
-    select.addEventListener('change', function() {
-        updatePlanPreviewGUI(this.value);
-    });
-    
-    // Initial preview
-    updatePlanPreviewGUI(select.value);
-}
-
-function updatePlanPreviewGUI(planName) {
-    var config = PLAN_CONFIGS[planName];
-    if (!config) return;
-    
-    document.getElementById('previewPlanName').textContent = planName;
-    document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
-    document.getElementById('previewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
-    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
-    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
-}
-
-function confirmChangePlan(email) {
-    var select = document.getElementById('newPlanSelect');
-    var newPlan = select.value;
-    
-    if (!newPlan) {
-        showNotification('Error', 'Please select a plan.', 'error');
-        return;
-    }
-    
-    var user = users[email];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
-    var config = PLAN_CONFIGS[newPlan];
-    if (!config) {
-        showNotification('Error', 'Invalid plan selected.', 'error');
-        return;
-    }
-    
-    // Check if it's the same plan
-    if (user.plan === newPlan) {
-        showNotification('Info', 'User already has this plan.', 'info');
-        return;
-    }
-    
-    // Ask for confirmation
-    if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) {
-        return;
-    }
-    
-    // Update user plan and stats
-    user.plan = newPlan;
-    user.stats.projects.max = config.projects;
-    user.stats.keys.max = config.keys;
-    user.stats.scripts.max = config.scripts;
-    user.stats.fileSize.max = config.fileSize;
-    
-    saveUsers();
-    
-    // Close modal
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    
-    showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
-    
-    // Refresh user lists
-    renderUserList();
-    renderAdminUserListFull();
-    
-    // If this is the current user, update UI
-    if (currentUser && currentUser.id === user.id) {
-        var userData = { ...user };
-        delete userData.password;
-        updateUIForUser(userData);
-    }
-}
-
-// ============ CHANGE OWN PLAN (Admin Panel) ============
-function changeOwnPlan() {
-    if (!currentUser) {
-        showNotification('Error', 'Please login first.', 'error');
-        return;
-    }
-    
-    var overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.display = 'flex';
-    overlay.style.zIndex = '2000';
-    
-    var planOptions = '';
-    for (var plan in PLAN_CONFIGS) {
-        var config = PLAN_CONFIGS[plan];
-        var isCurrent = currentUser.plan === plan ? '✅ ' : '';
-        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-        planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
-    }
-    
-    overlay.innerHTML = `
-        <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            
-            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
-                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
-                    ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
-                </div>
-                <div>
-                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2>
-                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label style="font-size: 14px;">Select New Plan</label>
-                <select id="ownPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
-                    ${planOptions}
-                </select>
-            </div>
-            
-            <!-- Plan Preview Card -->
-            <div id="ownPlanPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="ownPreviewPlanName">Basic</span>
-                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="ownPreviewPlanPrice">$0/month</span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>📁 Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
-                    <span>🔑 Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
-                    <span>📜 Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
-                    <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
-                </div>
-            </div>
-            
-            <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
-                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
-            </div>
-        </div>
-    `;
-    
-    document.body.appendChild(overlay);
-    
-    var select = overlay.querySelector('#ownPlanSelect');
-    select.addEventListener('change', function() {
-        updateOwnPlanPreviewGUI(this.value);
-    });
-    
-    updateOwnPlanPreviewGUI(select.value);
-}
-
-function updateOwnPlanPreviewGUI(planName) {
-    var config = PLAN_CONFIGS[planName];
-    if (!config) return;
-    
-    document.getElementById('ownPreviewPlanName').textContent = planName;
-    document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
-    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
-    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
-    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
-}
-
-function confirmOwnPlanChange() {
-    var select = document.getElementById('ownPlanSelect');
-    var newPlan = select.value;
-    
-    if (!newPlan) {
-        showNotification('Error', 'Please select a plan.', 'error');
-        return;
-    }
-    
-    var config = PLAN_CONFIGS[newPlan];
-    if (!config) {
-        showNotification('Error', 'Invalid plan selected.', 'error');
-        return;
-    }
-    
-    if (currentUser.plan === newPlan) {
-        showNotification('Info', 'You already have this plan.', 'info');
-        return;
-    }
-    
-    if (!confirm('Are you sure you want to change your plan from ' + currentUser.plan + ' to ' + newPlan + '?')) {
-        return;
-    }
-    
-    // Update current user
-    for (var key in users) {
-        if (users[key].id === currentUser.id) {
-            users[key].plan = newPlan;
-            users[key].stats.projects.max = config.projects;
-            users[key].stats.keys.max = config.keys;
-            users[key].stats.scripts.max = config.scripts;
-            users[key].stats.fileSize.max = config.fileSize;
-            break;
-        }
-    }
-    
-    saveUsers();
-    
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    
-    showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
-    
-    // Refresh UI
-    var userData = { ...currentUser };
-    userData.plan = newPlan;
-    userData.stats.projects.max = config.projects;
-    userData.stats.keys.max = config.keys;
-    userData.stats.scripts.max = config.scripts;
-    userData.stats.fileSize.max = config.fileSize;
-    delete userData.password;
-    updateUIForUser(userData);
+    changeUserPlan(selectedUserEmail);
 }
 
 // ============ ADMIN FUNCTIONS ============
@@ -1235,7 +990,6 @@ function uploadProfileImage() {
     
     var file = input.files[0];
     
-    // Reduce max size for profile to 2MB
     if (file.size > 2 * 1024 * 1024) {
         showNotification('Error', 'Profile image size must be less than 2MB.', 'error');
         return;
@@ -1288,7 +1042,6 @@ function uploadBannerImage() {
     
     var file = input.files[0];
     
-    // Reduce max size for banner to 5MB
     if (file.size > 5 * 1024 * 1024) {
         showNotification('Error', 'Banner image size must be less than 5MB.', 'error');
         return;
@@ -1371,6 +1124,283 @@ function exportUsers() {
     showNotification('Exported', 'User data exported successfully!', 'success');
 }
 
+// ============ CHANGE USER PLAN ============
+function changeUserPlan(email) {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can change user plans.', 'error');
+        return;
+    }
+    
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
+        return;
+    }
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    var planOptions = '';
+    for (var plan in PLAN_CONFIGS) {
+        var config = PLAN_CONFIGS[plan];
+        var isCurrent = user.plan === plan ? '✅ ' : '';
+        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+        planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
+    }
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 480px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
+                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2>
+                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label style="font-size: 14px;">Select New Plan</label>
+                <select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
+                    ${planOptions}
+                </select>
+            </div>
+            
+            <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="previewPlanName">Basic</span>
+                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="previewPlanPrice">$0/month</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    var select = overlay.querySelector('#newPlanSelect');
+    select.addEventListener('change', function() {
+        updatePlanPreviewGUI(this.value);
+    });
+    
+    updatePlanPreviewGUI(select.value);
+}
+
+function updatePlanPreviewGUI(planName) {
+    var config = PLAN_CONFIGS[planName];
+    if (!config) return;
+    
+    document.getElementById('previewPlanName').textContent = planName;
+    document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+    document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('previewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+}
+
+function confirmChangePlan(email) {
+    var select = document.getElementById('newPlanSelect');
+    var newPlan = select.value;
+    
+    if (!newPlan) {
+        showNotification('Error', 'Please select a plan.', 'error');
+        return;
+    }
+    
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
+        return;
+    }
+    
+    var config = PLAN_CONFIGS[newPlan];
+    if (!config) {
+        showNotification('Error', 'Invalid plan selected.', 'error');
+        return;
+    }
+    
+    if (user.plan === newPlan) {
+        showNotification('Info', 'User already has this plan.', 'info');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) {
+        return;
+    }
+    
+    user.plan = newPlan;
+    user.stats.projects.max = config.projects;
+    user.stats.keys.max = config.keys;
+    user.stats.scripts.max = config.scripts;
+    user.stats.fileSize.max = config.fileSize;
+    
+    saveUsers();
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    
+    showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
+    
+    renderUserList();
+    renderAdminUserListFull();
+    
+    if (currentUser && currentUser.id === user.id) {
+        var userData = { ...user };
+        delete userData.password;
+        updateUIForUser(userData);
+    }
+}
+
+// ============ CHANGE OWN PLAN (Admin Panel) ============
+function changeOwnPlan() {
+    if (!currentUser) {
+        showNotification('Error', 'Please login first.', 'error');
+        return;
+    }
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    var planOptions = '';
+    for (var plan in PLAN_CONFIGS) {
+        var config = PLAN_CONFIGS[plan];
+        var isCurrent = currentUser.plan === plan ? '✅ ' : '';
+        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+        planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
+    }
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 480px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
+                    ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2>
+                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label style="font-size: 14px;">Select New Plan</label>
+                <select id="ownPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
+                    ${planOptions}
+                </select>
+            </div>
+            
+            <div id="ownPlanPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="ownPreviewPlanName">Basic</span>
+                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="ownPreviewPlanPrice">$0/month</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    var select = overlay.querySelector('#ownPlanSelect');
+    select.addEventListener('change', function() {
+        updateOwnPlanPreviewGUI(this.value);
+    });
+    
+    updateOwnPlanPreviewGUI(select.value);
+}
+
+function updateOwnPlanPreviewGUI(planName) {
+    var config = PLAN_CONFIGS[planName];
+    if (!config) return;
+    
+    document.getElementById('ownPreviewPlanName').textContent = planName;
+    document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+}
+
+function confirmOwnPlanChange() {
+    var select = document.getElementById('ownPlanSelect');
+    var newPlan = select.value;
+    
+    if (!newPlan) {
+        showNotification('Error', 'Please select a plan.', 'error');
+        return;
+    }
+    
+    var config = PLAN_CONFIGS[newPlan];
+    if (!config) {
+        showNotification('Error', 'Invalid plan selected.', 'error');
+        return;
+    }
+    
+    if (currentUser.plan === newPlan) {
+        showNotification('Info', 'You already have this plan.', 'info');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to change your plan from ' + currentUser.plan + ' to ' + newPlan + '?')) {
+        return;
+    }
+    
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].plan = newPlan;
+            users[key].stats.projects.max = config.projects;
+            users[key].stats.keys.max = config.keys;
+            users[key].stats.scripts.max = config.scripts;
+            users[key].stats.fileSize.max = config.fileSize;
+            break;
+        }
+    }
+    
+    saveUsers();
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    
+    showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
+    
+    var userData = { ...currentUser };
+    userData.plan = newPlan;
+    userData.stats.projects.max = config.projects;
+    userData.stats.keys.max = config.keys;
+    userData.stats.scripts.max = config.scripts;
+    userData.stats.fileSize.max = config.fileSize;
+    delete userData.password;
+    updateUIForUser(userData);
+}
+
 // ============ AUTO-LOGIN CHECK ============
 function checkAuth() {
     loadUsers();
@@ -1429,6 +1459,11 @@ document.addEventListener('DOMContentLoaded', function() {
         adminBtn.addEventListener('click', openAdminPanel);
     }
     
+    var usersBtn = document.getElementById('usersBtn');
+    if (usersBtn) {
+        usersBtn.addEventListener('click', openUsersPanel);
+    }
+    
     console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
@@ -1440,14 +1475,16 @@ window.logout = logout;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.openAdminPanel = openAdminPanel;
-window.renderUserList = renderUserList;
-window.showUserDetailsDropdown = showUserDetailsDropdown;
-window.deleteUserDropdown = deleteUserDropdown;
+window.openUsersPanel = openUsersPanel;
+window.closeUsersPanel = closeUsersPanel;
+window.renderUsersList = renderUsersList;
+window.selectUser = selectUser;
+window.panelDeleteUser = panelDeleteUser;
+window.panelChangePlan = panelChangePlan;
 window.renderAdminUserListFull = renderAdminUserListFull;
 window.deleteUser = deleteUser;
 window.deleteAllUsers = deleteAllUsers;
 window.filterUsers = filterUsers;
-window.toggleDropdown = toggleDropdown;
 window.uploadProfileImage = uploadProfileImage;
 window.uploadBannerImage = uploadBannerImage;
 window.changeTheme = changeTheme;
