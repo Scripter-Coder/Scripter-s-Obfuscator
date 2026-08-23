@@ -698,64 +698,84 @@ function changeUserPlan(email) {
         return;
     }
     
-    var modal = document.createElement('div');
-    modal.className = 'modal-overlay';
-    modal.style.display = 'flex';
-    modal.style.zIndex = '2000';
+    // Create modal overlay
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
     
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
         var isCurrent = user.plan === plan ? '✅ ' : '';
-        planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - $' + config.price + (config.price !== 'Custom' ? '/month' : '') + '</option>';
+        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+        planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     
-    modal.innerHTML = `
-        <div class="modal" style="max-width: 420px;">
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 480px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            <h2 style="font-size: 22px;">Change Plan for ${user.username}</h2>
-            <p class="sub">Current plan: <strong style="color:#8a6bff;">${user.plan}</strong></p>
+            
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
+                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2>
+                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p>
+                </div>
+            </div>
             
             <div class="form-group">
-                <label>Select New Plan</label>
-                <select id="newPlanSelect" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px;">
+                <label style="font-size: 14px;">Select New Plan</label>
+                <select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
                     ${planOptions}
                 </select>
             </div>
             
-            <div style="margin-top:12px; padding:12px; background:rgba(108,59,255,0.05); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:13px; color:#8888aa;">
-                    <span>📁 Projects: <span id="planProjects">0</span></span>
-                    <span>🔑 Keys: <span id="planKeys">0</span></span>
-                    <span>📜 Scripts: <span id="planScripts">0</span></span>
-                    <span>💾 Storage: <span id="planStorage">0</span> MB</span>
+            <!-- Plan Preview Card -->
+            <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="previewPlanName">Basic</span>
+                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="previewPlanPrice">$0/month</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
                 </div>
             </div>
             
-            <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1;">✅ Confirm Change</button>
-                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Cancel</button>
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
     `;
     
-    document.body.appendChild(modal);
+    document.body.appendChild(overlay);
     
-    var select = modal.querySelector('#newPlanSelect');
+    // Update plan preview on selection change
+    var select = overlay.querySelector('#newPlanSelect');
     select.addEventListener('change', function() {
-        updatePlanPreview(this.value);
+        updatePlanPreviewGUI(this.value);
     });
-    updatePlanPreview(select.value);
+    
+    // Initial preview
+    updatePlanPreviewGUI(select.value);
 }
 
-function updatePlanPreview(planName) {
+function updatePlanPreviewGUI(planName) {
     var config = PLAN_CONFIGS[planName];
     if (!config) return;
     
-    document.getElementById('planProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
-    document.getElementById('planKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
-    document.getElementById('planScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
-    document.getElementById('planStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+    document.getElementById('previewPlanName').textContent = planName;
+    document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+    document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('previewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmChangePlan(email) {
@@ -779,6 +799,18 @@ function confirmChangePlan(email) {
         return;
     }
     
+    // Check if it's the same plan
+    if (user.plan === newPlan) {
+        showNotification('Info', 'User already has this plan.', 'info');
+        return;
+    }
+    
+    // Ask for confirmation
+    if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) {
+        return;
+    }
+    
+    // Update user plan and stats
     user.plan = newPlan;
     user.stats.projects.max = config.projects;
     user.stats.keys.max = config.keys;
@@ -787,14 +819,17 @@ function confirmChangePlan(email) {
     
     saveUsers();
     
+    // Close modal
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     
     showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
     
+    // Refresh user lists
     renderUserList();
     renderAdminUserList();
     
+    // If this is the current user, update UI
     if (currentUser && currentUser.id === user.id) {
         var userData = { ...user };
         delete userData.password;
@@ -809,64 +844,81 @@ function changeOwnPlan() {
         return;
     }
     
-    var modal = document.createElement('div');
-    modal.className = 'modal-overlay';
-    modal.style.display = 'flex';
-    modal.style.zIndex = '2000';
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
     
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
         var isCurrent = currentUser.plan === plan ? '✅ ' : '';
-        planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - $' + config.price + (config.price !== 'Custom' ? '/month' : '') + '</option>';
+        var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+        planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     
-    modal.innerHTML = `
-        <div class="modal" style="max-width: 420px;">
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 480px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            <h2 style="font-size: 22px;">Change Your Plan</h2>
-            <p class="sub">Current plan: <strong style="color:#8a6bff;">${currentUser.plan}</strong></p>
+            
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
+                    ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2>
+                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p>
+                </div>
+            </div>
             
             <div class="form-group">
-                <label>Select New Plan</label>
-                <select id="ownPlanSelect" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px;">
+                <label style="font-size: 14px;">Select New Plan</label>
+                <select id="ownPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
                     ${planOptions}
                 </select>
             </div>
             
-            <div style="margin-top:12px; padding:12px; background:rgba(108,59,255,0.05); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:13px; color:#8888aa;">
-                    <span>📁 Projects: <span id="ownPlanProjects">0</span></span>
-                    <span>🔑 Keys: <span id="ownPlanKeys">0</span></span>
-                    <span>📜 Scripts: <span id="ownPlanScripts">0</span></span>
-                    <span>💾 Storage: <span id="ownPlanStorage">0</span> MB</span>
+            <!-- Plan Preview Card -->
+            <div id="ownPlanPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="ownPreviewPlanName">Basic</span>
+                    <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="ownPreviewPlanPrice">$0/month</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
                 </div>
             </div>
             
-            <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1;">✅ Confirm Change</button>
-                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Cancel</button>
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
     `;
     
-    document.body.appendChild(modal);
+    document.body.appendChild(overlay);
     
-    var select = modal.querySelector('#ownPlanSelect');
+    var select = overlay.querySelector('#ownPlanSelect');
     select.addEventListener('change', function() {
-        updateOwnPlanPreview(this.value);
+        updateOwnPlanPreviewGUI(this.value);
     });
-    updateOwnPlanPreview(select.value);
+    
+    updateOwnPlanPreviewGUI(select.value);
 }
 
-function updateOwnPlanPreview(planName) {
+function updateOwnPlanPreviewGUI(planName) {
     var config = PLAN_CONFIGS[planName];
     if (!config) return;
     
-    document.getElementById('ownPlanProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
-    document.getElementById('ownPlanKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
-    document.getElementById('ownPlanScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
-    document.getElementById('ownPlanStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+    document.getElementById('ownPreviewPlanName').textContent = planName;
+    document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
+    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmOwnPlanChange() {
@@ -884,6 +936,16 @@ function confirmOwnPlanChange() {
         return;
     }
     
+    if (currentUser.plan === newPlan) {
+        showNotification('Info', 'You already have this plan.', 'info');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to change your plan from ' + currentUser.plan + ' to ' + newPlan + '?')) {
+        return;
+    }
+    
+    // Update current user
     for (var key in users) {
         if (users[key].id === currentUser.id) {
             users[key].plan = newPlan;
@@ -902,6 +964,7 @@ function confirmOwnPlanChange() {
     
     showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
     
+    // Refresh UI
     var userData = { ...currentUser };
     userData.plan = newPlan;
     userData.stats.projects.max = config.projects;
@@ -1070,6 +1133,10 @@ function showUserDetails(email) {
             <div class="user-detail-stats">
                 <div><span style="color: #8888aa;">Joined:</span> <span style="color: #ffffff;">${createdDate}</span></div>
                 <div><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">${user.description || 'No description'}</span></div>
+                <div><span style="color: #8888aa;">Projects:</span> <span style="color: #ffffff;">${user.stats.projects.used} / ${user.stats.projects.max === Infinity ? '∞' : user.stats.projects.max}</span></div>
+                <div><span style="color: #8888aa;">Keys:</span> <span style="color: #ffffff;">${user.stats.keys.used} / ${user.stats.keys.max === Infinity ? '∞' : user.stats.keys.max}</span></div>
+                <div><span style="color: #8888aa;">Scripts:</span> <span style="color: #ffffff;">${user.stats.scripts.used} / ${user.stats.scripts.max === Infinity ? '∞' : user.stats.scripts.max}</span></div>
+                <div><span style="color: #8888aa;">Storage:</span> <span style="color: #ffffff;">${user.stats.fileSize.used} / ${user.stats.fileSize.max === Infinity ? '∞' : user.stats.fileSize.max} MB</span></div>
             </div>
             <div class="user-detail-actions">
                 ${canDelete ? '<button onclick="deleteUser(\'' + email + '\')" class="btn btn-danger" style="padding: 8px 20px; font-size: 13px;">🗑️ Delete User</button>' : ''}
