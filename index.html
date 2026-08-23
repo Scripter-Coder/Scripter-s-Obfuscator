@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scripter's Obfuscator</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Animated Background -->
+    <div class="bg-animation">
+        <div class="circle"></div>
+        <div class="circle"></div>
+        <div class="circle"></div>
+    </div>
+
+    <!-- Notification Container -->
+    <div class="notification-container" id="notificationContainer"></div>
+
+    <!-- Navbar -->
+    <nav class="navbar">
+        <a href="#" class="navbar-brand" onclick="showPage('home')">Scripter's Obfuscator</a>
+        <div class="navbar-actions">
+            <div class="navbar-user" id="navbarUser">
+                <div class="avatar" id="userAvatar">D</div>
+                <span class="username" id="userName">DemoUser</span>
+                <span class="plan-badge" id="userPlan">Advanced</span>
+                <button class="btn btn-logout" onclick="logout()">Logout</button>
+            </div>
+            <button class="btn btn-white" id="signupBtn" onclick="openModal('signup')">Sign Up</button>
+            <button class="btn btn-black" id="loginBtn" onclick="openModal('login')">Log In</button>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Date & Time -->
+        <div class="datetime-display">
+            <div class="date" id="currentDate">Loading...</div>
+            <div class="time" id="currentTime">00:00:00</div>
+        </div>
+        
+        <!-- Home Page -->
+        <div id="homePage">
+            <section class="plans-section">
+                <h2>Choose Your Plan</h2>
+                <p class="plans-subtitle">Select the perfect plan for your needs</p>
+                
+                <div class="plans-grid">
+                    <!-- Basic Plan -->
+                    <div class="plan-card">
+                        <div class="plan-name">Basic</div>
+                        <div class="plan-price">$0 <span class="period">/ forever</span></div>
+                        <ul class="plan-features">
+                            <li>Upload file size: 5 MB</li>
+                            <li>2 Keys limit</li>
+                            <li>1 Projects limit</li>
+                            <li>3 Scripts limit</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="openModal('signup')">Get Started</button>
+                    </div>
+                    
+                    <!-- Advanced Plan -->
+                    <div class="plan-card featured">
+                        <div class="plan-name">Advanced</div>
+                        <div class="plan-price">$5 <span class="period">/ month</span></div>
+                        <ul class="plan-features">
+                            <li>Upload file size: 50 MB</li>
+                            <li>50 Keys limit</li>
+                            <li>10 Projects limit</li>
+                            <li>20 Scripts limit</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
+                    </div>
+                    
+                    <!-- Pro Plan -->
+                    <div class="plan-card">
+                        <div class="plan-name">Pro</div>
+                        <div class="plan-price">$10 <span class="period">/ month</span></div>
+                        <ul class="plan-features">
+                            <li>Upload file size: 200 MB</li>
+                            <li>200 Keys limit</li>
+                            <li>50 Projects limit</li>
+                            <li>100 Scripts limit</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
+                    </div>
+                    
+                    <!-- God Plan -->
+                    <div class="plan-card">
+                        <div class="plan-name">God</div>
+                        <div class="plan-price">$20 <span class="period">/ month</span></div>
+                        <ul class="plan-features">
+                            <li>Upload file size: 1 GB</li>
+                            <li>Unlimited Keys</li>
+                            <li>Unlimited Projects</li>
+                            <li>Unlimited Scripts</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
+                    </div>
+                    
+                    <!-- Custom Plan -->
+                    <div class="plan-card">
+                        <div class="plan-name">Custom</div>
+                        <div class="plan-price">Custom</div>
+                        <ul class="plan-features">
+                            <li>Upload file size: ∞</li>
+                            <li>∞ Keys limit</li>
+                            <li>∞ Projects limit</li>
+                            <li>∞ Scripts limit</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="openModal('signup')">Contact Us</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+        
+        <!-- Dashboard -->
+        <div class="dashboard" id="dashboard">
+            <div class="dashboard-header">
+                <div>
+                    <div class="welcome">Welcome back, <span id="dashUsername">User</span>!</div>
+                    <div style="color: #8888aa; font-size: 14px; margin-top: 4px;" id="dashEmail">user@example.com</div>
+                </div>
+                <div>
+                    <span class="plan-display" id="dashPlan">📊 Current Plan: Advanced</span>
+                </div>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">📁 Projects</div>
+                    <div class="stat-value"><span id="projectsUsed">0</span> <span class="max">/ <span id="projectsMax">10</span></span></div>
+                    <div class="stat-bar">
+                        <div class="fill" id="projectsBar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">🔑 Keys</div>
+                    <div class="stat-value"><span id="keysUsed">0</span> <span class="max">/ <span id="keysMax">50</span></span></div>
+                    <div class="stat-bar">
+                        <div class="fill" id="keysBar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">📜 Scripts</div>
+                    <div class="stat-value"><span id="scriptsUsed">0</span> <span class="max">/ <span id="scriptsMax">20</span></span></div>
+                    <div class="stat-bar">
+                        <div class="fill" id="scriptsBar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">💾 Storage Used</div>
+                    <div class="stat-value"><span id="storageUsed">0</span> <span class="max">/ <span id="storageMax">50</span> MB</span></div>
+                    <div class="stat-bar">
+                        <div class="fill" id="storageBar" style="width: 0%;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Signup Modal -->
+    <div class="modal-overlay" id="signupModal">
+        <div class="modal">
+            <button class="modal-close" onclick="closeModal('signup')">✕</button>
+            <h2>Create Account</h2>
+            <p class="sub">Join Scripter's Obfuscator today</p>
+            
+            <form id="signupForm" onsubmit="handleSignup(event)">
+                <div class="form-group">
+                    <label>Gmail <span class="required">*</span></label>
+                    <input type="email" id="signupEmail" placeholder="Enter your gmail" required>
+                </div>
+                <div class="form-group">
+                    <label>Username <span class="required">*</span></label>
+                    <input type="text" id="signupUsername" placeholder="Choose a username" required>
+                </div>
+                <div class="form-group">
+                    <label>Password <span class="required">*</span></label>
+                    <input type="password" id="signupPassword" placeholder="Create a password" required>
+                </div>
+                <div class="form-group">
+                    <label>Description <span style="color:#555577;">(optional)</span></label>
+                    <textarea id="signupDescription" placeholder="Tell us about yourself..."></textarea>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">Sign Up</button>
+                
+                <div class="modal-divider">or continue with</div>
+                
+                <div class="social-buttons">
+                    <button type="button" class="btn btn-google" onclick="handleSocialSignup('google')">Google</button>
+                    <button type="button" class="btn btn-discord" onclick="handleSocialSignup('discord')">Discord</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="modal">
+            <button class="modal-close" onclick="closeModal('login')">✕</button>
+            <h2>Welcome Back</h2>
+            <p class="sub">Log in to your account</p>
+            
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Gmail or Username <span class="required">*</span></label>
+                    <input type="text" id="loginEmail" placeholder="Enter your gmail or username" required>
+                </div>
+                <div class="form-group">
+                    <label>Password <span class="required">*</span></label>
+                    <input type="password" id="loginPassword" placeholder="Enter your password" required>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">Log In</button>
+                
+                <div class="modal-divider">or continue with</div>
+                
+                <div class="social-buttons">
+                    <button type="button" class="btn btn-google" onclick="handleSocialLogin('google')">Google</button>
+                    <button type="button" class="btn btn-discord" onclick="handleSocialLogin('discord')">Discord</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
