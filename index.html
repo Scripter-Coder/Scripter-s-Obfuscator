@@ -116,115 +116,47 @@
             </section>
         </div>
         
-        <!-- Dashboard (shown after login) -->
-        <div class="dashboard" id="dashboard">
-            <div class="dashboard-banner" id="dashBanner"></div>
-            
-            <div class="dashboard-profile">
-                <div class="profile-avatar" id="dashAvatar">U</div>
-                <div class="profile-info">
-                    <h2 id="dashUsername">User</h2>
-                    <p id="dashEmail">user@example.com</p>
-                    <span class="plan-display" id="dashPlan">📊 Current Plan: Basic</span>
+        <!-- ====== TABS NAVIGATION ====== -->
+        <div class="tabs-nav" id="tabsNav" style="display:none; margin-top: 10px; margin-bottom: 20px; display: flex; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px;">
+            <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Dashboard</button>
+            <button class="tab-btn" data-tab="scripts" onclick="switchTab('scripts')">📜 Scripts</button>
+            <button class="tab-btn" data-tab="keys" onclick="switchTab('keys')">🔑 Keys</button>
+            <button class="tab-btn" data-tab="credits" onclick="switchTab('credits')">💰 Credits</button>
+            <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙️ Settings</button>
+        </div>
+
+        <!-- ====== DASHBOARD TAB ====== -->
+        <div class="tab-content" id="tab-dashboard" style="display:block;"></div>
+
+        <!-- ====== SCRIPTS TAB ====== -->
+        <div class="tab-content" id="tab-scripts" style="display:none;">
+            <div id="scriptsContainer">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                    <h2 style="color:#fff; margin:0;">📜 Your Projects</h2>
+                    <button class="btn btn-primary" onclick="openCreateProject()">➕ Create Project</button>
+                </div>
+                <div id="projectsList" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:16px;">
+                    <p style="color:#8888aa; grid-column:1/-1; text-align:center; padding:40px 0;">No projects yet. Create your first project!</p>
                 </div>
             </div>
-            
-            <div class="upload-section">
-                <div class="upload-group">
-                    <div class="group-header">
-                        <span class="icon">📸</span>
-                        <label>Profile Image</label>
-                        <span class="file-type">PNG, JPG, WEBP</span>
-                    </div>
-                    <div class="file-input-wrapper">
-                        <input type="file" id="profileImageInput" accept="image/*">
-                    </div>
-                    <button class="btn btn-primary" onclick="uploadProfileImage()">⬆ Upload Profile</button>
-                </div>
-                
-                <div class="upload-group">
-                    <div class="group-header">
-                        <span class="icon">🖼️</span>
-                        <label>Banner Image</label>
-                        <span class="file-type">PNG, JPG, WEBP, GIF</span>
-                    </div>
-                    <div class="file-input-wrapper">
-                        <input type="file" id="bannerImageInput" accept="image/*">
-                    </div>
-                    <button class="btn btn-primary" onclick="uploadBannerImage()">⬆ Upload Banner</button>
-                </div>
-                
-                <div class="upload-group">
-                    <div class="group-header">
-                        <span class="icon">🎨</span>
-                        <label>Theme</label>
-                        <span class="file-type">Click to change</span>
-                    </div>
-                    <select id="themeSelect" onchange="changeTheme(this.value)">
-                        <option value="default">Default (Purple)</option>
-                        <option value="red">🔥 Red</option>
-                        <option value="blue">💙 Blue</option>
-                        <option value="green">💚 Green</option>
-                        <option value="purple">💜 Purple</option>
-                        <option value="orange">🧡 Orange</option>
-                        <option value="white">🤍 White</option>
-                        <option value="dark">🖤 Dark</option>
-                    </select>
-                    <div class="theme-preview">
-                        <div class="color-dot" style="background: #6c3bff;" onclick="changeTheme('default')" title="Default"></div>
-                        <div class="color-dot" style="background: #ff0000;" onclick="changeTheme('red')" title="Red"></div>
-                        <div class="color-dot" style="background: #0044ff;" onclick="changeTheme('blue')" title="Blue"></div>
-                        <div class="color-dot" style="background: #00cc44;" onclick="changeTheme('green')" title="Green"></div>
-                        <div class="color-dot" style="background: #9900ff;" onclick="changeTheme('purple')" title="Purple"></div>
-                        <div class="color-dot" style="background: #ff6600;" onclick="changeTheme('orange')" title="Orange"></div>
-                        <div class="color-dot" style="background: #ffffff;" onclick="changeTheme('white')" title="White"></div>
-                        <div class="color-dot" style="background: #222222;" onclick="changeTheme('dark')" title="Dark"></div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="dashboard-header">
-                <div>
-                    <div class="welcome">👋 Welcome back, <span id="dashUsername2">User</span>!</div>
-                </div>
-                <div>
-                    <span class="plan-display" id="dashPlan2">📊 Current Plan: Basic</span>
-                </div>
-            </div>
-            
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">📁 Projects</div>
-                    <div class="stat-value"><span id="projectsUsed">0</span> <span class="max">/ <span id="projectsMax">10</span></span></div>
-                    <div class="stat-bar">
-                        <div class="fill" id="projectsBar" style="width: 0%;"></div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-label">🔑 Keys</div>
-                    <div class="stat-value"><span id="keysUsed">0</span> <span class="max">/ <span id="keysMax">50</span></span></div>
-                    <div class="stat-bar">
-                        <div class="fill" id="keysBar" style="width: 0%;"></div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-label">📜 Scripts</div>
-                    <div class="stat-value"><span id="scriptsUsed">0</span> <span class="max">/ <span id="scriptsMax">20</span></span></div>
-                    <div class="stat-bar">
-                        <div class="fill" id="scriptsBar" style="width: 0%;"></div>
-                    </div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-label">💾 Storage Used</div>
-                    <div class="stat-value"><span id="storageUsed">0</span> <span class="max">/ <span id="storageMax">50</span> MB</span></div>
-                    <div class="stat-bar">
-                        <div class="fill" id="storageBar" style="width: 0%;"></div>
-                    </div>
-                </div>
-            </div>
+        </div>
+
+        <!-- ====== KEYS TAB ====== -->
+        <div class="tab-content" id="tab-keys" style="display:none;">
+            <h2 style="color:#fff;">🔑 Your Keys</h2>
+            <p style="color:#8888aa;">Coming soon...</p>
+        </div>
+
+        <!-- ====== CREDITS TAB ====== -->
+        <div class="tab-content" id="tab-credits" style="display:none;">
+            <h2 style="color:#fff;">💰 Credits</h2>
+            <p style="color:#8888aa;">Coming soon...</p>
+        </div>
+
+        <!-- ====== SETTINGS TAB ====== -->
+        <div class="tab-content" id="tab-settings" style="display:none;">
+            <h2 style="color:#fff;">⚙️ Settings</h2>
+            <p style="color:#8888aa;">Coming soon...</p>
         </div>
     </div>
 
