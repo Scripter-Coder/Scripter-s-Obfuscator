@@ -2025,14 +2025,16 @@ function viewScript(projectId, scriptId) {
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
+
 // Inside viewScript function, replace the loader code section:
 var scriptCode = script.code || '';
-var directLoader = 'loadstring([[' + scriptCode + ']])()';
 
 // Store for loader access
 storeScriptForLoader(script.loaderId, scriptCode, script.name);
 storeScriptForLoader(script.id, scriptCode, script.name);
+
+// Direct loader - this is what will be shown
+var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2127,55 +2129,46 @@ function copyLoader(loaderId) {
     storeScriptForLoader(loaderId, scriptCode, scriptName);
     storeScriptForLoader(scriptId, scriptCode, scriptName);
     
-    // Create a unique identifier for this script
-    var cleanName = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
-    var loaderId_short = loaderId.replace('ScripterHubOfficial_', '');
-    
-    // Method 1: Direct embed (most compatible with executors)
+    // Create the direct loader (this is the only one that works reliably)
+    // This embeds the script directly in the loadstring
     var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
-    // Method 2: Using a custom protocol (for executors that support it)
-    var protocolLoader = 'loadstring(game:HttpGet("script://' + loaderId + '"))()';
+    // Also create a version with the script name for reference
+    var cleanName = scriptName.replace(/[^a-zA-Z0-9]/g, '_');
+    var namedLoader = '-- Script: ' + scriptName + '\nloadstring([[' + scriptCode + ']])()';
     
-    // Method 3: Using a data URI (some executors support this)
-    var encoded = btoa(scriptCode);
-    var dataUriLoader = 'loadstring(game:HttpGet("data:text/plain;base64,' + encoded + '"))()';
-    
-    // Method 4: Using a blob URL (modern approach)
-    var blobLoader = 'loadstring(game:HttpGet("blob:' + loaderId + '"))()';
-    
-    // For the user, we'll provide the most compatible version
-    // Most executors work with the direct embed or the game:HttpGet with a data URI
-    
-    // Show a dialog with multiple options
+    // Show a dialog with the loader
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     
+    // Escape the script code for display (truncate if too long)
+    var displayCode = scriptCode;
+    if (displayCode.length > 200) {
+        displayCode = displayCode.substring(0, 200) + '...';
+    }
+    
     overlay.innerHTML = `
-        <div class="modal" style="max-width: 500px; padding: 32px;">
+        <div class="modal" style="max-width: 550px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:20px;">📋 Loader Code</h2>
             <p class="sub">Script: <strong style="color:#8a6bff;">${scriptName}</strong></p>
             
             <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">Method 1: Direct Load (Recommended)</label>
-                <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:10px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${directLoader}</code>
+                <label style="color:#8888aa; font-size:12px;">Copy this code and paste it in your executor:</label>
+                <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(108,59,255,0.2); margin-top:6px; max-height:150px; overflow-y:auto;">
+                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${directLoader}</code>
                 </div>
-                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+                <button onclick="copyText('${directLoader.replace(/'/g, "\\'").replace(/\\/g, '\\\\')}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Loader</button>
             </div>
             
-            <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">Method 2: Encoded Load</label>
-                <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:10px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${dataUriLoader}</code>
-                </div>
-                <button onclick="copyText('${dataUriLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+            <div style="background:rgba(255,200,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(255,200,100,0.1); margin-bottom:12px;">
+                <p style="color:#ffc800; font-size:12px; margin:0;">💡 This loader embeds the script directly. No external HTTP requests are made, so it works on all executors without errors.</p>
             </div>
             
-            <div style="display:flex; gap:8px; margin-top:12px;">
+            <div style="display:flex; gap:8px; margin-top:8px;">
+                <button onclick="copyText('${directLoader.replace(/'/g, "\\'").replace(/\\/g, '\\\\')}')" class="btn btn-primary" style="flex:1;">📋 Copy</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
             </div>
         </div>
@@ -2624,10 +2617,26 @@ function updateScriptVisibility(projectId, scriptId) {
 }
 
 // ============ AUTO-LOGIN CHECK ============
-// ============ AUTO-LOGIN CHECK ============
 function checkAuth() {
     loadUsers();
-    var savedUser = restoreSession();
+    
+    // Try to restore session
+    var savedUser = null;
+    try {
+        var sessionData = sessionStorage.getItem('session_user');
+        if (sessionData) {
+            savedUser = JSON.parse(sessionData);
+        }
+    } catch (e) {}
+    
+    if (!savedUser) {
+        try {
+            var localData = localStorage.getItem('currentUser');
+            if (localData) {
+                savedUser = JSON.parse(localData);
+            }
+        } catch (e) {}
+    }
     
     if (savedUser) {
         var userExists = false;
@@ -2648,6 +2657,20 @@ function checkAuth() {
     } else {
         showHomePage();
     }
+}
+
+function saveSession(user) {
+    try {
+        sessionStorage.setItem('session_user', JSON.stringify(user));
+        localStorage.setItem('currentUser', JSON.stringify(user));
+    } catch (e) {}
+}
+
+function clearSession() {
+    try {
+        sessionStorage.removeItem('session_user');
+        localStorage.removeItem('currentUser');
+    } catch (e) {}
 }
 
 function showHomePage() {
