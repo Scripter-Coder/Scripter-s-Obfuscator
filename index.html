@@ -150,32 +150,60 @@
                 </div>
             </div>
             
-            <!-- UPLOAD & THEME SECTION - 3 Column Grid -->
-            <div class="upload-section">
-                <div class="upload-group">
-                    <label>📸 Profile Image <span class="file-type">(PNG, JPG, WEBP)</span></label>
-                    <input type="file" id="profileImageInput" accept="image/*">
-                    <button class="btn btn-primary" onclick="uploadProfileImage()">⬆ Upload Profile</button>
-                </div>
-                <div class="upload-group">
-                    <label>🖼️ Banner Image <span class="file-type">(PNG, JPG, WEBP, GIF)</span></label>
-                    <input type="file" id="bannerImageInput" accept="image/*">
-                    <button class="btn btn-primary" onclick="uploadBannerImage()">⬆ Upload Banner</button>
-                </div>
-                <div class="upload-group">
-                    <label>🎨 Theme</label>
-                    <select id="themeSelect" onchange="changeTheme(this.value)">
-                        <option value="default">Default (Purple)</option>
-                        <option value="red">🔥 Red</option>
-                        <option value="blue">💙 Blue</option>
-                        <option value="green">💚 Green</option>
-                        <option value="purple">💜 Purple</option>
-                        <option value="orange">🧡 Orange</option>
-                        <option value="white">🤍 White</option>
-                        <option value="dark">🖤 Dark</option>
-                    </select>
-                </div>
-            </div>
+<!-- UPLOAD & THEME SECTION - Modern UI -->
+<div class="upload-section">
+    <div class="upload-group">
+        <div class="group-header">
+            <span class="icon">📸</span>
+            <label>Profile Image</label>
+            <span class="file-type">PNG, JPG, WEBP</span>
+        </div>
+        <div class="file-input-wrapper">
+            <input type="file" id="profileImageInput" accept="image/*">
+        </div>
+        <button class="btn btn-primary" onclick="uploadProfileImage()">⬆ Upload Profile</button>
+    </div>
+    
+    <div class="upload-group">
+        <div class="group-header">
+            <span class="icon">🖼️</span>
+            <label>Banner Image</label>
+            <span class="file-type">PNG, JPG, WEBP, GIF</span>
+        </div>
+        <div class="file-input-wrapper">
+            <input type="file" id="bannerImageInput" accept="image/*">
+        </div>
+        <button class="btn btn-primary" onclick="uploadBannerImage()">⬆ Upload Banner</button>
+    </div>
+    
+    <div class="upload-group">
+        <div class="group-header">
+            <span class="icon">🎨</span>
+            <label>Theme</label>
+            <span class="file-type">Click to change</span>
+        </div>
+        <select id="themeSelect" onchange="changeTheme(this.value)">
+            <option value="default">Default (Purple)</option>
+            <option value="red">🔥 Red</option>
+            <option value="blue">💙 Blue</option>
+            <option value="green">💚 Green</option>
+            <option value="purple">💜 Purple</option>
+            <option value="orange">🧡 Orange</option>
+            <option value="white">🤍 White</option>
+            <option value="dark">🖤 Dark</option>
+        </select>
+        <div class="theme-preview">
+            <div class="color-dot" style="background: #6c3bff;" onclick="changeTheme('default')" title="Default"></div>
+            <div class="color-dot" style="background: #ff0000;" onclick="changeTheme('red')" title="Red"></div>
+            <div class="color-dot" style="background: #0044ff;" onclick="changeTheme('blue')" title="Blue"></div>
+            <div class="color-dot" style="background: #00cc44;" onclick="changeTheme('green')" title="Green"></div>
+            <div class="color-dot" style="background: #9900ff;" onclick="changeTheme('purple')" title="Purple"></div>
+            <div class="color-dot" style="background: #ff6600;" onclick="changeTheme('orange')" title="Orange"></div>
+            <div class="color-dot" style="background: #ffffff;" onclick="changeTheme('white')" title="White"></div>
+            <div class="color-dot" style="background: #222222;" onclick="changeTheme('dark')" title="Dark"></div>
+        </div>
+    </div>
+</div>
             
             <!-- WELCOME HEADER -->
             <div class="dashboard-header">
