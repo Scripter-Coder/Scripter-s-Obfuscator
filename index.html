@@ -244,6 +244,27 @@
         </div>
     </div>
 
+    <!-- User Dropdown (only for Scripter) -->
+<div class="dropdown" id="userDropdown" style="display:none; position:relative; display:inline-block;">
+    <button class="btn btn-primary" onclick="toggleDropdown()">👤 Users ▼</button>
+    <div class="dropdown-content" id="dropdownContent" style="display:none; position:absolute; right:0; background:rgba(20,20,35,0.95); backdrop-filter:blur(10px); min-width:200px; border-radius:12px; padding:8px; border:1px solid rgba(255,255,255,0.1); z-index:1000;">
+        <div style="padding:8px 12px;">
+            <select id="userSearchType" onchange="filterUsers()" style="width:100%; padding:6px; background:rgba(255,255,255,0.05); color:#fff; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
+                <option value="username">Search by Username</option>
+                <option value="email">Search by Gmail</option>
+            </select>
+        </div>
+        <div style="padding:8px 12px;">
+            <input type="text" id="userSearchQuery" placeholder="Search..." oninput="filterUsers()" style="width:100%; padding:6px; background:rgba(255,255,255,0.05); color:#fff; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
+        </div>
+        <div style="padding:8px 12px; max-height:300px; overflow-y:auto;" id="userList"></div>
+        <div style="padding:8px 12px; border-top:1px solid rgba(255,255,255,0.05); display:flex; gap:8px;">
+            <button onclick="deleteAllUsers()" style="flex:1; background:rgba(255,50,50,0.2); color:#ff6b6b; border:1px solid rgba(255,50,50,0.3); padding:6px; border-radius:6px; cursor:pointer; font-size:12px;">🗑️ Delete All</button>
+            <button onclick="toggleDropdown()" style="flex:1; background:rgba(255,255,255,0.05); color:#8888aa; border:1px solid rgba(255,255,255,0.1); padding:6px; border-radius:6px; cursor:pointer; font-size:12px;">Close</button>
+        </div>
+    </div>
+</div>
+
     <script src="js/main.js"></script>
 </body>
 </html>
