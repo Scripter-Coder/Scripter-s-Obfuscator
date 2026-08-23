@@ -1,0 +1,10 @@
+name = "scripter-obfuscator-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+kv_namespaces = [
+  { binding = "USERS_KV", id = "14220ea6b5f846d0b382cbae0341545a" }  # Replace with YOUR KV ID
+]
+
+[vars]
+MASTER_KEY = "test"  # Change this!
