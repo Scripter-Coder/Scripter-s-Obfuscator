@@ -388,10 +388,11 @@ document.addEventListener('keydown', function(e) {
 function toggleDropdown() {
     var content = document.getElementById('dropdownContent');
     if (content) {
-        content.classList.toggle('show');
-        if (content.classList.contains('show')) {
+        var isOpen = content.classList.contains('show');
+        if (!isOpen) {
             renderUserList();
         }
+        content.classList.toggle('show');
     }
 }
 
@@ -685,6 +686,146 @@ function handleSocial(provider) {
     showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
 
+// ============ USER DROPDOWN FUNCTIONS ============
+
+function renderUserList() {
+    var container = document.getElementById('userList');
+    if (!container) return;
+    
+    var searchType = document.getElementById('userSearchType') ? document.getElementById('userSearchType').value : 'username';
+    var searchQuery = document.getElementById('userSearchQuery') ? document.getElementById('userSearchQuery').value.toLowerCase() : '';
+    
+    var html = '';
+    var count = 0;
+    var filteredUsers = {};
+    
+    for (var key in users) {
+        var user = users[key];
+        var match = false;
+        
+        if (searchQuery === '') {
+            match = true;
+        } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) {
+            match = true;
+        } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) {
+            match = true;
+        }
+        
+        if (match) {
+            filteredUsers[key] = user;
+        }
+    }
+    
+    for (var key in filteredUsers) {
+        count++;
+        var user = filteredUsers[key];
+        var createdDate = new Date(user.createdAt).toLocaleDateString();
+        var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
+        var isScripter = user.isScripter ? '⭐ Creator' : '';
+        
+        html += `
+            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetailsDropdown('${key}')">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
+                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                            <strong style="color: #ffffff;">${user.username}</strong>
+                            <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
+                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
+                        <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
+                        <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    if (count === 0) {
+        html = '<p style="color: #8888aa; text-align: center; padding: 20px 0;">No users found.</p>';
+    } else {
+        html = '<div style="margin-bottom: 8px; color: #8888aa; font-size: 12px;">' + count + ' users found</div>' + html;
+    }
+    
+    container.innerHTML = html;
+}
+
+// ============ SHOW USER DETAILS IN DROPDOWN ============
+function showUserDetailsDropdown(email) {
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
+        return;
+    }
+    
+    var container = document.getElementById('userList');
+    var createdDate = new Date(user.createdAt).toLocaleString();
+    var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
+    var isScripter = user.isScripter ? '⭐ Creator' : '';
+    var canDelete = !user.isAdmin && !user.isScripter;
+    
+    container.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <button onclick="renderUserList()" style="background: none; border: none; color: #6c3bff; cursor: pointer; font-size: 13px; padding: 4px 0;">← Back to users</button>
+        </div>
+        <div style="background: rgba(20,20,35,0.6); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.05);">
+            <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 20px; color: #fff; overflow: hidden; flex-shrink: 0;">
+                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-weight: 600; color: #ffffff; font-size: 16px;">${user.username}</div>
+                    <div style="color: #8888aa; font-size: 13px; word-break: break-all;">${user.email}</div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;">
+                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 1px 10px; border-radius: 10px; font-size: 11px;">${user.plan}</span>
+                        ${isAdmin ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 1px 10px; border-radius: 10px; font-size: 11px;">Admin</span>' : ''}
+                        ${isScripter ? '<span style="background: rgba(255,215,0,0.3); color: #ffd700; padding: 1px 10px; border-radius: 10px; font-size: 11px;">⭐ Creator</span>' : ''}
+                    </div>
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: #8888aa; margin-bottom: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <div><span style="color: #8888aa;">Joined:</span> <span style="color: #ffffff;">${createdDate}</span></div>
+                <div><span style="color: #8888aa;">Projects:</span> <span style="color: #ffffff;">${user.stats.projects.used} / ${user.stats.projects.max === Infinity ? '∞' : user.stats.projects.max}</span></div>
+                <div><span style="color: #8888aa;">Keys:</span> <span style="color: #ffffff;">${user.stats.keys.used} / ${user.stats.keys.max === Infinity ? '∞' : user.stats.keys.max}</span></div>
+                <div><span style="color: #8888aa;">Scripts:</span> <span style="color: #ffffff;">${user.stats.scripts.used} / ${user.stats.scripts.max === Infinity ? '∞' : user.stats.scripts.max}</span></div>
+                <div style="grid-column: span 2;"><span style="color: #8888aa;">Storage:</span> <span style="color: #ffffff;">${user.stats.fileSize.used} / ${user.stats.fileSize.max === Infinity ? '∞' : user.stats.fileSize.max} MB</span></div>
+                ${user.description ? '<div style="grid-column: span 2;"><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">' + user.description + '</span></div>' : ''}
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                ${canDelete ? '<button onclick="deleteUserDropdown(\'' + email + '\')" style="flex:1; background: rgba(255,50,50,0.2); color: #ff6b6b; border: 1px solid rgba(255,50,50,0.3); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">🗑️ Delete User</button>' : ''}
+                <button onclick="changeUserPlan('${email}')" style="flex:1; background: rgba(108,59,255,0.2); color: #8a6bff; border: 1px solid rgba(108,59,255,0.2); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 80px;">📊 Change Plan</button>
+                <button onclick="renderUserList()" style="flex:1; background: rgba(255,255,255,0.05); color: #8888aa; border: 1px solid rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; min-width: 60px;">← Back</button>
+            </div>
+        </div>
+    `;
+}
+
+// ============ DELETE USER FROM DROPDOWN ============
+function deleteUserDropdown(email) {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can delete users.', 'error');
+        return;
+    }
+    
+    if (email === 'scripter@example.com') {
+        showNotification('Error', 'Cannot delete the creator account.', 'error');
+        return;
+    }
+    
+    if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
+        delete users[email];
+        saveUsers();
+        showNotification('Deleted', 'User deleted successfully!', 'success');
+        renderUserList();
+        renderAdminUserListFull();
+    }
+}
+
 // ============ CHANGE USER PLAN ============
 function changeUserPlan(email) {
     if (!currentUser || currentUser.username !== 'Scripter') {
@@ -827,7 +968,7 @@ function confirmChangePlan(email) {
     
     // Refresh user lists
     renderUserList();
-    renderAdminUserList();
+    renderAdminUserListFull();
     
     // If this is the current user, update UI
     if (currentUser && currentUser.id === user.id) {
@@ -983,10 +1124,10 @@ function openAdminPanel() {
     }
     
     openModal('admin');
-    renderAdminUserList();
+    renderAdminUserListFull();
 }
 
-function renderAdminUserList() {
+function renderAdminUserListFull() {
     var container = document.getElementById('userList');
     if (!container) return;
     
@@ -1018,6 +1159,7 @@ function renderAdminUserList() {
                         <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
                         <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
                         ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">🗑️</button>' : ''}
+                        <button onclick="changeUserPlan(\'' + key + '\')" style="background: rgba(108,59,255,0.2); color: #8a6bff; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">📊</button>
                     </div>
                 </div>
             </div>
@@ -1031,120 +1173,6 @@ function renderAdminUserList() {
     }
     
     container.innerHTML = html;
-}
-
-function renderUserList() {
-    var container = document.getElementById('userList');
-    if (!container) return;
-    
-    var searchType = document.getElementById('userSearchType') ? document.getElementById('userSearchType').value : 'username';
-    var searchQuery = document.getElementById('userSearchQuery') ? document.getElementById('userSearchQuery').value.toLowerCase() : '';
-    
-    var html = '';
-    var count = 0;
-    var filteredUsers = {};
-    
-    for (var key in users) {
-        var user = users[key];
-        var match = false;
-        
-        if (searchQuery === '') {
-            match = true;
-        } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) {
-            match = true;
-        } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) {
-            match = true;
-        }
-        
-        if (match) {
-            filteredUsers[key] = user;
-        }
-    }
-    
-    for (var key in filteredUsers) {
-        count++;
-        var user = filteredUsers[key];
-        var createdDate = new Date(user.createdAt).toLocaleDateString();
-        var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
-        var isScripter = user.isScripter ? '⭐ Creator' : '';
-        
-        html += `
-            <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="showUserDetails('${key}')">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
-                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                            <strong style="color: #ffffff;">${user.username}</strong>
-                            <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
-                        </div>
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
-                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
-                        <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
-                        <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-    
-    if (count === 0) {
-        html = '<p style="color: #8888aa; text-align: center; padding: 20px 0;">No users found.</p>';
-    }
-    
-    container.innerHTML = html;
-}
-
-function showUserDetails(email) {
-    var user = users[email];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
-    var container = document.getElementById('userList');
-    var createdDate = new Date(user.createdAt).toLocaleString();
-    var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
-    var isScripter = user.isScripter ? '⭐ Creator' : '';
-    var canDelete = !user.isAdmin && !user.isScripter;
-    
-    container.innerHTML = `
-        <div style="margin-bottom: 16px;">
-            <button onclick="renderUserList()" class="back-btn">← Back to users</button>
-        </div>
-        <div class="user-detail-card">
-            <div class="user-detail-header">
-                <div class="user-detail-avatar">
-                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
-                </div>
-                <div class="user-detail-info">
-                    <h3>${user.username}</h3>
-                    <p>${user.email}</p>
-                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
-                        <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 12px;">${user.plan}</span>
-                        ${isAdmin ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 12px;">Admin</span>' : ''}
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.3); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 12px;">⭐ Creator</span>' : ''}
-                    </div>
-                </div>
-            </div>
-            <div class="user-detail-stats">
-                <div><span style="color: #8888aa;">Joined:</span> <span style="color: #ffffff;">${createdDate}</span></div>
-                <div><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">${user.description || 'No description'}</span></div>
-                <div><span style="color: #8888aa;">Projects:</span> <span style="color: #ffffff;">${user.stats.projects.used} / ${user.stats.projects.max === Infinity ? '∞' : user.stats.projects.max}</span></div>
-                <div><span style="color: #8888aa;">Keys:</span> <span style="color: #ffffff;">${user.stats.keys.used} / ${user.stats.keys.max === Infinity ? '∞' : user.stats.keys.max}</span></div>
-                <div><span style="color: #8888aa;">Scripts:</span> <span style="color: #ffffff;">${user.stats.scripts.used} / ${user.stats.scripts.max === Infinity ? '∞' : user.stats.scripts.max}</span></div>
-                <div><span style="color: #8888aa;">Storage:</span> <span style="color: #ffffff;">${user.stats.fileSize.used} / ${user.stats.fileSize.max === Infinity ? '∞' : user.stats.fileSize.max} MB</span></div>
-            </div>
-            <div class="user-detail-actions">
-                ${canDelete ? '<button onclick="deleteUser(\'' + email + '\')" class="btn btn-danger" style="padding: 8px 20px; font-size: 13px;">🗑️ Delete User</button>' : ''}
-                <button onclick="changeUserPlan('${email}')" class="btn btn-primary" style="padding: 8px 20px; font-size: 13px;">📊 Change Plan</button>
-                <button onclick="renderUserList()" class="btn btn-close-dropdown" style="padding: 8px 20px; font-size: 13px;">← Back</button>
-            </div>
-        </div>
-    `;
 }
 
 function deleteUser(email) {
@@ -1163,7 +1191,7 @@ function deleteUser(email) {
         saveUsers();
         showNotification('Deleted', 'User deleted successfully!', 'success');
         renderUserList();
-        renderAdminUserList();
+        renderAdminUserListFull();
     }
 }
 
@@ -1186,7 +1214,7 @@ function deleteAllUsers() {
         saveUsers();
         showNotification('Cleared', 'All users have been deleted.', 'warning');
         renderUserList();
-        renderAdminUserList();
+        renderAdminUserListFull();
     }
 }
 
@@ -1408,8 +1436,9 @@ window.openModal = openModal;
 window.closeModal = closeModal;
 window.openAdminPanel = openAdminPanel;
 window.renderUserList = renderUserList;
-window.renderAdminUserList = renderAdminUserList;
-window.showUserDetails = showUserDetails;
+window.showUserDetailsDropdown = showUserDetailsDropdown;
+window.deleteUserDropdown = deleteUserDropdown;
+window.renderAdminUserListFull = renderAdminUserListFull;
 window.deleteUser = deleteUser;
 window.deleteAllUsers = deleteAllUsers;
 window.filterUsers = filterUsers;
