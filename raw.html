@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Raw Script</title>
 </head>
 <body>
@@ -20,21 +19,6 @@
         // Check if user has owner key
         var isOwner = (userKey === OWNER_KEY);
         
-        // If not owner, show "Not Allowed"
-        if (!isOwner) {
-            document.getElementById('content').textContent = 'Not Allowed';
-            document.body.style.background = '#1a0000';
-            document.body.style.color = '#ff4444';
-            document.body.style.display = 'flex';
-            document.body.style.justifyContent = 'center';
-            document.body.style.alignItems = 'center';
-            document.body.style.height = '100vh';
-            document.body.style.fontFamily = 'monospace';
-            document.body.style.fontSize = '24px';
-            document.body.style.margin = '0';
-            return;
-        }
-        
         // Load scripts from localStorage
         function loadScripts() {
             try {
@@ -49,7 +33,48 @@
         var scriptStore = loadScripts();
         var scriptCode = scriptStore[scriptId];
         
-        if (scriptCode) {
+        // ===== DETECT ROOBLOX EXECUTOR =====
+        // Roblox executors send specific headers or user agents
+        var isRoblox = false;
+        
+        // Check User-Agent
+        var ua = navigator.userAgent || '';
+        if (ua.includes('Roblox') || ua.includes('RBX') || ua.includes('Synapse') || 
+            ua.includes('Krnl') || ua.includes('ScriptWare') || ua.includes('Fluxus') ||
+            ua.includes('Electron') || ua.includes('Oxygen U') || ua.includes('Valyse')) {
+            isRoblox = true;
+        }
+        
+        // Check for Roblox-specific headers (via fetch detection)
+        // Note: This is a best-effort detection
+        
+        // If it's a Roblox executor, return just the script code as plain text
+        if (isRoblox && scriptCode) {
+            // For Roblox executors, we need to return just the code
+            // But since we're in a browser context, we use a trick:
+            // We'll use document.write to output just the code
+            document.write(scriptCode);
+            document.close();
+            return;
+        }
+        
+        // If not owner and not Roblox, show "Not Allowed"
+        if (!isOwner && !isRoblox) {
+            document.getElementById('content').textContent = 'Not Allowed';
+            document.body.style.background = '#1a0000';
+            document.body.style.color = '#ff4444';
+            document.body.style.display = 'flex';
+            document.body.style.justifyContent = 'center';
+            document.body.style.alignItems = 'center';
+            document.body.style.height = '100vh';
+            document.body.style.fontFamily = 'monospace';
+            document.body.style.fontSize = '24px';
+            document.body.style.margin = '0';
+            return;
+        }
+        
+        // If owner, show the code with nice UI
+        if (isOwner && scriptCode) {
             document.getElementById('content').textContent = scriptCode;
             document.body.style.background = '#0a0a0f';
             document.body.style.color = '#66ccff';
@@ -59,7 +84,7 @@
             document.body.style.margin = '0';
             document.body.style.whiteSpace = 'pre-wrap';
             document.body.style.wordBreak = 'break-all';
-        } else {
+        } else if (!scriptCode) {
             document.getElementById('content').textContent = 'Script not found';
             document.body.style.background = '#1a0000';
             document.body.style.color = '#ff4444';
