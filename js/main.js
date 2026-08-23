@@ -3,6 +3,50 @@ let currentUser = null;
 let isLoggedIn = false;
 let users = {};
 
+// ============ PLAN CONFIGURATIONS ============
+const PLAN_CONFIGS = {
+    'Basic': {
+        fileSize: 10,
+        keys: 1000,
+        projects: 10,
+        scripts: 20,
+        price: 0,
+        label: 'Basic'
+    },
+    'Advanced': {
+        fileSize: 100,
+        keys: 10000,
+        projects: 50,
+        scripts: 100,
+        price: 10,
+        label: 'Advanced'
+    },
+    'Pro': {
+        fileSize: 1024,
+        keys: 100000,
+        projects: 500,
+        scripts: 300,
+        price: 30,
+        label: 'Pro'
+    },
+    'God': {
+        fileSize: 102400,
+        keys: Infinity,
+        projects: 10000,
+        scripts: 250000,
+        price: 50,
+        label: 'God'
+    },
+    'Custom': {
+        fileSize: Infinity,
+        keys: Infinity,
+        projects: Infinity,
+        scripts: Infinity,
+        price: 'Custom',
+        label: 'Custom'
+    }
+};
+
 // ============ DATABASE FUNCTIONS (localStorage) ============
 function loadUsers() {
     try {
@@ -641,6 +685,233 @@ function handleSocial(provider) {
     showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
 
+// ============ CHANGE USER PLAN ============
+function changeUserPlan(email) {
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        showNotification('Access Denied', 'Only Scripter can change user plans.', 'error');
+        return;
+    }
+    
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
+        return;
+    }
+    
+    var modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+    modal.style.zIndex = '2000';
+    
+    var planOptions = '';
+    for (var plan in PLAN_CONFIGS) {
+        var config = PLAN_CONFIGS[plan];
+        var isCurrent = user.plan === plan ? '✅ ' : '';
+        planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - $' + config.price + (config.price !== 'Custom' ? '/month' : '') + '</option>';
+    }
+    
+    modal.innerHTML = `
+        <div class="modal" style="max-width: 420px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 22px;">Change Plan for ${user.username}</h2>
+            <p class="sub">Current plan: <strong style="color:#8a6bff;">${user.plan}</strong></p>
+            
+            <div class="form-group">
+                <label>Select New Plan</label>
+                <select id="newPlanSelect" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px;">
+                    ${planOptions}
+                </select>
+            </div>
+            
+            <div style="margin-top:12px; padding:12px; background:rgba(108,59,255,0.05); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:13px; color:#8888aa;">
+                    <span>📁 Projects: <span id="planProjects">0</span></span>
+                    <span>🔑 Keys: <span id="planKeys">0</span></span>
+                    <span>📜 Scripts: <span id="planScripts">0</span></span>
+                    <span>💾 Storage: <span id="planStorage">0</span> MB</span>
+                </div>
+            </div>
+            
+            <div style="display:flex; gap:12px; margin-top:16px;">
+                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    var select = modal.querySelector('#newPlanSelect');
+    select.addEventListener('change', function() {
+        updatePlanPreview(this.value);
+    });
+    updatePlanPreview(select.value);
+}
+
+function updatePlanPreview(planName) {
+    var config = PLAN_CONFIGS[planName];
+    if (!config) return;
+    
+    document.getElementById('planProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('planKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('planScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('planStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+}
+
+function confirmChangePlan(email) {
+    var select = document.getElementById('newPlanSelect');
+    var newPlan = select.value;
+    
+    if (!newPlan) {
+        showNotification('Error', 'Please select a plan.', 'error');
+        return;
+    }
+    
+    var user = users[email];
+    if (!user) {
+        showNotification('Error', 'User not found.', 'error');
+        return;
+    }
+    
+    var config = PLAN_CONFIGS[newPlan];
+    if (!config) {
+        showNotification('Error', 'Invalid plan selected.', 'error');
+        return;
+    }
+    
+    user.plan = newPlan;
+    user.stats.projects.max = config.projects;
+    user.stats.keys.max = config.keys;
+    user.stats.scripts.max = config.scripts;
+    user.stats.fileSize.max = config.fileSize;
+    
+    saveUsers();
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    
+    showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
+    
+    renderUserList();
+    renderAdminUserList();
+    
+    if (currentUser && currentUser.id === user.id) {
+        var userData = { ...user };
+        delete userData.password;
+        updateUIForUser(userData);
+    }
+}
+
+// ============ CHANGE OWN PLAN (Admin Panel) ============
+function changeOwnPlan() {
+    if (!currentUser) {
+        showNotification('Error', 'Please login first.', 'error');
+        return;
+    }
+    
+    var modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+    modal.style.zIndex = '2000';
+    
+    var planOptions = '';
+    for (var plan in PLAN_CONFIGS) {
+        var config = PLAN_CONFIGS[plan];
+        var isCurrent = currentUser.plan === plan ? '✅ ' : '';
+        planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - $' + config.price + (config.price !== 'Custom' ? '/month' : '') + '</option>';
+    }
+    
+    modal.innerHTML = `
+        <div class="modal" style="max-width: 420px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 22px;">Change Your Plan</h2>
+            <p class="sub">Current plan: <strong style="color:#8a6bff;">${currentUser.plan}</strong></p>
+            
+            <div class="form-group">
+                <label>Select New Plan</label>
+                <select id="ownPlanSelect" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px;">
+                    ${planOptions}
+                </select>
+            </div>
+            
+            <div style="margin-top:12px; padding:12px; background:rgba(108,59,255,0.05); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:13px; color:#8888aa;">
+                    <span>📁 Projects: <span id="ownPlanProjects">0</span></span>
+                    <span>🔑 Keys: <span id="ownPlanKeys">0</span></span>
+                    <span>📜 Scripts: <span id="ownPlanScripts">0</span></span>
+                    <span>💾 Storage: <span id="ownPlanStorage">0</span> MB</span>
+                </div>
+            </div>
+            
+            <div style="display:flex; gap:12px; margin-top:16px;">
+                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1;">✅ Confirm Change</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Cancel</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    var select = modal.querySelector('#ownPlanSelect');
+    select.addEventListener('change', function() {
+        updateOwnPlanPreview(this.value);
+    });
+    updateOwnPlanPreview(select.value);
+}
+
+function updateOwnPlanPreview(planName) {
+    var config = PLAN_CONFIGS[planName];
+    if (!config) return;
+    
+    document.getElementById('ownPlanProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('ownPlanKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('ownPlanScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('ownPlanStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
+}
+
+function confirmOwnPlanChange() {
+    var select = document.getElementById('ownPlanSelect');
+    var newPlan = select.value;
+    
+    if (!newPlan) {
+        showNotification('Error', 'Please select a plan.', 'error');
+        return;
+    }
+    
+    var config = PLAN_CONFIGS[newPlan];
+    if (!config) {
+        showNotification('Error', 'Invalid plan selected.', 'error');
+        return;
+    }
+    
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].plan = newPlan;
+            users[key].stats.projects.max = config.projects;
+            users[key].stats.keys.max = config.keys;
+            users[key].stats.scripts.max = config.scripts;
+            users[key].stats.fileSize.max = config.fileSize;
+            break;
+        }
+    }
+    
+    saveUsers();
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    
+    showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
+    
+    var userData = { ...currentUser };
+    userData.plan = newPlan;
+    userData.stats.projects.max = config.projects;
+    userData.stats.keys.max = config.keys;
+    userData.stats.scripts.max = config.scripts;
+    userData.stats.fileSize.max = config.fileSize;
+    delete userData.password;
+    updateUIForUser(userData);
+}
+
 // ============ ADMIN FUNCTIONS ============
 function openAdminPanel() {
     if (!currentUser || currentUser.username !== 'Scripter') {
@@ -683,7 +954,7 @@ function renderAdminUserList() {
                         <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
                         <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
                         <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
-                        ${!user.isAdmin && !user.isScripter ? `<button onclick="deleteUser('${key}')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">🗑️</button>` : ''}
+                        ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">🗑️</button>' : ''}
                     </div>
                 </div>
             </div>
@@ -693,7 +964,7 @@ function renderAdminUserList() {
     if (count === 0) {
         html = '<p style="color: #8888aa; text-align: center; padding: 40px 0;">No users registered yet.</p>';
     } else {
-        html = `<div style="margin-bottom: 12px; color: #8888aa; font-size: 13px;">Total Users: ${count}</div>` + html;
+        html = '<div style="margin-bottom: 12px; color: #8888aa; font-size: 13px;">Total Users: ' + count + '</div>' + html;
     }
     
     container.innerHTML = html;
@@ -775,6 +1046,7 @@ function showUserDetails(email) {
     var createdDate = new Date(user.createdAt).toLocaleString();
     var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
     var isScripter = user.isScripter ? '⭐ Creator' : '';
+    var canDelete = !user.isAdmin && !user.isScripter;
     
     container.innerHTML = `
         <div style="margin-bottom: 16px;">
@@ -800,7 +1072,8 @@ function showUserDetails(email) {
                 <div><span style="color: #8888aa;">Description:</span> <span style="color: #ffffff;">${user.description || 'No description'}</span></div>
             </div>
             <div class="user-detail-actions">
-                ${!user.isAdmin && !user.isScripter ? `<button onclick="deleteUser('${email}')" class="btn btn-danger" style="padding: 8px 20px; font-size: 13px;">🗑️ Delete User</button>` : ''}
+                ${canDelete ? '<button onclick="deleteUser(\'' + email + '\')" class="btn btn-danger" style="padding: 8px 20px; font-size: 13px;">🗑️ Delete User</button>' : ''}
+                <button onclick="changeUserPlan('${email}')" class="btn btn-primary" style="padding: 8px 20px; font-size: 13px;">📊 Change Plan</button>
                 <button onclick="renderUserList()" class="btn btn-close-dropdown" style="padding: 8px 20px; font-size: 13px;">← Back</button>
             </div>
         </div>
@@ -854,7 +1127,7 @@ function filterUsers() {
     renderUserList();
 }
 
-// ============ IMAGE UPLOAD FUNCTIONS - FIXED ============
+// ============ IMAGE UPLOAD FUNCTIONS ============
 function uploadProfileImage() {
     var input = document.getElementById('profileImageInput');
     if (!input || !input.files || input.files.length === 0) {
@@ -864,13 +1137,11 @@ function uploadProfileImage() {
     
     var file = input.files[0];
     
-    // Check file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
         showNotification('Error', 'Image size must be less than 5MB.', 'error');
         return;
     }
     
-    // Check file type
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
     if (!validTypes.includes(file.type)) {
         showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
@@ -883,20 +1154,16 @@ function uploadProfileImage() {
         try {
             var imageData = e.target.result;
             
-            // Save to current user
             for (var key in users) {
                 if (users[key].id === currentUser.id) {
                     users[key].profileImage = imageData;
                     saveUsers();
                     
-                    // Update UI
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
                     
                     showNotification('Success', 'Profile image updated successfully!', 'success');
-                    
-                    // Reset input
                     input.value = '';
                     break;
                 }
@@ -922,13 +1189,11 @@ function uploadBannerImage() {
     
     var file = input.files[0];
     
-    // Check file size (max 10MB for banner)
     if (file.size > 10 * 1024 * 1024) {
         showNotification('Error', 'Banner image size must be less than 10MB.', 'error');
         return;
     }
     
-    // Check file type
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
     if (!validTypes.includes(file.type)) {
         showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
@@ -941,20 +1206,16 @@ function uploadBannerImage() {
         try {
             var imageData = e.target.result;
             
-            // Save to current user
             for (var key in users) {
                 if (users[key].id === currentUser.id) {
                     users[key].bannerImage = imageData;
                     saveUsers();
                     
-                    // Update UI
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
                     
                     showNotification('Success', 'Banner image updated successfully!', 'success');
-                    
-                    // Reset input
                     input.value = '';
                     break;
                 }
@@ -1090,3 +1351,7 @@ window.uploadProfileImage = uploadProfileImage;
 window.uploadBannerImage = uploadBannerImage;
 window.changeTheme = changeTheme;
 window.exportUsers = exportUsers;
+window.changeUserPlan = changeUserPlan;
+window.changeOwnPlan = changeOwnPlan;
+window.confirmChangePlan = confirmChangePlan;
+window.confirmOwnPlanChange = confirmOwnPlanChange;
