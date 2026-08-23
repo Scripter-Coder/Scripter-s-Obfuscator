@@ -4,6 +4,11 @@ let isLoggedIn = false;
 let users = {};
 let selectedUserEmail = null;
 
+// ============ PROJECTS & SCRIPTS SYSTEM ==========
+let currentProject = null;
+let currentScript = null;
+let editingScript = null;
+
 // ============ PLAN CONFIGURATIONS ============
 const PLAN_CONFIGS = {
     'Basic': {
@@ -384,7 +389,7 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// ============ SINGLE updateUIForUser (FIXED) ============
+// ============ UI UPDATE ============
 function updateUIForUser(user) {
     if (!user) return;
     
@@ -392,7 +397,7 @@ function updateUIForUser(user) {
     currentUser = user;
     setCurrentUser(user);
     
-    // Hide signup/login, show user info
+    // Show user info in navbar
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -403,7 +408,6 @@ function updateUIForUser(user) {
     if (loginBtn) loginBtn.style.display = 'none';
     if (navbarUser) navbarUser.classList.add('show');
     
-    // Update avatar, username, plan
     var avatar = document.getElementById('userAvatar');
     var userName = document.getElementById('userName');
     var userPlan = document.getElementById('userPlan');
@@ -418,7 +422,6 @@ function updateUIForUser(user) {
     if (userName) userName.textContent = user.username;
     if (userPlan) userPlan.textContent = user.plan || 'Basic';
     
-    // Admin & Users buttons only for Scripter
     if (adminBtn && user.username === 'Scripter') {
         adminBtn.style.display = 'inline-block';
     } else if (adminBtn) {
@@ -431,14 +434,12 @@ function updateUIForUser(user) {
         usersBtn.style.display = 'none';
     }
     
-    // Apply theme
     if (user.theme) {
         applyTheme(user.theme);
         var themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = user.theme;
     }
     
-    // Show dashboard, hide home page
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -447,7 +448,9 @@ function updateUIForUser(user) {
     if (dashboard) dashboard.classList.add('show');
     if (plansSection) plansSection.style.display = 'none';
     
-    // Update dashboard info
+    // ===== SHOW TABS =====
+    showTabs();
+    
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
@@ -462,7 +465,6 @@ function updateUIForUser(user) {
     if (dashUsername2) dashUsername2.textContent = user.username;
     if (dashPlan2) dashPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     
-    // Dashboard avatar
     if (dashAvatar) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -476,7 +478,6 @@ function updateUIForUser(user) {
         }
     }
     
-    // Dashboard banner
     if (dashBanner && user.bannerImage) {
         dashBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
         dashBanner.style.display = 'block';
@@ -484,36 +485,22 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     
-    // Update stats - FIXED: Properly display values
     if (user.stats) {
         var stats = user.stats;
-        
-        // Projects
-        var projectsUsed = document.getElementById('projectsUsed');
-        var projectsMax = document.getElementById('projectsMax');
-        if (projectsUsed) projectsUsed.textContent = stats.projects.used;
-        if (projectsMax) projectsMax.textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
+        document.getElementById('projectsUsed').textContent = stats.projects.used;
+        document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
         updateBar('projects', stats.projects.used, stats.projects.max);
         
-        // Keys
-        var keysUsed = document.getElementById('keysUsed');
-        var keysMax = document.getElementById('keysMax');
-        if (keysUsed) keysUsed.textContent = stats.keys.used;
-        if (keysMax) keysMax.textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
+        document.getElementById('keysUsed').textContent = stats.keys.used;
+        document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
         updateBar('keys', stats.keys.used, stats.keys.max);
         
-        // Scripts
-        var scriptsUsed = document.getElementById('scriptsUsed');
-        var scriptsMax = document.getElementById('scriptsMax');
-        if (scriptsUsed) scriptsUsed.textContent = stats.scripts.used;
-        if (scriptsMax) scriptsMax.textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
+        document.getElementById('scriptsUsed').textContent = stats.scripts.used;
+        document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
         updateBar('scripts', stats.scripts.used, stats.scripts.max);
         
-        // Storage
-        var storageUsed = document.getElementById('storageUsed');
-        var storageMax = document.getElementById('storageMax');
-        if (storageUsed) storageUsed.textContent = stats.fileSize.used;
-        if (storageMax) storageMax.textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
+        document.getElementById('storageUsed').textContent = stats.fileSize.used;
+        document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
         updateBar('storage', stats.fileSize.used, stats.fileSize.max);
     }
     
@@ -1420,6 +1407,962 @@ function exportUsers() {
     showNotification('Exported', 'User data exported successfully!', 'success');
 }
 
+// ============ PROJECTS SYSTEM ==========
+function loadProjects() {
+    try {
+        var data = localStorage.getItem('projects_' + (currentUser ? currentUser.id : ''));
+        return data ? JSON.parse(data) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function saveProjects(projects) {
+    try {
+        localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(projects));
+    } catch (e) {
+        console.error('Error saving projects:', e);
+    }
+}
+
+// ============ TAB SWITCHING ==========
+function switchTab(tabName) {
+    var btns = document.querySelectorAll('.tab-btn');
+    for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.remove('active');
+        if (btns[i].dataset.tab === tabName) {
+            btns[i].classList.add('active');
+        }
+    }
+    
+    var contents = document.querySelectorAll('.tab-content');
+    for (var i = 0; i < contents.length; i++) {
+        contents[i].style.display = 'none';
+    }
+    
+    var target = document.getElementById('tab-' + tabName);
+    if (target) {
+        target.style.display = 'block';
+    }
+    
+    if (tabName === 'scripts') {
+        renderProjects();
+    }
+}
+
+function showTabs() {
+    var tabsNav = document.getElementById('tabsNav');
+    if (tabsNav) {
+        tabsNav.style.display = 'flex';
+    }
+    var dashboardContent = document.getElementById('dashboard');
+    var tabDashboard = document.getElementById('tab-dashboard');
+    if (dashboardContent && tabDashboard) {
+        tabDashboard.innerHTML = '';
+        while (dashboardContent.firstChild) {
+            tabDashboard.appendChild(dashboardContent.firstChild);
+        }
+    }
+    switchTab('dashboard');
+}
+
+// ============ CREATE PROJECT ==========
+function openCreateProject() {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 500px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 22px;">📁 Create Project</h2>
+            <p class="sub">Fill in the details to create a new project</p>
+            
+            <div class="form-group">
+                <label>Project Name <span class="required">*</span></label>
+                <input type="text" id="projectName" placeholder="Enter project name" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Project Description <span style="color:#555577;">(optional)</span></label>
+                <textarea id="projectDescription" placeholder="Describe your project..."></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Visibility</label>
+                <select id="projectVisibility">
+                    <option value="anyone">Anyone</option>
+                    <option value="friends">Friends (Soon...)</option>
+                    <option value="private">Private</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="projectBlockIncognito"> Block Incognito Mode
+                </label>
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="projectBlockVPN"> Block VPN
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Type Of Project</label>
+                <select id="projectType">
+                    <option value="free">Free</option>
+                    <option value="key">Key Required</option>
+                    <option value="paid">Paid</option>
+                </select>
+            </div>
+            
+            <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Project</button>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+function confirmCreateProject() {
+    var name = document.getElementById('projectName').value.trim();
+    var description = document.getElementById('projectDescription').value.trim();
+    var visibility = document.getElementById('projectVisibility').value;
+    var blockIncognito = document.getElementById('projectBlockIncognito').checked;
+    var blockVPN = document.getElementById('projectBlockVPN').checked;
+    var type = document.getElementById('projectType').value;
+    
+    if (!name) {
+        showNotification('Error', 'Project name is required.', 'error');
+        return;
+    }
+    
+    var projects = loadProjects();
+    
+    var project = {
+        id: 'proj_' + Date.now(),
+        name: name,
+        description: description,
+        visibility: visibility,
+        blockIncognito: blockIncognito,
+        blockVPN: blockVPN,
+        type: type,
+        createdAt: new Date().toISOString(),
+        scripts: []
+    };
+    
+    projects.push(project);
+    saveProjects(projects);
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Success', 'Project "' + name + '" created!', 'success');
+    renderProjects();
+}
+
+function renderProjects() {
+    var container = document.getElementById('projectsList');
+    if (!container) return;
+    
+    var projects = loadProjects();
+    
+    if (projects.length === 0) {
+        container.innerHTML = '<p style="color:#8888aa; grid-column:1/-1; text-align:center; padding:40px 0;">No projects yet. Create your first project!</p>';
+        return;
+    }
+    
+    var html = '';
+    for (var i = 0; i < projects.length; i++) {
+        var project = projects[i];
+        var scriptCount = project.scripts ? project.scripts.length : 0;
+        var visibilityLabel = project.visibility === 'anyone' ? '🌐 Anyone' : (project.visibility === 'friends' ? '👥 Friends' : '🔒 Private');
+        
+        html += `
+            <div class="project-card" style="background:rgba(20,20,35,0.6); border-radius:16px; padding:20px; border:1px solid rgba(255,255,255,0.05);">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                    <div>
+                        <h3 style="color:#fff; margin:0 0 4px 0;">${project.name}</h3>
+                        <p style="color:#8888aa; font-size:13px; margin:0;">${project.description || 'No description'}</p>
+                        <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                            <span style="background:rgba(108,59,255,0.2); color:#8a6bff; padding:2px 12px; border-radius:12px; font-size:11px;">${visibilityLabel}</span>
+                            <span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">${project.type.toUpperCase()}</span>
+                            <span style="background:rgba(255,255,255,0.05); color:#8888aa; padding:2px 12px; border-radius:12px; font-size:11px;">📜 ${scriptCount} scripts</span>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-shrink:0;">
+                        <button onclick="viewProject('${project.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">📜 Scripts</button>
+                        <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">➕ Script</button>
+                        <button onclick="editProject('${project.id}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️</button>
+                        <button onclick="deleteProject('${project.id}')" class="btn btn-danger" style="padding:4px 12px; font-size:11px;">🗑️</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    container.innerHTML = html;
+}
+
+// ============ VIEW PROJECT ==========
+function viewProject(projectId) {
+    var projects = loadProjects();
+    var project = null;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            project = projects[i];
+            break;
+        }
+    }
+    
+    if (!project) {
+        showNotification('Error', 'Project not found.', 'error');
+        return;
+    }
+    
+    currentProject = project;
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    var scriptsHtml = '';
+    if (project.scripts && project.scripts.length > 0) {
+        for (var i = 0; i < project.scripts.length; i++) {
+            var script = project.scripts[i];
+            scriptsHtml += `
+                <div style="background:rgba(20,20,35,0.6); border-radius:12px; padding:16px; margin-bottom:8px; border:1px solid rgba(255,255,255,0.05); display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <strong style="color:#fff;">${script.name}</strong>
+                        <p style="color:#8888aa; font-size:12px; margin:4px 0 0;">${script.description || 'No description'}</p>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="viewScript('${project.id}','${script.id}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">👁️ View</button>
+                        <button onclick="editScript('${project.id}','${script.id}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️</button>
+                        <button onclick="deleteScript('${project.id}','${script.id}')" class="btn btn-danger" style="padding:4px 12px; font-size:11px;">🗑️</button>
+                    </div>
+                </div>
+            `;
+        }
+    } else {
+        scriptsHtml = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No scripts in this project yet.</p>';
+    }
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 650px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div>
+                    <h2 style="font-size:22px; margin:0; color:#fff;">📜 ${project.name}</h2>
+                    <p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${project.description || 'No description'}</p>
+                </div>
+                <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:8px 16px;">➕ Create Script</button>
+            </div>
+            <div style="max-height:400px; overflow-y:auto;">
+                ${scriptsHtml}
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+// ============ CREATE SCRIPT ==========
+function openCreateScript(projectId) {
+    var projects = loadProjects();
+    var project = null;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            project = projects[i];
+            break;
+        }
+    }
+    
+    if (!project) {
+        showNotification('Error', 'Project not found.', 'error');
+        return;
+    }
+    
+    editingScript = null;
+    currentProject = project;
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">➕ Create Script</h2>
+            <p class="sub">Create a new script for "${project.name}"</p>
+            
+            <div class="form-group">
+                <label>Script Name <span class="required">*</span></label>
+                <input type="text" id="scriptName" placeholder="Enter script name" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Script Description <span style="color:#555577;">(optional)</span></label>
+                <textarea id="scriptDescription" placeholder="Describe your script..."></textarea>
+            </div>
+            
+            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="scriptAntiTamper"> Anti Tampers
+                </label>
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="scriptAntiSkid"> Anti Skidders
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Max Timer Of Keys</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="number" id="scriptKeyTime" placeholder="Amount" style="flex:1; min-width:0;">
+                    <select id="scriptKeyUnit" style="flex:1; min-width:0;">
+                        <option value="seconds">Seconds</option>
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                        <option value="days">Days</option>
+                        <option value="weeks">Weeks</option>
+                        <option value="months">Months</option>
+                        <option value="years">Years</option>
+                        <option value="unlimited">Unlimited</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label>
+                <input type="file" id="scriptFile" accept=".txt,.lua">
+            </div>
+            
+            <div class="form-group">
+                <label>Paste .txt/.lua Code <span style="color:#555577;">(optional)</span></label>
+                <textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Obfuscation Level</label>
+                <input type="range" id="scriptObfuscation" min="1" max="10" value="10" style="width:100%;">
+                <div style="display:flex; justify-content:space-between; color:#8888aa; font-size:12px;">
+                    <span>1 (Low)</span>
+                    <span id="obfuscationLabel">10 (High) ⭐ Recommended</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label style="cursor:pointer;">
+                    <input type="checkbox" id="scriptHWIDReset"> HWID Reset (Allow device change)
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
+                <input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890">
+            </div>
+            
+            <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Script</button>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    var slider = document.getElementById('scriptObfuscation');
+    if (slider) {
+        slider.addEventListener('input', function() {
+            var label = document.getElementById('obfuscationLabel');
+            var val = parseInt(this.value);
+            var levels = ['1 (Low)', '2', '3', '4', '5 (Medium)', '6', '7', '8', '9', '10 (High) ⭐ Recommended'];
+            if (label) label.textContent = levels[val - 1] || '10 (High) ⭐ Recommended';
+        });
+    }
+}
+
+function confirmCreateScript(projectId) {
+    var name = document.getElementById('scriptName').value.trim();
+    var description = document.getElementById('scriptDescription').value.trim();
+    var antiTamper = document.getElementById('scriptAntiTamper').checked;
+    var antiSkid = document.getElementById('scriptAntiSkid').checked;
+    var keyTime = document.getElementById('scriptKeyTime').value;
+    var keyUnit = document.getElementById('scriptKeyUnit').value;
+    var code = document.getElementById('scriptCode').value.trim();
+    var obfuscation = parseInt(document.getElementById('scriptObfuscation').value);
+    var hwidReset = document.getElementById('scriptHWIDReset').checked;
+    var gameId = document.getElementById('scriptGameId').value.trim();
+    
+    if (!name) {
+        showNotification('Error', 'Script name is required.', 'error');
+        return;
+    }
+    
+    if (!code) {
+        showNotification('Error', 'Please paste your Lua code or upload a file.', 'error');
+        return;
+    }
+    
+    var projects = loadProjects();
+    var projectIndex = -1;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            projectIndex = i;
+            break;
+        }
+    }
+    
+    if (projectIndex === -1) {
+        showNotification('Error', 'Project not found.', 'error');
+        return;
+    }
+    
+    var script = {
+        id: 'script_' + Date.now(),
+        name: name,
+        description: description,
+        antiTamper: antiTamper,
+        antiSkid: antiSkid,
+        keyTime: keyTime || 'unlimited',
+        keyUnit: keyUnit || 'unlimited',
+        code: code,
+        obfuscation: obfuscation,
+        hwidReset: hwidReset,
+        gameId: gameId,
+        visibility: 'anyone',
+        createdAt: new Date().toISOString(),
+        loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15)
+    };
+    
+    if (!projects[projectIndex].scripts) {
+        projects[projectIndex].scripts = [];
+    }
+    projects[projectIndex].scripts.push(script);
+    saveProjects(projects);
+    
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Success', 'Script "' + name + '" created!', 'success');
+    renderProjects();
+}
+
+// ============ VIEW SCRIPT ==========
+function viewScript(projectId, scriptId) {
+    var projects = loadProjects();
+    var project = null;
+    var script = null;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            project = projects[i];
+            if (project.scripts) {
+                for (var j = 0; j < project.scripts.length; j++) {
+                    if (project.scripts[j].id === scriptId) {
+                        script = project.scripts[j];
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    if (!script) {
+        showNotification('Error', 'Script not found.', 'error');
+        return;
+    }
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    var loaderCode = 'loadstring(game:HttpGet("https://your-api.com/load/' + script.loaderId + '"))()';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            
+            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div>
+                    <h2 style="font-size:22px; margin:0; color:#fff;">${script.name}</h2>
+                    <p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${script.description || 'No description'}</p>
+                    <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                        <span style="background:rgba(108,59,255,0.2); color:#8a6bff; padding:2px 12px; border-radius:12px; font-size:11px;">Obfuscation: ${script.obfuscation}/10</span>
+                        ${script.antiTamper ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🛡️ Anti-Tamper</span>' : ''}
+                        ${script.antiSkid ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🔒 Anti-Skid</span>' : ''}
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; flex-shrink:0;">
+                    <button onclick="copyLoader('${script.loaderId}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">📋 Copy Loader</button>
+                    <button onclick="editScript('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️ Edit</button>
+                    <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">⚙️</button>
+                </div>
+            </div>
+            
+            <div style="margin-top:16px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05);">
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">📋 Loader Code:</p>
+                <code style="color:#66ccff; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${loaderCode}</code>
+            </div>
+            
+            <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:200px; overflow-y:auto;">
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
+                <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated)' : ''}</pre>
+            </div>
+            
+            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
+                <span>🆔 ${script.id}</span>
+                <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
+                ${script.gameId ? '<span>🎮 ' + script.gameId + '</span>' : ''}
+                <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+function copyLoader(loaderId) {
+    var loaderCode = 'loadstring(game:HttpGet("https://your-api.com/load/' + loaderId + '"))()';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(loaderCode).then(function() {
+            showNotification('Copied!', 'Loader code copied to clipboard.', 'success');
+        }).catch(function() {
+            fallbackCopy(loaderCode);
+        });
+    } else {
+        fallbackCopy(loaderCode);
+    }
+}
+
+function fallbackCopy(text) {
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        showNotification('Copied!', 'Loader code copied to clipboard.', 'success');
+    } catch (e) {
+        showNotification('Error', 'Failed to copy. Please copy manually.', 'error');
+    }
+    textarea.remove();
+}
+
+// ============ EDIT PROJECT ==========
+function editProject(projectId) {
+    var projects = loadProjects();
+    var project = null;
+    var projectIndex = -1;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            project = projects[i];
+            projectIndex = i;
+            break;
+        }
+    }
+    
+    if (!project) {
+        showNotification('Error', 'Project not found.', 'error');
+        return;
+    }
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 500px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Project</h2>
+            
+            <div class="form-group">
+                <label>Project Name <span class="required">*</span></label>
+                <input type="text" id="editProjectName" value="${project.name}" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Project Description <span style="color:#555577;">(optional)</span></label>
+                <textarea id="editProjectDescription">${project.description || ''}</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Visibility</label>
+                <select id="editProjectVisibility">
+                    <option value="anyone" ${project.visibility === 'anyone' ? 'selected' : ''}>Anyone</option>
+                    <option value="friends" ${project.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option>
+                    <option value="private" ${project.visibility === 'private' ? 'selected' : ''}>Private</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="editProjectBlockIncognito" ${project.blockIncognito ? 'checked' : ''}> Block Incognito Mode
+                </label>
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="editProjectBlockVPN" ${project.blockVPN ? 'checked' : ''}> Block VPN
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Type Of Project</label>
+                <select id="editProjectType">
+                    <option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option>
+                    <option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option>
+                    <option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option>
+                </select>
+            </div>
+            
+            <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Project</button>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+function confirmEditProject(projectId) {
+    var name = document.getElementById('editProjectName').value.trim();
+    var description = document.getElementById('editProjectDescription').value.trim();
+    var visibility = document.getElementById('editProjectVisibility').value;
+    var blockIncognito = document.getElementById('editProjectBlockIncognito').checked;
+    var blockVPN = document.getElementById('editProjectBlockVPN').checked;
+    var type = document.getElementById('editProjectType').value;
+    
+    if (!name) {
+        showNotification('Error', 'Project name is required.', 'error');
+        return;
+    }
+    
+    var projects = loadProjects();
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            projects[i].name = name;
+            projects[i].description = description;
+            projects[i].visibility = visibility;
+            projects[i].blockIncognito = blockIncognito;
+            projects[i].blockVPN = blockVPN;
+            projects[i].type = type;
+            break;
+        }
+    }
+    
+    saveProjects(projects);
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Success', 'Project updated!', 'success');
+    renderProjects();
+}
+
+// ============ DELETE PROJECT ==========
+function deleteProject(projectId) {
+    if (!confirm('Are you sure you want to delete this project and all its scripts?')) {
+        return;
+    }
+    
+    var projects = loadProjects();
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            projects.splice(i, 1);
+            break;
+        }
+    }
+    
+    saveProjects(projects);
+    showNotification('Deleted', 'Project deleted.', 'warning');
+    renderProjects();
+}
+
+// ============ EDIT SCRIPT ==========
+function editScript(projectId, scriptId) {
+    var projects = loadProjects();
+    var project = null;
+    var script = null;
+    var projectIndex = -1;
+    var scriptIndex = -1;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            project = projects[i];
+            projectIndex = i;
+            if (project.scripts) {
+                for (var j = 0; j < project.scripts.length; j++) {
+                    if (project.scripts[j].id === scriptId) {
+                        script = project.scripts[j];
+                        scriptIndex = j;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    if (!script) {
+        showNotification('Error', 'Script not found.', 'error');
+        return;
+    }
+    
+    editingScript = { projectId: projectId, scriptId: scriptId, projectIndex: projectIndex, scriptIndex: scriptIndex };
+    currentProject = project;
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    var keyTime = script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '' : script.keyTime;
+    var keyUnit = script.keyUnit === 'unlimited' || script.keyUnit === 'unlimited' ? 'unlimited' : (script.keyUnit || 'hours');
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Script</h2>
+            <p class="sub">Update script details</p>
+            
+            <div class="form-group">
+                <label>Script Name <span class="required">*</span></label>
+                <input type="text" id="editScriptName" value="${script.name}" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Script Description <span style="color:#555577;">(optional)</span></label>
+                <textarea id="editScriptDescription">${script.description || ''}</textarea>
+            </div>
+            
+            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> Anti Tampers
+                </label>
+                <label style="margin:0; cursor:pointer;">
+                    <input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> Anti Skidders
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Max Timer Of Keys</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="number" id="editScriptKeyTime" placeholder="Amount" value="${keyTime}" style="flex:1; min-width:0;">
+                    <select id="editScriptKeyUnit" style="flex:1; min-width:0;">
+                        <option value="seconds" ${keyUnit === 'seconds' ? 'selected' : ''}>Seconds</option>
+                        <option value="minutes" ${keyUnit === 'minutes' ? 'selected' : ''}>Minutes</option>
+                        <option value="hours" ${keyUnit === 'hours' ? 'selected' : ''}>Hours</option>
+                        <option value="days" ${keyUnit === 'days' ? 'selected' : ''}>Days</option>
+                        <option value="weeks" ${keyUnit === 'weeks' ? 'selected' : ''}>Weeks</option>
+                        <option value="months" ${keyUnit === 'months' ? 'selected' : ''}>Months</option>
+                        <option value="years" ${keyUnit === 'years' ? 'selected' : ''}>Years</option>
+                        <option value="unlimited" ${keyUnit === 'unlimited' ? 'selected' : ''}>Unlimited</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Paste .txt/.lua Code</label>
+                <textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.code || ''}</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Obfuscation Level</label>
+                <input type="range" id="editScriptObfuscation" min="1" max="10" value="${script.obfuscation || 10}" style="width:100%;">
+                <div style="display:flex; justify-content:space-between; color:#8888aa; font-size:12px;">
+                    <span>1 (Low)</span>
+                    <span id="editObfuscationLabel">${script.obfuscation || 10}${script.obfuscation === 10 ? ' (High) ⭐ Recommended' : ''}</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label style="cursor:pointer;">
+                    <input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> HWID Reset
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
+                <input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890">
+            </div>
+            
+            <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Script</button>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    var slider = document.getElementById('editScriptObfuscation');
+    if (slider) {
+        slider.addEventListener('input', function() {
+            var label = document.getElementById('editObfuscationLabel');
+            var val = parseInt(this.value);
+            if (label) label.textContent = val + (val === 10 ? ' (High) ⭐ Recommended' : '');
+        });
+    }
+}
+
+function confirmEditScript(projectId, scriptId) {
+    var name = document.getElementById('editScriptName').value.trim();
+    var description = document.getElementById('editScriptDescription').value.trim();
+    var antiTamper = document.getElementById('editScriptAntiTamper').checked;
+    var antiSkid = document.getElementById('editScriptAntiSkid').checked;
+    var keyTime = document.getElementById('editScriptKeyTime').value;
+    var keyUnit = document.getElementById('editScriptKeyUnit').value;
+    var code = document.getElementById('editScriptCode').value.trim();
+    var obfuscation = parseInt(document.getElementById('editScriptObfuscation').value);
+    var hwidReset = document.getElementById('editScriptHWIDReset').checked;
+    var gameId = document.getElementById('editScriptGameId').value.trim();
+    
+    if (!name) {
+        showNotification('Error', 'Script name is required.', 'error');
+        return;
+    }
+    
+    if (!code) {
+        showNotification('Error', 'Please paste your Lua code.', 'error');
+        return;
+    }
+    
+    var projects = loadProjects();
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            if (projects[i].scripts) {
+                for (var j = 0; j < projects[i].scripts.length; j++) {
+                    if (projects[i].scripts[j].id === scriptId) {
+                        projects[i].scripts[j].name = name;
+                        projects[i].scripts[j].description = description;
+                        projects[i].scripts[j].antiTamper = antiTamper;
+                        projects[i].scripts[j].antiSkid = antiSkid;
+                        projects[i].scripts[j].keyTime = keyTime || 'unlimited';
+                        projects[i].scripts[j].keyUnit = keyUnit || 'unlimited';
+                        projects[i].scripts[j].code = code;
+                        projects[i].scripts[j].obfuscation = obfuscation;
+                        projects[i].scripts[j].hwidReset = hwidReset;
+                        projects[i].scripts[j].gameId = gameId;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    saveProjects(projects);
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Success', 'Script updated!', 'success');
+    renderProjects();
+}
+
+// ============ DELETE SCRIPT ==========
+function deleteScript(projectId, scriptId) {
+    if (!confirm('Are you sure you want to delete this script?')) {
+        return;
+    }
+    
+    var projects = loadProjects();
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            if (projects[i].scripts) {
+                for (var j = 0; j < projects[i].scripts.length; j++) {
+                    if (projects[i].scripts[j].id === scriptId) {
+                        projects[i].scripts.splice(j, 1);
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    saveProjects(projects);
+    showNotification('Deleted', 'Script deleted.', 'warning');
+    renderProjects();
+}
+
+// ============ SCRIPT SETTINGS ==========
+function openScriptSettings(projectId, scriptId) {
+    var projects = loadProjects();
+    var script = null;
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            if (projects[i].scripts) {
+                for (var j = 0; j < projects[i].scripts.length; j++) {
+                    if (projects[i].scripts[j].id === scriptId) {
+                        script = projects[i].scripts[j];
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    if (!script) {
+        showNotification('Error', 'Script not found.', 'error');
+        return;
+    }
+    
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 450px; padding: 32px;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">⚙️ Script Settings</h2>
+            <p class="sub">Manage "${script.name}"</p>
+            
+            <div class="form-group">
+                <label>Visibility</label>
+                <select id="scriptVisibility">
+                    <option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option>
+                    <option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option>
+                    <option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option>
+                </select>
+            </div>
+            
+            <div style="display:flex; gap:12px; margin-top:16px;">
+                <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>
+                <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">🗑️ Delete Script</button>
+            </div>
+            <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
+        </div>
+    `;
+    
+    document.body.appendChild(overlay);
+}
+
+function updateScriptVisibility(projectId, scriptId) {
+    var visibility = document.getElementById('scriptVisibility').value;
+    
+    var projects = loadProjects();
+    
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId) {
+            if (projects[i].scripts) {
+                for (var j = 0; j < projects[i].scripts.length; j++) {
+                    if (projects[i].scripts[j].id === scriptId) {
+                        projects[i].scripts[j].visibility = visibility;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    saveProjects(projects);
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Success', 'Visibility updated!', 'success');
+    renderProjects();
+}
+
 // ============ AUTO-LOGIN CHECK ============
 function checkAuth() {
     loadUsers();
@@ -1512,3 +2455,25 @@ window.changeUserPlan = changeUserPlan;
 window.changeOwnPlan = changeOwnPlan;
 window.confirmChangePlan = confirmChangePlan;
 window.confirmOwnPlanChange = confirmOwnPlanChange;
+
+// ============ PROJECTS EXPOSE ============
+window.loadProjects = loadProjects;
+window.saveProjects = saveProjects;
+window.switchTab = switchTab;
+window.showTabs = showTabs;
+window.openCreateProject = openCreateProject;
+window.confirmCreateProject = confirmCreateProject;
+window.renderProjects = renderProjects;
+window.viewProject = viewProject;
+window.openCreateScript = openCreateScript;
+window.confirmCreateScript = confirmCreateScript;
+window.viewScript = viewScript;
+window.copyLoader = copyLoader;
+window.editProject = editProject;
+window.confirmEditProject = confirmEditProject;
+window.deleteProject = deleteProject;
+window.editScript = editScript;
+window.confirmEditScript = confirmEditScript;
+window.deleteScript = deleteScript;
+window.openScriptSettings = openScriptSettings;
+window.updateScriptVisibility = updateScriptVisibility;
