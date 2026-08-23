@@ -2738,6 +2738,26 @@ function handleScriptRequest(scriptId) {
     return null;
 }
 
+// ============ SCRIPT STORAGE FOR RAW ACCESS ============
+// The owner key - only you know this!
+const OWNER_KEY = 'test';
+
+function storeScriptForRawAccess(scriptId, code, scriptName) {
+    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+    scriptStore[scriptId] = code;
+    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
+    
+    // Also store the script name for reference
+    var scriptNames = JSON.parse(localStorage.getItem('scriptNames') || '{}');
+    scriptNames[scriptId] = scriptName;
+    localStorage.setItem('scriptNames', JSON.stringify(scriptNames));
+}
+
+function getScriptForRawAccess(scriptId) {
+    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+    return scriptStore[scriptId] || null;
+}
+
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
 window.handleSignup = handleSignup;
 window.handleLogin = handleLogin;
