@@ -47,7 +47,6 @@
                 <p class="plans-subtitle">Select the perfect plan for your needs</p>
                 
                 <div class="plans-grid">
-                    <!-- Basic Plan -->
                     <div class="plan-card">
                         <div class="plan-name">Basic</div>
                         <div class="plan-price">$0 <span class="period">/ forever</span></div>
@@ -60,7 +59,6 @@
                         <button class="btn btn-primary" onclick="openModal('signup')">Get Started</button>
                     </div>
                     
-                    <!-- Advanced Plan -->
                     <div class="plan-card featured">
                         <div class="plan-name">Advanced</div>
                         <div class="plan-price">$5 <span class="period">/ month</span></div>
@@ -73,7 +71,6 @@
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
                     
-                    <!-- Pro Plan -->
                     <div class="plan-card">
                         <div class="plan-name">Pro</div>
                         <div class="plan-price">$10 <span class="period">/ month</span></div>
@@ -86,7 +83,6 @@
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
                     
-                    <!-- God Plan -->
                     <div class="plan-card">
                         <div class="plan-name">God</div>
                         <div class="plan-price">$20 <span class="period">/ month</span></div>
@@ -99,7 +95,6 @@
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
                     
-                    <!-- Custom Plan -->
                     <div class="plan-card">
                         <div class="plan-name">Custom</div>
                         <div class="plan-price">Custom</div>
@@ -123,7 +118,7 @@
                     <div style="color: #8888aa; font-size: 14px; margin-top: 4px;" id="dashEmail">user@example.com</div>
                 </div>
                 <div>
-                    <span class="plan-display" id="dashPlan">📊 Current Plan: Advanced</span>
+                    <span class="plan-display" id="dashPlan">📊 Current Plan: Basic</span>
                 </div>
             </div>
             
@@ -181,7 +176,7 @@
                 </div>
                 <div class="form-group">
                     <label>Password <span class="required">*</span></label>
-                    <input type="password" id="signupPassword" placeholder="Create a password" required>
+                    <input type="password" id="signupPassword" placeholder="Create a password (min 6 chars)" required>
                 </div>
                 <div class="form-group">
                     <label>Description <span style="color:#555577;">(optional)</span></label>
@@ -193,8 +188,8 @@
                 <div class="modal-divider">or continue with</div>
                 
                 <div class="social-buttons">
-                    <button type="button" class="btn btn-google" onclick="handleSocialSignup('google')">Google</button>
-                    <button type="button" class="btn btn-discord" onclick="handleSocialSignup('discord')">Discord</button>
+                    <button type="button" class="btn btn-google" onclick="handleSocial('google')">Google</button>
+                    <button type="button" class="btn btn-discord" onclick="handleSocial('discord')">Discord</button>
                 </div>
             </form>
         </div>
@@ -222,15 +217,13 @@
                 <div class="modal-divider">or continue with</div>
                 
                 <div class="social-buttons">
-                    <button type="button" class="btn btn-google" onclick="handleSocialLogin('google')">Google</button>
-                    <button type="button" class="btn btn-discord" onclick="handleSocialLogin('discord')">Discord</button>
+                    <button type="button" class="btn btn-google" onclick="handleSocial('google')">Google</button>
+                    <button type="button" class="btn btn-discord" onclick="handleSocial('discord')">Discord</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- Scripts -->
-    <script src="js/api.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>
