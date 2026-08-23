@@ -2051,6 +2051,7 @@ var directLoader = 'loadstring([[' + scriptCode + ']])()';
                     </div>
                 </div>
                 <div style="display:flex; gap:8px; flex-shrink:0;">
+                    <button onclick="openRawScript('${script.loaderId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">📄 Raw</button>
                     <button onclick="copyLoader('${script.loaderId}')" class="btn btn-primary" style="padding:4px 12px; font-size:11px;">📋 Copy Loader</button>
                     <button onclick="editScript('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️ Edit</button>
                     <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">⚙️</button>
@@ -2066,8 +2067,6 @@ var directLoader = 'loadstring([[' + scriptCode + ']])()';
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
                 <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated)' : ''}</pre>
             </div>
-
-<button onclick="openRawScript('${script.loaderId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">📄 Raw</button>
 
             <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
                 <span>🆔 ${script.id}</span>
@@ -2763,9 +2762,147 @@ function getScriptForRawAccess(scriptId) {
 
 // ============ OPEN RAW SCRIPT ============
 function openRawScript(loaderId) {
-    // Open the raw page with the secret key
-    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&key=' + OWNER_KEY;
-    window.open(rawUrl, '_blank');
+    // Get the script from storage
+    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
+    var scriptCode = scriptStore[loaderId];
+    var scriptName = '';
+    
+    // If not found in scriptStore, try to find it in projects
+    if (!scriptCode) {
+        var projects = loadProjects();
+        for (var i = 0; i < projects.length; i++) {
+            if (projects[i].scripts) {
+                for (var j = 0; j < projects[i].scripts.length; j++) {
+                    if (projects[i].scripts[j].loaderId === loaderId || 
+                        projects[i].scripts[j].id === loaderId) {
+                        scriptCode = projects[i].scripts[j].code;
+                        scriptName = projects[i].scripts[j].name;
+                        break;
+                    }
+                }
+            }
+            if (scriptCode) break;
+        }
+    }
+    
+    if (!scriptCode) {
+        showNotification('Error', 'Script not found!', 'error');
+        return;
+    }
+    
+    // Create a new window or tab with the raw content
+    var rawWindow = window.open('', '_blank');
+    if (!rawWindow) {
+        showNotification('Error', 'Popup blocked! Please allow popups.', 'error');
+        return;
+    }
+    
+    // Write the raw content
+    rawWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Raw Script - ${scriptName || 'Script'}</title>
+            <style>
+                body {
+                    background: #0a0a0f;
+                    color: #66ccff;
+                    font-family: 'Courier New', monospace;
+                    padding: 20px;
+                    margin: 0;
+                    white-space: pre-wrap;
+                    word-break: break-all;
+                    font-size: 14px;
+                    line-height: 1.6;
+                }
+                .header {
+                    background: rgba(108, 59, 255, 0.1);
+                    border-bottom: 1px solid rgba(108, 59, 255, 0.2);
+                    padding: 12px 20px;
+                    margin: -20px -20px 20px -20px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                .header h2 {
+                    color: #ffffff;
+                    margin: 0;
+                    font-size: 16px;
+                }
+                .header .badge {
+                    background: rgba(100, 255, 100, 0.1);
+                    color: #66ff66;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    border: 1px solid rgba(100, 255, 100, 0.2);
+                }
+                .copy-btn {
+                    background: #6c3bff;
+                    color: #fff;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 13px;
+                    margin-top: 10px;
+                }
+                .copy-btn:hover {
+                    background: #8a6bff;
+                }
+                .footer {
+                    margin-top: 20px;
+                    color: #555577;
+                    font-size: 12px;
+                    border-top: 1px solid rgba(255,255,255,0.05);
+                    padding-top: 12px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2>📄 Raw Script: ${scriptName || 'Script'}</h2>
+                <span class="badge">🔒 Owner Only</span>
+            </div>
+            <div id="codeContent">${scriptCode}</div>
+            <button class="copy-btn" onclick="copyRawCode()">📋 Copy Code</button>
+            <div class="footer">
+                <span>Script ID: ${loaderId}</span>
+                <span style="float:right;">This code is only visible to the owner.</span>
+            </div>
+            
+            <script>
+                function copyRawCode() {
+                    var code = document.getElementById('codeContent').textContent;
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(code).then(function() {
+                            alert('✅ Code copied to clipboard!');
+                        }).catch(function() {
+                            fallbackCopy(code);
+                        });
+                    } else {
+                        fallbackCopy(code);
+                    }
+                }
+                function fallbackCopy(text) {
+                    var textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        alert('✅ Code copied to clipboard!');
+                    } catch (e) {
+                        alert('❌ Failed to copy. Please copy manually.');
+                    }
+                    textarea.remove();
+                }
+            </script>
+        </body>
+        </html>
+    `);
+    
+    rawWindow.document.close();
 }
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
