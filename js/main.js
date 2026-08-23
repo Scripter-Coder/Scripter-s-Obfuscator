@@ -854,31 +854,60 @@ function filterUsers() {
     renderUserList();
 }
 
-// ============ IMAGE UPLOAD FUNCTIONS ============
+// ============ IMAGE UPLOAD FUNCTIONS - FIXED ============
 function uploadProfileImage() {
     var input = document.getElementById('profileImageInput');
     if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file.', 'error');
+        showNotification('Error', 'Please select an image file first.', 'error');
         return;
     }
     
     var file = input.files[0];
+    
+    // Check file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+        showNotification('Error', 'Image size must be less than 5MB.', 'error');
+        return;
+    }
+    
+    // Check file type
+    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
+        return;
+    }
+    
     var reader = new FileReader();
     
     reader.onload = function(e) {
-        var imageData = e.target.result;
-        
-        for (var key in users) {
-            if (users[key].id === currentUser.id) {
-                users[key].profileImage = imageData;
-                saveUsers();
-                var userData = { ...users[key] };
-                delete userData.password;
-                updateUIForUser(userData);
-                showNotification('Success', 'Profile image updated!', 'success');
-                break;
+        try {
+            var imageData = e.target.result;
+            
+            // Save to current user
+            for (var key in users) {
+                if (users[key].id === currentUser.id) {
+                    users[key].profileImage = imageData;
+                    saveUsers();
+                    
+                    // Update UI
+                    var userData = { ...users[key] };
+                    delete userData.password;
+                    updateUIForUser(userData);
+                    
+                    showNotification('Success', 'Profile image updated successfully!', 'success');
+                    
+                    // Reset input
+                    input.value = '';
+                    break;
+                }
             }
+        } catch (error) {
+            showNotification('Error', 'Failed to save image: ' + error.message, 'error');
         }
+    };
+    
+    reader.onerror = function() {
+        showNotification('Error', 'Failed to read image file.', 'error');
     };
     
     reader.readAsDataURL(file);
@@ -887,27 +916,56 @@ function uploadProfileImage() {
 function uploadBannerImage() {
     var input = document.getElementById('bannerImageInput');
     if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file.', 'error');
+        showNotification('Error', 'Please select an image file first.', 'error');
         return;
     }
     
     var file = input.files[0];
+    
+    // Check file size (max 10MB for banner)
+    if (file.size > 10 * 1024 * 1024) {
+        showNotification('Error', 'Banner image size must be less than 10MB.', 'error');
+        return;
+    }
+    
+    // Check file type
+    var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
+        return;
+    }
+    
     var reader = new FileReader();
     
     reader.onload = function(e) {
-        var imageData = e.target.result;
-        
-        for (var key in users) {
-            if (users[key].id === currentUser.id) {
-                users[key].bannerImage = imageData;
-                saveUsers();
-                var userData = { ...users[key] };
-                delete userData.password;
-                updateUIForUser(userData);
-                showNotification('Success', 'Banner image updated!', 'success');
-                break;
+        try {
+            var imageData = e.target.result;
+            
+            // Save to current user
+            for (var key in users) {
+                if (users[key].id === currentUser.id) {
+                    users[key].bannerImage = imageData;
+                    saveUsers();
+                    
+                    // Update UI
+                    var userData = { ...users[key] };
+                    delete userData.password;
+                    updateUIForUser(userData);
+                    
+                    showNotification('Success', 'Banner image updated successfully!', 'success');
+                    
+                    // Reset input
+                    input.value = '';
+                    break;
+                }
             }
+        } catch (error) {
+            showNotification('Error', 'Failed to save banner: ' + error.message, 'error');
         }
+    };
+    
+    reader.onerror = function() {
+        showNotification('Error', 'Failed to read image file.', 'error');
     };
     
     reader.readAsDataURL(file);
