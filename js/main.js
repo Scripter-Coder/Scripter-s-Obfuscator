@@ -3,8 +3,6 @@ let currentUser = null;
 let isLoggedIn = false;
 let users = {};
 let selectedUserEmail = null;
-
-// ============ PROJECTS & SCRIPTS SYSTEM ==========
 let currentProject = null;
 let currentScript = null;
 let editingScript = null;
@@ -14,46 +12,11 @@ const OWNER_KEY = 'my_super_secret_key_2024_scripter';
 
 // ============ PLAN CONFIGURATIONS ============
 const PLAN_CONFIGS = {
-    'Basic': {
-        fileSize: 10,
-        keys: 1000,
-        projects: 10,
-        scripts: 20,
-        price: 0,
-        label: 'Basic'
-    },
-    'Advanced': {
-        fileSize: 100,
-        keys: 10000,
-        projects: 50,
-        scripts: 100,
-        price: 10,
-        label: 'Advanced'
-    },
-    'Pro': {
-        fileSize: 1024,
-        keys: 100000,
-        projects: 500,
-        scripts: 300,
-        price: 30,
-        label: 'Pro'
-    },
-    'God': {
-        fileSize: 102400,
-        keys: Infinity,
-        projects: 10000,
-        scripts: 250000,
-        price: 50,
-        label: 'God'
-    },
-    'Custom': {
-        fileSize: Infinity,
-        keys: Infinity,
-        projects: Infinity,
-        scripts: Infinity,
-        price: 'Custom',
-        label: 'Custom'
-    }
+    'Basic': { fileSize: 10, keys: 1000, projects: 10, scripts: 20, price: 0, label: 'Basic' },
+    'Advanced': { fileSize: 100, keys: 10000, projects: 50, scripts: 100, price: 10, label: 'Advanced' },
+    'Pro': { fileSize: 1024, keys: 100000, projects: 500, scripts: 300, price: 30, label: 'Pro' },
+    'God': { fileSize: 102400, keys: Infinity, projects: 10000, scripts: 250000, price: 50, label: 'God' },
+    'Custom': { fileSize: Infinity, keys: Infinity, projects: Infinity, scripts: Infinity, price: 'Custom', label: 'Custom' }
 };
 
 // ============ SESSION PERSISTENCE ============
@@ -67,13 +30,9 @@ function saveSession(user) {
 function restoreSession() {
     try {
         var sessionData = sessionStorage.getItem('session_user');
-        if (sessionData) {
-            return JSON.parse(sessionData);
-        }
+        if (sessionData) return JSON.parse(sessionData);
         var localData = localStorage.getItem('currentUser');
-        if (localData) {
-            return JSON.parse(localData);
-        }
+        if (localData) return JSON.parse(localData);
     } catch (e) {}
     return null;
 }
@@ -102,12 +61,7 @@ function loadUsers() {
                     profileImage: '',
                     bannerImage: '',
                     theme: 'default',
-                    stats: {
-                        projects: { used: 3, max: 10 },
-                        keys: { used: 12, max: 50 },
-                        scripts: { used: 8, max: 20 },
-                        fileSize: { used: 25, max: 50 }
-                    }
+                    stats: { projects: { used: 3, max: 10 }, keys: { used: 12, max: 50 }, scripts: { used: 8, max: 20 }, fileSize: { used: 25, max: 50 } }
                 },
                 'admin@example.com': {
                     id: 'user_admin',
@@ -121,12 +75,7 @@ function loadUsers() {
                     profileImage: '',
                     bannerImage: '',
                     theme: 'default',
-                    stats: {
-                        projects: { used: 0, max: Infinity },
-                        keys: { used: 0, max: Infinity },
-                        scripts: { used: 0, max: Infinity },
-                        fileSize: { used: 0, max: Infinity }
-                    }
+                    stats: { projects: { used: 0, max: Infinity }, keys: { used: 0, max: Infinity }, scripts: { used: 0, max: Infinity }, fileSize: { used: 0, max: Infinity } }
                 },
                 'dubovikstanislav51@gmail.com': {
                     id: 'user_scripter',
@@ -141,12 +90,7 @@ function loadUsers() {
                     profileImage: '',
                     bannerImage: '',
                     theme: 'default',
-                    stats: {
-                        projects: { used: 5, max: Infinity },
-                        keys: { used: 50, max: Infinity },
-                        scripts: { used: 20, max: Infinity },
-                        fileSize: { used: 100, max: Infinity }
-                    }
+                    stats: { projects: { used: 5, max: Infinity }, keys: { used: 50, max: Infinity }, scripts: { used: 20, max: Infinity }, fileSize: { used: 100, max: Infinity } }
                 }
             };
             saveUsers();
@@ -158,115 +102,41 @@ function loadUsers() {
 }
 
 function saveUsers() {
-    try {
-        localStorage.setItem('users', JSON.stringify(users));
-    } catch (error) {
-        console.error('Error saving users:', error);
-    }
+    try { localStorage.setItem('users', JSON.stringify(users)); } catch (error) { console.error('Error saving users:', error); }
 }
 
 function getCurrentUser() {
-    try {
-        const data = localStorage.getItem('currentUser');
-        return data ? JSON.parse(data) : null;
-    } catch (error) {
-        return null;
-    }
+    try { const data = localStorage.getItem('currentUser'); return data ? JSON.parse(data) : null; } catch (error) { return null; }
 }
 
 function setCurrentUser(user) {
-    try {
-        saveSession(user);
-    } catch (error) {
-        console.error('Error saving current user:', error);
-    }
+    try { saveSession(user); } catch (error) { console.error('Error saving current user:', error); }
 }
 
-function clearCurrentUser() {
-    clearSession();
-}
+function clearCurrentUser() { clearSession(); }
 
 // ============ THEME SYSTEM ============
 const themes = {
-    default: {
-        primary: '#6c3bff',
-        secondary: '#00bfff',
-        bg: '#0a0a0f',
-        card: 'rgba(20,20,35,0.8)',
-        text: '#ffffff',
-        accent: '#8a6bff'
-    },
-    red: {
-        primary: '#ff0000',
-        secondary: '#ff4444',
-        bg: '#1a0000',
-        card: 'rgba(35,10,10,0.8)',
-        text: '#ffffff',
-        accent: '#ff6666'
-    },
-    blue: {
-        primary: '#0044ff',
-        secondary: '#4488ff',
-        bg: '#00051a',
-        card: 'rgba(10,15,35,0.8)',
-        text: '#ffffff',
-        accent: '#6688ff'
-    },
-    green: {
-        primary: '#00cc44',
-        secondary: '#44ff88',
-        bg: '#000a05',
-        card: 'rgba(10,35,15,0.8)',
-        text: '#ffffff',
-        accent: '#66ff99'
-    },
-    purple: {
-        primary: '#9900ff',
-        secondary: '#cc44ff',
-        bg: '#0a001a',
-        card: 'rgba(20,10,35,0.8)',
-        text: '#ffffff',
-        accent: '#dd66ff'
-    },
-    orange: {
-        primary: '#ff6600',
-        secondary: '#ff9944',
-        bg: '#1a0800',
-        card: 'rgba(35,20,10,0.8)',
-        text: '#ffffff',
-        accent: '#ff8844'
-    },
-    white: {
-        primary: '#ffffff',
-        secondary: '#cccccc',
-        bg: '#1a1a1a',
-        card: 'rgba(40,40,40,0.8)',
-        text: '#ffffff',
-        accent: '#aaaaaa'
-    },
-    dark: {
-        primary: '#222222',
-        secondary: '#444444',
-        bg: '#000000',
-        card: 'rgba(20,20,20,0.9)',
-        text: '#ffffff',
-        accent: '#555555'
-    }
+    default: { primary: '#6c3bff', secondary: '#00bfff', bg: '#0a0a0f', card: 'rgba(20,20,35,0.8)', text: '#ffffff', accent: '#8a6bff' },
+    red: { primary: '#ff0000', secondary: '#ff4444', bg: '#1a0000', card: 'rgba(35,10,10,0.8)', text: '#ffffff', accent: '#ff6666' },
+    blue: { primary: '#0044ff', secondary: '#4488ff', bg: '#00051a', card: 'rgba(10,15,35,0.8)', text: '#ffffff', accent: '#6688ff' },
+    green: { primary: '#00cc44', secondary: '#44ff88', bg: '#000a05', card: 'rgba(10,35,15,0.8)', text: '#ffffff', accent: '#66ff99' },
+    purple: { primary: '#9900ff', secondary: '#cc44ff', bg: '#0a001a', card: 'rgba(20,10,35,0.8)', text: '#ffffff', accent: '#dd66ff' },
+    orange: { primary: '#ff6600', secondary: '#ff9944', bg: '#1a0800', card: 'rgba(35,20,10,0.8)', text: '#ffffff', accent: '#ff8844' },
+    white: { primary: '#ffffff', secondary: '#cccccc', bg: '#1a1a1a', card: 'rgba(40,40,40,0.8)', text: '#ffffff', accent: '#aaaaaa' },
+    dark: { primary: '#222222', secondary: '#444444', bg: '#000000', card: 'rgba(20,20,20,0.9)', text: '#ffffff', accent: '#555555' }
 };
 
 function applyTheme(themeName) {
     const theme = themes[themeName] || themes.default;
     const root = document.documentElement;
-    
     root.style.setProperty('--primary-color', theme.primary);
     root.style.setProperty('--secondary-color', theme.secondary);
     root.style.setProperty('--bg-color', theme.bg);
     root.style.setProperty('--card-color', theme.card);
     root.style.setProperty('--text-color', theme.text);
     root.style.setProperty('--accent-color', theme.accent);
-    
     document.body.style.background = theme.bg;
-    
     if (currentUser) {
         for (var key in users) {
             if (users[key].id === currentUser.id) {
@@ -276,23 +146,19 @@ function applyTheme(themeName) {
             }
         }
     }
-    
     document.querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal').forEach(function(el) {
         el.style.background = theme.card;
         el.style.borderColor = theme.primary + '40';
     });
-    
     document.querySelectorAll('.btn-primary').forEach(function(el) {
         el.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
     });
-    
     var brand = document.querySelector('.navbar-brand');
     if (brand) {
         brand.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
         brand.style.webkitBackgroundClip = 'text';
         brand.style.webkitTextFillColor = 'transparent';
     }
-    
     document.querySelectorAll('.stat-bar .fill').forEach(function(el) {
         el.style.background = 'linear-gradient(90deg, ' + theme.primary + ', ' + theme.secondary + ')';
     });
@@ -304,57 +170,37 @@ function showNotification(title, message, type, duration) {
     duration = duration || 4000;
     var container = document.getElementById('notificationContainer');
     if (!container) return;
-    
-    var icons = {
-        success: '✅',
-        error: '❌',
-        warning: '⚠️',
-        info: 'ℹ️'
-    };
-    
+    var icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
     var notif = document.createElement('div');
     notif.className = 'notification ' + type;
-    
     var iconSpan = document.createElement('span');
     iconSpan.className = 'icon';
     iconSpan.textContent = icons[type] || 'ℹ️';
-    
     var contentDiv = document.createElement('div');
     contentDiv.className = 'content';
-    
     var titleDiv = document.createElement('div');
     titleDiv.className = 'title';
     titleDiv.textContent = title;
-    
     var messageDiv = document.createElement('div');
     messageDiv.className = 'message';
     messageDiv.textContent = message;
-    
     contentDiv.appendChild(titleDiv);
     contentDiv.appendChild(messageDiv);
-    
     var closeBtn = document.createElement('button');
     closeBtn.className = 'close-btn';
     closeBtn.textContent = '✕';
     closeBtn.onclick = function() {
         notif.classList.add('hiding');
-        setTimeout(function() {
-            if (notif.parentNode) notif.remove();
-        }, 300);
+        setTimeout(function() { if (notif.parentNode) notif.remove(); }, 300);
     };
-    
     notif.appendChild(iconSpan);
     notif.appendChild(contentDiv);
     notif.appendChild(closeBtn);
-    
     container.appendChild(notif);
-    
     if (duration > 0) {
         setTimeout(function() {
             notif.classList.add('hiding');
-            setTimeout(function() {
-                if (notif.parentNode) notif.remove();
-            }, 300);
+            setTimeout(function() { if (notif.parentNode) notif.remove(); }, 300);
         }, duration);
     }
 }
@@ -362,25 +208,13 @@ function showNotification(title, message, type, duration) {
 // ============ DATE & TIME ============
 function updateDateTime() {
     var now = new Date();
-    var dateStr = now.toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-    });
-    var timeStr = now.toLocaleTimeString('en-US', {
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-    });
-    
+    var dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    var timeStr = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     var dateEl = document.getElementById('currentDate');
     var timeEl = document.getElementById('currentTime');
     if (dateEl) dateEl.textContent = dateStr;
     if (timeEl) timeEl.textContent = timeStr;
 }
-
 updateDateTime();
 setInterval(updateDateTime, 1000);
 
@@ -424,7 +258,6 @@ function storeScriptForRawAccess(scriptId, code, scriptName) {
     var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
     scriptStore[scriptId] = code;
     localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
-    
     var scriptNames = JSON.parse(localStorage.getItem('scriptNames') || '{}');
     scriptNames[scriptId] = scriptName;
     localStorage.setItem('scriptNames', JSON.stringify(scriptNames));
@@ -437,12 +270,10 @@ function getScriptForRawAccess(scriptId) {
 
 // ============ OPEN RAW SCRIPT ============
 function openRawScript(loaderId) {
-    // Get the script details
     var projects = loadProjects();
     var scriptCode = null;
     var scriptName = '';
     var loaderKey = '';
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].scripts) {
             for (var j = 0; j < projects[i].scripts.length; j++) {
@@ -456,44 +287,114 @@ function openRawScript(loaderId) {
         }
         if (scriptCode) break;
     }
-    
     if (!scriptCode) {
         showNotification('Error', 'Script not found!', 'error');
         return;
     }
-    
-    // Store the script for raw access
     storeScriptForRawAccess(loaderId, scriptCode, scriptName);
     storeScriptForLoader(loaderId, scriptCode, scriptName, loaderKey);
-    
-    // Build the raw URL
     var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey;
-    
-    // Show notification
     showNotification('Raw URL Generated', 'Opening raw page...', 'info', 2000);
-    
-    // Open the actual raw.html URL in a new tab
     window.open(rawUrl, '_blank');
 }
 
 // ============ SCRIPT LOADER SYSTEM ============
 function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) {
     var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-    loaderStore[scriptId] = {
-        code: scriptCode,
-        name: scriptName,
-        loaderKey: loaderKey || '',
-        timestamp: Date.now()
-    };
+    loaderStore[scriptId] = { code: scriptCode, name: scriptName, loaderKey: loaderKey || '', timestamp: Date.now() };
     localStorage.setItem('loaderStore', JSON.stringify(loaderStore));
 }
 
 function getScriptForLoader(scriptId) {
     var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-    if (loaderStore[scriptId]) {
-        return loaderStore[scriptId].code;
+    return loaderStore[scriptId] ? loaderStore[scriptId].code : null;
+}
+
+// ============ GENERATE KEY ============
+function generateKey() {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    var key = '';
+    for (var i = 0; i < 16; i++) {
+        if (i > 0 && i % 4 === 0) key += '-';
+        key += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    return null;
+    return key;
+}
+
+// ============ KEYS SYSTEM ============
+function loadKeys() {
+    try {
+        var data = localStorage.getItem('keys_' + (currentUser ? currentUser.id : ''));
+        return data ? JSON.parse(data) : { keys: [], used: 0 };
+    } catch (e) { return { keys: [], used: 0 }; }
+}
+
+function saveKeys(keyData) {
+    try {
+        localStorage.setItem('keys_' + (currentUser ? currentUser.id : ''), JSON.stringify(keyData));
+    } catch (e) { console.error('Error saving keys:', e); }
+}
+
+function createKey(scriptId, keyType, expiresDays) {
+    var keyData = loadKeys();
+    var newKey = {
+        id: 'key_' + Date.now(),
+        key: generateKey(),
+        scriptId: scriptId,
+        type: keyType || 'premium',
+        expires: expiresDays ? Date.now() + (expiresDays * 86400000) : null,
+        used: false,
+        usedBy: null,
+        usedAt: null,
+        createdAt: new Date().toISOString()
+    };
+    keyData.keys.push(newKey);
+    keyData.used = keyData.keys.filter(k => k.used).length;
+    saveKeys(keyData);
+    showNotification('Key Generated', 'New key: ' + newKey.key, 'success');
+    renderKeys();
+    return newKey;
+}
+
+function deleteKey(keyId) {
+    if (!confirm('Delete this key?')) return;
+    var keyData = loadKeys();
+    keyData.keys = keyData.keys.filter(k => k.id !== keyId);
+    keyData.used = keyData.keys.filter(k => k.used).length;
+    saveKeys(keyData);
+    renderKeys();
+    showNotification('Deleted', 'Key deleted.', 'warning');
+}
+
+function verifyKey(key) {
+    var keyData = loadKeys();
+    for (var i = 0; i < keyData.keys.length; i++) {
+        if (keyData.keys[i].key === key) {
+            if (keyData.keys[i].used) {
+                return { valid: false, message: 'Key already used.' };
+            }
+            if (keyData.keys[i].expires && keyData.keys[i].expires < Date.now()) {
+                return { valid: false, message: 'Key has expired.' };
+            }
+            return { valid: true, keyData: keyData.keys[i] };
+        }
+    }
+    return { valid: false, message: 'Invalid key.' };
+}
+
+function useKey(key) {
+    var keyData = loadKeys();
+    for (var i = 0; i < keyData.keys.length; i++) {
+        if (keyData.keys[i].key === key) {
+            keyData.keys[i].used = true;
+            keyData.keys[i].usedBy = currentUser ? currentUser.id : 'unknown';
+            keyData.keys[i].usedAt = new Date().toISOString();
+            keyData.used = keyData.keys.filter(k => k.used).length;
+            saveKeys(keyData);
+            return true;
+        }
+    }
+    return false;
 }
 
 // ============ COPY LOADER ============
@@ -503,7 +404,6 @@ function copyLoader(loaderId) {
     var scriptName = '';
     var scriptId = '';
     var loaderKey = '';
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].scripts) {
             for (var j = 0; j < projects[i].scripts.length; j++) {
@@ -518,70 +418,68 @@ function copyLoader(loaderId) {
         }
         if (scriptCode) break;
     }
-    
     if (!scriptCode) {
         showNotification('Error', 'Script not found!', 'error');
         return;
     }
-    
-    // Store the script for raw access with loader key
     storeScriptForRawAccess(loaderId, scriptCode, scriptName);
     storeScriptForRawAccess(scriptId, scriptCode, scriptName);
     storeScriptForLoader(loaderId, scriptCode, scriptName, loaderKey);
     storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey);
-    
-    // SIMPLE LOADER - Direct embed (works everywhere)
+
+    // Luarmor-style loader with key verification
+    var loaderWithKey = 'local key = "YOUR_KEY_HERE";\n' +
+                        'local function verifyKey(k)\n' +
+                        '  local url = "' + window.location.origin + '/verify-key?id=' + loaderId + '&key=" .. k;\n' +
+                        '  local response = game:HttpGet(url);\n' +
+                        '  return response == "valid";\n' +
+                        'end\n' +
+                        'if verifyKey(key) then\n' +
+                        '  loadstring(game:HttpGet("' + window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey + '"))()\n' +
+                        'else\n' +
+                        '  error("Invalid or expired key.")\n' +
+                        'end';
+
     var directLoader = 'loadstring([[' + scriptCode + ']])()';
-    
-    // HTTP Loader using raw.html (shows "Not Allowed" in browser, works in executor)
     var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey;
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
-    
-    // Show dialog with both options
+
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 550px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:20px;">📋 Loader Code</h2>
             <p class="sub">Script: <strong style="color:#8a6bff;">${scriptName}</strong></p>
-            
+
             <div style="margin-bottom:12px;">
-                <label style="color:#66ff66; font-size:12px;">✅ Recommended (Works on all executors):</label>
+                <label style="color:#66ff66; font-size:12px;">✅ Luarmor-Style Loader (With Key Verification):</label>
                 <div style="background:rgba(10,10,15,0.8); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.2); margin-top:4px;">
-                    <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${directLoader}</code>
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${loaderWithKey}</code>
                 </div>
-                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Direct Loader</button>
+                <button onclick="copyText('${loaderWithKey.replace(/'/g, "\\'")}')" class="btn btn-primary" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy Loader with Key</button>
             </div>
-            
+
             <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">🔗 HTTP Loader (Raw - Hidden from browsers):</label>
+                <label style="color:#8888aa; font-size:12px;">🔗 Simple HTTP Loader:</label>
                 <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
                     <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${httpLoader}</code>
                 </div>
                 <button onclick="copyText('${httpLoader.replace(/'/g, "\\'")}')" class="btn btn-close-dropdown" style="margin-top:6px; padding:6px 16px; font-size:13px; width:100%;">📋 Copy HTTP Loader</button>
             </div>
-            
+
             <div style="background:rgba(100,255,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.1); margin-bottom:12px;">
-                <p style="color:#66ff66; font-size:12px; margin:0;">💡 The HTTP loader fetches from raw.html. Browsers see "Not Allowed" - only Roblox executors get the code!</p>
+                <p style="color:#66ff66; font-size:12px; margin:0;">💡 The Luarmor-style loader includes key verification. Replace YOUR_KEY_HERE with a valid key from the Keys tab.</p>
             </div>
-            
+
             <div style="display:flex; gap:8px; margin-top:8px;">
-                <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy Direct</button>
-                <button onclick="copyText('${httpLoader.replace(/'/g, "\\'")}')" class="btn btn-close-dropdown" style="flex:1;">📋 Copy HTTP</button>
+                <button onclick="copyText('${loaderWithKey.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy Loader</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
-            </div>
-            
-            <div style="margin-top:8px; padding:8px; background:rgba(255,215,0,0.05); border-radius:8px; border:1px solid rgba(255,215,0,0.1);">
-                <p style="color:#ffd700; font-size:11px; margin:0; word-break:break-all;">🔗 Raw URL: ${rawUrl}</p>
-                <button onclick="copyText('${rawUrl}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:11px; width:100%;">📋 Copy Raw URL</button>
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
@@ -589,12 +487,8 @@ function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(function() {
             showNotification('Copied!', 'Copied to clipboard!', 'success');
-        }).catch(function() {
-            fallbackCopy(text);
-        });
-    } else {
-        fallbackCopy(text);
-    }
+        }).catch(function() { fallbackCopy(text); });
+    } else { fallbackCopy(text); }
 }
 
 function fallbackCopy(text) {
@@ -611,28 +505,55 @@ function fallbackCopy(text) {
     textarea.remove();
 }
 
+// ============ RENDER KEYS ============
+function renderKeys() {
+    var container = document.getElementById('keysList');
+    if (!container) return;
+    var keyData = loadKeys();
+    if (keyData.keys.length === 0) {
+        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No keys generated yet. Generate a key below.</p>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < keyData.keys.length; i++) {
+        var k = keyData.keys[i];
+        var status = k.used ? '❌ Used' : (k.expires && k.expires < Date.now() ? '⏰ Expired' : '✅ Active');
+        var statusColor = k.used ? '#ff6b6b' : (k.expires && k.expires < Date.now() ? '#ffc800' : '#66ff66');
+        var expiresText = k.expires ? new Date(k.expires).toLocaleDateString() : 'Never';
+        html += `
+            <div class="script-item">
+                <div class="script-info">
+                    <div class="name" style="font-family:monospace;">${k.key}</div>
+                    <div class="desc">Type: ${k.type} | Expires: ${expiresText} | Status: <span style="color:${statusColor};">${status}</span></div>
+                    ${k.usedBy ? '<div class="desc">Used by: ' + k.usedBy + ' at ' + new Date(k.usedAt).toLocaleDateString() + '</div>' : ''}
+                </div>
+                <div class="script-actions">
+                    <button onclick="copyText('${k.key}')" class="btn-sm btn-sm-primary">📋 Copy</button>
+                    <button onclick="deleteKey('${k.id}')" class="btn-sm btn-sm-danger">🗑️</button>
+                </div>
+            </div>
+        `;
+    }
+    container.innerHTML = html;
+}
+
 // ============ UI UPDATE ============
 function updateUIForUser(user) {
     if (!user) return;
-    
     isLoggedIn = true;
     currentUser = user;
     setCurrentUser(user);
-    
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
     var adminBtn = document.getElementById('adminBtn');
     var usersBtn = document.getElementById('usersBtn');
-    
     if (signupBtn) signupBtn.style.display = 'none';
     if (loginBtn) loginBtn.style.display = 'none';
     if (navbarUser) navbarUser.classList.add('show');
-    
     var avatar = document.getElementById('userAvatar');
     var userName = document.getElementById('userName');
     var userPlan = document.getElementById('userPlan');
-    
     if (avatar) {
         if (user.profileImage) {
             avatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">';
@@ -642,36 +563,29 @@ function updateUIForUser(user) {
     }
     if (userName) userName.textContent = user.username;
     if (userPlan) userPlan.textContent = user.plan || 'Basic';
-    
     if (adminBtn && user.username === 'Scripter') {
         adminBtn.style.display = 'inline-block';
     } else if (adminBtn) {
         adminBtn.style.display = 'none';
     }
-    
     if (usersBtn && user.username === 'Scripter') {
         usersBtn.style.display = 'inline-block';
     } else if (usersBtn) {
         usersBtn.style.display = 'none';
     }
-    
     if (user.theme) {
         applyTheme(user.theme);
         var themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = user.theme;
     }
-    
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
-    
     if (homePage) homePage.style.display = 'none';
     if (dashboard) dashboard.style.display = 'block';
     dashboard.classList.add('show');
     if (plansSection) plansSection.style.display = 'none';
-    
     showTabs();
-    
     var dashUsername = document.getElementById('dashUsername');
     var dashEmail = document.getElementById('dashEmail');
     var dashPlan = document.getElementById('dashPlan');
@@ -679,13 +593,11 @@ function updateUIForUser(user) {
     var dashBanner = document.getElementById('dashBanner');
     var dashUsername2 = document.getElementById('dashUsername2');
     var dashPlan2 = document.getElementById('dashPlan2');
-    
     if (dashUsername) dashUsername.textContent = user.username;
     if (dashEmail) dashEmail.textContent = user.email;
     if (dashPlan) dashPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (dashUsername2) dashUsername2.textContent = user.username;
     if (dashPlan2) dashPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
-    
     if (dashAvatar) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -698,42 +610,34 @@ function updateUIForUser(user) {
             dashAvatar.style.fontWeight = 'bold';
         }
     }
-    
     if (dashBanner && user.bannerImage) {
         dashBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
         dashBanner.style.display = 'block';
     } else if (dashBanner) {
         dashBanner.style.display = 'none';
     }
-    
     if (user.stats) {
         var stats = user.stats;
         document.getElementById('projectsUsed').textContent = stats.projects.used;
         document.getElementById('projectsMax').textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
         updateBar('projects', stats.projects.used, stats.projects.max);
-        
         document.getElementById('keysUsed').textContent = stats.keys.used;
         document.getElementById('keysMax').textContent = stats.keys.max === Infinity ? '∞' : stats.keys.max;
         updateBar('keys', stats.keys.used, stats.keys.max);
-        
         document.getElementById('scriptsUsed').textContent = stats.scripts.used;
         document.getElementById('scriptsMax').textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
         updateBar('scripts', stats.scripts.used, stats.scripts.max);
-        
         document.getElementById('storageUsed').textContent = stats.fileSize.used;
         document.getElementById('storageMax').textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
         updateBar('storage', stats.fileSize.used, stats.fileSize.max);
     }
-    
     updateDashboardTab(user);
-    
     console.log('✅ Dashboard shown for user:', user.username);
 }
 
 function updateDashboardTab(user) {
     var tabDashboard = document.getElementById('tab-dashboard');
     if (!tabDashboard) return;
-    
     var tabUsername = tabDashboard.querySelector('#dashUsername');
     var tabEmail = tabDashboard.querySelector('#dashEmail');
     var tabPlan = tabDashboard.querySelector('#dashPlan');
@@ -741,13 +645,11 @@ function updateDashboardTab(user) {
     var tabBanner = tabDashboard.querySelector('#dashBanner');
     var tabUsername2 = tabDashboard.querySelector('#dashUsername2');
     var tabPlan2 = tabDashboard.querySelector('#dashPlan2');
-    
     if (tabUsername) tabUsername.textContent = user.username;
     if (tabEmail) tabEmail.textContent = user.email;
     if (tabPlan) tabPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (tabUsername2) tabUsername2.textContent = user.username;
     if (tabPlan2) tabPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
-    
     if (tabAvatar) {
         if (user.profileImage) {
             tabAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -760,14 +662,12 @@ function updateDashboardTab(user) {
             tabAvatar.style.fontWeight = 'bold';
         }
     }
-    
     if (tabBanner && user.bannerImage) {
         tabBanner.style.backgroundImage = 'url(' + user.bannerImage + ')';
         tabBanner.style.display = 'block';
     } else if (tabBanner) {
         tabBanner.style.display = 'none';
     }
-    
     if (user.stats) {
         var stats = user.stats;
         var tabProjectsUsed = tabDashboard.querySelector('#projectsUsed');
@@ -778,7 +678,6 @@ function updateDashboardTab(user) {
         var tabScriptsMax = tabDashboard.querySelector('#scriptsMax');
         var tabStorageUsed = tabDashboard.querySelector('#storageUsed');
         var tabStorageMax = tabDashboard.querySelector('#storageMax');
-        
         if (tabProjectsUsed) tabProjectsUsed.textContent = stats.projects.used;
         if (tabProjectsMax) tabProjectsMax.textContent = stats.projects.max === Infinity ? '∞' : stats.projects.max;
         if (tabKeysUsed) tabKeysUsed.textContent = stats.keys.used;
@@ -787,7 +686,6 @@ function updateDashboardTab(user) {
         if (tabScriptsMax) tabScriptsMax.textContent = stats.scripts.max === Infinity ? '∞' : stats.scripts.max;
         if (tabStorageUsed) tabStorageUsed.textContent = stats.fileSize.used;
         if (tabStorageMax) tabStorageMax.textContent = stats.fileSize.max === Infinity ? '∞' : stats.fileSize.max;
-        
         updateTabBar(tabDashboard, 'projects', stats.projects.used, stats.projects.max);
         updateTabBar(tabDashboard, 'keys', stats.keys.used, stats.keys.max);
         updateTabBar(tabDashboard, 'scripts', stats.scripts.used, stats.scripts.max);
@@ -798,37 +696,21 @@ function updateDashboardTab(user) {
 function updateTabBar(container, name, used, max) {
     var bar = container.querySelector('#' + name + 'Bar');
     if (!bar) return;
-    
     var percentage = 0;
-    if (max > 0 && max !== Infinity) {
-        percentage = (used / max) * 100;
-    }
+    if (max > 0 && max !== Infinity) { percentage = (used / max) * 100; }
     bar.style.width = Math.min(percentage, 100) + '%';
-    
     bar.className = 'fill';
-    if (percentage > 90) {
-        bar.classList.add('danger');
-    } else if (percentage > 70) {
-        bar.classList.add('warning');
-    }
+    if (percentage > 90) { bar.classList.add('danger'); } else if (percentage > 70) { bar.classList.add('warning'); }
 }
 
 function updateBar(name, used, max) {
     var bar = document.getElementById(name + 'Bar');
     if (!bar) return;
-    
     var percentage = 0;
-    if (max > 0 && max !== Infinity) {
-        percentage = (used / max) * 100;
-    }
+    if (max > 0 && max !== Infinity) { percentage = (used / max) * 100; }
     bar.style.width = Math.min(percentage, 100) + '%';
-    
     bar.className = 'fill';
-    if (percentage > 90) {
-        bar.classList.add('danger');
-    } else if (percentage > 70) {
-        bar.classList.add('warning');
-    }
+    if (percentage > 90) { bar.classList.add('danger'); } else if (percentage > 70) { bar.classList.add('warning'); }
 }
 
 // ============ AUTH FUNCTIONS ============
@@ -836,7 +718,6 @@ function logout() {
     isLoggedIn = false;
     currentUser = null;
     clearCurrentUser();
-    
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -846,69 +727,53 @@ function logout() {
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
     var tabsNav = document.getElementById('tabsNav');
-    
     if (signupBtn) signupBtn.style.display = 'inline-block';
     if (loginBtn) loginBtn.style.display = 'inline-block';
     if (navbarUser) navbarUser.classList.remove('show');
     if (adminBtn) adminBtn.style.display = 'none';
     if (usersBtn) usersBtn.style.display = 'none';
     if (tabsNav) tabsNav.style.display = 'none';
-    
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
     dashboard.style.display = 'none';
     if (plansSection) plansSection.style.display = 'block';
-    
     var tabDashboard = document.getElementById('tab-dashboard');
     if (tabDashboard) tabDashboard.innerHTML = '';
-    
     var contents = document.querySelectorAll('.tab-content');
-    for (var i = 0; i < contents.length; i++) {
-        contents[i].style.display = 'none';
-    }
-    
+    for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     showNotification('Logged Out', 'You have been logged out successfully.', 'info');
     console.log('👋 Logged out');
 }
 
-// ============ SIGNUP HANDLER ============
 function handleSignup(event) {
     event.preventDefault();
-    console.log('📝 Signup form submitted');
-    
     var email = document.getElementById('signupEmail').value.trim();
     var username = document.getElementById('signupUsername').value.trim();
     var password = document.getElementById('signupPassword').value;
     var description = document.getElementById('signupDescription').value.trim();
-    
     if (!email || !username || !password) {
         showNotification('Error', 'Please fill in all required fields.', 'error');
         return;
     }
-    
     var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
         showNotification('Error', 'Please enter a valid email address.', 'error');
         return;
     }
-    
     if (password.length < 6) {
         showNotification('Error', 'Password must be at least 6 characters.', 'error');
         return;
     }
-    
     if (users[email]) {
         showNotification('Error', 'An account with this email already exists.', 'error');
         return;
     }
-    
     for (var key in users) {
         if (users[key].username.toLowerCase() === username.toLowerCase()) {
             showNotification('Error', 'This username is already taken.', 'error');
             return;
         }
     }
-    
     var user = {
         id: 'user_' + Date.now(),
         email: email,
@@ -922,43 +787,29 @@ function handleSignup(event) {
         profileImage: '',
         bannerImage: '',
         theme: 'default',
-        stats: {
-            projects: { used: 0, max: 1 },
-            keys: { used: 0, max: 2 },
-            scripts: { used: 0, max: 3 },
-            fileSize: { used: 0, max: 5 }
-        }
+        stats: { projects: { used: 0, max: 1 }, keys: { used: 0, max: 2 }, scripts: { used: 0, max: 3 }, fileSize: { used: 0, max: 5 } }
     };
-    
     users[email] = user;
     saveUsers();
-    
     closeModal('signup');
     showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
     document.getElementById('signupForm').reset();
-    
     var userData = { ...user };
     delete userData.password;
     updateUIForUser(userData);
     console.log('✅ User signed up and logged in:', username);
 }
 
-// ============ LOGIN HANDLER ============
 function handleLogin(event) {
     event.preventDefault();
-    console.log('🔑 Login form submitted');
-    
     var emailOrUsername = document.getElementById('loginEmail').value.trim();
     var password = document.getElementById('loginPassword').value;
-    
     if (!emailOrUsername || !password) {
         showNotification('Error', 'Please fill in all fields.', 'error');
         return;
     }
-    
     var foundUser = null;
     var foundKey = null;
-    
     for (var key in users) {
         if (key === emailOrUsername || users[key].username.toLowerCase() === emailOrUsername.toLowerCase()) {
             foundUser = users[key];
@@ -966,28 +817,23 @@ function handleLogin(event) {
             break;
         }
     }
-    
     if (!foundUser) {
         showNotification('Error', 'Invalid email/username or password.', 'error');
         return;
     }
-    
     if (btoa(password) !== foundUser.password) {
         showNotification('Error', 'Invalid email/username or password.', 'error');
         return;
     }
-    
     closeModal('login');
     showNotification('Welcome Back!', 'Logged in successfully!', 'success');
     document.getElementById('loginForm').reset();
-    
     var userData = { ...foundUser };
     delete userData.password;
     updateUIForUser(userData);
     console.log('✅ User logged in:', userData.username);
 }
 
-// ============ SOCIAL AUTH (Demo) ============
 function handleSocial(provider) {
     showNotification('Coming Soon', provider + ' authentication will be available soon.', 'info');
 }
@@ -998,13 +844,11 @@ function openUsersPanel() {
         showNotification('Access Denied', 'Only Scripter can access the users panel.', 'error');
         return;
     }
-    
     var overlay = document.getElementById('usersPanelOverlay');
     if (!overlay) {
         createUsersPanel();
         overlay = document.getElementById('usersPanelOverlay');
     }
-    
     overlay.classList.add('active');
     selectedUserEmail = null;
     renderUsersList();
@@ -1025,14 +869,9 @@ function createUsersPanel() {
     var overlay = document.createElement('div');
     overlay.className = 'users-panel-overlay';
     overlay.id = 'usersPanelOverlay';
-    
     overlay.innerHTML = `
         <div class="users-panel">
-            <div class="panel-header">
-                <h2>👥 Users List</h2>
-                <button class="panel-close" onclick="closeUsersPanel()">✕</button>
-            </div>
-            
+            <div class="panel-header"><h2>👥 Users List</h2><button class="panel-close" onclick="closeUsersPanel()">✕</button></div>
             <div class="panel-search">
                 <select id="panelSearchType" onchange="renderUsersList()">
                     <option value="username">Search by Username</option>
@@ -1040,11 +879,8 @@ function createUsersPanel() {
                 </select>
                 <input type="text" id="panelSearchQuery" placeholder="Search users..." oninput="renderUsersList()">
             </div>
-            
             <div class="panel-list" id="panelUserList"></div>
-            
             <div class="panel-status" id="panelStatus"></div>
-            
             <div class="panel-actions">
                 <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
                 <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
@@ -1052,45 +888,25 @@ function createUsersPanel() {
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
-    
-    overlay.addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeUsersPanel();
-        }
-    });
+    overlay.addEventListener('click', function(e) { if (e.target === this) closeUsersPanel(); });
 }
 
 function renderUsersList() {
     var container = document.getElementById('panelUserList');
     var statusEl = document.getElementById('panelStatus');
     if (!container) return;
-    
     var searchType = document.getElementById('panelSearchType') ? document.getElementById('panelSearchType').value : 'username';
     var searchQuery = document.getElementById('panelSearchQuery') ? document.getElementById('panelSearchQuery').value.toLowerCase() : '';
-    
     var html = '';
     var count = 0;
     var filteredUsers = {};
-    
     for (var key in users) {
         var user = users[key];
         var match = false;
-        
-        if (searchQuery === '') {
-            match = true;
-        } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) {
-            match = true;
-        } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) {
-            match = true;
-        }
-        
-        if (match) {
-            filteredUsers[key] = user;
-        }
+        if (searchQuery === '') { match = true; } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) { match = true; } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) { match = true; }
+        if (match) { filteredUsers[key] = user; }
     }
-    
     for (var key in filteredUsers) {
         count++;
         var user = filteredUsers[key];
@@ -1100,17 +916,11 @@ function renderUsersList() {
         var isSelected = (selectedUserEmail === key) ? 'selected' : '';
         var avatarLetter = user.username.charAt(0).toUpperCase();
         var safeKey = key.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        
         html += `
             <div class="user-list-item ${isSelected}" onclick="selectUser('${safeKey}')">
                 <div class="user-info">
-                    <div class="user-avatar">
-                        ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : avatarLetter}
-                    </div>
-                    <div class="user-details">
-                        <div class="name">${user.username}</div>
-                        <div class="email">${user.email}</div>
-                    </div>
+                    <div class="user-avatar">${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : avatarLetter}</div>
+                    <div class="user-details"><div class="name">${user.username}</div><div class="email">${user.email}</div></div>
                 </div>
                 <div class="user-tags">
                     <span class="tag tag-plan">${user.plan}</span>
@@ -1119,15 +929,9 @@ function renderUsersList() {
             </div>
         `;
     }
-    
-    if (count === 0) {
-        html = '<div style="text-align: center; color: #8888aa; padding: 40px 0;">No users found.</div>';
-    }
-    
+    if (count === 0) { html = '<div style="text-align: center; color: #8888aa; padding: 40px 0;">No users found.</div>'; }
     container.innerHTML = html;
-    if (statusEl) {
-        statusEl.textContent = count + ' users found';
-    }
+    if (statusEl) { statusEl.textContent = count + ' users found'; }
     updatePanelButtons();
 }
 
@@ -1143,34 +947,15 @@ function updatePanelButtons() {
     var isSelected = selectedUserEmail !== null;
     var user = isSelected ? users[selectedUserEmail] : null;
     var canDelete = isSelected && user && !user.isScripter;
-    
-    if (deleteBtn) {
-        deleteBtn.disabled = !canDelete;
-        deleteBtn.style.opacity = canDelete ? '1' : '0.3';
-    }
-    if (planBtn) {
-        planBtn.disabled = !isSelected;
-        planBtn.style.opacity = isSelected ? '1' : '0.3';
-    }
+    if (deleteBtn) { deleteBtn.disabled = !canDelete; deleteBtn.style.opacity = canDelete ? '1' : '0.3'; }
+    if (planBtn) { planBtn.disabled = !isSelected; planBtn.style.opacity = isSelected ? '1' : '0.3'; }
 }
 
 function panelDeleteUser() {
-    if (!selectedUserEmail) {
-        showNotification('Error', 'Please select a user first.', 'error');
-        return;
-    }
-    
+    if (!selectedUserEmail) { showNotification('Error', 'Please select a user first.', 'error'); return; }
     var user = users[selectedUserEmail];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
-    if (user.isScripter) {
-        showNotification('Error', 'Cannot delete the creator account.', 'error');
-        return;
-    }
-    
+    if (!user) { showNotification('Error', 'User not found.', 'error'); return; }
+    if (user.isScripter) { showNotification('Error', 'Cannot delete the creator account.', 'error'); return; }
     if (confirm('Are you sure you want to delete ' + user.username + '? This cannot be undone!')) {
         delete users[selectedUserEmail];
         saveUsers();
@@ -1183,17 +968,9 @@ function panelDeleteUser() {
 }
 
 function panelChangePlan() {
-    if (!selectedUserEmail) {
-        showNotification('Error', 'Please select a user first.', 'error');
-        return;
-    }
-    
+    if (!selectedUserEmail) { showNotification('Error', 'Please select a user first.', 'error'); return; }
     var user = users[selectedUserEmail];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
+    if (!user) { showNotification('Error', 'User not found.', 'error'); return; }
     changeUserPlan(selectedUserEmail);
 }
 
@@ -1203,7 +980,6 @@ function openAdminPanel() {
         showNotification('Access Denied', 'Only Scripter can access the admin panel.', 'error');
         return;
     }
-    
     openModal('admin');
     renderAdminUserListFull();
 }
@@ -1211,17 +987,14 @@ function openAdminPanel() {
 function renderAdminUserListFull() {
     var container = document.getElementById('userList');
     if (!container) return;
-    
     var html = '';
     var count = 0;
-    
     for (var key in users) {
         count++;
         var user = users[key];
         var createdDate = new Date(user.createdAt).toLocaleDateString();
         var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
         var isScripter = user.isScripter ? '⭐ Creator' : '';
-        
         html += `
             <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -1229,10 +1002,7 @@ function renderAdminUserListFull() {
                         <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
                             ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
                         </div>
-                        <div>
-                            <strong style="color: #ffffff;">${user.username}</strong>
-                            <span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span>
-                        </div>
+                        <div><strong style="color: #ffffff;">${user.username}</strong><span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span></div>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                         ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
@@ -1246,27 +1016,13 @@ function renderAdminUserListFull() {
             </div>
         `;
     }
-    
-    if (count === 0) {
-        html = '<p style="color: #8888aa; text-align: center; padding: 40px 0;">No users registered yet.</p>';
-    } else {
-        html = '<div style="margin-bottom: 12px; color: #8888aa; font-size: 13px;">Total Users: ' + count + '</div>' + html;
-    }
-    
+    if (count === 0) { html = '<p style="color: #8888aa; text-align: center; padding: 40px 0;">No users registered yet.</p>'; } else { html = '<div style="margin-bottom: 12px; color: #8888aa; font-size: 13px;">Total Users: ' + count + '</div>' + html; }
     container.innerHTML = html;
 }
 
 function deleteUser(email) {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can delete users.', 'error');
-        return;
-    }
-    
-    if (email === 'dubovikstanislav51@gmail.com') {
-        showNotification('Error', 'Cannot delete the creator account.', 'error');
-        return;
-    }
-    
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete users.', 'error'); return; }
+    if (email === 'dubovikstanislav51@gmail.com') { showNotification('Error', 'Cannot delete the creator account.', 'error'); return; }
     if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
         delete users[email];
         saveUsers();
@@ -1277,21 +1033,13 @@ function deleteUser(email) {
 }
 
 function deleteAllUsers() {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can delete all users.', 'error');
-        return;
-    }
-    
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete all users.', 'error'); return; }
     if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
         var scripterAccount = users['dubovikstanislav51@gmail.com'];
         var adminAccount = users['admin@example.com'];
         users = {};
-        if (scripterAccount) {
-            users['dubovikstanislav51@gmail.com'] = scripterAccount;
-        }
-        if (adminAccount) {
-            users['admin@example.com'] = adminAccount;
-        }
+        if (scripterAccount) { users['dubovikstanislav51@gmail.com'] = scripterAccount; }
+        if (adminAccount) { users['admin@example.com'] = adminAccount; }
         saveUsers();
         showNotification('Cleared', 'All users have been deleted.', 'warning');
         renderUserList();
@@ -1299,28 +1047,17 @@ function deleteAllUsers() {
     }
 }
 
-function filterUsers() {
-    renderUserList();
-}
+function filterUsers() { renderUserList(); }
 
 // ============ CHANGE USER PLAN ============
 function changeUserPlan(email) {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can change user plans.', 'error');
-        return;
-    }
-    
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can change user plans.', 'error'); return; }
     var user = users[email];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
+    if (!user) { showNotification('Error', 'User not found.', 'error'); return; }
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
@@ -1328,28 +1065,16 @@ function changeUserPlan(email) {
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
                 </div>
-                <div>
-                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2>
-                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p>
-                </div>
+                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
             </div>
-            
-            <div class="form-group">
-                <label style="font-size: 14px;">Select New Plan</label>
-                <select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
-                    ${planOptions}
-                </select>
-            </div>
-            
+            <div class="form-group"><label style="font-size: 14px;">Select New Plan</label><select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">${planOptions}</select></div>
             <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                     <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="previewPlanName">Basic</span>
@@ -1362,28 +1087,21 @@ function changeUserPlan(email) {
                     <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
                 </div>
             </div>
-            
             <div style="display: flex; gap: 12px; margin-top: 20px;">
                 <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
-    
     var select = overlay.querySelector('#newPlanSelect');
-    select.addEventListener('change', function() {
-        updatePlanPreviewGUI(this.value);
-    });
-    
+    select.addEventListener('change', function() { updatePlanPreviewGUI(this.value); });
     updatePlanPreviewGUI(select.value);
 }
 
 function updatePlanPreviewGUI(planName) {
     var config = PLAN_CONFIGS[planName];
     if (!config) return;
-    
     document.getElementById('previewPlanName').textContent = planName;
     document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
     document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
@@ -1395,49 +1113,24 @@ function updatePlanPreviewGUI(planName) {
 function confirmChangePlan(email) {
     var select = document.getElementById('newPlanSelect');
     var newPlan = select.value;
-    
-    if (!newPlan) {
-        showNotification('Error', 'Please select a plan.', 'error');
-        return;
-    }
-    
+    if (!newPlan) { showNotification('Error', 'Please select a plan.', 'error'); return; }
     var user = users[email];
-    if (!user) {
-        showNotification('Error', 'User not found.', 'error');
-        return;
-    }
-    
+    if (!user) { showNotification('Error', 'User not found.', 'error'); return; }
     var config = PLAN_CONFIGS[newPlan];
-    if (!config) {
-        showNotification('Error', 'Invalid plan selected.', 'error');
-        return;
-    }
-    
-    if (user.plan === newPlan) {
-        showNotification('Info', 'User already has this plan.', 'info');
-        return;
-    }
-    
-    if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) {
-        return;
-    }
-    
+    if (!config) { showNotification('Error', 'Invalid plan selected.', 'error'); return; }
+    if (user.plan === newPlan) { showNotification('Info', 'User already has this plan.', 'info'); return; }
+    if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) return;
     user.plan = newPlan;
     user.stats.projects.max = config.projects;
     user.stats.keys.max = config.keys;
     user.stats.scripts.max = config.scripts;
     user.stats.fileSize.max = config.fileSize;
-    
     saveUsers();
-    
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    
     showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
-    
     renderUserList();
     renderAdminUserListFull();
-    
     if (currentUser && currentUser.id === user.id) {
         var userData = { ...user };
         delete userData.password;
@@ -1447,16 +1140,11 @@ function confirmChangePlan(email) {
 
 // ============ CHANGE OWN PLAN ============
 function changeOwnPlan() {
-    if (!currentUser) {
-        showNotification('Error', 'Please login first.', 'error');
-        return;
-    }
-    
+    if (!currentUser) { showNotification('Error', 'Please login first.', 'error'); return; }
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
@@ -1464,28 +1152,16 @@ function changeOwnPlan() {
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
                 </div>
-                <div>
-                    <h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2>
-                    <p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p>
-                </div>
+                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p></div>
             </div>
-            
-            <div class="form-group">
-                <label style="font-size: 14px;">Select New Plan</label>
-                <select id="ownPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">
-                    ${planOptions}
-                </select>
-            </div>
-            
+            <div class="form-group"><label style="font-size: 14px;">Select New Plan</label><select id="ownPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">${planOptions}</select></div>
             <div id="ownPlanPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                     <span style="font-weight: 600; font-size: 16px; color: #ffffff;" id="ownPreviewPlanName">Basic</span>
@@ -1498,28 +1174,21 @@ function changeOwnPlan() {
                     <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
                 </div>
             </div>
-            
             <div style="display: flex; gap: 12px; margin-top: 20px;">
                 <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
-    
     var select = overlay.querySelector('#ownPlanSelect');
-    select.addEventListener('change', function() {
-        updateOwnPlanPreviewGUI(this.value);
-    });
-    
+    select.addEventListener('change', function() { updateOwnPlanPreviewGUI(this.value); });
     updateOwnPlanPreviewGUI(select.value);
 }
 
 function updateOwnPlanPreviewGUI(planName) {
     var config = PLAN_CONFIGS[planName];
     if (!config) return;
-    
     document.getElementById('ownPreviewPlanName').textContent = planName;
     document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
     document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
@@ -1531,27 +1200,11 @@ function updateOwnPlanPreviewGUI(planName) {
 function confirmOwnPlanChange() {
     var select = document.getElementById('ownPlanSelect');
     var newPlan = select.value;
-    
-    if (!newPlan) {
-        showNotification('Error', 'Please select a plan.', 'error');
-        return;
-    }
-    
+    if (!newPlan) { showNotification('Error', 'Please select a plan.', 'error'); return; }
     var config = PLAN_CONFIGS[newPlan];
-    if (!config) {
-        showNotification('Error', 'Invalid plan selected.', 'error');
-        return;
-    }
-    
-    if (currentUser.plan === newPlan) {
-        showNotification('Info', 'You already have this plan.', 'info');
-        return;
-    }
-    
-    if (!confirm('Are you sure you want to change your plan from ' + currentUser.plan + ' to ' + newPlan + '?')) {
-        return;
-    }
-    
+    if (!config) { showNotification('Error', 'Invalid plan selected.', 'error'); return; }
+    if (currentUser.plan === newPlan) { showNotification('Info', 'You already have this plan.', 'info'); return; }
+    if (!confirm('Are you sure you want to change your plan from ' + currentUser.plan + ' to ' + newPlan + '?')) return;
     for (var key in users) {
         if (users[key].id === currentUser.id) {
             users[key].plan = newPlan;
@@ -1562,14 +1215,10 @@ function confirmOwnPlanChange() {
             break;
         }
     }
-    
     saveUsers();
-    
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    
     showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
-    
     var userData = { ...currentUser };
     userData.plan = newPlan;
     userData.stats.projects.max = config.projects;
@@ -1583,111 +1232,64 @@ function confirmOwnPlanChange() {
 // ============ IMAGE UPLOAD FUNCTIONS ============
 function uploadProfileImage() {
     var input = document.getElementById('profileImageInput');
-    if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file first.', 'error');
-        return;
-    }
-    
+    if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
-    
-    if (file.size > 2 * 1024 * 1024) {
-        showNotification('Error', 'Profile image size must be less than 2MB.', 'error');
-        return;
-    }
-    
+    if (file.size > 2 * 1024 * 1024) { showNotification('Error', 'Profile image size must be less than 2MB.', 'error'); return; }
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
-    if (!validTypes.includes(file.type)) {
-        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
-        return;
-    }
-    
+    if (!validTypes.includes(file.type)) { showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error'); return; }
     var reader = new FileReader();
-    
     reader.onload = function(e) {
         try {
             var imageData = e.target.result;
-            
             for (var key in users) {
                 if (users[key].id === currentUser.id) {
                     users[key].profileImage = imageData;
                     saveUsers();
-                    
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
-                    
                     showNotification('Success', 'Profile image updated successfully!', 'success');
                     input.value = '';
                     break;
                 }
             }
-        } catch (error) {
-            showNotification('Error', 'Failed to save image: ' + error.message, 'error');
-        }
+        } catch (error) { showNotification('Error', 'Failed to save image: ' + error.message, 'error'); }
     };
-    
-    reader.onerror = function() {
-        showNotification('Error', 'Failed to read image file.', 'error');
-    };
-    
+    reader.onerror = function() { showNotification('Error', 'Failed to read image file.', 'error'); };
     reader.readAsDataURL(file);
 }
 
 function uploadBannerImage() {
     var input = document.getElementById('bannerImageInput');
-    if (!input || !input.files || input.files.length === 0) {
-        showNotification('Error', 'Please select an image file first.', 'error');
-        return;
-    }
-    
+    if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
-    
-    if (file.size > 5 * 1024 * 1024) {
-        showNotification('Error', 'Banner image size must be less than 5MB.', 'error');
-        return;
-    }
-    
+    if (file.size > 5 * 1024 * 1024) { showNotification('Error', 'Banner image size must be less than 5MB.', 'error'); return; }
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
-    if (!validTypes.includes(file.type)) {
-        showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error');
-        return;
-    }
-    
+    if (!validTypes.includes(file.type)) { showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error'); return; }
     var reader = new FileReader();
-    
     reader.onload = function(e) {
         try {
             var imageData = e.target.result;
-            
             for (var key in users) {
                 if (users[key].id === currentUser.id) {
                     users[key].bannerImage = imageData;
                     saveUsers();
-                    
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
-                    
                     showNotification('Success', 'Banner image updated successfully!', 'success');
                     input.value = '';
                     break;
                 }
             }
-        } catch (error) {
-            showNotification('Error', 'Failed to save banner: ' + error.message, 'error');
-        }
+        } catch (error) { showNotification('Error', 'Failed to save banner: ' + error.message, 'error'); }
     };
-    
-    reader.onerror = function() {
-        showNotification('Error', 'Failed to read image file.', 'error');
-    };
-    
+    reader.onerror = function() { showNotification('Error', 'Failed to read image file.', 'error'); };
     reader.readAsDataURL(file);
 }
 
 function changeTheme(themeName) {
     if (!currentUser) return;
-    
     for (var key in users) {
         if (users[key].id === currentUser.id) {
             users[key].theme = themeName;
@@ -1700,18 +1302,13 @@ function changeTheme(themeName) {
 }
 
 function exportUsers() {
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        showNotification('Access Denied', 'Only Scripter can export users.', 'error');
-        return;
-    }
-    
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can export users.', 'error'); return; }
     var exportData = {};
     for (var key in users) {
         var user = { ...users[key] };
         delete user.password;
         exportData[key] = user;
     }
-    
     var json = JSON.stringify(exportData, null, 2);
     var blob = new Blob([json], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
@@ -1720,7 +1317,6 @@ function exportUsers() {
     a.download = 'users_export_' + new Date().toISOString().slice(0,10) + '.json';
     a.click();
     URL.revokeObjectURL(url);
-    
     showNotification('Exported', 'User data exported successfully!', 'success');
 }
 
@@ -1729,29 +1325,21 @@ function loadProjects() {
     try {
         var data = localStorage.getItem('projects_' + (currentUser ? currentUser.id : ''));
         return data ? JSON.parse(data) : [];
-    } catch (e) {
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
 function saveProjects(projects) {
     try {
         localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(projects));
-    } catch (e) {
-        console.error('Error saving projects:', e);
-    }
+    } catch (e) { console.error('Error saving projects:', e); }
 }
 
 // ============ SHOW TABS ============
 function showTabs() {
     var tabsNav = document.getElementById('tabsNav');
-    if (tabsNav) {
-        tabsNav.style.display = 'flex';
-    }
-    
+    if (tabsNav) { tabsNav.style.display = 'flex'; }
     var dashboardContent = document.getElementById('dashboard');
     var tabDashboard = document.getElementById('tab-dashboard');
-    
     if (dashboardContent && tabDashboard) {
         if (!tabDashboard.hasChildNodes() || tabDashboard.children.length === 0) {
             var clone = dashboardContent.cloneNode(true);
@@ -1760,37 +1348,22 @@ function showTabs() {
         }
         dashboardContent.style.display = 'none';
     }
-    
-    if (currentUser) {
-        updateDashboardTab(currentUser);
-    }
-    
+    if (currentUser) { updateDashboardTab(currentUser); }
     switchTab('dashboard');
 }
 
-// ============ TAB SWITCHING ============
 function switchTab(tabName) {
     var btns = document.querySelectorAll('.tab-btn');
     for (var i = 0; i < btns.length; i++) {
         btns[i].classList.remove('active');
-        if (btns[i].dataset.tab === tabName) {
-            btns[i].classList.add('active');
-        }
+        if (btns[i].dataset.tab === tabName) { btns[i].classList.add('active'); }
     }
-    
     var contents = document.querySelectorAll('.tab-content');
-    for (var i = 0; i < contents.length; i++) {
-        contents[i].style.display = 'none';
-    }
-    
+    for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     var target = document.getElementById('tab-' + tabName);
-    if (target) {
-        target.style.display = 'block';
-    }
-    
-    if (tabName === 'scripts') {
-        renderProjects();
-    }
+    if (target) { target.style.display = 'block'; }
+    if (tabName === 'scripts') { renderProjects(); }
+    if (tabName === 'keys') { renderKeys(); }
 }
 
 // ============ CREATE PROJECT ==========
@@ -1799,54 +1372,22 @@ function openCreateProject() {
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size: 22px;">📁 Create Project</h2>
             <p class="sub">Fill in the details to create a new project</p>
-            
-            <div class="form-group">
-                <label>Project Name <span class="required">*</span></label>
-                <input type="text" id="projectName" placeholder="Enter project name" required>
-            </div>
-            
-            <div class="form-group">
-                <label>Project Description <span style="color:#555577;">(optional)</span></label>
-                <textarea id="projectDescription" placeholder="Describe your project..."></textarea>
-            </div>
-            
-            <div class="form-group">
-                <label>Visibility</label>
-                <select id="projectVisibility">
-                    <option value="anyone">Anyone</option>
-                    <option value="friends">Friends (Soon...)</option>
-                    <option value="private">Private</option>
-                </select>
-            </div>
-            
+            <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="projectName" placeholder="Enter project name" required></div>
+            <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="projectDescription" placeholder="Describe your project..."></textarea></div>
+            <div class="form-group"><label>Visibility</label><select id="projectVisibility"><option value="anyone">Anyone</option><option value="friends">Friends (Soon...)</option><option value="private">Private</option></select></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center;">
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="projectBlockIncognito"> Block Incognito Mode
-                </label>
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="projectBlockVPN"> Block VPN
-                </label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectBlockIncognito"> Block Incognito Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectBlockVPN"> Block VPN</label>
             </div>
-            
-            <div class="form-group">
-                <label>Type Of Project</label>
-                <select id="projectType">
-                    <option value="free">Free</option>
-                    <option value="key">Key Required</option>
-                    <option value="paid">Paid</option>
-                </select>
-            </div>
-            
+            <div class="form-group"><label>Type Of Project</label><select id="projectType"><option value="free">Free</option><option value="key">Key Required</option><option value="paid">Paid</option></select></div>
             <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Project</button>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
@@ -1857,29 +1398,11 @@ function confirmCreateProject() {
     var blockIncognito = document.getElementById('projectBlockIncognito').checked;
     var blockVPN = document.getElementById('projectBlockVPN').checked;
     var type = document.getElementById('projectType').value;
-    
-    if (!name) {
-        showNotification('Error', 'Project name is required.', 'error');
-        return;
-    }
-    
+    if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
     var projects = loadProjects();
-    
-    var project = {
-        id: 'proj_' + Date.now(),
-        name: name,
-        description: description,
-        visibility: visibility,
-        blockIncognito: blockIncognito,
-        blockVPN: blockVPN,
-        type: type,
-        createdAt: new Date().toISOString(),
-        scripts: []
-    };
-    
+    var project = { id: 'proj_' + Date.now(), name: name, description: description, visibility: visibility, blockIncognito: blockIncognito, blockVPN: blockVPN, type: type, createdAt: new Date().toISOString(), scripts: [] };
     projects.push(project);
     saveProjects(projects);
-    
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Success', 'Project "' + name + '" created!', 'success');
@@ -1889,20 +1412,16 @@ function confirmCreateProject() {
 function renderProjects() {
     var container = document.getElementById('projectsList');
     if (!container) return;
-    
     var projects = loadProjects();
-    
     if (projects.length === 0) {
         container.innerHTML = '<p style="color:#8888aa; grid-column:1/-1; text-align:center; padding:40px 0;">No projects yet. Create your first project!</p>';
         return;
     }
-    
     var html = '';
     for (var i = 0; i < projects.length; i++) {
         var project = projects[i];
         var scriptCount = project.scripts ? project.scripts.length : 0;
         var visibilityLabel = project.visibility === 'anyone' ? '🌐 Anyone' : (project.visibility === 'friends' ? '👥 Friends' : '🔒 Private');
-        
         html += `
             <div class="project-card">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
@@ -1925,7 +1444,6 @@ function renderProjects() {
             </div>
         `;
     }
-    
     container.innerHTML = html;
 }
 
@@ -1933,26 +1451,13 @@ function renderProjects() {
 function viewProject(projectId) {
     var projects = loadProjects();
     var project = null;
-    
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            project = projects[i];
-            break;
-        }
-    }
-    
-    if (!project) {
-        showNotification('Error', 'Project not found.', 'error');
-        return;
-    }
-    
+    for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { project = projects[i]; break; } }
+    if (!project) { showNotification('Error', 'Project not found.', 'error'); return; }
     currentProject = project;
-    
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     var scriptsHtml = '';
     if (project.scripts && project.scripts.length > 0) {
         for (var i = 0; i < project.scripts.length; i++) {
@@ -1967,15 +1472,12 @@ function viewProject(projectId) {
             else if (obfType === 'luaobfuscator') obfBadgeClass += ' obf-badge-luaobfuscator';
             else if (obfType === 'moonsec') obfBadgeClass += ' obf-badge-moonsec';
             else if (obfType === 'luraph_normal' || obfType === 'luraph_v15') obfBadgeClass += ' obf-badge-luraph';
-            
             scriptsHtml += `
                 <div class="script-item">
                     <div class="script-info">
                         <div class="name">${script.name}</div>
                         <div class="desc">${script.description || 'No description'}</div>
-                        <div style="margin-top:4px;">
-                            <span class="${obfBadgeClass}">🔐 ${obfDisplay}</span>
-                        </div>
+                        <div style="margin-top:4px;"><span class="${obfBadgeClass}">🔐 ${obfDisplay}</span></div>
                     </div>
                     <div class="script-actions">
                         <button onclick="viewScript('${project.id}','${script.id}')" class="btn-sm btn-sm-primary">👁️ View</button>
@@ -1985,26 +1487,17 @@ function viewProject(projectId) {
                 </div>
             `;
         }
-    } else {
-        scriptsHtml = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No scripts in this project yet.</p>';
-    }
-    
+    } else { scriptsHtml = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No scripts in this project yet.</p>'; }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <div>
-                    <h2 style="font-size:22px; margin:0; color:#fff;">📜 ${project.name}</h2>
-                    <p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${project.description || 'No description'}</p>
-                </div>
+                <div><h2 style="font-size:22px; margin:0; color:#fff;">📜 ${project.name}</h2><p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${project.description || 'No description'}</p></div>
                 <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:8px 16px;">➕ Create Script</button>
             </div>
-            <div style="max-height:400px; overflow-y:auto;">
-                ${scriptsHtml}
-            </div>
+            <div style="max-height:400px; overflow-y:auto;">${scriptsHtml}</div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
@@ -2022,43 +1515,23 @@ const OBFUSCATION_TYPES = {
 
 function applyObfuscation(code, type) {
     switch(type) {
-        case 'allinone':
-            return applyAllInOne(code);
-        case 'ironbrew':
-            return applyIronBrew(code);
-        case 'moonveil':
-            return applyMoonVeiL(code);
-        case 'prometheus':
-            return applyPrometheus(code);
-        case 'luaobfuscator':
-            return applyLuaObfuscator(code);
-        case 'moonsec':
-            return applyMoonsec(code);
-        case 'luraph_normal':
-            return applyLuraph(code, 'normal');
-        case 'luraph_v15':
-            return applyLuraph(code, 'v15');
-        default:
-            return code;
+        case 'allinone': return applyAllInOne(code);
+        case 'ironbrew': return applyIronBrew(code);
+        case 'moonveil': return applyMoonVeiL(code);
+        case 'prometheus': return applyPrometheus(code);
+        case 'luaobfuscator': return applyLuaObfuscator(code);
+        case 'moonsec': return applyMoonsec(code);
+        case 'luraph_normal': return applyLuraph(code, 'normal');
+        case 'luraph_v15': return applyLuraph(code, 'v15');
+        default: return code;
     }
 }
 
 function applyAllInOne(code) {
-    var steps = [
-        applyIronBrew,
-        applyMoonVeiL,
-        applyPrometheus,
-        applyLuaObfuscator,
-        applyMoonsec,
-        function(c) { return applyLuraph(c, 'v15'); }
-    ];
+    var steps = [applyIronBrew, applyMoonVeiL, applyPrometheus, applyLuaObfuscator, applyMoonsec, function(c) { return applyLuraph(c, 'v15'); }];
     var result = code;
     for (var i = 0; i < steps.length; i++) {
-        try {
-            result = steps[i](result);
-        } catch (e) {
-            console.warn('Obfuscation step ' + i + ' failed:', e);
-        }
+        try { result = steps[i](result); } catch (e) { console.warn('Obfuscation step ' + i + ' failed:', e); }
     }
     return '-- [[ All In One Obfuscation ]] --\n-- Protected by IronBrew, MoonVeiL, Prometheus, LuaObfuscator, Moonsec, Luraph V15\n-- This script is secured with military-grade obfuscation\n\n' + result;
 }
@@ -2070,7 +1543,6 @@ function applyIronBrew(code) {
     var varMap = {};
     var varCounter = 0;
     var result = [];
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         var strMatches = line.match(/["']([^"']*)["']/g);
@@ -2095,19 +1567,15 @@ function applyIronBrew(code) {
             }
         }
     }
-
     result.push('local _strings = {');
     for (var str in stringMap) {
         var encrypted = '';
-        for (var k = 0; k < str.length; k++) {
-            encrypted += (str.charCodeAt(k) + 5) + ',';
-        }
+        for (var k = 0; k < str.length; k++) { encrypted += (str.charCodeAt(k) + 5) + ','; }
         encrypted = encrypted.slice(0, -1);
         result.push('  ["' + str + '"] = {' + encrypted + '},');
     }
     result.push('}');
     result.push('local function _d(t) local s="";for i=1,#t do s=s..string.char(t[i]-5) end;return s end');
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         for (var str in stringMap) {
@@ -2120,7 +1588,6 @@ function applyIronBrew(code) {
         }
         result.push(line);
     }
-
     return result.join('\n');
 }
 
@@ -2128,7 +1595,6 @@ function applyMoonVeiL(code) {
     var lines = code.split('\n');
     var result = [];
     var junkCounter = 0;
-
     var junkFunctions = [
         'local function _j' + junkCounter + '() local a=0;for i=1,100 do a=a+i end;return a end',
         'local function _j' + (junkCounter+1) + '() local b=2;local c=3;return b*c end',
@@ -2137,7 +1603,6 @@ function applyMoonVeiL(code) {
         'local function _j' + (junkCounter+4) + '() local f=0;for i=1,200 do f=f+i/2 end;return math.floor(f) end'
     ];
     result.push(junkFunctions.join('\n'));
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         if (line.match(/^\s*if\s+.*\s+then/)) {
@@ -2152,11 +1617,8 @@ function applyMoonVeiL(code) {
         } else if (line.match(/^\s*local\s+\w+\s*=/)) {
             result.push(line);
             result.push('  _j' + ((junkCounter + 2) % 5) + '()');
-        } else {
-            result.push(line);
-        }
+        } else { result.push(line); }
     }
-
     return result.join('\n');
 }
 
@@ -2165,7 +1627,6 @@ function applyPrometheus(code) {
     var varMap = {};
     var varCounter = 0;
     var result = [];
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         var varMatches = line.match(/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=/g);
@@ -2179,12 +1640,10 @@ function applyPrometheus(code) {
             }
         }
     }
-
     result.push('local function _m(a,b) return a+b end');
     result.push('local function _s(a,b) return a-b end');
     result.push('local function _mul(a,b) return a*b end');
     result.push('local function _d(a,b) return a/b end');
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         line = line.replace(/(\w+)\s*\+\s*(\w+)/g, '_m($1, $2)');
@@ -2197,7 +1656,6 @@ function applyPrometheus(code) {
         }
         result.push(line);
     }
-
     return result.join('\n');
 }
 
@@ -2206,7 +1664,6 @@ function applyLuaObfuscator(code) {
     var result = [];
     var stringMap = {};
     var stringCounter = 0;
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         var strMatches = line.match(/["']([^"']*)["']/g);
@@ -2221,19 +1678,15 @@ function applyLuaObfuscator(code) {
             }
         }
     }
-
     result.push('local _s = {');
     for (var str in stringMap) {
         var encoded = '';
-        for (var k = 0; k < str.length; k++) {
-            encoded += string.charCodeAt(str, k) + ',';
-        }
+        for (var k = 0; k < str.length; k++) { encoded += string.charCodeAt(str, k) + ','; }
         encoded = encoded.slice(0, -1);
         result.push('  ["' + str + '"] = {' + encoded + '},');
     }
     result.push('}');
     result.push('local function _d(t) local s="";for i=1,#t do s=s..string.char(t[i]) end;return s end');
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         line = line.replace(/--.*$/, '');
@@ -2242,11 +1695,8 @@ function applyLuaObfuscator(code) {
             line = line.replace(regex, '_d(_s["' + str + '"])');
         }
         line = line.trim();
-        if (line.length > 0) {
-            result.push(line);
-        }
+        if (line.length > 0) { result.push(line); }
     }
-
     return result.join('\n');
 }
 
@@ -2255,7 +1705,6 @@ function applyMoonsec(code) {
     var result = [];
     var varMap = {};
     var varCounter = 0;
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         var varMatches = line.match(/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=/g);
@@ -2269,7 +1718,6 @@ function applyMoonsec(code) {
             }
         }
     }
-
     result.push('local function _antiDebug()');
     result.push('  local t = debug and debug.getinfo or nil');
     result.push('  if t then');
@@ -2277,7 +1725,6 @@ function applyMoonsec(code) {
     result.push('  end');
     result.push('end');
     result.push('_antiDebug()');
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         if (line.match(/^\s*function\s+/)) {
@@ -2292,12 +1739,9 @@ function applyMoonsec(code) {
             if (line.match(/^\s*local\s+\w+\s*=/)) {
                 result.push(line);
                 result.push('  _antiDebug()');
-            } else {
-                result.push(line);
-            }
+            } else { result.push(line); }
         }
     }
-
     return result.join('\n');
 }
 
@@ -2308,7 +1752,6 @@ function applyLuraph(code, version) {
     var stringCounter = 0;
     var varMap = {};
     var varCounter = 0;
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         var strMatches = line.match(/["']([^"']*)["']/g);
@@ -2333,20 +1776,16 @@ function applyLuraph(code, version) {
             }
         }
     }
-
     result.push('local _strings = {');
     for (var str in stringMap) {
         var encrypted = '';
         var key = Math.floor(Math.random() * 255) + 1;
-        for (var k = 0; k < str.length; k++) {
-            encrypted += (str.charCodeAt(k) ^ key) + ',';
-        }
+        for (var k = 0; k < str.length; k++) { encrypted += (str.charCodeAt(k) ^ key) + ','; }
         encrypted = encrypted.slice(0, -1);
         result.push('  ["' + str + '"] = {key=' + key + ', data={' + encrypted + '}},');
     }
     result.push('}');
     result.push('local function _d(t) local s="";for i=1,#t.data do s=s..string.char(bit32.bxor(t.data[i], t.key)) end;return s end');
-
     if (version === 'v15') {
         result.push('-- Luraph V15: Advanced control flow');
         result.push('local function _v15() local a={} for i=1,1000 do a[i]=i end return #a end');
@@ -2356,7 +1795,6 @@ function applyLuraph(code, version) {
         result.push('-- Luraph Normal: Standard obfuscation');
         result.push('local function _ln() local a=0;for i=1,500 do a=a+i end;return a end');
     }
-
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i];
         for (var str in stringMap) {
@@ -2369,7 +1807,6 @@ function applyLuraph(code, version) {
         }
         result.push(line);
     }
-
     return result.join('\n');
 }
 
@@ -2377,79 +1814,38 @@ function applyLuraph(code, version) {
 function openCreateScript(projectId) {
     var projects = loadProjects();
     var project = null;
-    
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            project = projects[i];
-            break;
-        }
-    }
-    
-    if (!project) {
-        showNotification('Error', 'Project not found.', 'error');
-        return;
-    }
-    
+    for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { project = projects[i]; break; } }
+    if (!project) { showNotification('Error', 'Project not found.', 'error'); return; }
     editingScript = null;
     currentProject = project;
-    
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
-            
-            <div class="form-group">
-                <label>Script Name <span class="required">*</span></label>
-                <input type="text" id="scriptName" placeholder="Enter script name" required>
-            </div>
-            
-            <div class="form-group">
-                <label>Script Description <span style="color:#555577;">(optional)</span></label>
-                <textarea id="scriptDescription" placeholder="Describe your script..."></textarea>
-            </div>
-            
+            <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
+            <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="scriptAntiTamper"> 🛡️ Anti Tampers
-                </label>
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="scriptAntiSkid"> 🔒 Anti Skidders
-                </label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper"> 🛡️ Anti Tampers</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid"> 🔒 Anti Skidders</label>
             </div>
-            
             <div class="form-group">
                 <label>Max Timer Of Keys</label>
                 <div style="display:flex; gap:8px;">
                     <input type="number" id="scriptKeyTime" placeholder="Amount" style="flex:1; min-width:0;">
                     <select id="scriptKeyUnit" style="flex:1; min-width:0;">
-                        <option value="seconds">Seconds</option>
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
-                        <option value="days">Days</option>
-                        <option value="weeks">Weeks</option>
-                        <option value="months">Months</option>
-                        <option value="years">Years</option>
-                        <option value="unlimited">Unlimited</option>
+                        <option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option>
+                        <option value="days">Days</option><option value="weeks">Weeks</option><option value="months">Months</option>
+                        <option value="years">Years</option><option value="unlimited">Unlimited</option>
                     </select>
                 </div>
             </div>
-            
-            <div class="form-group">
-                <label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label>
-                <input type="file" id="scriptFile" accept=".txt,.lua">
-            </div>
-            
-            <div class="form-group">
-                <label>Paste .txt/.lua Code <span class="required">*</span></label>
-                <textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea>
-            </div>
-            
+            <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
+            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea></div>
             <div class="form-group">
                 <label>🔐 Choose Obfuscation Method</label>
                 <select id="scriptObfuscationType" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
@@ -2463,11 +1859,8 @@ function openCreateScript(projectId) {
                     <option value="luraph_v15">💀 Luraph V15 [Best]</option>
                     <option value="none">🚫 None - No Obfuscation</option>
                 </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;">
-                    ⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!
-                </div>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!</div>
             </div>
-            
             <div class="form-group">
                 <label>Obfuscation Intensity</label>
                 <input type="range" id="scriptObfuscation" min="1" max="10" value="10" style="width:100%;">
@@ -2476,27 +1869,15 @@ function openCreateScript(projectId) {
                     <span id="obfuscationLabel">10 (Maximum) ⭐ Recommended</span>
                 </div>
             </div>
-            
-            <div class="form-group">
-                <label style="cursor:pointer;">
-                    <input type="checkbox" id="scriptHWIDReset"> 🔄 HWID Reset (Allow device change)
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
-                <input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890">
-            </div>
-            
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="scriptHWIDReset"> 🔄 HWID Reset (Allow device change)</label></div>
+            <div class="form-group"><label>Game Link/ID <span style="color:#555577;">(optional)</span></label><input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890"></div>
             <div style="display:flex; gap:12px; margin-top:12px;">
                 <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">✅ Create Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
-    
     var fileInput = document.getElementById('scriptFile');
     if (fileInput) {
         fileInput.addEventListener('change', function(e) {
@@ -2507,13 +1888,10 @@ function openCreateScript(projectId) {
                 document.getElementById('scriptCode').value = e.target.result;
                 showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
             };
-            reader.onerror = function() {
-                showNotification('Error', 'Failed to read file.', 'error');
-            };
+            reader.onerror = function() { showNotification('Error', 'Failed to read file.', 'error'); };
             reader.readAsText(file);
         });
     }
-    
     var slider = document.getElementById('scriptObfuscation');
     if (slider) {
         slider.addEventListener('input', function() {
@@ -2538,32 +1916,12 @@ function confirmCreateScript(projectId) {
     var obfuscationType = document.getElementById('scriptObfuscationType').value;
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
-    
-    if (!name) {
-        showNotification('Error', 'Script name is required.', 'error');
-        return;
-    }
-    
-    if (!code) {
-        showNotification('Error', 'Please paste your Lua code or upload a file.', 'error');
-        return;
-    }
-    
+    if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
+    if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
     var projects = loadProjects();
     var projectIndex = -1;
-    
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            projectIndex = i;
-            break;
-        }
-    }
-    
-    if (projectIndex === -1) {
-        showNotification('Error', 'Project not found.', 'error');
-        return;
-    }
-    
+    for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { projectIndex = i; break; } }
+    if (projectIndex === -1) { showNotification('Error', 'Project not found.', 'error'); return; }
     var obfuscatedCode = code;
     if (obfuscationType && obfuscationType !== 'none') {
         try {
@@ -2574,9 +1932,7 @@ function confirmCreateScript(projectId) {
             obfuscatedCode = code;
         }
     }
-    
     var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
-    
     var script = {
         id: 'script_' + Date.now(),
         name: name,
@@ -2596,21 +1952,15 @@ function confirmCreateScript(projectId) {
         loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15),
         loaderKey: loaderKey
     };
-    
-    if (!projects[projectIndex].scripts) {
-        projects[projectIndex].scripts = [];
-    }
+    if (!projects[projectIndex].scripts) { projects[projectIndex].scripts = []; }
     projects[projectIndex].scripts.push(script);
     saveProjects(projects);
-    
     storeScriptForLoader(script.loaderId, obfuscatedCode, script.name, script.loaderKey);
     storeScriptForLoader(script.id, obfuscatedCode, script.name, script.loaderKey);
     storeScriptForRawAccess(script.loaderId, obfuscatedCode, script.name);
     storeScriptForRawAccess(script.id, obfuscatedCode, script.name);
-    
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    
     var obfuscationDisplay = OBFUSCATION_TYPES[obfuscationType] || 'None';
     showNotification('Success', 'Script "' + name + '" created with ' + obfuscationDisplay + '!', 'success');
     renderProjects();
@@ -2621,7 +1971,6 @@ function viewScript(projectId, scriptId) {
     var projects = loadProjects();
     var project = null;
     var script = null;
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             project = projects[i];
@@ -2636,34 +1985,24 @@ function viewScript(projectId, scriptId) {
             break;
         }
     }
-    
-    if (!script) {
-        showNotification('Error', 'Script not found.', 'error');
-        return;
-    }
-    
+    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
     storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
     storeScriptForRawAccess(script.loaderId, script.code, script.name);
     storeScriptForRawAccess(script.id, script.code, script.name);
-
-    // Build URLs
     var directLoader = 'loadstring([[' + script.code + ']])()';
     var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&loaderKey=' + script.loaderKey;
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
     var ownerUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&key=' + OWNER_KEY + '&format=debug';
     var obfType = script.obfuscationType || 'none';
     var obfDisplay = OBFUSCATION_TYPES[obfType] || 'None';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
                     <h2 style="font-size:22px; margin:0; color:#fff;">${script.name}</h2>
@@ -2682,22 +2021,18 @@ function viewScript(projectId, scriptId) {
                     <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">⚙️</button>
                 </div>
             </div>
-            
             <div style="margin-top:16px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05);">
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">📋 Direct Loader (Recommended):</p>
                 <code style="color:#66ff66; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${directLoader}</code>
             </div>
-            
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05);">
-                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">🔗 HTTP Loader (Works via index.html):</p>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">🔗 HTTP Loader:</p>
                 <code style="color:#66ccff; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${httpLoader}</code>
             </div>
-            
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:200px; overflow-y:auto;">
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
                 <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated)' : ''}</pre>
             </div>
-
             <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
                 <span>🆔 ${script.id}</span>
                 <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
@@ -2705,24 +2040,22 @@ function viewScript(projectId, scriptId) {
                 <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
                 <span>🔑 Loader Key: ${script.loaderKey}</span>
             </div>
-            
-<details style="margin-top:12px;">
-    <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
-    <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
-        <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
-        <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px; width:100%;">📋 Copy Raw URL</button>
-    </div>
-</details>
-<details style="margin-top:8px;">
-    <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔗 Public Raw URL (Loader)</summary>
-    <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
-        <code style="color:#66ccff; font-size:12px; word-break:break-all;">${rawUrl}</code>
-        <button onclick="copyText('${rawUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px; width:100%;">📋 Copy Raw URL</button>
-    </div>
-</details>
+            <details style="margin-top:12px;">
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
+                <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
+                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+                </div>
+            </details>
+            <details style="margin-top:8px;">
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔗 Public Raw URL (Loader)</summary>
+                <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${rawUrl}</code>
+                    <button onclick="copyText('${rawUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+                </div>
+            </details>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
@@ -2731,71 +2064,27 @@ function editProject(projectId) {
     var projects = loadProjects();
     var project = null;
     var projectIndex = -1;
-    
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            project = projects[i];
-            projectIndex = i;
-            break;
-        }
-    }
-    
-    if (!project) {
-        showNotification('Error', 'Project not found.', 'error');
-        return;
-    }
-    
+    for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { project = projects[i]; projectIndex = i; break; } }
+    if (!project) { showNotification('Error', 'Project not found.', 'error'); return; }
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">✏️ Edit Project</h2>
-            
-            <div class="form-group">
-                <label>Project Name <span class="required">*</span></label>
-                <input type="text" id="editProjectName" value="${project.name}" required>
-            </div>
-            
-            <div class="form-group">
-                <label>Project Description <span style="color:#555577;">(optional)</span></label>
-                <textarea id="editProjectDescription">${project.description || ''}</textarea>
-            </div>
-            
-            <div class="form-group">
-                <label>Visibility</label>
-                <select id="editProjectVisibility">
-                    <option value="anyone" ${project.visibility === 'anyone' ? 'selected' : ''}>Anyone</option>
-                    <option value="friends" ${project.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option>
-                    <option value="private" ${project.visibility === 'private' ? 'selected' : ''}>Private</option>
-                </select>
-            </div>
-            
+            <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="editProjectName" value="${project.name}" required></div>
+            <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="editProjectDescription">${project.description || ''}</textarea></div>
+            <div class="form-group"><label>Visibility</label><select id="editProjectVisibility"><option value="anyone" ${project.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${project.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${project.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center;">
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editProjectBlockIncognito" ${project.blockIncognito ? 'checked' : ''}> Block Incognito Mode
-                </label>
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editProjectBlockVPN" ${project.blockVPN ? 'checked' : ''}> Block VPN
-                </label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectBlockIncognito" ${project.blockIncognito ? 'checked' : ''}> Block Incognito Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectBlockVPN" ${project.blockVPN ? 'checked' : ''}> Block VPN</label>
             </div>
-            
-            <div class="form-group">
-                <label>Type Of Project</label>
-                <select id="editProjectType">
-                    <option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option>
-                    <option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option>
-                    <option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option>
-                </select>
-            </div>
-            
+            <div class="form-group"><label>Type Of Project</label><select id="editProjectType"><option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option><option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option><option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option></select></div>
             <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Project</button>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
@@ -2806,14 +2095,8 @@ function confirmEditProject(projectId) {
     var blockIncognito = document.getElementById('editProjectBlockIncognito').checked;
     var blockVPN = document.getElementById('editProjectBlockVPN').checked;
     var type = document.getElementById('editProjectType').value;
-    
-    if (!name) {
-        showNotification('Error', 'Project name is required.', 'error');
-        return;
-    }
-    
+    if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
     var projects = loadProjects();
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             projects[i].name = name;
@@ -2825,7 +2108,6 @@ function confirmEditProject(projectId) {
             break;
         }
     }
-    
     saveProjects(projects);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
@@ -2835,19 +2117,9 @@ function confirmEditProject(projectId) {
 
 // ============ DELETE PROJECT ==========
 function deleteProject(projectId) {
-    if (!confirm('Are you sure you want to delete this project and all its scripts?')) {
-        return;
-    }
-    
+    if (!confirm('Are you sure you want to delete this project and all its scripts?')) return;
     var projects = loadProjects();
-    
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            projects.splice(i, 1);
-            break;
-        }
-    }
-    
+    for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { projects.splice(i, 1); break; } }
     saveProjects(projects);
     showNotification('Deleted', 'Project deleted.', 'warning');
     renderProjects();
@@ -2860,7 +2132,6 @@ function editScript(projectId, scriptId) {
     var script = null;
     var projectIndex = -1;
     var scriptIndex = -1;
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             project = projects[i];
@@ -2877,24 +2148,16 @@ function editScript(projectId, scriptId) {
             break;
         }
     }
-    
-    if (!script) {
-        showNotification('Error', 'Script not found.', 'error');
-        return;
-    }
-    
+    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     editingScript = { projectId: projectId, scriptId: scriptId, projectIndex: projectIndex, scriptIndex: scriptIndex };
     currentProject = project;
-    
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     var keyTime = script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '' : script.keyTime;
     var keyUnit = script.keyUnit === 'unlimited' || script.keyUnit === 'unlimited' ? 'unlimited' : (script.keyUnit || 'hours');
     var currentObfType = script.obfuscationType || 'none';
-    
     var obfOptions = '';
     var obfTypes = {
         'allinone': '🔥 All In One [Recommended] - Unbreakable',
@@ -2911,32 +2174,17 @@ function editScript(projectId, scriptId) {
         var selected = (key === currentObfType) ? 'selected' : '';
         obfOptions += '<option value="' + key + '" ' + selected + '>' + obfTypes[key] + '</option>';
     }
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
-            
-            <div class="form-group">
-                <label>Script Name <span class="required">*</span></label>
-                <input type="text" id="editScriptName" value="${script.name}" required>
-            </div>
-            
-            <div class="form-group">
-                <label>Script Description <span style="color:#555577;">(optional)</span></label>
-                <textarea id="editScriptDescription">${script.description || ''}</textarea>
-            </div>
-            
+            <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
+            <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampers
-                </label>
-                <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidders
-                </label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampers</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidders</label>
             </div>
-            
             <div class="form-group">
                 <label>Max Timer Of Keys</label>
                 <div style="display:flex; gap:8px;">
@@ -2953,17 +2201,11 @@ function editScript(projectId, scriptId) {
                     </select>
                 </div>
             </div>
-            
             <div class="form-group">
                 <label>🔐 Choose Obfuscation Method</label>
-                <select id="editScriptObfuscationType" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
-                    ${obfOptions}
-                </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;">
-                    ⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!
-                </div>
+                <select id="editScriptObfuscationType" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">${obfOptions}</select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!</div>
             </div>
-            
             <div class="form-group">
                 <label>Obfuscation Intensity</label>
                 <input type="range" id="editScriptObfuscation" min="1" max="10" value="${script.obfuscationIntensity || 10}" style="width:100%;">
@@ -2972,32 +2214,16 @@ function editScript(projectId, scriptId) {
                     <span id="editObfuscationLabel">${script.obfuscationIntensity || 10}${(script.obfuscationIntensity || 10) === 10 ? ' (Maximum) ⭐ Recommended' : ''}</span>
                 </div>
             </div>
-            
-            <div class="form-group">
-                <label>Paste .txt/.lua Code</label>
-                <textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.originalCode || script.code || ''}</textarea>
-            </div>
-            
-            <div class="form-group">
-                <label style="cursor:pointer;">
-                    <input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
-                <input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890">
-            </div>
-            
+            <div class="form-group"><label>Paste .txt/.lua Code</label><textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.originalCode || script.code || ''}</textarea></div>
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
+            <div class="form-group"><label>Game Link/ID <span style="color:#555577;">(optional)</span></label><input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890"></div>
             <div style="display:flex; gap:12px; margin-top:12px;">
                 <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">💾 Update Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
     `;
-    
     document.body.appendChild(overlay);
-    
     var slider = document.getElementById('editScriptObfuscation');
     if (slider) {
         slider.addEventListener('input', function() {
@@ -3022,19 +2248,9 @@ function confirmEditScript(projectId, scriptId) {
     var obfuscationType = document.getElementById('editScriptObfuscationType').value;
     var hwidReset = document.getElementById('editScriptHWIDReset').checked;
     var gameId = document.getElementById('editScriptGameId').value.trim();
-    
-    if (!name) {
-        showNotification('Error', 'Script name is required.', 'error');
-        return;
-    }
-    
-    if (!code) {
-        showNotification('Error', 'Please paste your Lua code.', 'error');
-        return;
-    }
-    
+    if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
+    if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     var projects = loadProjects();
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             if (projects[i].scripts) {
@@ -3042,17 +2258,13 @@ function confirmEditScript(projectId, scriptId) {
                     if (projects[i].scripts[j].id === scriptId) {
                         var existingLoaderKey = projects[i].scripts[j].loaderKey;
                         var existingLoaderId = projects[i].scripts[j].loaderId;
-                        
                         var obfuscatedCode = code;
                         if (obfuscationType && obfuscationType !== 'none') {
-                            try {
-                                obfuscatedCode = applyObfuscation(code, obfuscationType);
-                            } catch (e) {
+                            try { obfuscatedCode = applyObfuscation(code, obfuscationType); } catch (e) {
                                 showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
                                 obfuscatedCode = code;
                             }
                         }
-                        
                         projects[i].scripts[j].name = name;
                         projects[i].scripts[j].description = description;
                         projects[i].scripts[j].antiTamper = antiTamper;
@@ -3074,9 +2286,7 @@ function confirmEditScript(projectId, scriptId) {
             break;
         }
     }
-    
     saveProjects(projects);
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             if (projects[i].scripts) {
@@ -3094,10 +2304,8 @@ function confirmEditScript(projectId, scriptId) {
             break;
         }
     }
-    
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    
     var obfuscationDisplay = OBFUSCATION_TYPES[obfuscationType] || 'None';
     showNotification('Success', 'Script "' + name + '" updated with ' + obfuscationDisplay + '!', 'success');
     renderProjects();
@@ -3105,12 +2313,8 @@ function confirmEditScript(projectId, scriptId) {
 
 // ============ DELETE SCRIPT ==========
 function deleteScript(projectId, scriptId) {
-    if (!confirm('Are you sure you want to delete this script?')) {
-        return;
-    }
-    
+    if (!confirm('Are you sure you want to delete this script?')) return;
     var projects = loadProjects();
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             if (projects[i].scripts) {
@@ -3124,7 +2328,6 @@ function deleteScript(projectId, scriptId) {
             break;
         }
     }
-    
     saveProjects(projects);
     showNotification('Deleted', 'Script deleted.', 'warning');
     renderProjects();
@@ -3134,7 +2337,6 @@ function deleteScript(projectId, scriptId) {
 function openScriptSettings(projectId, scriptId) {
     var projects = loadProjects();
     var script = null;
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             if (projects[i].scripts) {
@@ -3148,32 +2350,17 @@ function openScriptSettings(projectId, scriptId) {
             break;
         }
     }
-    
-    if (!script) {
-        showNotification('Error', 'Script not found.', 'error');
-        return;
-    }
-    
+    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-    
     overlay.innerHTML = `
         <div class="modal" style="max-width: 450px; padding: 32px;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">⚙️ Script Settings</h2>
             <p class="sub">Manage "${script.name}"</p>
-            
-            <div class="form-group">
-                <label>Visibility</label>
-                <select id="scriptVisibility">
-                    <option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option>
-                    <option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option>
-                    <option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option>
-                </select>
-            </div>
-            
+            <div class="form-group"><label>Visibility</label><select id="scriptVisibility"><option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
                 <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>
                 <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">🗑️ Delete Script</button>
@@ -3181,15 +2368,12 @@ function openScriptSettings(projectId, scriptId) {
             <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
         </div>
     `;
-    
     document.body.appendChild(overlay);
 }
 
 function updateScriptVisibility(projectId, scriptId) {
     var visibility = document.getElementById('scriptVisibility').value;
-    
     var projects = loadProjects();
-    
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].id === projectId) {
             if (projects[i].scripts) {
@@ -3203,7 +2387,6 @@ function updateScriptVisibility(projectId, scriptId) {
             break;
         }
     }
-    
     saveProjects(projects);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
@@ -3214,24 +2397,17 @@ function updateScriptVisibility(projectId, scriptId) {
 // ============ AUTO-LOGIN CHECK ============
 function checkAuth() {
     loadUsers();
-    
     var savedUser = null;
     try {
         var sessionData = sessionStorage.getItem('session_user');
-        if (sessionData) {
-            savedUser = JSON.parse(sessionData);
-        }
+        if (sessionData) { savedUser = JSON.parse(sessionData); }
     } catch (e) {}
-    
     if (!savedUser) {
         try {
             var localData = localStorage.getItem('currentUser');
-            if (localData) {
-                savedUser = JSON.parse(localData);
-            }
+            if (localData) { savedUser = JSON.parse(localData); }
         } catch (e) {}
     }
-    
     if (savedUser) {
         var userExists = false;
         for (var key in users) {
@@ -3243,7 +2419,6 @@ function checkAuth() {
                 break;
             }
         }
-        
         if (!userExists) {
             clearCurrentUser();
             showHomePage();
@@ -3257,7 +2432,6 @@ function showHomePage() {
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
-    
     if (homePage) homePage.style.display = 'block';
     if (dashboard) dashboard.classList.remove('show');
     dashboard.style.display = 'none';
@@ -3266,40 +2440,22 @@ function showHomePage() {
 
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 Scripter\'s Obfuscator loaded');
+    console.log('🚀 Streaming Obfuscation System loaded');
     checkAuth();
-    
     var signupForm = document.getElementById('signupForm');
-    if (signupForm) {
-        signupForm.addEventListener('submit', handleSignup);
-        console.log('✅ Signup form attached');
-    }
-    
+    if (signupForm) { signupForm.addEventListener('submit', handleSignup); }
     var loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-        loginForm.addEventListener('submit', handleLogin);
-        console.log('✅ Login form attached');
-    }
-    
+    if (loginForm) { loginForm.addEventListener('submit', handleLogin); }
     var adminBtn = document.getElementById('adminBtn');
-    if (adminBtn) {
-        adminBtn.addEventListener('click', openAdminPanel);
-    }
-    
+    if (adminBtn) { adminBtn.addEventListener('click', openAdminPanel); }
     var usersBtn = document.getElementById('usersBtn');
-    if (usersBtn) {
-        usersBtn.addEventListener('click', openUsersPanel);
-    }
-    
+    if (usersBtn) { usersBtn.addEventListener('click', openUsersPanel); }
     console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
-// ============ SESSION RESTORE ON REFRESH ============
 (function() {
     var savedUser = getCurrentUser();
-    if (savedUser) {
-        console.log('🔄 Session found, restoring...');
-    }
+    if (savedUser) { console.log('🔄 Session found, restoring...'); }
 })();
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
@@ -3354,3 +2510,11 @@ window.storeScriptForLoader = storeScriptForLoader;
 window.storeScriptForRawAccess = storeScriptForRawAccess;
 window.getScriptForLoader = getScriptForLoader;
 window.getScriptForRawAccess = getScriptForRawAccess;
+window.createKey = createKey;
+window.deleteKey = deleteKey;
+window.generateKey = generateKey;
+window.renderKeys = renderKeys;
+window.verifyKey = verifyKey;
+window.useKey = useKey;
+window.loadKeys = loadKeys;
+window.saveKeys = saveKeys;
