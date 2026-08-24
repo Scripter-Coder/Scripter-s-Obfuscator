@@ -4,8 +4,8 @@ export default defineConfig({
   root: '.',
   build: {
     outDir: 'dist',
-  copyPublicDir: true,
-  rollupOptions: {
+    copyPublicDir: true,
+    rollupOptions: {
       input: {
         main: 'index.html',
         raw: 'raw.html',
