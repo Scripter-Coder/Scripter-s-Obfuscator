@@ -466,120 +466,14 @@ function openRawScript(loaderId) {
     storeScriptForRawAccess(loaderId, scriptCode, scriptName);
     storeScriptForLoader(loaderId, scriptCode, scriptName, loaderKey);
     
-    // Build the raw URL - this is the actual URL that will be opened
+    // Build the raw URL
     var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey;
     
-    // Show the raw URL in a notification and copy it
+    // Show notification
     showNotification('Raw URL Generated', 'Opening raw page...', 'info', 2000);
     
     // Open the actual raw.html URL in a new tab
     window.open(rawUrl, '_blank');
-}
-    
-    rawWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Raw Script - ${scriptName || 'Script'}</title>
-            <style>
-                body {
-                    background: #0a0a0f;
-                    color: #66ccff;
-                    font-family: 'Courier New', monospace;
-                    padding: 20px;
-                    margin: 0;
-                    white-space: pre-wrap;
-                    word-break: break-all;
-                    font-size: 14px;
-                    line-height: 1.6;
-                }
-                .header {
-                    background: rgba(108, 59, 255, 0.1);
-                    border-bottom: 1px solid rgba(108, 59, 255, 0.2);
-                    padding: 12px 20px;
-                    margin: -20px -20px 20px -20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                }
-                .header h2 {
-                    color: #ffffff;
-                    margin: 0;
-                    font-size: 16px;
-                }
-                .header .badge {
-                    background: rgba(100, 255, 100, 0.1);
-                    color: #66ff66;
-                    padding: 4px 12px;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    border: 1px solid rgba(100, 255, 100, 0.2);
-                }
-                .copy-btn {
-                    background: #6c3bff;
-                    color: #fff;
-                    border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
-                    cursor: pointer;
-                    font-size: 13px;
-                    margin-top: 10px;
-                }
-                .copy-btn:hover {
-                    background: #8a6bff;
-                }
-                .footer {
-                    margin-top: 20px;
-                    color: #555577;
-                    font-size: 12px;
-                    border-top: 1px solid rgba(255,255,255,0.05);
-                    padding-top: 12px;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h2>📄 Raw Script: ${scriptName || 'Script'}</h2>
-                <span class="badge">🔒 Owner Only</span>
-            </div>
-            <div id="codeContent">${escapedCode}</div>
-            <button class="copy-btn" onclick="copyRawCode()">📋 Copy Code</button>
-            <div class="footer">
-                <span>Script ID: ${loaderId}</span>
-                <span style="float:right;">This code is only visible to the owner.</span>
-            </div>
-            <script>
-                function copyRawCode() {
-                    var code = document.getElementById('codeContent').textContent;
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(code).then(function() {
-                            alert('✅ Code copied to clipboard!');
-                        }).catch(function() {
-                            fallbackCopy(code);
-                        });
-                    } else {
-                        fallbackCopy(code);
-                    }
-                }
-                function fallbackCopy(text) {
-                    var textarea = document.createElement('textarea');
-                    textarea.value = text;
-                    document.body.appendChild(textarea);
-                    textarea.select();
-                    try {
-                        document.execCommand('copy');
-                        alert('✅ Code copied to clipboard!');
-                    } catch (e) {
-                        alert('❌ Failed to copy. Please copy manually.');
-                    }
-                    textarea.remove();
-                }
-            <\/script>
-        </body>
-        </html>
-    `);
-    
-    rawWindow.document.close();
 }
 
 // ============ SCRIPT LOADER SYSTEM ============
