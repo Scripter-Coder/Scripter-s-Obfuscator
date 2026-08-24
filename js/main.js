@@ -437,25 +437,24 @@ function getScriptForRawAccess(scriptId) {
 
 // ============ OPEN RAW SCRIPT ============
 function openRawScript(loaderId) {
-    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
-    var scriptCode = scriptStore[loaderId];
+    // Get the script details
+    var projects = loadProjects();
+    var scriptCode = null;
     var scriptName = '';
+    var loaderKey = '';
     
-    if (!scriptCode) {
-        var projects = loadProjects();
-        for (var i = 0; i < projects.length; i++) {
-            if (projects[i].scripts) {
-                for (var j = 0; j < projects[i].scripts.length; j++) {
-                    if (projects[i].scripts[j].loaderId === loaderId || 
-                        projects[i].scripts[j].id === loaderId) {
-                        scriptCode = projects[i].scripts[j].code;
-                        scriptName = projects[i].scripts[j].name;
-                        break;
-                    }
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].loaderId === loaderId) {
+                    scriptCode = projects[i].scripts[j].code;
+                    scriptName = projects[i].scripts[j].name;
+                    loaderKey = projects[i].scripts[j].loaderKey || '';
+                    break;
                 }
             }
-            if (scriptCode) break;
         }
+        if (scriptCode) break;
     }
     
     if (!scriptCode) {
@@ -463,13 +462,19 @@ function openRawScript(loaderId) {
         return;
     }
     
-    var rawWindow = window.open('', '_blank');
-    if (!rawWindow) {
-        showNotification('Error', 'Popup blocked! Please allow popups.', 'error');
-        return;
-    }
+    // Store the script for raw access
+    storeScriptForRawAccess(loaderId, scriptCode, scriptName);
+    storeScriptForLoader(loaderId, scriptCode, scriptName, loaderKey);
     
-    var escapedCode = scriptCode.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Build the raw URL - this is the actual URL that will be opened
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey;
+    
+    // Show the raw URL in a notification and copy it
+    showNotification('Raw URL Generated', 'Opening raw page...', 'info', 2000);
+    
+    // Open the actual raw.html URL in a new tab
+    window.open(rawUrl, '_blank');
+}
     
     rawWindow.document.write(`
         <!DOCTYPE html>
@@ -674,6 +679,11 @@ function copyLoader(loaderId) {
                 <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy Direct</button>
                 <button onclick="copyText('${httpLoader.replace(/'/g, "\\'")}')" class="btn btn-close-dropdown" style="flex:1;">📋 Copy HTTP</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
+            </div>
+            
+            <div style="margin-top:8px; padding:8px; background:rgba(255,215,0,0.05); border-radius:8px; border:1px solid rgba(255,215,0,0.1);">
+                <p style="color:#ffd700; font-size:11px; margin:0; word-break:break-all;">🔗 Raw URL: ${rawUrl}</p>
+                <button onclick="copyText('${rawUrl}')" class="btn btn-primary" style="margin-top:4px; padding:4px 12px; font-size:11px; width:100%;">📋 Copy Raw URL</button>
             </div>
         </div>
     `;
@@ -2747,7 +2757,8 @@ function viewScript(projectId, scriptId) {
     storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
     storeScriptForRawAccess(script.loaderId, script.code, script.name);
     storeScriptForRawAccess(script.id, script.code, script.name);
-    
+
+    // Build URLs
     var directLoader = 'loadstring([[' + script.code + ']])()';
     var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&loaderKey=' + script.loaderKey;
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
@@ -2801,13 +2812,20 @@ function viewScript(projectId, scriptId) {
                 <span>🔑 Loader Key: ${script.loaderKey}</span>
             </div>
             
-            <details style="margin-top:12px;">
-                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
-                <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
-                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
-                </div>
-            </details>
+<details style="margin-top:12px;">
+    <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
+    <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
+        <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
+        <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px; width:100%;">📋 Copy Raw URL</button>
+    </div>
+</details>
+<details style="margin-top:8px;">
+    <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔗 Public Raw URL (Loader)</summary>
+    <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
+        <code style="color:#66ccff; font-size:12px; word-break:break-all;">${rawUrl}</code>
+        <button onclick="copyText('${rawUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px; width:100%;">📋 Copy Raw URL</button>
+    </div>
+</details>
         </div>
     `;
     
