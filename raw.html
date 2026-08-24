@@ -199,4 +199,30 @@
         })();
     </script>
 </body>
+    <script>
+    // ============ KEY VERIFICATION ENDPOINT ============
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('verify-key') === 'true') {
+        var key = params.get('key');
+        var scriptId = params.get('id');
+        
+        // Load keys
+        var keyData = JSON.parse(localStorage.getItem('keys_' + (currentUserId || '')) || '{"keys":[]}');
+        var valid = false;
+        for (var i = 0; i < keyData.keys.length; i++) {
+            if (keyData.keys[i].key === key && !keyData.keys[i].used) {
+                if (!keyData.keys[i].expires || keyData.keys[i].expires > Date.now()) {
+                    valid = true;
+                    keyData.keys[i].used = true;
+                    keyData.keys[i].usedAt = new Date().toISOString();
+                    localStorage.setItem('keys_' + (currentUserId || ''), JSON.stringify(keyData));
+                    break;
+                }
+            }
+        }
+        document.write(valid ? 'valid' : 'invalid');
+        document.close();
+        return;
+    }
+</script>
 </html>
