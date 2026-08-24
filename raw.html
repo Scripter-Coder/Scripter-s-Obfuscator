@@ -3,99 +3,230 @@
 <head>
     <meta charset="UTF-8">
     <title>Raw Script</title>
+    <style>
+        body {
+            background: #0a0a0f;
+            color: #66ccff;
+            font-family: 'Courier New', monospace;
+            padding: 20px;
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .error {
+            color: #ff4444;
+            text-align: center;
+            padding: 40px;
+            font-size: 24px;
+        }
+        .header {
+            background: rgba(108, 59, 255, 0.1);
+            border-bottom: 1px solid rgba(108, 59, 255, 0.2);
+            padding: 12px 20px;
+            margin: -20px -20px 20px -20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h2 { color: #fff; margin: 0; font-size: 16px; }
+        .badge { 
+            background: rgba(100, 255, 100, 0.1); 
+            color: #66ff66; 
+            padding: 4px 12px; 
+            border-radius: 12px; 
+            font-size: 12px; 
+            border: 1px solid rgba(100, 255, 100, 0.2);
+        }
+        .badge.owner { background: rgba(255, 215, 0, 0.2); color: #ffd700; border-color: rgba(255,215,0,0.3); }
+        .copy-btn {
+            background: #6c3bff;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        .copy-btn:hover { background: #8a6bff; }
+        .footer {
+            margin-top: 20px;
+            color: #555577;
+            font-size: 12px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 12px;
+        }
+    </style>
 </head>
 <body>
-    <pre id="content"></pre>
+    <div id="content"></div>
     <script>
-        // ============ RAW SCRIPT ACCESS CONTROL ============
-        // Only the owner knows this key
-        const OWNER_KEY = 'my_super_secret_key_2024_scripter';
-        
-        // Get script ID from URL
-        var params = new URLSearchParams(window.location.search);
-        var scriptId = params.get('id');
-        var userKey = params.get('key');
-        
-        // Check if user has owner key
-        var isOwner = (userKey === OWNER_KEY);
-        
-        // Load scripts from localStorage
-        function loadScripts() {
-            try {
-                var data = localStorage.getItem('scriptStore');
-                if (data) {
-                    return JSON.parse(data);
+        (function() {
+            const OWNER_KEY = 'my_super_secret_key_2024_scripter';
+            var params = new URLSearchParams(window.location.search);
+            var scriptId = params.get('id');
+            var ownerKey = params.get('key');
+            var loaderKey = params.get('loaderKey');
+            var format = params.get('format');
+
+            function loadScripts() {
+                try {
+                    var data = localStorage.getItem('scriptStore');
+                    if (data) return JSON.parse(data);
+                } catch (e) {}
+                return {};
+            }
+
+            function loadProjectScripts() {
+                try {
+                    // We need the current user ID to load their projects
+                    var currentUserId = null;
+                    try {
+                        var sessionUser = sessionStorage.getItem('session_user');
+                        if (sessionUser) {
+                            var user = JSON.parse(sessionUser);
+                            currentUserId = user.id;
+                        } else {
+                            var localUser = localStorage.getItem('currentUser');
+                            if (localUser) {
+                                var user = JSON.parse(localUser);
+                                currentUserId = user.id;
+                            }
+                        }
+                    } catch (e) {}
+                    
+                    var projectsData = localStorage.getItem('projects_' + (currentUserId || ''));
+                    if (projectsData) {
+                        var projects = JSON.parse(projectsData);
+                        for (var i = 0; i < projects.length; i++) {
+                            if (projects[i].scripts) {
+                                for (var j = 0; j < projects[i].scripts.length; j++) {
+                                    var s = projects[i].scripts[j];
+                                    if (s.loaderId === scriptId || s.id === scriptId) {
+                                        return s;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            }
+
+            var scriptStore = loadScripts();
+            var scriptCode = scriptStore[scriptId];
+            var scriptObj = null;
+            
+            if (!scriptCode) {
+                scriptObj = loadProjectScripts();
+                if (scriptObj) {
+                    scriptCode = scriptObj.code;
                 }
-            } catch (e) {}
-            return {};
-        }
-        
-        var scriptStore = loadScripts();
-        var scriptCode = scriptStore[scriptId];
-        
-        // ===== DETECT ROOBLOX EXECUTOR =====
-        // Roblox executors send specific headers or user agents
-        var isRoblox = false;
-        
-        // Check User-Agent
-        var ua = navigator.userAgent || '';
-        if (ua.includes('Roblox') || ua.includes('RBX') || ua.includes('Synapse') || 
-            ua.includes('Krnl') || ua.includes('ScriptWare') || ua.includes('Fluxus') ||
-            ua.includes('Electron') || ua.includes('Oxygen U') || ua.includes('Valyse')) {
-            isRoblox = true;
-        }
-        
-        // Check for Roblox-specific headers (via fetch detection)
-        // Note: This is a best-effort detection
-        
-        // If it's a Roblox executor, return just the script code as plain text
-        if (isRoblox && scriptCode) {
-            // For Roblox executors, we need to return just the code
-            // But since we're in a browser context, we use a trick:
-            // We'll use document.write to output just the code
-            document.write(scriptCode);
-            document.close();
-            return;
-        }
-        
-        // If not owner and not Roblox, show "Not Allowed"
-        if (!isOwner && !isRoblox) {
-            document.getElementById('content').textContent = 'Not Allowed';
-            document.body.style.background = '#1a0000';
-            document.body.style.color = '#ff4444';
-            document.body.style.display = 'flex';
-            document.body.style.justifyContent = 'center';
-            document.body.style.alignItems = 'center';
-            document.body.style.height = '100vh';
-            document.body.style.fontFamily = 'monospace';
-            document.body.style.fontSize = '24px';
-            document.body.style.margin = '0';
-            return;
-        }
-        
-        // If owner, show the code with nice UI
-        if (isOwner && scriptCode) {
-            document.getElementById('content').textContent = scriptCode;
-            document.body.style.background = '#0a0a0f';
-            document.body.style.color = '#66ccff';
-            document.body.style.fontFamily = 'monospace';
-            document.body.style.fontSize = '14px';
-            document.body.style.padding = '20px';
-            document.body.style.margin = '0';
-            document.body.style.whiteSpace = 'pre-wrap';
-            document.body.style.wordBreak = 'break-all';
-        } else if (!scriptCode) {
-            document.getElementById('content').textContent = 'Script not found';
-            document.body.style.background = '#1a0000';
-            document.body.style.color = '#ff4444';
-            document.body.style.display = 'flex';
-            document.body.style.justifyContent = 'center';
-            document.body.style.alignItems = 'center';
-            document.body.style.height = '100vh';
-            document.body.style.fontFamily = 'monospace';
-            document.body.style.fontSize = '24px';
-            document.body.style.margin = '0';
-        }
+            }
+
+            // If still no code, check loaderStore
+            if (!scriptCode) {
+                try {
+                    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
+                    if (loaderStore[scriptId] && loaderStore[scriptId].code) {
+                        scriptCode = loaderStore[scriptId].code;
+                    }
+                } catch (e) {}
+            }
+
+            var isOwner = (ownerKey === OWNER_KEY);
+            var isValidLoader = false;
+
+            // Validate loader key
+            if (loaderKey && scriptCode) {
+                var storedLoaderKey = null;
+                // Check scriptObj first
+                if (scriptObj && scriptObj.loaderKey) {
+                    storedLoaderKey = scriptObj.loaderKey;
+                }
+                // If not, check loaderStore
+                if (!storedLoaderKey) {
+                    try {
+                        var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
+                        if (loaderStore[scriptId] && loaderStore[scriptId].loaderKey) {
+                            storedLoaderKey = loaderStore[scriptId].loaderKey;
+                        }
+                    } catch (e) {}
+                }
+                if (storedLoaderKey && storedLoaderKey === loaderKey) {
+                    isValidLoader = true;
+                }
+            }
+
+            var hasAccess = isOwner || isValidLoader;
+            var contentEl = document.getElementById('content');
+
+            if (!scriptCode) {
+                contentEl.textContent = '❌ Script not found';
+                contentEl.className = 'error';
+                return;
+            }
+
+            if (!hasAccess) {
+                contentEl.textContent = '⛔ Not Allowed';
+                contentEl.className = 'error';
+                return;
+            }
+
+            // If format=text, output plain code (for Roblox executors)
+            if (format === 'text') {
+                document.write(scriptCode);
+                document.close();
+                return;
+            }
+
+            // Otherwise show with UI
+            var badgeText = isOwner ? '🔑 Master Key' : '🔓 Loader Key Valid';
+            var badgeClass = isOwner ? 'owner' : '';
+            var headerTitle = isOwner ? '📄 Raw Script (Owner View)' : '📄 Script (Loader Access)';
+            
+            contentEl.innerHTML = `
+                <div class="header">
+                    <h2>${headerTitle}</h2>
+                    <span class="badge ${badgeClass}">${badgeText}</span>
+                </div>
+                <pre style="margin:0; color:#66ccff;">${scriptCode}</pre>
+                <button class="copy-btn" onclick="copyRawCode()">📋 Copy Code</button>
+                <div class="footer">
+                    <span>Script ID: ${scriptId}</span>
+                    <span style="float:right;">${isOwner ? '🔒 Owner Access' : '🔓 Loader Access'}</span>
+                </div>
+            `;
+
+            window.copyRawCode = function() {
+                var code = scriptCode;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(code).then(function() {
+                        alert('✅ Code copied to clipboard!');
+                    }).catch(function() {
+                        fallbackCopy(code);
+                    });
+                } else {
+                    fallbackCopy(code);
+                }
+            };
+
+            function fallbackCopy(text) {
+                var textarea = document.createElement('textarea');
+                textarea.value = text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    alert('✅ Code copied to clipboard!');
+                } catch (e) {
+                    alert('❌ Failed to copy. Please copy manually.');
+                }
+                textarea.remove();
+            }
+        })();
     </script>
 </body>
 </html>
