@@ -71,3 +71,49 @@ function getDiscordAuthUrl() {
         '&response_type=code&' +
         'scope=identify%20email';
 }
+
+// ============ INTEGRATION WITH LOCAL STORAGE ============
+// This allows the API to be used alongside the localStorage system
+// If the API is down, it falls back to localStorage
+window.apiSignup = async function(email, username, password, description) {
+    try {
+        const result = await signup(email, username, password, description);
+        if (result.success) {
+            showNotification('API Success', 'Account created via API!', 'success');
+            return result;
+        } else {
+            // Fallback to localStorage
+            console.log('API failed, using localStorage fallback');
+            // Trigger the existing signup handler
+            document.getElementById('signupEmail').value = email;
+            document.getElementById('signupUsername').value = username;
+            document.getElementById('signupPassword').value = password;
+            document.getElementById('signupDescription').value = description || '';
+            handleSignup(new Event('submit'));
+            return { success: true, message: 'Created via localStorage' };
+        }
+    } catch (e) {
+        console.error('API signup error:', e);
+        return { success: false, message: 'Error' };
+    }
+};
+
+window.apiLogin = async function(email, password) {
+    try {
+        const result = await login(email, password);
+        if (result.success) {
+            showNotification('API Success', 'Logged in via API!', 'success');
+            return result;
+        } else {
+            // Fallback to localStorage
+            console.log('API failed, using localStorage fallback');
+            document.getElementById('loginEmail').value = email;
+            document.getElementById('loginPassword').value = password;
+            handleLogin(new Event('submit'));
+            return { success: true, message: 'Logged in via localStorage' };
+        }
+    } catch (e) {
+        console.error('API login error:', e);
+        return { success: false, message: 'Error' };
+    }
+};
