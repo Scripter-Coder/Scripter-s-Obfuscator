@@ -562,6 +562,84 @@ body {
     margin-top: 4px;
 }
 
+/* ===== UPLOAD GROUP HEADER ===== */
+.upload-group .group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.upload-group .group-header .icon {
+    font-size: 18px;
+}
+.upload-group .group-header label {
+    font-weight: 600;
+    color: #aaaacc;
+    font-size: 14px;
+}
+.upload-group .group-header .file-type {
+    color: #555577;
+    font-size: 11px;
+    font-weight: 400;
+    margin-left: auto;
+}
+
+/* ===== THEME PREVIEW DOTS ===== */
+.theme-preview {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+.color-dot {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid rgba(255,255,255,0.1);
+    transition: all 0.2s ease;
+}
+.color-dot:hover {
+    transform: scale(1.15);
+    border-color: rgba(255,255,255,0.4);
+}
+
+/* ===== STYLED SELECTS ===== */
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(20, 20, 35, 0.85);
+    backdrop-filter: blur(5px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    color: #e0e0e0;
+    padding: 12px 18px;
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23888aaa' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 16px center;
+    padding-right: 40px;
+}
+
+select:hover {
+    border-color: rgba(108, 59, 255, 0.4);
+}
+
+select:focus {
+    outline: none;
+    border-color: #6c3bff;
+    box-shadow: 0 0 0 3px rgba(108, 59, 255, 0.2);
+}
+
+select option {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    padding: 8px;
+}
+
 /* ===== DASHBOARD - HEADER ===== */
 .dashboard-header {
     display: flex;
@@ -1050,7 +1128,6 @@ body {
         font-size: 24px;
     }
     
-    /* Dashboard responsive */
     .dashboard-banner {
         height: 150px;
     }
@@ -1569,4 +1646,9 @@ body {
     gap: 6px;
     flex-shrink: 0;
     flex-wrap: wrap;
+}
+
+/* ===== FILE INPUT WRAPPER ===== */
+.file-input-wrapper {
+    width: 100%;
 }
