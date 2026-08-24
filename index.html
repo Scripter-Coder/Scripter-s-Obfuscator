@@ -249,11 +249,26 @@
             </div>
         </div>
 
-        <!-- KEYS TAB -->
-        <div class="tab-content" id="tab-keys" style="display:none;">
-            <h2 style="color:#fff;">🔑 Your Keys</h2>
-            <p style="color:#8888aa;">Coming soon...</p>
+<!-- KEYS TAB -->
+<div class="tab-content" id="tab-keys" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h2 style="color:#fff; margin:0;">🔑 Your Keys</h2>
+        <div style="display:flex; gap:10px;">
+            <button class="btn btn-primary" onclick="createKey('all', 'premium', 30)">➕ Generate Premium Key (30 days)</button>
+            <button class="btn btn-primary" onclick="createKey('all', 'lifetime', null)">🔑 Generate Lifetime Key</button>
         </div>
+    </div>
+    <div style="background:rgba(20,20,35,0.6); border-radius:12px; padding:16px; margin-bottom:16px; border:1px solid rgba(255,255,255,0.05);">
+        <p style="color:#8888aa; font-size:13px; margin:0;">
+            💡 Keys are used to whitelist users. Each key is unique and can only be used once. 
+            Premium keys expire after 30 days. Lifetime keys never expire. 
+            Users enter the key in their script loader to gain access.
+        </p>
+    </div>
+    <div id="keysList" style="display:grid; grid-template-columns:1fr; gap:8px;">
+        <p style="color:#8888aa; text-align:center; padding:20px 0;">No keys generated yet.</p>
+    </div>
+</div>
 
         <!-- CREDITS TAB -->
         <div class="tab-content" id="tab-credits" style="display:none;">
