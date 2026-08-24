@@ -2475,9 +2475,15 @@ function confirmCreateScript(projectId) {
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
-    var obfuscation = parseInt(document.getElementById('scriptObfuscation').value);
+    var obfuscationType = document.getElementById('scriptObfuscationType').value;
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
+
+    // Apply obfuscation
+if (obfuscationType && obfuscationType !== 'none') {
+    script.code = applyObfuscation(script.code, obfuscationType);
+    script.obfuscationType = obfuscationType;
+}
     
     if (!name) {
         showNotification('Error', 'Script name is required.', 'error');
