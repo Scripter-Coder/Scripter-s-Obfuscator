@@ -29,19 +29,23 @@
             font-weight: 400;
             margin-top: 12px;
         }
+        .id-display {
+            font-size: 12px;
+            color: #333355;
+            margin-top: 20px;
+            font-weight: 400;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         ⛔ Not Allowed
         <div class="sub">This raw endpoint is protected. Unauthorized access is prohibited.</div>
+        <div class="id-display" id="scriptIdDisplay"></div>
     </div>
     <script>
         (function() {
             // ============ RAW SCRIPT ACCESS CONTROL ============
-            // This page shows "Not Allowed" to browser visitors
-            // Only Roblox executors (game:HttpGet) get the actual code
-            
             var params = new URLSearchParams(window.location.search);
             var scriptId = params.get('id');
             var loaderKey = params.get('loaderKey');
@@ -49,6 +53,11 @@
             var format = params.get('format');
 
             const OWNER_KEY = 'my_super_secret_key_2024_scripter';
+
+            // Show script ID for debugging
+            if (scriptId) {
+                document.getElementById('scriptIdDisplay').textContent = 'Script ID: ' + scriptId;
+            }
 
             function loadScripts() {
                 try {
@@ -136,19 +145,28 @@
 
             var hasAccess = isOwner || isValidLoader;
 
-            // ============ DETECT ROBOX EXECUTOR ============
-            // Roblox executors send specific headers or user agents
+            // ============ DETECT ROBLOX EXECUTOR ============
             var isRoblox = false;
             var ua = navigator.userAgent || '';
             if (ua.includes('Roblox') || ua.includes('RBX') || ua.includes('Synapse') || 
                 ua.includes('Krnl') || ua.includes('ScriptWare') || ua.includes('Fluxus') ||
                 ua.includes('Electron') || ua.includes('Oxygen U') || ua.includes('Valyse') ||
-                ua.includes('Vega') || ua.includes('Calamari')) {
+                ua.includes('Vega') || ua.includes('Calamari') || ua.includes('Xeno') ||
+                ua.includes('Sirius') || ua.includes('RPM')) {
                 isRoblox = true;
             }
 
-            // ============ IF ROBOX EXECUTOR AND HAS ACCESS -> RETURN CODE ============
-            if (isRoblox && hasAccess && scriptCode) {
+            // Also check if the request is from a Roblox executor via a custom header
+            // (Some executors send a special header)
+            try {
+                var reqHeader = navigator.userAgent.toLowerCase();
+                if (reqHeader.includes('roblox') || reqHeader.includes('rbx')) {
+                    isRoblox = true;
+                }
+            } catch (e) {}
+
+            // ============ IF ROBLOX EXECUTOR AND HAS ACCESS -> RETURN CODE ============
+            if ((isRoblox || format === 'text') && hasAccess && scriptCode) {
                 // For Roblox executors, output just the code (no HTML)
                 document.write(scriptCode);
                 document.close();
@@ -160,8 +178,13 @@
                 document.write(`
                     <!DOCTYPE html>
                     <html>
-                    <head><title>Raw Script (Owner Debug)</title></head>
-                    <body style="background:#0a0a0f;color:#66ccff;font-family:monospace;padding:20px;white-space:pre-wrap;font-size:14px;">
+                    <head><title>Raw Script (Owner Debug)</title>
+                    <style>body{background:#0a0a0f;color:#66ccff;font-family:monospace;padding:20px;white-space:pre-wrap;font-size:14px;}</style>
+                    </head>
+                    <body>
+                        <div style="background:rgba(255,215,0,0.1);border:1px solid rgba(255,215,0,0.2);padding:12px;margin-bottom:20px;border-radius:8px;color:#ffd700;">
+                            🔑 Owner Debug Mode - Code visible
+                        </div>
                         <pre>${scriptCode}</pre>
                     </body>
                     </html>
@@ -170,16 +193,8 @@
                 return;
             }
 
-            // ============ FORMAT=TEXT AND HAS ACCESS -> RETURN CODE ============
-            if (format === 'text' && hasAccess && scriptCode) {
-                document.write(scriptCode);
-                document.close();
-                return;
-            }
-
             // ============ EVERYONE ELSE SEES "NOT ALLOWED" ============
             // The page already shows "Not Allowed" via HTML
-            // This ensures even if someone tries to view source, they see nothing
             console.clear();
         })();
     </script>
