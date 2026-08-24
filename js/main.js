@@ -634,8 +634,8 @@ function copyLoader(loaderId) {
     // SIMPLE LOADER - Direct embed (works everywhere)
     var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
-    // HTTP Loader using index.html?raw=true (NO 404!)
-    var rawUrl = window.location.origin + window.location.pathname + '?raw=true&id=' + loaderId + '&loaderKey=' + loaderKey + '&format=text';
+    // HTTP Loader using raw.html (shows "Not Allowed" in browser, works in executor)
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey;
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
     
     // Show dialog with both options
@@ -659,7 +659,7 @@ function copyLoader(loaderId) {
             </div>
             
             <div style="margin-bottom:12px;">
-                <label style="color:#8888aa; font-size:12px;">🔗 HTTP Loader (Works via index.html):</label>
+                <label style="color:#8888aa; font-size:12px;">🔗 HTTP Loader (Raw - Hidden from browsers):</label>
                 <div style="background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
                     <code style="color:#66ccff; font-size:13px; word-break:break-all; white-space:pre-wrap; font-family:monospace;">${httpLoader}</code>
                 </div>
@@ -667,20 +667,12 @@ function copyLoader(loaderId) {
             </div>
             
             <div style="background:rgba(100,255,100,0.05); border-radius:8px; padding:12px; border:1px solid rgba(100,255,100,0.1); margin-bottom:12px;">
-                <p style="color:#66ff66; font-size:12px; margin:0;">💡 The direct loader embeds the script directly. No external requests needed!</p>
+                <p style="color:#66ff66; font-size:12px; margin:0;">💡 The HTTP loader fetches from raw.html. Browsers see "Not Allowed" - only Roblox executors get the code!</p>
             </div>
-            
-            <details style="margin-bottom:12px;">
-                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔑 View Raw (Owner Only)</summary>
-                <div style="margin-top:6px; padding:10px; background:rgba(10,10,15,0.6); border-radius:8px; border:1px solid rgba(108,59,255,0.1);">
-                    <p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">To view the raw code, use this URL with your secret key:</p>
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${window.location.origin + window.location.pathname}?raw=true&id=${loaderId}&key=${OWNER_KEY}</code>
-                    <button onclick="copyText('${window.location.origin + window.location.pathname}?raw=true&id=${loaderId}&key=${OWNER_KEY}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy Raw URL</button>
-                </div>
-            </details>
             
             <div style="display:flex; gap:8px; margin-top:8px;">
                 <button onclick="copyText('${directLoader.replace(/'/g, "\\'")}')" class="btn btn-primary" style="flex:1;">📋 Copy Direct</button>
+                <button onclick="copyText('${httpLoader.replace(/'/g, "\\'")}')" class="btn btn-close-dropdown" style="flex:1;">📋 Copy HTTP</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1;">Close</button>
             </div>
         </div>
@@ -2757,9 +2749,9 @@ function viewScript(projectId, scriptId) {
     storeScriptForRawAccess(script.id, script.code, script.name);
     
     var directLoader = 'loadstring([[' + script.code + ']])()';
-    var rawUrl = window.location.origin + window.location.pathname + '?raw=true&id=' + script.loaderId + '&loaderKey=' + script.loaderKey + '&format=text';
+    var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&loaderKey=' + script.loaderKey;
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
-    var ownerUrl = window.location.origin + window.location.pathname + '?raw=true&id=' + script.loaderId + '&key=' + OWNER_KEY;
+    var ownerUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&key=' + OWNER_KEY + '&format=debug';
     var obfType = script.obfuscationType || 'none';
     var obfDisplay = OBFUSCATION_TYPES[obfType] || 'None';
     
