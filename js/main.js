@@ -2127,7 +2127,7 @@ function openCreateScript(projectId) {
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">➕ Create Script</h2>
-            <p class="sub">Create a new script for "${project.name}"</p>
+            <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             
             <div class="form-group">
                 <label>Script Name <span class="required">*</span></label>
@@ -2139,12 +2139,12 @@ function openCreateScript(projectId) {
                 <textarea id="scriptDescription" placeholder="Describe your script..."></textarea>
             </div>
             
-            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+            <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="scriptAntiTamper"> Anti Tampers
+                    <input type="checkbox" id="scriptAntiTamper"> 🛡️ Anti Tampers
                 </label>
                 <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="scriptAntiSkid"> Anti Skidders
+                    <input type="checkbox" id="scriptAntiSkid"> 🔒 Anti Skidders
                 </label>
             </div>
             
@@ -2171,22 +2171,40 @@ function openCreateScript(projectId) {
             </div>
             
             <div class="form-group">
-                <label>Paste .txt/.lua Code <span style="color:#555577;">(optional)</span></label>
+                <label>Paste .txt/.lua Code <span class="required">*</span></label>
                 <textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea>
             </div>
             
             <div class="form-group">
-                <label>Obfuscation Level</label>
+                <label>🔐 Choose Obfuscation Method</label>
+                <select id="scriptObfuscationType" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    <option value="allinone">🔥 All In One [Recommended] - Unbreakable</option>
+                    <option value="ironbrew">⚔️ IronBrew - String Encryption</option>
+                    <option value="moonveil">🌙 MoonVeiL - Control Flow</option>
+                    <option value="prometheus">🔥 Prometheus - Variable + String</option>
+                    <option value="luaobfuscator">📦 LuaObfuscator - Lightweight</option>
+                    <option value="moonsec">🛡️ Moonsec - Anti-Debug</option>
+                    <option value="luraph_normal">💀 Luraph Normal [Best]</option>
+                    <option value="luraph_v15">💀 Luraph V15 [Best]</option>
+                    <option value="none">🚫 None - No Obfuscation</option>
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">
+                    ⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Obfuscation Intensity</label>
                 <input type="range" id="scriptObfuscation" min="1" max="10" value="10" style="width:100%;">
                 <div style="display:flex; justify-content:space-between; color:#8888aa; font-size:12px;">
                     <span>1 (Low)</span>
-                    <span id="obfuscationLabel">10 (High) ⭐ Recommended</span>
+                    <span id="obfuscationLabel">10 (Maximum) ⭐ Recommended</span>
                 </div>
             </div>
             
             <div class="form-group">
                 <label style="cursor:pointer;">
-                    <input type="checkbox" id="scriptHWIDReset"> HWID Reset (Allow device change)
+                    <input type="checkbox" id="scriptHWIDReset"> 🔄 HWID Reset (Allow device change)
                 </label>
             </div>
             
@@ -2195,19 +2213,41 @@ function openCreateScript(projectId) {
                 <input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890">
             </div>
             
-            <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Script</button>
+            <div style="display:flex; gap:12px; margin-top:12px;">
+                <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">✅ Create Script</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
+            </div>
         </div>
     `;
     
     document.body.appendChild(overlay);
     
+    // File upload handler
+    var fileInput = document.getElementById('scriptFile');
+    if (fileInput) {
+        fileInput.addEventListener('change', function(e) {
+            var file = this.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('scriptCode').value = e.target.result;
+                showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
+            };
+            reader.onerror = function() {
+                showNotification('Error', 'Failed to read file.', 'error');
+            };
+            reader.readAsText(file);
+        });
+    }
+    
+    // Obfuscation intensity slider
     var slider = document.getElementById('scriptObfuscation');
     if (slider) {
         slider.addEventListener('input', function() {
             var label = document.getElementById('obfuscationLabel');
             var val = parseInt(this.value);
-            var levels = ['1 (Low)', '2', '3', '4', '5 (Medium)', '6', '7', '8', '9', '10 (High) ⭐ Recommended'];
-            if (label) label.textContent = levels[val - 1] || '10 (High) ⭐ Recommended';
+            var levels = ['1 (Lowest)', '2', '3', '4', '5 (Medium)', '6', '7', '8', '9', '10 (Maximum) ⭐ Recommended'];
+            if (label) label.textContent = levels[val - 1] || '10 (Maximum) ⭐ Recommended';
         });
     }
 }
@@ -2475,15 +2515,10 @@ function confirmCreateScript(projectId) {
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
+    var obfuscationIntensity = parseInt(document.getElementById('scriptObfuscation').value);
     var obfuscationType = document.getElementById('scriptObfuscationType').value;
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
-
-    // Apply obfuscation
-if (obfuscationType && obfuscationType !== 'none') {
-    script.code = applyObfuscation(script.code, obfuscationType);
-    script.obfuscationType = obfuscationType;
-}
     
     if (!name) {
         showNotification('Error', 'Script name is required.', 'error');
@@ -2510,6 +2545,18 @@ if (obfuscationType && obfuscationType !== 'none') {
         return;
     }
     
+    // Apply obfuscation if selected
+    var obfuscatedCode = code;
+    if (obfuscationType && obfuscationType !== 'none') {
+        try {
+            obfuscatedCode = applyObfuscation(code, obfuscationType);
+            showNotification('Obfuscation Applied', 'Using: ' + OBFUSCATION_TYPES[obfuscationType], 'success', 2000);
+        } catch (e) {
+            showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
+            obfuscatedCode = code;
+        }
+    }
+    
     var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
     
     var script = {
@@ -2520,8 +2567,10 @@ if (obfuscationType && obfuscationType !== 'none') {
         antiSkid: antiSkid,
         keyTime: keyTime || 'unlimited',
         keyUnit: keyUnit || 'unlimited',
-        code: code,
-        obfuscation: obfuscation,
+        code: obfuscatedCode,
+        originalCode: code,
+        obfuscationType: obfuscationType,
+        obfuscationIntensity: obfuscationIntensity,
         hwidReset: hwidReset,
         gameId: gameId,
         visibility: 'anyone',
@@ -2537,14 +2586,16 @@ if (obfuscationType && obfuscationType !== 'none') {
     saveProjects(projects);
     
     // Store in loader store for raw access
-    storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
-    storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
-    storeScriptForRawAccess(script.loaderId, script.code, script.name);
-    storeScriptForRawAccess(script.id, script.code, script.name);
+    storeScriptForLoader(script.loaderId, obfuscatedCode, script.name, script.loaderKey);
+    storeScriptForLoader(script.id, obfuscatedCode, script.name, script.loaderKey);
+    storeScriptForRawAccess(script.loaderId, obfuscatedCode, script.name);
+    storeScriptForRawAccess(script.id, obfuscatedCode, script.name);
     
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    showNotification('Success', 'Script "' + name + '" created!', 'success');
+    
+    var obfuscationDisplay = OBFUSCATION_TYPES[obfuscationType] || 'None';
+    showNotification('Success', 'Script "' + name + '" created with ' + obfuscationDisplay + '!', 'success');
     renderProjects();
 }
 
@@ -2775,7 +2826,6 @@ function deleteProject(projectId) {
     renderProjects();
 }
 
-// ============ EDIT SCRIPT ==========
 function editScript(projectId, scriptId) {
     var projects = loadProjects();
     var project = null;
@@ -2815,6 +2865,25 @@ function editScript(projectId, scriptId) {
     
     var keyTime = script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '' : script.keyTime;
     var keyUnit = script.keyUnit === 'unlimited' || script.keyUnit === 'unlimited' ? 'unlimited' : (script.keyUnit || 'hours');
+    var currentObfType = script.obfuscationType || 'none';
+    
+    // Build obfuscation options with current selected
+    var obfOptions = '';
+    var obfTypes = {
+        'allinone': '🔥 All In One [Recommended] - Unbreakable',
+        'ironbrew': '⚔️ IronBrew - String Encryption',
+        'moonveil': '🌙 MoonVeiL - Control Flow',
+        'prometheus': '🔥 Prometheus - Variable + String',
+        'luaobfuscator': '📦 LuaObfuscator - Lightweight',
+        'moonsec': '🛡️ Moonsec - Anti-Debug',
+        'luraph_normal': '💀 Luraph Normal [Best]',
+        'luraph_v15': '💀 Luraph V15 [Best]',
+        'none': '🚫 None - No Obfuscation'
+    };
+    for (var key in obfTypes) {
+        var selected = (key === currentObfType) ? 'selected' : '';
+        obfOptions += '<option value="' + key + '" ' + selected + '>' + obfTypes[key] + '</option>';
+    }
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2832,12 +2901,12 @@ function editScript(projectId, scriptId) {
                 <textarea id="editScriptDescription">${script.description || ''}</textarea>
             </div>
             
-            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+            <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> Anti Tampers
+                    <input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampers
                 </label>
                 <label style="margin:0; cursor:pointer;">
-                    <input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> Anti Skidders
+                    <input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidders
                 </label>
             </div>
             
@@ -2859,22 +2928,32 @@ function editScript(projectId, scriptId) {
             </div>
             
             <div class="form-group">
-                <label>Paste .txt/.lua Code</label>
-                <textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.code || ''}</textarea>
-            </div>
-            
-            <div class="form-group">
-                <label>Obfuscation Level</label>
-                <input type="range" id="editScriptObfuscation" min="1" max="10" value="${script.obfuscation || 10}" style="width:100%;">
-                <div style="display:flex; justify-content:space-between; color:#8888aa; font-size:12px;">
-                    <span>1 (Low)</span>
-                    <span id="editObfuscationLabel">${script.obfuscation || 10}${script.obfuscation === 10 ? ' (High) ⭐ Recommended' : ''}</span>
+                <label>🔐 Choose Obfuscation Method</label>
+                <select id="editScriptObfuscationType" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    ${obfOptions}
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">
+                    ⚡ <strong style="color:#66ff66;">All In One</strong> applies ALL obfuscators simultaneously for maximum protection!
                 </div>
             </div>
             
             <div class="form-group">
+                <label>Obfuscation Intensity</label>
+                <input type="range" id="editScriptObfuscation" min="1" max="10" value="${script.obfuscationIntensity || 10}" style="width:100%;">
+                <div style="display:flex; justify-content:space-between; color:#8888aa; font-size:12px;">
+                    <span>1 (Low)</span>
+                    <span id="editObfuscationLabel">${script.obfuscationIntensity || 10}${(script.obfuscationIntensity || 10) === 10 ? ' (Maximum) ⭐ Recommended' : ''}</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Paste .txt/.lua Code</label>
+                <textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.originalCode || script.code || ''}</textarea>
+            </div>
+            
+            <div class="form-group">
                 <label style="cursor:pointer;">
-                    <input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> HWID Reset
+                    <input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset
                 </label>
             </div>
             
@@ -2883,7 +2962,10 @@ function editScript(projectId, scriptId) {
                 <input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890">
             </div>
             
-            <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Script</button>
+            <div style="display:flex; gap:12px; margin-top:12px;">
+                <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">💾 Update Script</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
+            </div>
         </div>
     `;
     
@@ -2894,7 +2976,8 @@ function editScript(projectId, scriptId) {
         slider.addEventListener('input', function() {
             var label = document.getElementById('editObfuscationLabel');
             var val = parseInt(this.value);
-            if (label) label.textContent = val + (val === 10 ? ' (High) ⭐ Recommended' : '');
+            var levels = ['1 (Lowest)', '2', '3', '4', '5 (Medium)', '6', '7', '8', '9', '10 (Maximum) ⭐ Recommended'];
+            if (label) label.textContent = levels[val - 1] || '10 (Maximum) ⭐ Recommended';
         });
     }
 }
