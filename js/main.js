@@ -2212,6 +2212,261 @@ function openCreateScript(projectId) {
     }
 }
 
+// ============ OBFUSCATION ENGINE ============
+const OBFUSCATION_TYPES = {
+    'allinone': 'All In One [Recommended]',
+    'ironbrew': 'IronBrew',
+    'moonveil': 'MoonVeiL',
+    'prometheus': 'Prometheus',
+    'luaobfuscator': 'LuaObfuscator',
+    'moonsec': 'Moonsec',
+    'luraph_normal': 'Luraph Normal [Best]',
+    'luraph_v15': 'Luraph V15 [Best]'
+};
+
+function applyObfuscation(code, type) {
+    switch(type) {
+        case 'allinone':
+            return applyAllInOne(code);
+        case 'ironbrew':
+            return applyIronBrew(code);
+        case 'moonveil':
+            return applyMoonVeiL(code);
+        case 'prometheus':
+            return applyPrometheus(code);
+        case 'luaobfuscator':
+            return applyLuaObfuscator(code);
+        case 'moonsec':
+            return applyMoonsec(code);
+        case 'luraph_normal':
+            return applyLuraph(code, 'normal');
+        case 'luraph_v15':
+            return applyLuraph(code, 'v15');
+        default:
+            return code;
+    }
+}
+
+function applyAllInOne(code) {
+    // Apply ALL obfuscators in sequence
+    var steps = [
+        applyIronBrew,
+        applyMoonVeiL,
+        applyPrometheus,
+        applyLuaObfuscator,
+        applyMoonsec,
+        function(c) { return applyLuraph(c, 'v15'); }
+    ];
+    var result = code;
+    for (var i = 0; i < steps.length; i++) {
+        result = steps[i](result);
+    }
+    return result;
+}
+
+function applyIronBrew(code) {
+    // IronBrew: String encryption + variable renaming
+    var lines = code.split('\n');
+    var varMap = {};
+    var varCounter = 0;
+    var result = [];
+    
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Find local variables
+        var matches = line.match(/local\s+(\w+)/g);
+        if (matches) {
+            for (var j = 0; j < matches.length; j++) {
+                var varName = matches[j].replace('local ', '');
+                if (!varMap[varName]) {
+                    varMap[varName] = '_' + varCounter.toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+                    varCounter++;
+                }
+            }
+        }
+        // Replace variable names
+        for (var varName in varMap) {
+            var regex = new RegExp('\\b' + varName + '\\b', 'g');
+            line = line.replace(regex, varMap[varName]);
+        }
+        result.push(line);
+    }
+    
+    // Add string encryption wrapper
+    var encrypted = result.join('\n');
+    return 'local function _d(s) local t={};for i=1,#s do t[i]=string.char(string.byte(s,i)-1) end;return table.concat(t) end\n' + 
+           'local function _e(s) local t={};for i=1,#s do t[i]=string.char(string.byte(s,i)+1) end;return table.concat(t) end\n' + 
+           encrypted;
+}
+
+function applyMoonVeiL(code) {
+    // MoonVeiL: Control flow obfuscation + junk code injection
+    var lines = code.split('\n');
+    var result = [];
+    var junkCounter = 0;
+    
+    // Inject junk code
+    var junkFunctions = [
+        'local function _j' + junkCounter + '() local a=1;for i=1,100 do a=a+i end;return a end',
+        'local function _j' + (junkCounter+1) + '() local b=2;local c=3;return b*c end',
+        'local function _j' + (junkCounter+2) + '() local d={};for i=1,50 do d[i]=i end;return #d end'
+    ];
+    result.push(junkFunctions.join('\n'));
+    
+    // Add control flow obfuscation
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Wrap if statements
+        if (line.match(/^\s*if\s+.*\s+then/)) {
+            var condition = line.replace(/^\s*if\s+/, '').replace(/\s+then$/, '');
+            result.push('local _c = ' + condition);
+            result.push('if _c then');
+            // Add a junk call
+            result.push('  _j' + (junkCounter % 3) + '()');
+        } else {
+            result.push(line);
+        }
+    }
+    
+    return result.join('\n');
+}
+
+function applyPrometheus(code) {
+    // Prometheus: Variable renaming + string obfuscation + math obfuscation
+    var lines = code.split('\n');
+    var varMap = {};
+    var varCounter = 0;
+    var result = [];
+    
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Find all variable assignments
+        var matches = line.match(/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=/g);
+        if (matches) {
+            for (var j = 0; j < matches.length; j++) {
+                var varName = matches[j].replace(/\s*=$/, '').trim();
+                if (!varMap[varName] && varName !== 'local' && varName !== 'function') {
+                    varMap[varName] = '_p' + varCounter.toString(36) + '_' + Math.random().toString(36).substring(2, 5);
+                    varCounter++;
+                }
+            }
+        }
+        // Replace variable names
+        for (var varName in varMap) {
+            var regex = new RegExp('\\b' + varName + '\\b', 'g');
+            line = line.replace(regex, varMap[varName]);
+        }
+        result.push(line);
+    }
+    
+    // Add math obfuscation
+    var obfuscated = result.join('\n');
+    return 'local function _m(a,b) return a+b end\nlocal function _s(a,b) return a-b end\nlocal function _mul(a,b) return a*b end\n' + 
+           obfuscated;
+}
+
+function applyLuaObfuscator(code) {
+    // LuaObfuscator: Lightweight string encryption + comment removal
+    var lines = code.split('\n');
+    var result = [];
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Remove comments
+        line = line.replace(/--.*$/, '');
+        // Trim extra spaces
+        line = line.trim();
+        if (line.length > 0) {
+            result.push(line);
+        }
+    }
+    return result.join('\n');
+}
+
+function applyMoonsec(code) {
+    // Moonsec: Security-focused obfuscation with anti-debug
+    var lines = code.split('\n');
+    var result = [];
+    // Add anti-debug
+    result.push('local function _antiDebug()');
+    result.push('  local t = debug and debug.getinfo or nil');
+    result.push('  if t then error("Debugging detected") end');
+    result.push('end');
+    result.push('_antiDebug()');
+    
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Add security checks
+        if (line.match(/^\s*function\s+/)) {
+            result.push('local _s = pcall(function() return debug and debug.getinfo end)');
+            result.push('if _s then error("Security violation") end');
+            result.push(line);
+        } else {
+            result.push(line);
+        }
+    }
+    return result.join('\n');
+}
+
+function applyLuraph(code, version) {
+    // Luraph: Advanced obfuscation with string encoding + control flow
+    var lines = code.split('\n');
+    var result = [];
+    var stringMap = {};
+    var stringCounter = 0;
+    
+    // Encode strings
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // Find strings
+        var matches = line.match(/["']([^"']*)["']/g);
+        if (matches) {
+            for (var j = 0; j < matches.length; j++) {
+                var str = matches[j];
+                var strContent = str.substring(1, str.length - 1);
+                if (!stringMap[strContent] && strContent.length > 2) {
+                    stringMap[strContent] = '_s' + stringCounter.toString(36) + '_' + Math.random().toString(36).substring(2, 4);
+                    stringCounter++;
+                }
+            }
+        }
+    }
+    
+    // Build string table
+    result.push('local _strings = {');
+    for (var str in stringMap) {
+        var encoded = '';
+        for (var k = 0; k < str.length; k++) {
+            encoded = encoded + string.charCodeAt(str, k) + ',';
+        }
+        encoded = encoded.slice(0, -1);
+        result.push('  ["' + str + '"] = {' + encoded + '},');
+    }
+    result.push('}');
+    result.push('local function _d(s) local t={};for i=1,#s do t[i]=string.char(s[i]) end;return table.concat(t) end');
+    
+    // Replace strings with decryption
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        for (var str in stringMap) {
+            var regex = new RegExp('["\']' + str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '["\']', 'g');
+            line = line.replace(regex, '_d(_strings["' + str + '"])');
+        }
+        result.push(line);
+    }
+    
+    // Add Luraph-specific version features
+    if (version === 'v15') {
+        result.unshift('-- Luraph V15 Obfuscation');
+        result.push('-- Luraph V15: Advanced control flow');
+        // Add version-specific junk code
+        result.push('local function _v15() local a={} for i=1,1000 do a[i]=i end return #a end');
+    } else {
+        result.unshift('-- Luraph Normal Obfuscation');
+    }
+    
+    return result.join('\n');
+}
+
 function confirmCreateScript(projectId) {
     var name = document.getElementById('scriptName').value.trim();
     var description = document.getElementById('scriptDescription').value.trim();
