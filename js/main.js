@@ -569,7 +569,7 @@ function openRawScript(loaderId) {
                     }
                     textarea.remove();
                 }
-            </script>
+            <\/script>
         </body>
         </html>
     `);
@@ -578,11 +578,12 @@ function openRawScript(loaderId) {
 }
 
 // ============ SCRIPT LOADER SYSTEM ============
-function storeScriptForLoader(scriptId, scriptCode, scriptName) {
+function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) {
     var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
     loaderStore[scriptId] = {
         code: scriptCode,
         name: scriptName,
+        loaderKey: loaderKey || '',
         timestamp: Date.now()
     };
     localStorage.setItem('loaderStore', JSON.stringify(loaderStore));
@@ -602,6 +603,7 @@ function copyLoader(loaderId) {
     var scriptCode = null;
     var scriptName = '';
     var scriptId = '';
+    var loaderKey = '';
     
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].scripts) {
@@ -610,6 +612,7 @@ function copyLoader(loaderId) {
                     scriptCode = projects[i].scripts[j].code;
                     scriptName = projects[i].scripts[j].name;
                     scriptId = projects[i].scripts[j].id;
+                    loaderKey = projects[i].scripts[j].loaderKey || '';
                     break;
                 }
             }
@@ -622,16 +625,17 @@ function copyLoader(loaderId) {
         return;
     }
     
-    // Store the script for raw access
+    // Store the script for raw access with loader key
     storeScriptForRawAccess(loaderId, scriptCode, scriptName);
     storeScriptForRawAccess(scriptId, scriptCode, scriptName);
+    storeScriptForLoader(loaderId, scriptCode, scriptName, loaderKey);
+    storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey);
     
-    // SIMPLE LOADER - Just the direct embed (works everywhere, no HTTP requests)
-    // This is the most reliable method for Roblox executors
+    // SIMPLE LOADER - Direct embed (works everywhere)
     var directLoader = 'loadstring([[' + scriptCode + ']])()';
     
-    // Also provide the HTTP version for users who want it
-    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId;
+    // HTTP Loader with loader key for security
+    var rawUrl = window.location.origin + '/raw.html?id=' + loaderId + '&loaderKey=' + loaderKey + '&format=text';
     var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
     
     // Show dialog with both options
@@ -2245,6 +2249,8 @@ function confirmCreateScript(projectId) {
         return;
     }
     
+    var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
+    
     var script = {
         id: 'script_' + Date.now(),
         name: name,
@@ -2259,7 +2265,8 @@ function confirmCreateScript(projectId) {
         gameId: gameId,
         visibility: 'anyone',
         createdAt: new Date().toISOString(),
-        loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15)
+        loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15),
+        loaderKey: loaderKey
     };
     
     if (!projects[projectIndex].scripts) {
@@ -2267,6 +2274,12 @@ function confirmCreateScript(projectId) {
     }
     projects[projectIndex].scripts.push(script);
     saveProjects(projects);
+    
+    // Store in loader store for raw access
+    storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
+    storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
+    storeScriptForRawAccess(script.loaderId, script.code, script.name);
+    storeScriptForRawAccess(script.id, script.code, script.name);
     
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
@@ -2304,20 +2317,17 @@ function viewScript(projectId, scriptId) {
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
-
-// Inside viewScript function, replace the loader code section:
-var directLoader = 'loadstring([[' + script.code + ']])()';
-var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId;
-var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
-
-// Store for loader access
-storeScriptForLoader(script.loaderId, script.code, script.name);
-storeScriptForLoader(script.id, script.code, script.name);
-storeScriptForRawAccess(script.loaderId, script.code, script.name);
-storeScriptForRawAccess(script.id, script.code, script.name);
-
-    var loaderUrl = window.location.origin + '/raw.html?id=' + script.loaderId;
-    var loaderCode = 'loadstring(game:HttpGet("' + loaderUrl + '"))()';
+    
+    // Store for loader
+    storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
+    storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
+    storeScriptForRawAccess(script.loaderId, script.code, script.name);
+    storeScriptForRawAccess(script.id, script.code, script.name);
+    
+    var directLoader = 'loadstring([[' + script.code + ']])()';
+    var rawUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&loaderKey=' + script.loaderKey + '&format=text';
+    var httpLoader = 'loadstring(game:HttpGet("' + rawUrl + '"))()';
+    var ownerUrl = window.location.origin + '/raw.html?id=' + script.loaderId + '&key=' + OWNER_KEY;
     
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
@@ -2342,8 +2352,13 @@ storeScriptForRawAccess(script.id, script.code, script.name);
             </div>
             
             <div style="margin-top:16px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05);">
-                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">📋 Loader Code:</p>
-                <code style="color:#66ccff; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${loaderCode}</code>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">📋 Direct Loader (Recommended):</p>
+                <code style="color:#66ff66; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${directLoader}</code>
+            </div>
+            
+            <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05);">
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">🔗 HTTP Loader:</p>
+                <code style="color:#66ccff; font-size:12px; word-break:break-all; display:block; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">${httpLoader}</code>
             </div>
             
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:200px; overflow-y:auto;">
@@ -2356,7 +2371,16 @@ storeScriptForRawAccess(script.id, script.code, script.name);
                 <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
                 ${script.gameId ? '<span>🎮 ' + script.gameId + '</span>' : ''}
                 <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
+                <span>🔑 Loader Key: ${script.loaderKey}</span>
             </div>
+            
+            <details style="margin-top:12px;">
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
+                <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
+                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+                </div>
+            </details>
         </div>
     `;
     
@@ -2643,6 +2667,8 @@ function confirmEditScript(projectId, scriptId) {
             if (projects[i].scripts) {
                 for (var j = 0; j < projects[i].scripts.length; j++) {
                     if (projects[i].scripts[j].id === scriptId) {
+                        // Preserve loaderKey
+                        var existingLoaderKey = projects[i].scripts[j].loaderKey;
                         projects[i].scripts[j].name = name;
                         projects[i].scripts[j].description = description;
                         projects[i].scripts[j].antiTamper = antiTamper;
@@ -2653,6 +2679,8 @@ function confirmEditScript(projectId, scriptId) {
                         projects[i].scripts[j].obfuscation = obfuscation;
                         projects[i].scripts[j].hwidReset = hwidReset;
                         projects[i].scripts[j].gameId = gameId;
+                        // Preserve loaderKey
+                        projects[i].scripts[j].loaderKey = existingLoaderKey;
                         break;
                     }
                 }
@@ -2915,3 +2943,7 @@ window.openScriptSettings = openScriptSettings;
 window.updateScriptVisibility = updateScriptVisibility;
 window.openRawScript = openRawScript;
 window.copyText = copyText;
+window.storeScriptForLoader = storeScriptForLoader;
+window.storeScriptForRawAccess = storeScriptForRawAccess;
+window.getScriptForLoader = getScriptForLoader;
+window.getScriptForRawAccess = getScriptForRawAccess;
