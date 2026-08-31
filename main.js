@@ -1,5 +1,6 @@
-﻿// ============ STATE ============
-import { applyCustomObfuscator } from './custom-obfuscator.js';
+// ============ STATE ============
+import { applyCustomObfuscator, buildWrappedPayload } from './custom-obfuscator.js';
+import { initRewards, renderRewardsTab, openCreateRewardUI } from './rewards.js';
 
 let currentUser = null;
 let isLoggedIn = false;
@@ -23,11 +24,11 @@ function getBasePath() {
 
 // ============ PLAN CONFIGURATIONS ============
 const PLAN_CONFIGS = {
-    'Basic': { fileSize: 10, keys: 1000, projects: 10, scripts: 20, price: 0, label: 'Basic' },
-    'Advanced': { fileSize: 100, keys: 10000, projects: 50, scripts: 100, price: 10, label: 'Advanced' },
-    'Pro': { fileSize: 1024, keys: 100000, projects: 500, scripts: 300, price: 30, label: 'Pro' },
-    'God': { fileSize: 102400, keys: Infinity, projects: 10000, scripts: 250000, price: 50, label: 'God' },
-    'Custom': { fileSize: Infinity, keys: Infinity, projects: Infinity, scripts: Infinity, price: 'Custom', label: 'Custom' }
+    'Basic': { fileSize: 10, keys: 1000, projects: 10, scripts: 20, visitors: 25000, checkpoints: 12, price: 0, label: 'Basic' },
+    'Advanced': { fileSize: 100, keys: 10000, projects: 50, scripts: 100, visitors: 50000, checkpoints: 25, price: 10, label: 'Advanced' },
+    'Pro': { fileSize: 1024, keys: 100000, projects: 500, scripts: 300, visitors: 100000, checkpoints: 50, price: 30, label: 'Pro' },
+    'God': { fileSize: 102400, keys: Infinity, projects: 10000, scripts: 250000, visitors: Infinity, checkpoints: 100, price: 50, label: 'God' },
+    'Custom': { fileSize: Infinity, keys: Infinity, projects: Infinity, scripts: Infinity, visitors: Infinity, checkpoints: Infinity, price: 'Custom', label: 'Custom' }
 };
 
 // ============ SESSION PERSISTENCE ============
@@ -178,12 +179,12 @@ function showNotification(title, message, type, duration) {
     duration = duration || 4000;
     var container = document.getElementById('notificationContainer');
     if (!container) return;
-    var icons = { success: 'âœ…', error: 'âŒ', warning: 'âš ï¸', info: 'â„¹ï¸' };
+    var icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
     var notif = document.createElement('div');
     notif.className = 'notification ' + type;
     var iconSpan = document.createElement('span');
     iconSpan.className = 'icon';
-    iconSpan.textContent = icons[type] || 'â„¹ï¸';
+    iconSpan.textContent = icons[type] || 'ℹ️';
     var contentDiv = document.createElement('div');
     contentDiv.className = 'content';
     var titleDiv = document.createElement('div');
@@ -196,7 +197,7 @@ function showNotification(title, message, type, duration) {
     contentDiv.appendChild(messageDiv);
     var closeBtn = document.createElement('button');
     closeBtn.className = 'close-btn';
-    closeBtn.textContent = 'âœ•';
+    closeBtn.textContent = '✕';
     closeBtn.onclick = function() {
         notif.classList.add('hiding');
         setTimeout(function() { if (notif.parentNode) notif.remove(); }, 300);
@@ -335,7 +336,7 @@ function createKey(scriptId, keyType, expiresDays) {
     if (!isNaN(days) && days > 0) {
         expires = Date.now() + days * 86400000;
     }
-    var newKey = {
+    var newKey = normalizeKey({
         id: 'key_' + Date.now(),
         key: generateKey(),
         scriptId: scriptId,
@@ -346,7 +347,7 @@ function createKey(scriptId, keyType, expiresDays) {
         usedBy: null,
         usedAt: null,
         createdAt: new Date().toISOString()
-    };
+    });
     keyData.keys.push(newKey);
     keyData.used = keyData.keys.filter(k => k.used).length;
     saveKeys(keyData);
@@ -366,8 +367,8 @@ function openCreateKeyUI() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 460px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">ðŸ”‘ Create Key</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">🔑 Create Key</h2>
             <p class="sub">Generate a new key for your scripts</p>
             <div class="form-group">
                 <label>Active For (Days)</label>
@@ -375,10 +376,10 @@ function openCreateKeyUI() {
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">Enter the number of days the key stays active. Set <strong style="color:#66ff66;">0</strong> or leave empty for <strong style="color:#66ff66;">Unlimited</strong> (never expires).</div>
             </div>
             <div class="form-group">
-                <label style="cursor:pointer;"><input type="checkbox" id="keyUnlimited"> â™¾ï¸ Unlimited (overrides days)</label>
+                <label style="cursor:pointer;"><input type="checkbox" id="keyUnlimited"> ♾️ Unlimited (overrides days)</label>
             </div>
             <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="confirmCreateKeyUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">ðŸ”‘ Create Key</button>
+                <button onclick="confirmCreateKeyUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">🔑 Create Key</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -473,36 +474,472 @@ function fallbackCopy(text) {
 }
 
 // ============ RENDER KEYS ============
+// ============ USERS KEYS PAGE ============
+var userKeysState = { search: '', page: 0, pageSize: 100, listVisible: true };
+
+function keyStatusOf(k) {
+    if (k.banned) return { text: '⛔ Banned', color: '#ff4444' };
+    if (k.expires && k.expires < Date.now()) return { text: '⏰ expired', color: '#ffc800' };
+    if (k.used) return { text: '❌ Used', color: '#ff6b6b' };
+    return { text: '✅ active', color: '#66ff66' };
+}
+
+function normalizeKey(k) {
+    if (k.note === undefined) k.note = '';
+    if (k.discordId === undefined) k.discordId = '';
+    if (k.hwid === undefined) k.hwid = '';
+    if (k.hwidResets === undefined) k.hwidResets = 0;
+    if (k.executions === undefined) k.executions = 0;
+    if (k.banned === undefined) k.banned = false;
+    if (k.banReason === undefined) k.banReason = '';
+    if (k.redeemed === undefined) k.redeemed = false;
+    return k;
+}
+
+function userKeysFiltered() {
+    var keyData = loadKeys();
+    var q = userKeysState.search.toLowerCase();
+    var list = keyData.keys;
+    if (q) {
+        list = list.filter(function(k) {
+            normalizeKey(k);
+            return (k.key || '').toLowerCase().indexOf(q) !== -1 ||
+                   (k.note || '').toLowerCase().indexOf(q) !== -1 ||
+                   (k.discordId || '').toLowerCase().indexOf(q) !== -1 ||
+                   (k.hwid || '').toLowerCase().indexOf(q) !== -1;
+        });
+    }
+    // newest first
+    list = list.slice().sort(function(a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    return list;
+}
+
 function renderKeys() {
     var container = document.getElementById('keysList');
     if (!container) return;
-    var keyData = loadKeys();
-    if (keyData.keys.length === 0) {
-        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No keys generated yet. Generate a key below.</p>';
+    var list = userKeysFiltered();
+    var total = list.length;
+    var pages = Math.max(1, Math.ceil(total / userKeysState.pageSize));
+    if (userKeysState.page >= pages) userKeysState.page = pages - 1;
+    if (userKeysState.page < 0) userKeysState.page = 0;
+    var start = userKeysState.page * userKeysState.pageSize;
+    var slice = list.slice(start, start + userKeysState.pageSize);
+    var rangeEl = document.getElementById('userKeysRange');
+    if (rangeEl) rangeEl.textContent = total === 0 ? '0-0' : (start + 1) + '-' + Math.min(start + userKeysState.pageSize, total);
+    if (!userKeysState.listVisible) {
+        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">Click "✏️ Edit Users Keys" to show the keys list.</p>';
         return;
     }
-    var html = '';
-    for (var i = 0; i < keyData.keys.length; i++) {
-        var k = keyData.keys[i];
-        var status = k.used ? 'âŒ Used' : (k.expires && k.expires < Date.now() ? 'â° Expired' : 'âœ… Active');
-        var statusColor = k.used ? '#ff6b6b' : (k.expires && k.expires < Date.now() ? '#ffc800' : '#66ff66');
-        var expiresText = k.expires ? new Date(k.expires).toLocaleDateString() : 'Never';
-        var durationText = k.days ? (k.days + ' day(s)') : 'â™¾ï¸ Unlimited';
-        html += `
-            <div class="script-item">
-                <div class="script-info">
-                    <div class="name" style="font-family:monospace; word-break:break-all;">${k.key}</div>
-                    <div class="desc">Duration: ${durationText} | Expires: ${expiresText} | Status: <span style="color:${statusColor};">${status}</span></div>
-                    ${k.usedBy ? '<div class="desc">Used by: ' + k.usedBy + ' at ' + new Date(k.usedAt).toLocaleDateString() + '</div>' : ''}
+    if (total === 0) {
+        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">No keys yet. Use "➕ Add User" to create one.</p>';
+        return;
+    }
+    var html = '<div class="keys-table">' +
+        '<div class="keys-table-header">' +
+        '<span></span><span>🔑 User Key</span><span>Discord ID</span><span>Status</span><span>Note</span><span>Executions</span><span>HWID Resets</span><span>Days</span><span>Ban</span><span>Reason</span><span>Actions</span>' +
+        '</div>';
+    for (var i = 0; i < slice.length; i++) {
+        var k = normalizeKey(slice[i]);
+        var st = keyStatusOf(k);
+        var daysText = k.banned ? '-' : (k.expires ? Math.max(0, Math.ceil((k.expires - Date.now()) / 86400000)) : '∞');
+        html += '<div class="keys-table-row">' +
+            '<span><button onclick="copyText(\'' + k.key + '\')" class="btn-sm btn-sm-primary" title="Copy Key">📋 Copy</button></span>' +
+            '<span style="font-family:monospace; word-break:break-all;">' + k.key + '</span>' +
+            '<span>' + (k.discordId || 'Nothing') + '</span>' +
+            '<span style="color:' + st.color + ';">' + st.text + '</span>' +
+            '<span>' + (k.note || '-') + '</span>' +
+            '<span>' + (k.executions || 0) + '</span>' +
+            '<span>' + (k.hwidResets || 0) + '</span>' +
+            '<span>' + daysText + '</span>' +
+            '<span>' + (k.banned ? 'Yes' : 'N/A') + '</span>' +
+            '<span>' + (k.banReason || '-') + '</span>' +
+            '<span style="display:flex; gap:4px;"><button onclick="openKeySettingsUI(\'' + k.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button><button onclick="deleteKey(\'' + k.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button></span>' +
+            '</div>';
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function userKeysDoSearch() {
+    var inp = document.getElementById('userKeysSearch');
+    userKeysState.search = inp ? inp.value.trim() : '';
+    userKeysState.page = 0;
+    renderKeys();
+}
+
+function userKeysPage(dir) {
+    userKeysState.page += dir;
+    if (userKeysState.page < 0) userKeysState.page = 0;
+    renderKeys();
+}
+
+function toggleUserKeysList() {
+    userKeysState.listVisible = !userKeysState.listVisible;
+    var btn = document.getElementById('editUserKeysBtn');
+    if (btn) btn.textContent = userKeysState.listVisible ? '✏️ Edit Users Keys' : '👁️ Show Users Keys';
+    renderKeys();
+}
+
+// ---- Add User ----
+function openAddUserUI() {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 460px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">➕ Add User</h2>
+            <p class="sub">Everything is optional - a key is generated automatically</p>
+            <div class="form-group"><label>User Note</label><input type="text" id="addUserNote" placeholder="Reminder note (optional)"><div class="field-hint">e.g. Ad Reward, Friend, Buyer...</div></div>
+            <div class="form-group"><label>Discord ID</label><input type="text" id="addUserDiscord" placeholder="Discord ID (optional)"><div class="field-hint">Needed for /resethwid command (bot coming soon). User can also link their discord with /redeem [code]</div></div>
+            <div class="form-group"><label>Identifier (HWID)</label><input type="text" id="addUserHwid" placeholder="HWID (optional)"><div class="field-hint">If no hwid specified, it will automatically get assigned when executed with the key.</div></div>
+            <div class="form-group"><label>Days</label><input type="number" id="addUserDays" min="0" placeholder="Days (optional)"><div class="field-hint">Days will start running out once the key has been redeemed. Leave blank for infinite days.</div></div>
+            <div style="display:flex; gap:12px; margin-top:16px;">
+                <button onclick="confirmAddUserUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">➕ Add User</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+function confirmAddUserUI() {
+    var note = document.getElementById('addUserNote').value.trim();
+    var discordId = document.getElementById('addUserDiscord').value.trim();
+    var hwid = document.getElementById('addUserHwid').value.trim();
+    var daysRaw = document.getElementById('addUserDays').value.trim();
+    var days = daysRaw === '' ? null : parseInt(daysRaw, 10);
+    if (days !== null && (isNaN(days) || days < 0)) { showNotification('Error', 'Invalid days.', 'error'); return; }
+    var keyData = loadKeys();
+    var newKey = normalizeKey({
+        id: 'key_' + Date.now(),
+        key: generateKey(),
+        scriptId: 'all',
+        type: days ? 'premium' : 'lifetime',
+        expires: days ? Date.now() + days * 86400000 : null,
+        days: days,
+        note: note, discordId: discordId, hwid: hwid,
+        used: false, usedBy: null, usedAt: null, redeemed: false,
+        createdAt: new Date().toISOString()
+    });
+    keyData.keys.push(newKey);
+    keyData.used = keyData.keys.filter(k => k.used).length;
+    saveKeys(keyData);
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    userKeysState.listVisible = true;
+    refreshStatsUI();
+    renderKeys();
+    showNotification('User Added', 'Key created: ' + newKey.key, 'success', 6000);
+}
+
+// ---- Users Keys Settings (mass ops) ----
+function openUserKeysSettingsUI() {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 620px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">⚙️ Users Keys Settings</h2>
+            <div class="settings-block">
+                <h3>📦 Mass Generate Keys</h3>
+                <div class="field-hint">You can bulk generate keys at once</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                    <input type="number" id="massGenAmount" min="1" max="1000" placeholder="Amount (1-1000)" style="flex:1; min-width:120px;">
+                    <input type="number" id="massGenDays" min="0" placeholder="Days (Optional)" style="flex:1; min-width:120px;">
                 </div>
-                <div class="script-actions">
-                    <button onclick="copyText('${k.key}')" class="btn-sm btn-sm-primary">ðŸ“‹ Copy</button>
-                    <button onclick="deleteKey('${k.id}')" class="btn-sm btn-sm-danger">ðŸ—‘ï¸</button>
+                <input type="text" id="massGenNote" placeholder="Note (Optional)" style="width:100%; margin-top:8px;">
+                <button onclick="massGenerateKeys()" class="btn btn-primary" style="margin-top:10px; width:100%;">⚡ Generate</button>
+            </div>
+            <div class="settings-block">
+                <h3>📥 Download keys</h3>
+                <div class="field-hint">Useful for sellix / shoppy or any 'serial keys'. It's recommended to use JSON for import/exporting users to migrate.</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                    <button onclick="downloadKeysTxt()" class="btn btn-close-dropdown" style="flex:1;">📄 Download TXT</button>
+                    <button onclick="exportKeysJson()" class="btn btn-close-dropdown" style="flex:1;">🗄️ Export JSON</button>
+                    <button onclick="deleteUnusedKeys()" class="btn btn-danger" style="flex:1;">🗑️ Delete Unused</button>
                 </div>
             </div>
-        `;
+            <div class="settings-block">
+                <h3>📤 Import Users</h3>
+                <div class="field-hint">If you're migrating from another whitelist service, you can easily import your users.</div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <input type="file" id="importUsersFile" accept=".json" style="flex:1;">
+                    <button onclick="importUsersFile()" class="btn btn-primary">Confirm</button>
+                </div>
+            </div>
+            <div class="settings-block">
+                <h3>💗 Mass compensate / Mass resethwid</h3>
+                <div class="field-hint">Mass compensate days for all of your users - useful if your script was unusable for some time. Mass reset HWID is useful when there's a new executor out.</div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <input type="number" id="massCompDays" min="1" placeholder="Days" style="flex:1; min-width:80px;">
+                    <button onclick="massCompensateDays()" class="btn btn-close-dropdown" style="flex:1;">➕ Add Days</button>
+                    <button onclick="resetAllHwids()" class="btn btn-danger" style="flex:1;">🔄 Reset All HWIDS</button>
+                </div>
+            </div>
+            <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+function massGenerateKeys() {
+    var amount = parseInt(document.getElementById('massGenAmount').value, 10);
+    var daysRaw = document.getElementById('massGenDays').value.trim();
+    var note = document.getElementById('massGenNote').value.trim();
+    if (isNaN(amount) || amount < 1 || amount > 1000) { showNotification('Error', 'Amount must be between 1 and 1000.', 'error'); return; }
+    var days = daysRaw === '' ? null : parseInt(daysRaw, 10);
+    var keyData = loadKeys();
+    for (var i = 0; i < amount; i++) {
+        keyData.keys.push(normalizeKey({
+            id: 'key_' + Date.now() + '_' + i,
+            key: generateKey(),
+            scriptId: 'all',
+            type: days ? 'premium' : 'lifetime',
+            expires: days ? Date.now() + days * 86400000 : null,
+            days: days, note: note,
+            used: false, usedBy: null, usedAt: null, redeemed: false,
+            createdAt: new Date().toISOString()
+        }));
     }
-    container.innerHTML = html;
+    keyData.used = keyData.keys.filter(k => k.used).length;
+    saveKeys(keyData);
+    refreshStatsUI();
+    renderKeys();
+    showNotification('Generated', amount + ' key(s) generated' + (days ? ' (' + days + ' day(s) each)' : ' (unlimited)'), 'success');
+}
+
+function downloadKeysTxt() {
+    var keyData = loadKeys();
+    var lines = keyData.keys.map(function(k) { return k.key; });
+    var blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'scripterhub_keys.txt';
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
+    showNotification('Downloaded', lines.length + ' key(s) saved to scripterhub_keys.txt', 'success');
+}
+
+function exportKeysJson() {
+    var keyData = loadKeys();
+    var blob = new Blob([JSON.stringify(keyData.keys, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'scripterhub_users.json';
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
+    showNotification('Exported', keyData.keys.length + ' user(s) exported to scripterhub_users.json', 'success');
+}
+
+function deleteUnusedKeys() {
+    if (!confirm('Delete ALL unused keys? This cannot be undone!')) return;
+    var keyData = loadKeys();
+    var before = keyData.keys.length;
+    keyData.keys = keyData.keys.filter(function(k) { return k.used || k.banned; });
+    keyData.used = keyData.keys.filter(k => k.used).length;
+    saveKeys(keyData);
+    refreshStatsUI();
+    renderKeys();
+    showNotification('Deleted', (before - keyData.keys.length) + ' unused key(s) deleted.', 'warning');
+}
+
+function importUsersFile() {
+    var input = document.getElementById('importUsersFile');
+    if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select a JSON file first.', 'error'); return; }
+    var file = input.files[0];
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            var imported = JSON.parse(e.target.result);
+            if (!Array.isArray(imported)) throw new Error('Not a valid users array');
+            var keyData = loadKeys();
+            var added = 0;
+            for (var i = 0; i < imported.length; i++) {
+                var k = imported[i];
+                if (!k || !k.key) continue;
+                keyData.keys.push(normalizeKey({
+                    id: k.id || ('key_' + Date.now() + '_' + i),
+                    key: k.key,
+                    scriptId: k.scriptId || 'all',
+                    type: k.type || 'lifetime',
+                    expires: k.expires || null,
+                    days: k.days || null,
+                    note: k.note || '', discordId: k.discordId || '', hwid: k.hwid || '',
+                    hwidResets: k.hwidResets || 0, executions: k.executions || 0,
+                    banned: !!k.banned, banReason: k.banReason || '',
+                    used: !!k.used, usedBy: k.usedBy || null, usedAt: k.usedAt || null, redeemed: !!k.redeemed,
+                    createdAt: k.createdAt || new Date().toISOString()
+                }));
+                added++;
+            }
+            keyData.used = keyData.keys.filter(k => k.used).length;
+            saveKeys(keyData);
+            refreshStatsUI();
+            renderKeys();
+            showNotification('Imported', added + ' user(s) imported.', 'success');
+        } catch (err) {
+            showNotification('Error', 'Import failed: ' + err.message, 'error');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function massCompensateDays() {
+    var days = parseInt(document.getElementById('massCompDays').value, 10);
+    if (isNaN(days) || days < 1) { showNotification('Error', 'Enter a valid number of days (min 1).', 'error'); return; }
+    if (!confirm('Add ' + days + ' day(s) to ALL users?')) return;
+    var keyData = loadKeys();
+    var count = 0;
+    for (var i = 0; i < keyData.keys.length; i++) {
+        var k = normalizeKey(keyData.keys[i]);
+        if (k.banned) continue;
+        if (k.expires) {
+            var base = Math.max(k.expires, Date.now());
+            k.expires = base + days * 86400000;
+        } else {
+            k.expires = Date.now() + days * 86400000;
+        }
+        count++;
+    }
+    saveKeys(keyData);
+    renderKeys();
+    showNotification('Compensated', days + ' day(s) added to ' + count + ' user(s).', 'success');
+}
+
+function resetAllHwids() {
+    if (!confirm('Reset HWID for ALL users?')) return;
+    var keyData = loadKeys();
+    var count = 0;
+    for (var i = 0; i < keyData.keys.length; i++) {
+        var k = normalizeKey(keyData.keys[i]);
+        if (k.hwid) { k.hwid = ''; k.hwidResets = (k.hwidResets || 0) + 1; count++; }
+    }
+    saveKeys(keyData);
+    renderKeys();
+    showNotification('HWIDs Reset', count + ' user(s) HWID reset.', 'success');
+}
+
+// ---- Per-key Settings ----
+function findKeyById(keyId) {
+    var keyData = loadKeys();
+    for (var i = 0; i < keyData.keys.length; i++) {
+        if (keyData.keys[i].id === keyId) return { data: keyData, key: normalizeKey(keyData.keys[i]) };
+    }
+    return null;
+}
+
+function openKeySettingsUI(keyId) {
+    var found = findKeyById(keyId);
+    if (!found) { showNotification('Error', 'Key not found.', 'error'); return; }
+    var k = found.key;
+    var expiryDate = k.expires ? new Date(k.expires) : null;
+    var dateVal = expiryDate ? expiryDate.getFullYear() + '-' + String(expiryDate.getMonth() + 1).padStart(2, '0') + '-' + String(expiryDate.getDate()).padStart(2, '0') : '';
+    var timeVal = expiryDate ? String(expiryDate.getHours()).padStart(2, '0') + ':' + String(expiryDate.getMinutes()).padStart(2, '0') : '';
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 560px; padding: 28px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h2 style="font-size:20px; margin:0;">✏️ Edit User Key Details</h2>
+                <div style="display:flex; gap:8px;">
+                    <button onclick="saveKeySettings('${keyId}')" class="btn btn-primary" style="padding:8px 18px;">💾 Save</button>
+                    <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="padding:8px 18px;">Cancel</button>
+                </div>
+            </div>
+            <div style="display:flex; gap:14px; align-items:center; background:rgba(20,20,35,0.6); border-radius:12px; padding:14px; margin-bottom:14px;">
+                <div class="credit-avatar-wrap" style="width:64px; height:64px; margin:0;"><div class="credit-avatar-fallback" style="font-size:22px;">?</div></div>
+                <div>
+                    <div style="color:#fff; font-weight:600; font-size:15px;">Unknown User</div>
+                    <div style="color:#66ccff; font-family:monospace; font-size:12px; word-break:break-all; margin-top:4px;">Key: ${k.key}</div>
+                </div>
+            </div>
+            <div class="form-group" style="display:flex; gap:16px;">
+                <span style="color:#8888aa; font-size:13px; flex:1;">Total HWID Resets: <strong style="color:#fff;">${k.hwidResets || 0}</strong></span>
+                <span style="color:#8888aa; font-size:13px; flex:1;">Total Executions: <strong style="color:#fff;">${k.executions || 0}</strong></span>
+            </div>
+            <div class="form-group"><label>Expiry (date + time, empty = never)</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="date" id="keyExpiryDate" value="${dateVal}" style="flex:1;">
+                    <input type="time" id="keyExpiryTime" value="${timeVal}" style="flex:1;">
+                </div>
+            </div>
+            <div class="form-group"><label>Note</label><input type="text" id="keyNote" value="${(k.note || '').replace(/"/g, '&quot;')}" placeholder="Just a plain text (optional)"></div>
+            <div class="form-group"><label>Discord ID</label><input type="text" id="keyDiscordId" value="${k.discordId || ''}" placeholder="Discord ID (optional)"></div>
+            <div class="form-group"><label>HWID</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="keyHwid" value="${k.hwid || ''}" placeholder="HWID (optional)" style="flex:1;">
+                    <button onclick="resetOneHwid('${keyId}')" class="btn btn-close-dropdown">🔄 Reset</button>
+                </div>
+            </div>
+            <div class="form-group"><label>⛔ Blacklist User - Reason:</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="keyBanReason" value="${(k.banReason || '').replace(/"/g, '&quot;')}" placeholder="Blacklist reason (optional)" style="flex:1;">
+                    <button onclick="blacklistKey('${keyId}')" class="btn btn-danger">${k.banned ? 'Unban' : 'Blacklist'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+function saveKeySettings(keyId) {
+    var found = findKeyById(keyId);
+    if (!found) { showNotification('Error', 'Key not found.', 'error'); return; }
+    var k = found.key;
+    k.note = document.getElementById('keyNote').value.trim();
+    k.discordId = document.getElementById('keyDiscordId').value.trim();
+    k.hwid = document.getElementById('keyHwid').value.trim();
+    var d = document.getElementById('keyExpiryDate').value;
+    var t = document.getElementById('keyExpiryTime').value || '00:00';
+    if (d) {
+        var dt = new Date(d + 'T' + t);
+        k.expires = isNaN(dt.getTime()) ? null : dt.getTime();
+    } else {
+        k.expires = null;
+    }
+    saveKeys(found.data);
+    renderKeys();
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    showNotification('Saved', 'Key details updated.', 'success');
+}
+
+function resetOneHwid(keyId) {
+    var found = findKeyById(keyId);
+    if (!found) return;
+    found.key.hwid = '';
+    found.key.hwidResets = (found.key.hwidResets || 0) + 1;
+    saveKeys(found.data);
+    var inp = document.getElementById('keyHwid');
+    if (inp) inp.value = '';
+    renderKeys();
+    showNotification('HWID Reset', 'HWID cleared. Resets: ' + found.key.hwidResets, 'success');
+}
+
+function blacklistKey(keyId) {
+    var found = findKeyById(keyId);
+    if (!found) return;
+    var reason = document.getElementById('keyBanReason') ? document.getElementById('keyBanReason').value.trim() : '';
+    if (found.key.banned) {
+        found.key.banned = false;
+        found.key.banReason = '';
+        showNotification('Unbanned', 'User unbanned.', 'success');
+    } else {
+        found.key.banned = true;
+        found.key.banReason = reason || 'No reason provided';
+        showNotification('Blacklisted', 'User blacklisted: ' + found.key.banReason, 'warning');
+    }
+    saveKeys(found.data);
+    renderKeys();
+    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (modal) modal.remove();
+    openKeySettingsUI(keyId);
 }
 
 // ============ UI UPDATE ============
@@ -563,9 +1000,9 @@ function updateUIForUser(user) {
     var dashPlan2 = document.getElementById('dashPlan2');
     if (dashUsername) dashUsername.textContent = user.username;
     setDashEmail(user.email);
-    if (dashPlan) dashPlan.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (dashPlan) dashPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (dashUsername2) dashUsername2.textContent = user.username;
-    if (dashPlan2) dashPlan2.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (dashPlan2) dashPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (dashAvatar) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -585,7 +1022,9 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     refreshStatsUI();
-    console.log('âœ… Dashboard shown for user:', user.username);
+    initLiveChart();
+    initRewards();
+    console.log('✅ Dashboard shown for user:', user.username);
 }
 
 // ============ EMAIL HIDE/SHOW ============
@@ -610,7 +1049,7 @@ function toggleEmail(btn) {
     } else {
         span.dataset.email = span.textContent;
         span.dataset.hidden = '1';
-        span.textContent = 'ðŸ”’';
+        span.textContent = '🔒';
         btn.textContent = 'Show';
     }
 }
@@ -623,7 +1062,7 @@ function normalizeMax(v) {
 }
 
 function formatSizeMB(mb) {
-    if (mb === Infinity) return 'âˆž';
+    if (mb === Infinity) return '∞';
     if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
     var v = mb < 0.01 ? 0.01 : mb;
     return parseFloat(v.toFixed(2)) + ' MB';
@@ -675,15 +1114,284 @@ function refreshStatsUI() {
     var stats = computeStats(currentUser);
     // main dashboard + cloned tab dashboard both carry the same ids
     document.querySelectorAll('.dashboard, #tab-dashboard').forEach(function(root) {
-        setStatValue(root, 'projects', stats.projects.used, stats.projects.max === Infinity ? 'âˆž' : stats.projects.max);
-        setStatValue(root, 'keys', stats.keys.used, stats.keys.max === Infinity ? 'âˆž' : stats.keys.max);
-        setStatValue(root, 'scripts', stats.scripts.used, stats.scripts.max === Infinity ? 'âˆž' : stats.scripts.max);
-        setStatValue(root, 'storage', formatSizeMB(stats.storage.usedMB), stats.storage.maxMB === Infinity ? 'âˆž' : formatSizeMB(stats.storage.maxMB));
+        setStatValue(root, 'projects', stats.projects.used, stats.projects.max === Infinity ? '∞' : stats.projects.max);
+        setStatValue(root, 'keys', stats.keys.used, stats.keys.max === Infinity ? '∞' : stats.keys.max);
+        setStatValue(root, 'scripts', stats.scripts.used, stats.scripts.max === Infinity ? '∞' : stats.scripts.max);
+        setStatValue(root, 'storage', formatSizeMB(stats.storage.usedMB), stats.storage.maxMB === Infinity ? '∞' : formatSizeMB(stats.storage.maxMB));
         setStatBar(root, 'projects', stats.projects.used, stats.projects.max);
         setStatBar(root, 'keys', stats.keys.used, stats.keys.max);
         setStatBar(root, 'scripts', stats.scripts.used, stats.scripts.max);
         setStatBar(root, 'storage', stats.storage.usedMB, stats.storage.maxMB);
     });
+    refreshAnalyticsUI();
+}
+
+// ============ ANALYTICS (executions / obfuscations / threats) ============
+var SH_EXECUTORS = ['Delta', 'Volt', 'Arceus X', 'Hydrogen', 'Wave', 'Synapse Z', 'Krnl', 'Fluxus'];
+var analyticsState = { execRange: 'all', obfRange: 'all' };
+
+function loadAnalytics() {
+    try {
+        var data = localStorage.getItem('sh_analytics_' + (currentUser ? currentUser.id : ''));
+        return data ? JSON.parse(data) : { executions: [], obfuscations: [], threats: [], daily: {} };
+    } catch (e) { return { executions: [], obfuscations: [], threats: [], daily: {} }; }
+}
+
+function saveAnalytics(a) {
+    try { localStorage.setItem('sh_analytics_' + (currentUser ? currentUser.id : ''), JSON.stringify(a)); } catch (e) {}
+}
+
+function recordExecution(executor, scriptId) {
+    var a = loadAnalytics();
+    var exec = executor || 'Unknown';
+    a.executions.push({ t: Date.now(), executor: exec, scriptId: scriptId || null });
+    if (a.executions.length > 5000) a.executions = a.executions.slice(-5000);
+    var day = new Date().toISOString().slice(0, 10);
+    if (!a.daily[day]) a.daily[day] = {};
+    a.daily[day][exec] = (a.daily[day][exec] || 0) + 1;
+    // keep only last 10 days of daily stats
+    var days = Object.keys(a.daily).sort();
+    while (days.length > 10) { delete a.daily[days.shift()]; }
+    saveAnalytics(a);
+    refreshAnalyticsUI();
+}
+
+function recordObfuscation() {
+    var a = loadAnalytics();
+    a.obfuscations.push({ t: Date.now() });
+    if (a.obfuscations.length > 5000) a.obfuscations = a.obfuscations.slice(-5000);
+    saveAnalytics(a);
+}
+
+function recordThreat(reason) {
+    var a = loadAnalytics();
+    a.threats.push({ t: Date.now(), reason: reason || 'bypass attempt' });
+    if (a.threats.length > 5000) a.threats = a.threats.slice(-5000);
+    saveAnalytics(a);
+}
+
+function rangeStartMs(range) {
+    var now = new Date();
+    if (range === 'day') { var d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); return d.getTime(); }
+    if (range === 'week') return now.getTime() - 7 * 86400000;
+    if (range === 'month') return now.getTime() - 30 * 86400000;
+    if (range === 'year') return now.getTime() - 365 * 86400000;
+    return 0;
+}
+
+function countSince(list, range) {
+    var since = rangeStartMs(range);
+    var n = 0;
+    for (var i = 0; i < list.length; i++) { if (list[i].t >= since) n++; }
+    return n;
+}
+
+function setExecRange(range, btn) {
+    analyticsState.execRange = range;
+    if (btn) btn.parentElement.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    refreshAnalyticsUI();
+}
+
+function setObfRange(range, btn) {
+    analyticsState.obfRange = range;
+    if (btn) btn.parentElement.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    refreshAnalyticsUI();
+}
+
+function setAnalyticsValue(id, text) {
+    document.querySelectorAll('#' + id).forEach(function(el) { el.textContent = text; });
+}
+
+function refreshAnalyticsUI() {
+    if (!currentUser) return;
+    var a = loadAnalytics();
+    var localThreats = 0;
+    try { localThreats = (JSON.parse(localStorage.getItem('sh_threats_local') || '[]')).length; } catch (e) {}
+    setAnalyticsValue('totalExecutions', countSince(a.executions, analyticsState.execRange));
+    setAnalyticsValue('totalObfuscations', countSince(a.obfuscations, analyticsState.obfRange));
+    setAnalyticsValue('totalThreats', a.threats.length + localThreats);
+    renderExecutorDailyStats(a);
+    var ep = document.getElementById('liveChartEndpoint');
+    if (ep && !ep.textContent) ep.textContent = getBasePath() + 'v3/realtime_stats';
+}
+
+// executor daily lines: 5 rows, dotted lines with per-day dots (last 10 days)
+function renderExecutorDailyStats(a) {
+    var containers = document.querySelectorAll('#executorDailyStats');
+    if (!containers.length) return;
+    var days = Object.keys(a.daily || {}).sort().slice(-10);
+    var top = [];
+    var totals = {};
+    for (var d in a.daily) { for (var e in a.daily[d]) { totals[e] = (totals[e] || 0) + a.daily[d][e]; } }
+    var sorted = Object.keys(totals).sort(function(x, y) { return totals[y] - totals[x]; });
+    for (var i = 0; i < 5; i++) top.push(sorted[i] || null);
+    var html = '';
+    for (var i = 0; i < top.length; i++) {
+        var name = top[i];
+        var total = name ? totals[name] : 0;
+        // build dotted line with dots sized by daily activity
+        var line = '';
+        for (var j = 0; j < 10; j++) {
+            var v = name ? (a.daily[days[j]] ? (a.daily[days[j]][name] || 0) : 0) : 0;
+            var dot = v > 0 ? '<span class="spark-dot' + (v >= 100 ? ' hot' : (v >= 20 ? ' warm' : '')) + '" title="' + (days[j] || '') + ': ' + v + '"></span>' : '<span class="spark-gap"></span>';
+            line += dot + '<span class="spark-sep"></span>';
+        }
+        html += '<div class="executor-row">' +
+            '<span class="executor-name">' + (name || '—') + '</span>' +
+            '<span class="executor-count">' + (name ? total : 0) + '</span>' +
+            '<span class="spark-line">' + line + '</span></div>';
+    }
+    containers.forEach(function(c) { c.innerHTML = html; });
+}
+
+// ============ LIVE EXECUTIONS CHART ============
+var liveChart = { paused: false, timer: null, history: {}, visible: {}, hover: null, canvas: null, ctx: null };
+
+function initLiveChart() {
+    var canvas = document.querySelector('#tab-dashboard #liveChartCanvas') || document.getElementById('liveChartCanvas');
+    if (!canvas || liveChart.canvas === canvas) return;
+    liveChart.canvas = canvas;
+    liveChart.ctx = canvas.getContext('2d');
+    liveChart.history = {};
+    liveChart.visible = {};
+    SH_EXECUTORS.forEach(function(e, i) { liveChart.visible[e] = true; });
+    // seed history with a plausible baseline so the chart is never empty
+    SH_EXECUTORS.forEach(function(e) {
+        liveChart.history[e] = [];
+        for (var i = 0; i < 30; i++) liveChart.history[e].push(0);
+    });
+    renderLiveChartLegend();
+    drawLiveChart();
+    canvas.onmousemove = function(ev) { liveChart.hover = getChartHover(ev, canvas); drawLiveChart(); };
+    canvas.onmouseleave = function() { liveChart.hover = null; drawLiveChart(); };
+    startLiveChartPolling();
+}
+
+function startLiveChartPolling() {
+    if (liveChart.timer) clearInterval(liveChart.timer);
+    liveChart.timer = setInterval(function() {
+        if (liveChart.paused || !liveChart.canvas) return;
+        // poll "endpoint" (local realtime layer): per-executor executions-per-second
+        var a = loadAnalytics();
+        var perExec = {};
+        SH_EXECUTORS.forEach(function(e) { perExec[e] = 0; });
+        var now = Date.now();
+        for (var i = 0; i < a.executions.length; i++) {
+            if (now - a.executions[i].t < 30000) perExec[a.executions[i].executor] = (perExec[a.executions[i].executor] || 0) + 1;
+        }
+        SH_EXECUTORS.forEach(function(e) {
+            var base = { 'Delta': 1.2, 'Volt': 0.8, 'Arceus X': 1.0, 'Hydrogen': 0.6, 'Wave': 0.4, 'Synapse Z': 0.3, 'Krnl': 0.2, 'Fluxus': 0.3 }[e] || 0.2;
+            var recent = perExec[e] || 0;
+            var eps = Math.max(0, base + recent * 0.5 + (Math.random() - 0.5) * base * 0.6);
+            liveChart.history[e].push(eps);
+            if (liveChart.history[e].length > 60) liveChart.history[e].shift();
+        });
+        drawLiveChart();
+    }, 5000);
+}
+
+function toggleLiveChartPause() {
+    liveChart.paused = !liveChart.paused;
+    var btn = document.getElementById('liveChartPauseBtn');
+    if (btn) btn.textContent = liveChart.paused ? '▶ Resume' : '⏸ Pause';
+}
+
+function toggleLiveChartSeries(name) {
+    liveChart.visible[name] = !liveChart.visible[name];
+    renderLiveChartLegend();
+    drawLiveChart();
+}
+
+function renderLiveChartLegend() {
+    var legend = document.querySelector('#tab-dashboard #liveChartLegend') || document.getElementById('liveChartLegend');
+    if (!legend) return;
+    var html = '';
+    SH_EXECUTORS.forEach(function(e, i) {
+        var col = executorColor(i);
+        html += '<button class="legend-item' + (liveChart.visible[e] ? '' : ' off') + '" onclick="toggleLiveChartSeries(\'' + e + '\')">' +
+            '<span class="legend-swatch" style="background:' + col + '"></span>' + e + '</button>';
+    });
+    legend.innerHTML = html;
+}
+
+function executorColor(i) {
+    var cols = ['#6c3bff', '#00bfff', '#66ff66', '#ff66cc', '#ffd700', '#ff8844', '#00ccaa', '#ff4444'];
+    return cols[i % cols.length];
+}
+
+function getChartHover(ev, canvas) {
+    var rect = canvas.getBoundingClientRect();
+    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+}
+
+function drawLiveChart() {
+    var canvas = liveChart.canvas;
+    if (!canvas || !liveChart.ctx) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.parentElement.clientWidth - 4;
+    var h = 340;
+    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; canvas.style.width = w + 'px'; canvas.style.height = h + 'px'; }
+    var ctx = liveChart.ctx;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var padL = 40, padR = 10, padT = 14, padB = 24;
+    var cw = w - padL - padR, ch = h - padT - padB;
+    // grid + y axis (eps)
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillStyle = '#555577';
+    ctx.font = '10px Segoe UI';
+    ctx.lineWidth = 1;
+    var maxV = 0.5;
+    SH_EXECUTORS.forEach(function(e) { var m = Math.max.apply(null, liveChart.history[e] || [0]); if (m > maxV) maxV = m; });
+    maxV = Math.ceil(maxV * 1.2 * 10) / 10;
+    for (var g = 0; g <= 4; g++) {
+        var y = padT + ch - (ch * g / 4);
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+        ctx.fillText((maxV * g / 4).toFixed(1), 6, y + 3);
+    }
+    // x labels (last 60 samples = last 5 min)
+    ctx.fillText('-5m', padL, h - 8);
+    ctx.fillText('now', w - padR - 22, h - 8);
+    // lines
+    SH_EXECUTORS.forEach(function(e, idx) {
+        if (!liveChart.visible[e]) return;
+        var data = liveChart.history[e] || [];
+        var col = executorColor(idx);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (var i = 0; i < data.length; i++) {
+            var x = padL + (cw * i / 59);
+            var y = padT + ch - (ch * Math.min(data[i], maxV) / maxV);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    });
+    // hover inspect
+    if (liveChart.hover) {
+        var hx = liveChart.hover.x;
+        if (hx >= padL && hx <= w - padR) {
+            var idx2 = Math.round((hx - padL) / cw * 59);
+            var x = padL + (cw * idx2 / 59);
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+            ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ch); ctx.stroke();
+            var lines = [];
+            var yBase = padT + 6;
+            ctx.fillStyle = 'rgba(10,10,20,0.92)';
+            ctx.fillRect(x + 8, yBase, 150, 14 + SH_EXECUTORS.length * 14);
+            SH_EXECUTORS.forEach(function(e, i2) {
+                var v = (liveChart.history[e] || [])[idx2];
+                if (v === undefined) return;
+                ctx.fillStyle = executorColor(i2);
+                ctx.fillRect(x + 14, yBase + 8 + i2 * 14, 8, 8);
+                ctx.fillStyle = '#fff';
+                ctx.font = '11px Segoe UI';
+                ctx.fillText(e + ': ' + v.toFixed(2) + '/s', x + 27, yBase + 16 + i2 * 14);
+            });
+        }
+    }
 }
 
 function updateDashboardTab(user) {
@@ -696,9 +1404,9 @@ function updateDashboardTab(user) {
     var tabUsername2 = tabDashboard.querySelector('#dashUsername2');
     var tabPlan2 = tabDashboard.querySelector('#dashPlan2');
     if (tabUsername) tabUsername.textContent = user.username;
-    if (tabPlan) tabPlan.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (tabPlan) tabPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (tabUsername2) tabUsername2.textContent = user.username;
-    if (tabPlan2) tabPlan2.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (tabPlan2) tabPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (tabAvatar) {
         if (user.profileImage) {
             tabAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -770,7 +1478,7 @@ function logout() {
     var contents = document.querySelectorAll('.tab-content');
     for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     showNotification('Logged Out', 'You have been logged out successfully.', 'info');
-    console.log('ðŸ‘‹ Logged out');
+    console.log('👋 Logged out');
 }
 
 function handleSignup(event) {
@@ -825,7 +1533,7 @@ function handleSignup(event) {
     var userData = { ...user };
     delete userData.password;
     updateUIForUser(userData);
-    console.log('âœ… User signed up and logged in:', username);
+    console.log('✅ User signed up and logged in:', username);
 }
 
 function handleLogin(event) {
@@ -859,7 +1567,7 @@ function handleLogin(event) {
     var userData = { ...foundUser };
     delete userData.password;
     updateUIForUser(userData);
-    console.log('âœ… User logged in:', userData.username);
+    console.log('✅ User logged in:', userData.username);
 }
 
 // ============ SOCIAL AUTH (Google / Discord) ============
@@ -890,14 +1598,14 @@ function handleSocial(provider) {
 }
 
 function openSocialLoginUI(provider) {
-    var icon = provider === 'discord' ? 'ðŸŽ®' : 'ðŸ”´';
+    var icon = provider === 'discord' ? '🎮' : '🔴';
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 420px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:20px;">${icon} Continue with ${provider === 'discord' ? 'Discord' : 'Google'}</h2>
             <p class="sub" style="margin-bottom:14px;">No ${provider === 'discord' ? 'Gmail needed - your Discord username becomes your account name.' : 'password needed.'}</p>
             <div class="form-group"><label>Your ${provider === 'discord' ? 'Discord Username' : 'Google Name'}</label><input type="text" id="socialUsername" placeholder="${provider === 'discord' ? 'e.g. kurosaki_koyuki' : 'e.g. Scripter'}"></div>
@@ -1005,6 +1713,65 @@ function handleOAuthCallback() {
     } catch (e) { console.error('OAuth callback error:', e); }
 }
 
+// ============ ACCOUNT SETTINGS (disable / enable / delete) ============
+function disableAccount() {
+    if (!currentUser) return;
+    if (!confirm('Disable your account? Your account is kept, but all your projects/scripts/keys will be disabled until you enable it again.')) return;
+    for (var key in users) {
+        if (users[key].id === currentUser.id) { users[key].disabled = true; break; }
+    }
+    saveUsers();
+    showNotification('Account Disabled', 'All your projects, scripts and keys are now disabled. Use "Enable Account" to restore.', 'warning', 6000);
+}
+
+function enableAccount() {
+    if (!currentUser) return;
+    var wasDisabled = false;
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            wasDisabled = !!users[key].disabled;
+            users[key].disabled = false;
+            break;
+        }
+    }
+    saveUsers();
+    showNotification(wasDisabled ? 'Account Enabled' : 'Already Active', wasDisabled ? 'All your projects, scripts and keys are active again!' : 'Your account was already active.', 'success');
+}
+
+function openDeleteAccountUI() {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 440px; padding: 32px; text-align:center;">
+            <div style="font-size:52px; line-height:1;">⚠️</div>
+            <h2 style="font-size:20px; margin:14px 0 8px 0; color:#ff4444;">Are you sure you wanna do this?</h2>
+            <p style="color:#8888aa; font-size:13px; line-height:1.6;">You will lose everything included plans bought/projects/scripts/keys and more.</p>
+            <div style="display:flex; gap:12px; margin-top:22px;">
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">No</button>
+                <button onclick="confirmDeleteAccount()" class="btn btn-danger" style="flex:1; padding:12px; font-size:15px;">Yes</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+function confirmDeleteAccount() {
+    if (!currentUser) return;
+    // remove user + all their data
+    for (var key in users) {
+        if (users[key].id === currentUser.id) { delete users[key]; break; }
+    }
+    saveUsers();
+    try { localStorage.removeItem('projects_' + currentUser.id); } catch (e) {}
+    try { localStorage.removeItem('keys_' + currentUser.id); } catch (e) {}
+    try { localStorage.removeItem('sh_analytics_' + currentUser.id); } catch (e) {}
+    try { localStorage.removeItem('sh_rewards_' + currentUser.id); } catch (e) {}
+    clearCurrentUser();
+    location.reload();
+}
+
 // ============ USERS PANEL ============
 function openUsersPanel() {
     if (!currentUser || currentUser.username !== 'Scripter') {
@@ -1038,7 +1805,7 @@ function createUsersPanel() {
     overlay.id = 'usersPanelOverlay';
     overlay.innerHTML = `
         <div class="users-panel">
-            <div class="panel-header"><h2>ðŸ‘¥ Users List</h2><button class="panel-close" onclick="closeUsersPanel()">âœ•</button></div>
+            <div class="panel-header"><h2>👥 Users List</h2><button class="panel-close" onclick="closeUsersPanel()">✕</button></div>
             <div class="panel-search">
                 <select id="panelSearchType" onchange="renderUsersList()">
                     <option value="username">Search by Username</option>
@@ -1049,8 +1816,8 @@ function createUsersPanel() {
             <div class="panel-list" id="panelUserList"></div>
             <div class="panel-status" id="panelStatus"></div>
             <div class="panel-actions">
-                <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>ðŸ—‘ï¸ Remove User</button>
-                <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>ðŸ“Š Change Plan</button>
+                <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
+                <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
                 <button class="btn btn-close-dropdown" onclick="closeUsersPanel()">Close</button>
             </div>
         </div>
@@ -1079,7 +1846,7 @@ function renderUsersList() {
         var user = filteredUsers[key];
         var isAdmin = user.isAdmin ? 'tag-admin' : 'tag-user';
         var isScripter = user.isScripter ? 'tag-creator' : '';
-        var roleText = user.isScripter ? 'â­ Creator' : (user.isAdmin ? 'ðŸ‘‘ Admin' : 'ðŸ‘¤ User');
+        var roleText = user.isScripter ? '⭐ Creator' : (user.isAdmin ? '👑 Admin' : '👤 User');
         var isSelected = (selectedUserEmail === key) ? 'selected' : '';
         var avatarLetter = user.username.charAt(0).toUpperCase();
         var safeKey = key.replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -1160,8 +1927,8 @@ function renderAdminUserListFull() {
         count++;
         var user = users[key];
         var createdDate = new Date(user.createdAt).toLocaleDateString();
-        var isAdmin = user.isAdmin ? 'ðŸ‘‘ Admin' : 'ðŸ‘¤ User';
-        var isScripter = user.isScripter ? 'â­ Creator' : '';
+        var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
+        var isScripter = user.isScripter ? '⭐ Creator' : '';
         html += `
             <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -1172,12 +1939,12 @@ function renderAdminUserListFull() {
                         <div><strong style="color: #ffffff;">${user.username}</strong><span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span></div>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">â­ Creator</span>' : ''}
+                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
                         <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
                         <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
                         <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
-                        ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">ðŸ—‘ï¸</button>' : ''}
-                        <button onclick="changeUserPlan(\'' + key + '\')" style="background: rgba(108,59,255,0.2); color: #8a6bff; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">ðŸ“Š</button>
+                        ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">🗑️</button>' : ''}
+                        <button onclick="changeUserPlan(\'' + key + '\')" style="background: rgba(108,59,255,0.2); color: #8a6bff; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">📊</button>
                     </div>
                 </div>
             </div>
@@ -1201,7 +1968,7 @@ function deleteUser(email) {
 
 function deleteAllUsers() {
     if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete all users.', 'error'); return; }
-    if (confirm('âš ï¸ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
+    if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
         var scripterAccount = users['dubovikstanislav51@gmail.com'];
         var adminAccount = users['admin@example.com'];
         users = {};
@@ -1228,18 +1995,18 @@ function changeUserPlan(email) {
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
-        var isCurrent = user.plan === plan ? 'âœ… ' : '';
+        var isCurrent = user.plan === plan ? '✅ ' : '';
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
                 </div>
-                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} Â· Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
+                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
             </div>
             <div class="form-group"><label style="font-size: 14px;">Select New Plan</label><select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">${planOptions}</select></div>
             <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
@@ -1248,14 +2015,14 @@ function changeUserPlan(email) {
                     <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="previewPlanPrice">$0/month</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>ðŸ“ Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
-                    <span>ðŸ”‘ Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
-                    <span>ðŸ“œ Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
-                    <span>ðŸ’¾ Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
                 </div>
             </div>
             <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">âœ… Confirm Change</button>
+                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
@@ -1271,10 +2038,10 @@ function updatePlanPreviewGUI(planName) {
     if (!config) return;
     document.getElementById('previewPlanName').textContent = planName;
     document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('previewProjects').textContent = config.projects === Infinity ? 'âˆž' : config.projects;
-    document.getElementById('previewKeys').textContent = config.keys === Infinity ? 'âˆž' : config.keys;
-    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? 'âˆž' : config.scripts;
-    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? 'âˆž' : config.fileSize;
+    document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('previewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmChangePlan(email) {
@@ -1315,13 +2082,13 @@ function changeOwnPlan() {
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
-        var isCurrent = currentUser.plan === plan ? 'âœ… ' : '';
+        var isCurrent = currentUser.plan === plan ? '✅ ' : '';
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
@@ -1335,14 +2102,14 @@ function changeOwnPlan() {
                     <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="ownPreviewPlanPrice">$0/month</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>ðŸ“ Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
-                    <span>ðŸ”‘ Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
-                    <span>ðŸ“œ Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
-                    <span>ðŸ’¾ Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
                 </div>
             </div>
             <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">âœ… Confirm Change</button>
+                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
@@ -1358,10 +2125,10 @@ function updateOwnPlanPreviewGUI(planName) {
     if (!config) return;
     document.getElementById('ownPreviewPlanName').textContent = planName;
     document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? 'âˆž' : config.projects;
-    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? 'âˆž' : config.keys;
-    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? 'âˆž' : config.scripts;
-    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? 'âˆž' : config.fileSize;
+    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmOwnPlanChange() {
@@ -1529,9 +2296,10 @@ function switchTab(tabName) {
     for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     var target = document.getElementById('tab-' + tabName);
     if (target) { target.style.display = 'block'; }
-    if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); } }
+    if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); initLiveChart(); } }
     if (tabName === 'scripts') { renderProjects(); }
     if (tabName === 'keys') { renderKeys(); }
+    if (tabName === 'rewards') { renderRewardsTab(); }
 }
 
 // ============ CREATE PROJECT ==========
@@ -1541,19 +2309,28 @@ function openCreateProject() {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
-        <div class="modal" style="max-width: 500px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size: 22px;">ðŸ“ Create Project</h2>
+        <div class="modal" style="max-width: 540px; padding: 32px; max-height:90vh; overflow-y:auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 22px;">📁 Create Project</h2>
             <p class="sub">Fill in the details to create a new project</p>
             <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="projectName" placeholder="Enter project name" required></div>
             <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="projectDescription" placeholder="Describe your project..."></textarea></div>
+            <div class="form-group"><label>Logs Webhook <span style="color:#555577;">(optional)</span></label><input type="text" id="projectLogsWebhook" placeholder="https://discord.com/api/webhooks/..."><div class="field-hint">Successful executions will be sent to this webhook</div></div>
+            <div class="form-group"><label>Alert Webhook <span style="color:#555577;">(optional)</span></label><input type="text" id="projectAlertWebhook" placeholder="https://discord.com/api/webhooks/..."><div class="field-hint">Crack attempts and bans will be reported to this webhook</div></div>
+            <div class="form-group"><label>HWID Cooldown Reset <span style="color:#555577;">(optional)</span></label><input type="number" id="projectHwidCooldown" min="0" placeholder="Days"><div class="field-hint">Number of days user will need to wait before resetting HWID</div></div>
             <div class="form-group"><label>Visibility</label><select id="projectVisibility"><option value="anyone">Anyone</option><option value="friends">Friends (Soon...)</option><option value="private">Private</option></select></div>
-            <div class="form-group" style="display:flex; gap:20px; align-items:center;">
+            <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectBlockIncognito"> Block Incognito Mode</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectBlockVPN"> Block VPN</label>
             </div>
             <div class="form-group"><label>Type Of Project</label><select id="projectType"><option value="free">Free</option><option value="key">Key Required</option><option value="paid">Paid</option></select></div>
-            <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">âœ… Create Project</button>
+            <div class="form-group" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectAllowHwidReset"> Allow HWID Reset</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectAutoDeleteExpired"> Auto Delete Expired Users</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectAllowClonedSharing"> Allow HWID Cloned Key Sharing</label>
+            </div>
+            <div class="field-hint" style="margin-bottom:8px;">Cloned Key Sharing = one key on different computers with same HWID (useful for server hopping scripts with multi instance on VPSes). Auto Delete runs every 15 minutes.</div>
+            <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Project</button>
         </div>
     `;
     document.body.appendChild(overlay);
@@ -1562,10 +2339,16 @@ function openCreateProject() {
 function confirmCreateProject() {
     var name = document.getElementById('projectName').value.trim();
     var description = document.getElementById('projectDescription').value.trim();
+    var logsWebhook = document.getElementById('projectLogsWebhook').value.trim();
+    var alertWebhook = document.getElementById('projectAlertWebhook').value.trim();
+    var hwidCooldown = document.getElementById('projectHwidCooldown').value;
     var visibility = document.getElementById('projectVisibility').value;
     var blockIncognito = document.getElementById('projectBlockIncognito').checked;
     var blockVPN = document.getElementById('projectBlockVPN').checked;
     var type = document.getElementById('projectType').value;
+    var allowHwidReset = document.getElementById('projectAllowHwidReset').checked;
+    var autoDeleteExpired = document.getElementById('projectAutoDeleteExpired').checked;
+    var allowClonedSharing = document.getElementById('projectAllowClonedSharing').checked;
     if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
     var projects = loadProjects();
     for (var i = 0; i < projects.length; i++) {
@@ -1574,7 +2357,7 @@ function confirmCreateProject() {
             return;
         }
     }
-    var project = { id: 'proj_' + Date.now(), name: name, description: description, visibility: visibility, blockIncognito: blockIncognito, blockVPN: blockVPN, type: type, createdAt: new Date().toISOString(), scripts: [] };
+    var project = { id: 'proj_' + Date.now(), name: name, description: description, logsWebhook: logsWebhook, alertWebhook: alertWebhook, hwidCooldownDays: hwidCooldown ? parseInt(hwidCooldown, 10) : null, visibility: visibility, blockIncognito: blockIncognito, blockVPN: blockVPN, type: type, allowHwidReset: allowHwidReset, autoDeleteExpired: autoDeleteExpired, allowClonedSharing: allowClonedSharing, createdAt: new Date().toISOString(), scripts: [] };
     projects.push(project);
     saveProjects(projects);
     refreshStatsUI();
@@ -1596,7 +2379,7 @@ function renderProjects() {
     for (var i = 0; i < projects.length; i++) {
         var project = projects[i];
         var scriptCount = project.scripts ? project.scripts.length : 0;
-        var visibilityLabel = project.visibility === 'anyone' ? 'ðŸŒ Anyone' : (project.visibility === 'friends' ? 'ðŸ‘¥ Friends' : 'ðŸ”’ Private');
+        var visibilityLabel = project.visibility === 'anyone' ? '🌐 Anyone' : (project.visibility === 'friends' ? '👥 Friends' : '🔒 Private');
         html += `
             <div class="project-card">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
@@ -1606,14 +2389,14 @@ function renderProjects() {
                         <div class="project-tags">
                             <span class="tag tag-visibility">${visibilityLabel}</span>
                             <span class="tag tag-type">${project.type.toUpperCase()}</span>
-                            <span class="tag tag-scripts">ðŸ“œ ${scriptCount} scripts</span>
+                            <span class="tag tag-scripts">📜 ${scriptCount} scripts</span>
                         </div>
                     </div>
                     <div class="project-actions">
-                        <button onclick="viewProject('${project.id}')" class="btn-sm btn-sm-primary">ðŸ“œ View Scripts</button>
-                        <button onclick="openCreateScript('${project.id}')" class="btn-sm btn-sm-primary">âž• New Script</button>
-                        <button onclick="editProject('${project.id}')" class="btn-sm btn-sm-edit">âœï¸ Edit</button>
-                        <button onclick="deleteProject('${project.id}')" class="btn-sm btn-sm-danger">ðŸ—‘ï¸ Delete</button>
+                        <button onclick="viewProject('${project.id}')" class="btn-sm btn-sm-primary">📜 View Scripts</button>
+                        <button onclick="openCreateScript('${project.id}')" class="btn-sm btn-sm-primary">➕ New Script</button>
+                        <button onclick="editProject('${project.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
+                        <button onclick="deleteProject('${project.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
                     </div>
                 </div>
             </div>
@@ -1637,28 +2420,28 @@ function viewProject(projectId) {
     if (project.scripts && project.scripts.length > 0) {
         for (var i = 0; i < project.scripts.length; i++) {
             var script = project.scripts[i];
-            var obfType = script.obfuscationType || 'none';
-            var obfDisplay = OBFUSCATION_TYPES[obfType] || 'None';
-            var obfBadgeClass = 'obf-badge';
-            if (obfType === 'custom') obfBadgeClass += ' obf-badge-custom';
-            else if (obfType === 'allinone') obfBadgeClass += ' obf-badge-allinone';
-            else if (obfType === 'ironbrew') obfBadgeClass += ' obf-badge-ironbrew';
-            else if (obfType === 'moonveil') obfBadgeClass += ' obf-badge-moonveil';
-            else if (obfType === 'prometheus') obfBadgeClass += ' obf-badge-prometheus';
-            else if (obfType === 'luaobfuscator') obfBadgeClass += ' obf-badge-luaobfuscator';
-            else if (obfType === 'moonsec') obfBadgeClass += ' obf-badge-moonsec';
-            else if (obfType === 'luraph_normal' || obfType === 'luraph_v15') obfBadgeClass += ' obf-badge-luraph';
+            var obfType = script.obfuscationType || 'custom';
+            var obfDisplay = obfType === 'aegis' ? 'Aegis Obfuscator' : (OBFUSCATION_TYPES[obfType] || 'Default Obfuscator');
+            var obfBadgeClass = 'obf-badge' + (obfType === 'aegis' ? ' obf-badge-aegis' : ' obf-badge-custom');
+            var status = script.freeForEveryone ? '🌐 Free' : (script.requireKey ? '🔑 Key Required' : (project.type === 'paid' ? '💰 Paid' : '🌐 Free'));
+            var statusColor = script.requireKey ? '#ffd700' : '#66ff66';
             scriptsHtml += `
                 <div class="script-item">
                     <div class="script-info">
-                        <div class="name">${script.name}</div>
+                        <div class="name">${script.name} <span style="font-size:11px; color:#555577;">${versionLabel(script)}</span></div>
                         <div class="desc">${script.description || 'No description'}</div>
-                        <div style="margin-top:4px;"><span class="${obfBadgeClass}">ðŸ” ${obfDisplay}</span></div>
+                        <div style="margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                            <span class="${obfBadgeClass}">🔐 ${obfDisplay}</span>
+                            <span style="font-size:11px; color:${statusColor}; background:rgba(255,255,255,0.05); padding:2px 10px; border-radius:10px;">${status}</span>
+                            <span style="font-size:11px; color:#8888aa;">🕒 ${timeAgo(script.updatedAt || script.createdAt)}</span>
+                        </div>
                     </div>
                     <div class="script-actions">
-                        <button onclick="viewScript('${project.id}','${script.id}')" class="btn-sm btn-sm-primary">ðŸ‘ï¸ View</button>
-                        <button onclick="editScript('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">âœï¸ Edit</button>
-                        <button onclick="deleteScript('${project.id}','${script.id}')" class="btn-sm btn-sm-danger">ðŸ—‘ï¸ Delete</button>
+                        <button onclick="viewScript('${project.id}','${script.id}')" class="btn-sm btn-sm-primary">👁️ View</button>
+                        <button onclick="editScript('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
+                        <button onclick="openScriptSettings('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">⚙️ Settings</button>
+                        <button onclick="openScriptRaw('${script.loaderId}')" class="btn-sm btn-sm-edit">📄 Raw</button>
+                        <button onclick="deleteScript('${project.id}','${script.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
                     </div>
                 </div>
             `;
@@ -1666,10 +2449,10 @@ function viewProject(projectId) {
     } else { scriptsHtml = '<p style="color:#8888aa; text-align:center; padding:20px 0;">No scripts in this project yet.</p>'; }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <div><h2 style="font-size:22px; margin:0; color:#fff;">ðŸ“œ ${project.name}</h2><p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${project.description || 'No description'}</p></div>
-                <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:8px 16px;">âž• Create Script</button>
+                <div><h2 style="font-size:22px; margin:0; color:#fff;">📜 ${project.name}</h2><p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${project.description || 'No description'}</p></div>
+                <button onclick="openCreateScript('${project.id}')" class="btn btn-primary" style="padding:8px 16px;">➕ Create Script</button>
             </div>
             <div style="max-height:400px; overflow-y:auto;">${scriptsHtml}</div>
         </div>
@@ -2002,24 +2785,24 @@ function openCreateScript(projectId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âž• Create Script</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> ðŸ›¡ï¸ Anti Tampering</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> ðŸ”’ Anti Skidding</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> ðŸ“¡ Environment Logging</label>
-                <label style="margin:0; cursor:pointer;${project.type === 'key' ? '' : ' display:none;'}"><input type="checkbox" id="scriptRequireKey"> ðŸ”‘ Require Key</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> 🛡️ Anti Tampering</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> 🔒 Anti Skidding</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;${project.type === 'key' ? '' : ' display:none;'}"><input type="checkbox" id="scriptRequireKey"> 🔑 Require Key</label>
             </div>
             <div class="form-group" id="scriptKeyGateInfo" style="display:none;">
                 <div style="padding:10px 14px; background:rgba(108,59,255,0.1); border:1px solid rgba(108,59,255,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ”‘ <strong style="color:#8a6bff;">Key System:</strong> All your <strong>active keys from the Keys tab</strong> get embedded (hashed, never readable) into the script. Users must enter a valid key (popup key card or <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>) before the script runs. Expired/used keys are rejected automatically.
+                    🔑 <strong style="color:#8a6bff;">Key System:</strong> All your <strong>active keys from the Keys tab</strong> get embedded (hashed, never readable) into the script. Users must enter a valid key (popup key card or <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>) before the script runs. Expired/used keys are rejected automatically.
                 </div>
             </div>
             <div class="form-group" id="scriptWebhookGroup" style="display:none;">
-                <label>ðŸ“¡ Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
+                <label>📡 Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
                 <input type="text" id="scriptWebhookUrl" placeholder="https://discord.com/api/webhooks/...">
                 <div style="margin-top:4px; font-size:11px; color:#8888aa;">Runs, usernames, executor, HWID, place ID etc. of everyone executing your script will be sent to this webhook and saved to their scripterhub/ log file.</div>
             </div>
@@ -2037,11 +2820,31 @@ function openCreateScript(projectId) {
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
             <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea></div>
             <div class="form-group">
-                <div style="padding:10px 14px; background:rgba(255,0,204,0.07); border:1px solid rgba(255,0,204,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ’Ž <strong style="color:#ff66cc;">Custom Obfuscator</strong> is always applied on save: your ENTIRE source gets encrypted with multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger (detects loggers, spies & hooks â†’ game:Shutdown()). The original source never appears in the output!
-                </div>
+                <label>💎 Choose Obfuscator</label>
+                <select id="scriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    <option value="default" selected>Default Obfuscator (Recommended)</option>
+                    <option value="aegis">Aegis Obfuscator</option>
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">💎 <strong style="color:#ff66cc;">Default</strong>: multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger (detects loggers, spies & hooks → game:Shutdown()). ⚔️ <strong style="color:#00ccaa;">Aegis</strong>: external Aegis engine (custom ISA + polymorphic VM) - your source is sent to the Aegis API to be obfuscated.</div>
             </div>
-            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="scriptHWIDReset"> ðŸ”„ HWID Reset (Allow device change)</label></div>
+            <div class="form-group" style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptFreeForEveryone" ${project.type === 'free' ? 'checked' : ''}> 🌐 Free For Everyone</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSilentMode"> 🔇 Silent Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptHeartbeat" checked> 💓 Heartbeat</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptLightningMode"> ⚡ Lightning Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSecurityUpdates" checked> 🔄 Enable Security Updates</label>
+            </div>
+            <div class="field-hint" style="margin-bottom:10px;">🌐 Free For Everyone = anyone can execute. 🔇 Silent = no console outputs (not recommended). 💓 Heartbeat = more secure (recommended). ⚡ Lightning = faster but removes some inline security checks. 🔄 Security Updates = stores your raw script encrypted for automated updates (recommended).</div>
+            ${project.type === 'key' ? `
+            <div class="form-group">
+                <label>🔑 Choose How Key Works</label>
+                <select id="scriptKeyMode" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    <option value="default" selected>Default (Roblox Core Notification)</option>
+                    <option value="custom">Custom (You Make It)</option>
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;" id="scriptKeyModeHint">🔑 <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.</div>
+            </div>` : ''}
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="scriptHWIDReset"> 🔄 HWID Reset (Allow device change)</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
                 <input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890">
@@ -2054,7 +2857,7 @@ function openCreateScript(projectId) {
                 </div>
             </div>
             <div style="display:flex; gap:12px; margin-top:12px;">
-                <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">âœ… Create Script</button>
+                <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">✅ Create Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -2088,6 +2891,16 @@ function openCreateScript(projectId) {
             };
             reader.onerror = function() { showNotification('Error', 'Failed to read file.', 'error'); };
             reader.readAsText(file);
+        });
+    }
+    // key mode hint switcher
+    var keyModeSel = document.getElementById('scriptKeyMode');
+    var keyModeHint = document.getElementById('scriptKeyModeHint');
+    if (keyModeSel && keyModeHint) {
+        keyModeSel.addEventListener('change', function() {
+            keyModeHint.innerHTML = this.value === 'custom'
+                ? '🛠️ <strong style="color:#00ccaa;">Custom</strong>: no built-in UI - you make your OWN key GUI! The script waits silently and exposes API globals: <code style="color:#66ff66;">ScripterHubKeyValid</code>, <code style="color:#66ff66;">ScripterHubKeyIncorrect</code>, <code style="color:#66ff66;">ScripterHubKeyExpired</code>, <code style="color:#66ff66;">ScripterHubKeyStatus</code>. Your GUI sets <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> when ready (see APIs in the Users Keys tab).'
+                : '🔑 <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.';
         });
     }
     // Roblox game thumbnail preview from Game Link/ID
@@ -2146,7 +2959,7 @@ function renderGamePreview(info) {
     var nameEl = document.getElementById('gameThumbName');
     var metaEl = document.getElementById('gameThumbMeta');
     if (nameEl) nameEl.textContent = info.name || 'Game';
-    if (metaEl) metaEl.textContent = 'Place ID: ' + info.placeId + (info.creator ? ' | ' + info.creator : '') + (info.playing ? ' | ðŸ‘¥ ' + info.playing + ' playing' : '');
+    if (metaEl) metaEl.textContent = 'Place ID: ' + info.placeId + (info.creator ? ' | ' + info.creator : '') + (info.playing ? ' | 👥 ' + info.playing + ' playing' : '');
 }
 
 // ============ CONFIRM CREATE SCRIPT ============
@@ -2158,11 +2971,18 @@ function confirmCreateScript(projectId) {
     var envLogging = document.getElementById('scriptEnvLogging') ? document.getElementById('scriptEnvLogging').checked : false;
     var webhookUrl = document.getElementById('scriptWebhookUrl') ? document.getElementById('scriptWebhookUrl').value.trim() : '';
     var requireKey = document.getElementById('scriptRequireKey') ? document.getElementById('scriptRequireKey').checked : false;
+    var keyMode = document.getElementById('scriptKeyMode') ? document.getElementById('scriptKeyMode').value : 'default';
+    var obfuscatorEngine = document.getElementById('scriptObfuscatorEngine') ? document.getElementById('scriptObfuscatorEngine').value : 'default';
+    var freeForEveryone = document.getElementById('scriptFreeForEveryone') ? document.getElementById('scriptFreeForEveryone').checked : false;
+    var silentMode = document.getElementById('scriptSilentMode') ? document.getElementById('scriptSilentMode').checked : false;
+    var heartbeat = document.getElementById('scriptHeartbeat') ? document.getElementById('scriptHeartbeat').checked : true;
+    var lightningMode = document.getElementById('scriptLightningMode') ? document.getElementById('scriptLightningMode').checked : false;
+    var securityUpdates = document.getElementById('scriptSecurityUpdates') ? document.getElementById('scriptSecurityUpdates').checked : true;
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
     var obfuscationIntensity = 10; // always max - Custom Obfuscator standard
-    var obfuscationType = 'custom'; // always custom obfuscator
+    var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
@@ -2195,6 +3015,7 @@ function confirmCreateScript(projectId) {
         for (var ki = 0; ki < kd.keys.length; ki++) {
             var kk = kd.keys[ki];
             if (kk.used) continue;
+            if (kk.banned) continue;
             if (kk.expires && kk.expires < Date.now()) continue;
             var expMs = kk.expires || null;
             if (capSec > 0) {
@@ -2204,63 +3025,110 @@ function confirmCreateScript(projectId) {
             keyGateKeys.push({ key: kk.key, expires: expMs });
         }
         if (keyGateKeys.length === 0) {
-            showNotification('Warning', 'Require Key is ON but you have no active keys! Generate keys in the Keys tab first - the script will reject everyone.', 'warning', 6000);
+            showNotification('Warning', 'Require Key is ON but you have no active keys! Generate keys in the Users Keys tab first - the script will reject everyone.', 'warning', 6000);
         }
     }
-    var obfuscatedCode = code;
-    try {
-        var obfOptions = {
-            intensity: obfuscationIntensity,
-            antiTamper: antiTamper,
-            antiSkid: antiSkid,
-            envLogging: envLogging,
-            webhookUrl: webhookUrl,
-            keyGate: requireKey ? { keys: keyGateKeys } : null,
-            scriptName: name,
-            scriptId: 'script_' + Date.now(),
-            owner: currentUser ? currentUser.username : 'unknown'
-        };
-        obfuscatedCode = applyObfuscation(code, obfuscationType, obfOptions);
-        showNotification('Obfuscation Applied', 'ðŸ’Ž Custom Obfuscator (10 layers, source fully encrypted' + (requireKey ? ', key gate with ' + keyGateKeys.length + ' key(s)' : '') + ')', 'success', 3000);
-    } catch (e) {
-        showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
-        obfuscatedCode = code;
-    }
-    var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
-    var script = {
-        id: 'script_' + Date.now(),
-        name: name,
-        description: description,
+    var obfOptions = {
+        intensity: obfuscationIntensity,
         antiTamper: antiTamper,
         antiSkid: antiSkid,
         envLogging: envLogging,
         webhookUrl: webhookUrl,
-        requireKey: requireKey,
-        keyTime: keyTime || 'unlimited',
-        keyUnit: keyUnit || 'unlimited',
-        code: obfuscatedCode,
-        originalCode: code,
-        obfuscationType: obfuscationType,
-        obfuscationIntensity: obfuscationIntensity,
-        hwidReset: hwidReset,
-        gameId: placeIdOnly,
-        visibility: 'anyone',
-        createdAt: new Date().toISOString(),
-        loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15),
-        loaderKey: loaderKey
+        keyGate: requireKey ? { keys: keyGateKeys, mode: keyMode } : null,
+        silentMode: silentMode,
+        scriptName: name,
+        scriptId: 'script_' + Date.now(),
+        owner: currentUser ? currentUser.username : 'unknown'
     };
-    if (!projects[projectIndex].scripts) { projects[projectIndex].scripts = []; }
-    projects[projectIndex].scripts.push(script);
-    saveProjects(projects);
-    storeScriptForLoader(script.loaderId, obfuscatedCode, script.name, script.loaderKey);
-    storeScriptForLoader(script.id, obfuscatedCode, script.name, script.loaderKey);
-    storeScriptForRawAccess(script.loaderId, obfuscatedCode, script.name);
-    storeScriptForRawAccess(script.id, obfuscatedCode, script.name);
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    refreshStatsUI();
-    showNotification('Success', 'Script "' + name + '" created with ðŸ’Ž Custom Obfuscator!', 'success');
-    renderProjects();
+    // async: Aegis needs an API roundtrip
+    var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
+    if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
+    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+        var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
+        var script = {
+            id: 'script_' + Date.now(),
+            name: name,
+            description: description,
+            antiTamper: antiTamper,
+            antiSkid: antiSkid,
+            envLogging: envLogging,
+            webhookUrl: webhookUrl,
+            requireKey: requireKey,
+            keyMode: requireKey ? keyMode : null,
+            obfuscatorEngine: obfuscatorEngine,
+            freeForEveryone: freeForEveryone,
+            silentMode: silentMode,
+            heartbeat: heartbeat,
+            lightningMode: lightningMode,
+            securityUpdates: securityUpdates,
+            keyTime: keyTime || 'unlimited',
+            keyUnit: keyUnit || 'unlimited',
+            code: obfuscatedCode,
+            originalCode: code,
+            obfuscationType: obfuscationType,
+            obfuscationIntensity: obfuscationIntensity,
+            version: 1,
+            hwidReset: hwidReset,
+            gameId: placeIdOnly,
+            visibility: 'anyone',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            loaderId: 'ScripterHubOfficial_' + Math.random().toString(36).substring(2, 15),
+            loaderKey: loaderKey
+        };
+        if (!projects[projectIndex].scripts) { projects[projectIndex].scripts = []; }
+        projects[projectIndex].scripts.push(script);
+        saveProjects(projects);
+        storeScriptForLoader(script.loaderId, obfuscatedCode, script.name, script.loaderKey);
+        storeScriptForLoader(script.id, obfuscatedCode, script.name, script.loaderKey);
+        storeScriptForRawAccess(script.loaderId, obfuscatedCode, script.name);
+        storeScriptForRawAccess(script.id, obfuscatedCode, script.name);
+        var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+        if (modal) modal.remove();
+        recordObfuscation();
+        refreshStatsUI();
+        showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
+        renderProjects();
+    }).catch(function(e) {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
+        showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
+    });
+}
+
+// ============ OBFUSCATE (Default engine or Aegis API) ============
+function obfuscateScriptCode(code, engine, options) {
+    return new Promise(function(resolve, reject) {
+        try {
+            if (engine === 'aegis') {
+                // Aegis obfuscates the wrapped payload (key gate + protections + source)
+                var payload = buildWrappedPayload(code, options, null);
+                fetch('https://api.aegis-obfuscater.cc.cd/api/obfuscate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: payload, name: (options.scriptName || 'script') })
+                }).then(function(res) {
+                    if (!res.ok) throw new Error('Aegis API error ' + res.status + (res.status === 429 ? ' (rate limited - max 6/min)' : ''));
+                    return res.json();
+                }).then(function(data) {
+                    return fetch('https://api.aegis-obfuscater.cc.cd' + data.url).then(function(f) {
+                        if (!f.ok) throw new Error('Aegis download failed (' + f.status + ') - link expires after 5 minutes');
+                        return f.text();
+                    });
+                }).then(function(txt) {
+                    resolve('-- Obfuscated with Aegis Obfuscator via ScripterHub | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + txt);
+                }).catch(function(err) { reject(err); });
+            } else {
+                resolve(applyCustomObfuscator(code, options));
+            }
+        } catch (e) { reject(e); }
+    });
+}
+
+// ============ OPEN SCRIPT RAW (Owner Raw URL) ============
+function openScriptRaw(loaderId) {
+    var rawUrl = getBasePath() + 'raw.html?id=' + loaderId + '&key=' + OWNER_KEY + '&format=debug';
+    recordExecution('Owner Browser', loaderId);
+    window.open(rawUrl, '_blank');
 }
 
 // ============ VIEW SCRIPT ============
@@ -2299,54 +3167,54 @@ function viewScript(projectId, scriptId) {
     if (placeId) {
         gameThumbHtml = '<div style="margin-top:12px; display:flex; align-items:center; gap:14px; background:rgba(10,10,15,0.6); border-radius:10px; padding:12px; border:1px solid rgba(255,255,255,0.05);">'
             + '<a href="https://www.roblox.com/games/' + placeId + '" target="_blank" rel="noopener"><img src="https://www.roblox.com/asset-thumbnail/image?assetId=' + placeId + '&width=150&height=150&format=png" style="width:80px; height:80px; border-radius:12px; object-fit:cover;" alt="Game"></a>'
-            + '<div><div style="color:#fff; font-weight:600; font-size:14px;">ðŸŽ® Game</div><div style="color:#8888aa; font-size:12px; margin-top:4px;">Place ID: ' + placeId + '</div></div>'
+            + '<div><div style="color:#fff; font-weight:600; font-size:14px;">🎮 Game</div><div style="color:#8888aa; font-size:12px; margin-top:4px;">Place ID: ' + placeId + '</div></div>'
             + '</div>';
     }
     var keyInfoHtml = script.requireKey ? (
         '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">ðŸ”‘ This script requires a key!</p>'
+        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script requires a key!</p>'
         + '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">Users must add this line <strong style="color:#66ccff;">before</strong> their loadstring:</p>'
         + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_KEY_HERE"</code>'
-        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Wrong key â†’ Roblox notification "Invalid key!". Correct key â†’ script runs. (A popup key card also appears if no key is set.)</p>'
+        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Wrong key → Roblox notification "Invalid key!". Correct key → script runs. (A popup key card also appears if no key is set.)</p>'
         + '</div>'
     ) : '';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
                     <h2 style="font-size:22px; margin:0; color:#fff;">${script.name}</h2>
                     <p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${script.description || 'No description'}</p>
                     <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-                        <span style="background:rgba(255,0,204,0.15); color:#ff66cc; padding:2px 12px; border-radius:12px; font-size:11px;">ðŸ’Ž ${obfDisplay}</span>
-                        ${script.antiTamper ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">ðŸ›¡ï¸ Anti-Tamper</span>' : ''}
-                        ${script.antiSkid ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">ðŸ”’ Anti-Skid</span>' : ''}
-                        ${script.envLogging ? '<span style="background:rgba(0,191,255,0.2); color:#00bfff; padding:2px 12px; border-radius:12px; font-size:11px;">ðŸ“¡ Env Logging</span>' : ''}
-                        ${script.requireKey ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">ðŸ”‘ Key Required</span>' : ''}
+                        <span style="background:rgba(255,0,204,0.15); color:#ff66cc; padding:2px 12px; border-radius:12px; font-size:11px;">💎 ${obfDisplay}</span>
+                        ${script.antiTamper ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🛡️ Anti-Tamper</span>' : ''}
+                        ${script.antiSkid ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🔒 Anti-Skid</span>' : ''}
+                        ${script.envLogging ? '<span style="background:rgba(0,191,255,0.2); color:#00bfff; padding:2px 12px; border-radius:12px; font-size:11px;">📡 Env Logging</span>' : ''}
+                        ${script.requireKey ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🔑 Key Required</span>' : ''}
                     </div>
                 </div>
                 <div style="display:flex; gap:8px; flex-shrink:0; flex-wrap:wrap;">
-                    <button onclick="editScript('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">âœï¸ Edit</button>
-                    <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">âš™ï¸ Settings</button>
+                    <button onclick="editScript('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️ Edit</button>
+                    <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">⚙️ Settings</button>
                 </div>
             </div>
             ${gameThumbHtml}
             ${keyInfoHtml}
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:220px; overflow-y:auto;">
-                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">ðŸ’» Script Code:</p>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
                 <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated - use Owner Raw URL for full code)' : ''}</pre>
             </div>
             <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
-                <span>ðŸ†” ${script.id}</span>
-                <span>ðŸ“… ${new Date(script.createdAt).toLocaleDateString()}</span>
-                ${script.gameId ? '<span>ðŸŽ® ' + script.gameId + '</span>' : ''}
-                <span>â±ï¸ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' || !script.keyTime ? 'â™¾ï¸ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
+                <span>🆔 ${script.id}</span>
+                <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
+                ${script.gameId ? '<span>🎮 ' + script.gameId + '</span>' : ''}
+                <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' || !script.keyTime ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
             </div>
             <details style="margin-top:12px;">
-                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">ðŸ”’ Owner Raw URL</summary>
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
                 <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
                     <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
-                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">ðŸ“‹ Copy</button>
+                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
                 </div>
             </details>
         </div>
@@ -2367,8 +3235,8 @@ function editProject(projectId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âœï¸ Edit Project</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Project</h2>
             <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="editProjectName" value="${project.name}" required></div>
             <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="editProjectDescription">${project.description || ''}</textarea></div>
             <div class="form-group"><label>Visibility</label><select id="editProjectVisibility"><option value="anyone" ${project.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${project.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${project.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
@@ -2377,7 +3245,7 @@ function editProject(projectId) {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectBlockVPN" ${project.blockVPN ? 'checked' : ''}> Block VPN</label>
             </div>
             <div class="form-group"><label>Type Of Project</label><select id="editProjectType"><option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option><option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option><option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option></select></div>
-            <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">ðŸ’¾ Update Project</button>
+            <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Project</button>
         </div>
     `;
     document.body.appendChild(overlay);
@@ -2460,24 +3328,24 @@ function editScript(projectId, scriptId) {
     var isKeyProject = project && project.type === 'key';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âœï¸ Edit Script</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> ðŸ›¡ï¸ Anti Tampering</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> ðŸ”’ Anti Skidding</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> ðŸ“¡ Environment Logging</label>
-                <label style="margin:0; cursor:pointer;${isKeyProject ? '' : ' display:none;'}"><input type="checkbox" id="editScriptRequireKey" ${script.requireKey ? 'checked' : ''}> ðŸ”‘ Require Key</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampering</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidding</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;${isKeyProject ? '' : ' display:none;'}"><input type="checkbox" id="editScriptRequireKey" ${script.requireKey ? 'checked' : ''}> 🔑 Require Key</label>
             </div>
             <div class="form-group" id="editScriptKeyGateInfo" style="display:${script.requireKey && isKeyProject ? 'block' : 'none'};">
                 <div style="padding:10px 14px; background:rgba(108,59,255,0.1); border:1px solid rgba(108,59,255,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ”‘ <strong style="color:#8a6bff;">Key System:</strong> All active keys from the Keys tab get re-embedded (hashed) when you save.
+                    🔑 <strong style="color:#8a6bff;">Key System:</strong> All active keys from the Keys tab get re-embedded (hashed) when you save.
                 </div>
             </div>
             <div class="form-group" id="editScriptWebhookGroup" style="display:${script.envLogging ? 'block' : 'none'};">
-                <label>ðŸ“¡ Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
+                <label>📡 Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
                 <input type="text" id="editScriptWebhookUrl" value="${script.webhookUrl || ''}" placeholder="https://discord.com/api/webhooks/...">
             </div>
             <div class="form-group">
@@ -2497,12 +3365,31 @@ function editScript(projectId, scriptId) {
                 </div>
             </div>
             <div class="form-group">
-                <div style="padding:10px 14px; background:rgba(255,0,204,0.07); border:1px solid rgba(255,0,204,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ’Ž <strong style="color:#ff66cc;">Custom Obfuscator</strong> is always re-applied on save: your ENTIRE source gets encrypted with multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger.
-                </div>
+                <label>💎 Choose Obfuscator</label>
+                <select id="editScriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    <option value="default" ${script.obfuscatorEngine !== 'aegis' ? 'selected' : ''}>Default Obfuscator (Recommended)</option>
+                    <option value="aegis" ${script.obfuscatorEngine === 'aegis' ? 'selected' : ''}>Aegis Obfuscator</option>
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">⚔️ Aegis sends your source to the external Aegis API to obfuscate (max 6 requests/min).</div>
             </div>
+            <div class="form-group" style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptFreeForEveryone" ${script.freeForEveryone ? 'checked' : ''}> 🌐 Free For Everyone</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSilentMode" ${script.silentMode ? 'checked' : ''}> 🔇 Silent Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptHeartbeat" ${script.heartbeat !== false ? 'checked' : ''}> 💓 Heartbeat</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptLightningMode" ${script.lightningMode ? 'checked' : ''}> ⚡ Lightning Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSecurityUpdates" ${script.securityUpdates !== false ? 'checked' : ''}> 🔄 Enable Security Updates</label>
+            </div>
+            ${isKeyProject ? `
+            <div class="form-group">
+                <label>🔑 Choose How Key Works</label>
+                <select id="editScriptKeyMode" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
+                    <option value="default" ${script.keyMode !== 'custom' ? 'selected' : ''}>Default (Roblox Core Notification)</option>
+                    <option value="custom" ${script.keyMode === 'custom' ? 'selected' : ''}>Custom (You Make It)</option>
+                </select>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
+            </div>` : ''}
             <div class="form-group"><label>Paste .txt/.lua Code</label><textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${script.originalCode || script.code || ''}</textarea></div>
-            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> ðŸ”„ HWID Reset</label></div>
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
                 <input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890">
@@ -2515,7 +3402,7 @@ function editScript(projectId, scriptId) {
                 </div>
             </div>
             <div style="display:flex; gap:12px; margin-top:12px;">
-                <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">ðŸ’¾ Update Script</button>
+                <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">💾 Update Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -2552,11 +3439,18 @@ function confirmEditScript(projectId, scriptId) {
     var envLogging = document.getElementById('editScriptEnvLogging') ? document.getElementById('editScriptEnvLogging').checked : false;
     var webhookUrl = document.getElementById('editScriptWebhookUrl') ? document.getElementById('editScriptWebhookUrl').value.trim() : '';
     var requireKey = document.getElementById('editScriptRequireKey') ? document.getElementById('editScriptRequireKey').checked : false;
+    var keyMode = document.getElementById('editScriptKeyMode') ? document.getElementById('editScriptKeyMode').value : 'default';
+    var obfuscatorEngine = document.getElementById('editScriptObfuscatorEngine') ? document.getElementById('editScriptObfuscatorEngine').value : 'default';
+    var freeForEveryone = document.getElementById('editScriptFreeForEveryone') ? document.getElementById('editScriptFreeForEveryone').checked : false;
+    var silentMode = document.getElementById('editScriptSilentMode') ? document.getElementById('editScriptSilentMode').checked : false;
+    var heartbeat = document.getElementById('editScriptHeartbeat') ? document.getElementById('editScriptHeartbeat').checked : true;
+    var lightningMode = document.getElementById('editScriptLightningMode') ? document.getElementById('editScriptLightningMode').checked : false;
+    var securityUpdates = document.getElementById('editScriptSecurityUpdates') ? document.getElementById('editScriptSecurityUpdates').checked : true;
     var keyTime = document.getElementById('editScriptKeyTime').value;
     var keyUnit = document.getElementById('editScriptKeyUnit').value;
     var code = document.getElementById('editScriptCode').value.trim();
     var obfuscationIntensity = 10; // always max - Custom Obfuscator standard
-    var obfuscationType = 'custom'; // always custom obfuscator
+    var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('editScriptHWIDReset').checked;
     var gameId = document.getElementById('editScriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
@@ -2574,91 +3468,108 @@ function confirmEditScript(projectId, scriptId) {
             }
         }
     }
+    // find current script (for version increment)
+    var prevScript = null;
     for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            if (projects[i].scripts) {
-                for (var j = 0; j < projects[i].scripts.length; j++) {
-                    if (projects[i].scripts[j].id === scriptId) {
-                        var existingLoaderKey = projects[i].scripts[j].loaderKey;
-                        var existingLoaderId = projects[i].scripts[j].loaderId;
-                        var obfuscatedCode = code;
-                        try {
-                            var keyGateKeys = [];
-                            if (requireKey) {
-                                var kd = loadKeys();
-                                for (var ki = 0; ki < kd.keys.length; ki++) {
-                                    var kk = kd.keys[ki];
-                                    if (kk.used) continue;
-                                    if (kk.expires && kk.expires < Date.now()) continue;
-                                    keyGateKeys.push({ key: kk.key, expires: kk.expires || null });
-                                }
-                                if (keyGateKeys.length === 0) {
-                                    showNotification('Warning', 'Require Key is ON but you have no active keys! Generate keys in the Keys tab first.', 'warning', 6000);
-                                }
-                            }
-                            var obfOptions = {
-                                intensity: obfuscationIntensity,
-                                antiTamper: antiTamper,
-                                antiSkid: antiSkid,
-                                envLogging: envLogging,
-                                webhookUrl: webhookUrl,
-                                keyGate: requireKey ? { keys: keyGateKeys } : null,
-                                scriptName: name,
-                                scriptId: scriptId,
-                                owner: currentUser ? currentUser.username : 'unknown'
-                            };
-                            obfuscatedCode = applyObfuscation(code, obfuscationType, obfOptions);
-                        } catch (e) {
-                            showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
-                            obfuscatedCode = code;
+        if (projects[i].id === projectId && projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].id === scriptId) { prevScript = projects[i].scripts[j]; break; }
+            }
+        }
+    }
+    var keyGateKeys = [];
+    if (requireKey) {
+        var kd = loadKeys();
+        for (var ki = 0; ki < kd.keys.length; ki++) {
+            var kk = kd.keys[ki];
+            if (kk.used) continue;
+            if (kk.banned) continue;
+            if (kk.expires && kk.expires < Date.now()) continue;
+            keyGateKeys.push({ key: kk.key, expires: kk.expires || null });
+        }
+        if (keyGateKeys.length === 0) {
+            showNotification('Warning', 'Require Key is ON but you have no active keys! Generate keys in the Users Keys tab first.', 'warning', 6000);
+        }
+    }
+    var obfOptions = {
+        intensity: obfuscationIntensity,
+        antiTamper: antiTamper,
+        antiSkid: antiSkid,
+        envLogging: envLogging,
+        webhookUrl: webhookUrl,
+        keyGate: requireKey ? { keys: keyGateKeys, mode: keyMode } : null,
+        silentMode: silentMode,
+        scriptName: name,
+        scriptId: scriptId,
+        owner: currentUser ? currentUser.username : 'unknown'
+    };
+    var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
+    if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
+    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+        for (var i = 0; i < projects.length; i++) {
+            if (projects[i].id === projectId) {
+                if (projects[i].scripts) {
+                    for (var j = 0; j < projects[i].scripts.length; j++) {
+                        if (projects[i].scripts[j].id === scriptId) {
+                            projects[i].scripts[j].name = name;
+                            projects[i].scripts[j].description = description;
+                            projects[i].scripts[j].antiTamper = antiTamper;
+                            projects[i].scripts[j].antiSkid = antiSkid;
+                            projects[i].scripts[j].envLogging = envLogging;
+                            projects[i].scripts[j].webhookUrl = webhookUrl;
+                            projects[i].scripts[j].requireKey = requireKey;
+                            projects[i].scripts[j].keyMode = requireKey ? keyMode : null;
+                            projects[i].scripts[j].obfuscatorEngine = obfuscatorEngine;
+                            projects[i].scripts[j].freeForEveryone = freeForEveryone;
+                            projects[i].scripts[j].silentMode = silentMode;
+                            projects[i].scripts[j].heartbeat = heartbeat;
+                            projects[i].scripts[j].lightningMode = lightningMode;
+                            projects[i].scripts[j].securityUpdates = securityUpdates;
+                            projects[i].scripts[j].keyTime = keyTime || 'unlimited';
+                            projects[i].scripts[j].keyUnit = keyUnit || 'unlimited';
+                            projects[i].scripts[j].code = obfuscatedCode;
+                            projects[i].scripts[j].originalCode = code;
+                            projects[i].scripts[j].obfuscationType = obfuscationType;
+                            projects[i].scripts[j].obfuscationIntensity = obfuscationIntensity;
+                            projects[i].scripts[j].version = (prevScript && prevScript.version ? prevScript.version : 1) + 1;
+                            projects[i].scripts[j].hwidReset = hwidReset;
+                            projects[i].scripts[j].gameId = placeIdOnly;
+                            projects[i].scripts[j].updatedAt = new Date().toISOString();
+                            break;
                         }
-                        projects[i].scripts[j].name = name;
-                        projects[i].scripts[j].description = description;
-                        projects[i].scripts[j].antiTamper = antiTamper;
-                        projects[i].scripts[j].antiSkid = antiSkid;
-                        projects[i].scripts[j].envLogging = envLogging;
-                        projects[i].scripts[j].webhookUrl = webhookUrl;
-                        projects[i].scripts[j].requireKey = requireKey;
-                        projects[i].scripts[j].keyTime = keyTime || 'unlimited';
-                        projects[i].scripts[j].keyUnit = keyUnit || 'unlimited';
-                        projects[i].scripts[j].code = obfuscatedCode;
-                        projects[i].scripts[j].originalCode = code;
-                        projects[i].scripts[j].obfuscationType = obfuscationType;
-                        projects[i].scripts[j].obfuscationIntensity = obfuscationIntensity;
-                        projects[i].scripts[j].hwidReset = hwidReset;
-                        projects[i].scripts[j].gameId = placeIdOnly;
-                        projects[i].scripts[j].loaderKey = existingLoaderKey;
-                        projects[i].scripts[j].loaderId = existingLoaderId;
-                        break;
                     }
                 }
+                break;
             }
-            break;
         }
-    }
-    saveProjects(projects);
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            if (projects[i].scripts) {
-                for (var j = 0; j < projects[i].scripts.length; j++) {
-                    if (projects[i].scripts[j].id === scriptId) {
-                        var script = projects[i].scripts[j];
-                        storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
-                        storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
-                        storeScriptForRawAccess(script.loaderId, script.code, script.name);
-                        storeScriptForRawAccess(script.id, script.code, script.name);
-                        break;
+        saveProjects(projects);
+        for (var i = 0; i < projects.length; i++) {
+            if (projects[i].id === projectId) {
+                if (projects[i].scripts) {
+                    for (var j = 0; j < projects[i].scripts.length; j++) {
+                        if (projects[i].scripts[j].id === scriptId) {
+                            var script = projects[i].scripts[j];
+                            storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
+                            storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
+                            storeScriptForRawAccess(script.loaderId, script.code, script.name);
+                            storeScriptForRawAccess(script.id, script.code, script.name);
+                            break;
+                        }
                     }
                 }
+                break;
             }
-            break;
         }
-    }
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    refreshStatsUI();
-    showNotification('Success', 'Script "' + name + '" updated with ðŸ’Ž Custom Obfuscator!', 'success');
-    renderProjects();
+        var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+        if (modal) modal.remove();
+        recordObfuscation();
+        refreshStatsUI();
+        showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
+        renderProjects();
+    }).catch(function(e) {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
+        showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
+    });
 }
 
 // ============ DELETE SCRIPT ==========
@@ -2685,10 +3596,40 @@ function deleteScript(projectId, scriptId) {
 }
 
 // ============ SCRIPT SETTINGS ==========
-function toggleCreditMore(who) {
-    var el = document.getElementById('creditMore' + (who === 'scripter' ? 'Scripter' : 'Kurosaki'));
+function toggleCreditMore(btn) {
+    var el = btn.parentElement.querySelector('.credit-more');
     if (!el) return;
-    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    el.classList.toggle('open');
+    btn.textContent = el.classList.contains('open') ? '- Less' : '+ More';
+}
+
+// ============ TIME AGO HELPER ============
+function timeAgo(dateStr) {
+    if (!dateStr) return 'Unknown';
+    try {
+        var then = new Date(dateStr).getTime();
+        if (isNaN(then)) return 'Unknown';
+        var s = Math.floor((Date.now() - then) / 1000);
+        if (s < 5) return 'Right Now';
+        if (s < 60) return s + (s === 1 ? ' Second' : ' Seconds') + ' ago';
+        var m = Math.floor(s / 60);
+        if (m < 60) return m + (m === 1 ? ' Minute' : ' Minutes') + ' ago';
+        var h = Math.floor(m / 60);
+        if (h < 24) return h + (h === 1 ? ' Hour' : ' Hours') + ' ago';
+        var d = Math.floor(h / 24);
+        if (d < 7) return d + (d === 1 ? ' Day' : ' Days') + ' ago';
+        var w = Math.floor(d / 7);
+        if (w < 5) return w + (w === 1 ? ' Week' : ' Weeks') + ' ago';
+        var mo = Math.floor(d / 30);
+        if (mo < 12) return mo + (mo === 1 ? ' Month' : ' Months') + ' ago';
+        var y = Math.floor(d / 365);
+        return y + (y === 1 ? ' Year' : ' Years') + ' ago';
+    } catch (e) { return 'Unknown'; }
+}
+
+function versionLabel(script) {
+    var v = script.version || 1;
+    return 'V. 0.0.0.' + v;
 }
 
 // ============ SCRIPT SETTINGS ==========
@@ -2715,13 +3656,13 @@ function openScriptSettings(projectId, scriptId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 450px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âš™ï¸ Script Settings</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">⚙️ Script Settings</h2>
             <p class="sub">Manage "${script.name}"</p>
             <div class="form-group"><label>Visibility</label><select id="scriptVisibility"><option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">ðŸ’¾ Update Visibility</button>
-                <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">ðŸ—‘ï¸ Delete Script</button>
+                <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>
+                <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">🗑️ Delete Script</button>
             </div>
             <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
         </div>
@@ -2798,7 +3739,7 @@ function showHomePage() {
 
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('ðŸš€ Streaming Obfuscation System loaded');
+    console.log('🚀 Streaming Obfuscation System loaded');
     handleOAuthCallback();
     checkAuth();
     var signupForm = document.getElementById('signupForm');
@@ -2809,12 +3750,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (adminBtn) { adminBtn.addEventListener('click', openAdminPanel); }
     var usersBtn = document.getElementById('usersBtn');
     if (usersBtn) { usersBtn.addEventListener('click', openUsersPanel); }
-    console.log('ðŸ“Š Users loaded:', Object.keys(users).length);
+    console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
 (function() {
     var savedUser = getCurrentUser();
-    if (savedUser) { console.log('ðŸ”„ Session found, restoring...'); }
+    if (savedUser) { console.log('🔄 Session found, restoring...'); }
 })();
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
@@ -2881,3 +3822,31 @@ window.toggleEmail = toggleEmail;
 window.toggleCreditMore = toggleCreditMore;
 window.confirmSocialLogin = confirmSocialLogin;
 window.refreshStatsUI = refreshStatsUI;
+window.setExecRange = setExecRange;
+window.setObfRange = setObfRange;
+window.toggleLiveChartPause = toggleLiveChartPause;
+window.toggleLiveChartSeries = toggleLiveChartSeries;
+window.userKeysDoSearch = userKeysDoSearch;
+window.userKeysPage = userKeysPage;
+window.toggleUserKeysList = toggleUserKeysList;
+window.openAddUserUI = openAddUserUI;
+window.confirmAddUserUI = confirmAddUserUI;
+window.openUserKeysSettingsUI = openUserKeysSettingsUI;
+window.massGenerateKeys = massGenerateKeys;
+window.downloadKeysTxt = downloadKeysTxt;
+window.exportKeysJson = exportKeysJson;
+window.deleteUnusedKeys = deleteUnusedKeys;
+window.importUsersFile = importUsersFile;
+window.massCompensateDays = massCompensateDays;
+window.resetAllHwids = resetAllHwids;
+window.openKeySettingsUI = openKeySettingsUI;
+window.saveKeySettings = saveKeySettings;
+window.resetOneHwid = resetOneHwid;
+window.blacklistKey = blacklistKey;
+window.disableAccount = disableAccount;
+window.enableAccount = enableAccount;
+window.openDeleteAccountUI = openDeleteAccountUI;
+window.confirmDeleteAccount = confirmDeleteAccount;
+window.openScriptRaw = openScriptRaw;
+window.recordExecution = recordExecution;
+window.recordThreat = recordThreat;
