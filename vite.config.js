@@ -10,6 +10,8 @@ export default defineConfig({
       input: {
         main: 'index.html',
         raw: 'raw.html',
+        reward: 'reward.html',
+        checkpoint: 'checkpoint.html',
       },
     },
   },

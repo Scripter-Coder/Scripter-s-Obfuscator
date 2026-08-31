@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Checkpoint Verification</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0a0a0f; color: #fff; min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 24px; }
+        .card { background: rgba(20,20,35,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 34px; max-width: 460px; width: 100%; text-align: center; }
+        h1 { font-size: 20px; }
+        .sub { color: #8888aa; font-size: 13px; margin-top: 8px; line-height: 1.6; }
+        .big { font-size: 54px; line-height: 1; }
+        .btn { margin-top: 20px; padding: 13px 34px; font-size: 15px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .timer { color: #ffd700; font-size: 14px; margin-top: 14px; }
+        .blocked h1 { color: #ff4444; }
+        .ok h1 { color: #66ff66; }
+        .spin { display: inline-block; animation: spin 1.2s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="card" id="app">
+        <div class="big spin">⏳</div>
+        <h1>Verifying checkpoint...</h1>
+        <p class="sub">Checking that you completed the ad link normally.</p>
+    </div>
+<script>
+(function () {
+    function b64d(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); }
+    function hash(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 999999937; return h; }
+    function ls(k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+    function lss(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    function fmtLeft(ms) { var h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000); return h > 0 ? h + ' hours ' + m + ' minutes' : m + ' minutes'; }
+
+    var q = new URLSearchParams(location.search);
+    var rStr = q.get('r');
+    var cIdx = parseInt(q.get('c') || '0', 10);
+    var app = document.getElementById('app');
+
+    function blacklist(msg) {
+        // doubling penalty: 2h -> 4h -> 8h -> ... (2^strikes hours)
+        var bl = ls('sh_blacklist', { strikes: 0, until: 0 });
+        if (!bl.until || bl.until < Date.now()) bl.strikes = Math.max(0, bl.strikes);
+        bl.strikes += 1;
+        bl.until = Date.now() + Math.pow(2, bl.strikes) * 3600000;
+        lss('sh_blacklist', bl);
+        app.className = 'card blocked';
+        app.innerHTML = '<div class="big">⛔</div><h1>You are blacklisted for ' + fmtLeft(bl.until - Date.now()) + '</h1>' +
+            '<p class="sub">' + msg + '<br>Repeat bypassing doubles the penalty (2h → 4h → 8h → ...).</p>';
+        return;
+    }
+
+    if (!rStr) { app.innerHTML = '<div class="big">❌</div><h1>Invalid checkpoint link</h1>'; return; }
+    var cfg;
+    try { cfg = JSON.parse(b64d(rStr)); } catch (e) { app.innerHTML = '<div class="big">❌</div><h1>Invalid checkpoint link</h1>'; return; }
+
+    // existing blacklist?
+    var bl = ls('sh_blacklist', { strikes: 0, until: 0 });
+    if (bl.until && bl.until > Date.now()) {
+        app.className = 'card blocked';
+        app.innerHTML = '<div class="big">⛔</div><h1>You are blacklisted for ' + fmtLeft(bl.until - Date.now()) + '</h1>' +
+            '<p class="sub">because you tried to bypass a checkpoint</p>';
+        return;
+    }
+
+    // ---------- ANTI-BYPASS: bot/automation heuristics (score >= 3 => bypass attempt) ----------
+    var score = 0, reasons = [];
+    try {
+        if (navigator.webdriver) { score += 3; reasons.push('automation driver'); }
+        if (!navigator.languages || navigator.languages.length === 0) { score += 2; reasons.push('no languages'); }
+        var isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        if (!isMobile && navigator.plugins && navigator.plugins.length === 0) { score += 2; reasons.push('no plugins (headless)'); }
+        if (window.outerWidth === 0 || window.outerHeight === 0) { score += 3; reasons.push('hidden window'); }
+        if (!document.referrer) { score += 1; reasons.push('no referrer'); }
+        // came back too fast? (ad links take at least a few seconds)
+        var H = 'shrw_' + hash(rStr);
+        var leftAt = ls(H + '_t', 0);
+        if (leftAt && Date.now() - leftAt < 3000) { score += 2; reasons.push('returned too fast'); }
+        // multiple checkpoints instantly
+        var lastVerify = ls(H + '_v', 0);
+        if (lastVerify && Date.now() - lastVerify < 1500) { score += 2; reasons.push('verification spam'); }
+    } catch (e) {}
+    if (score >= 3) {
+        blacklist('We detected suspicious activity (' + reasons.join(', ') + '). Bots must actually complete the checkpoint.');
+        return;
+    }
+
+    // ---------- Human verification (must interact & wait a moment) ----------
+    lss(H + '_v', Date.now());
+    var cp = (cfg.cps || [])[cIdx];
+    var provider = (cp && cp.p) || '';
+    var antiBypass = provider === 'admint' || provider === 'linkvertise' || provider === 'workink' || provider === 'lootlabs';
+    var waitSec = antiBypass ? 6 : 4;
+    app.className = 'card';
+    app.innerHTML = '<div class="big">🛡️</div>' +
+        '<h1>Checkpoint ' + (cIdx + 1) + '/' + (cfg.cps || []).length + '</h1>' +
+        '<p class="sub">Almost done! Click the button below to verify you completed this checkpoint' + (antiBypass ? ' (Anti-Bypass is active on this checkpoint).' : '.') + '</p>' +
+        '<button class="btn" id="verifyBtn" disabled>✅ Verify Checkpoint</button>' +
+        '<div class="timer" id="timer">Please wait ' + waitSec + ' seconds...</div>';
+    var left = waitSec;
+    var t = setInterval(function () {
+        left--;
+        var el = document.getElementById('timer');
+        var btn = document.getElementById('verifyBtn');
+        if (!el || !btn) { clearInterval(t); return; }
+        if (left <= 0) {
+            clearInterval(t);
+            el.textContent = 'You can verify now.';
+            btn.disabled = false;
+        } else {
+            el.textContent = 'Please wait ' + left + ' second' + (left === 1 ? '' : 's') + '...';
+        }
+    }, 1000);
+    document.getElementById('verifyBtn').onclick = function () {
+        // update owner-side stats when the owner tests on the same browser
+        try {
+            var uid = (window.opener && '') || '';
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf('sh_rewards_') === 0) {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    var updated = false;
+                    (d.rewards || []).forEach(function (rw) {
+                        (rw.checkpoints || []).forEach(function (cp2) {
+                            var cfgCps = (cfg.cps || []);
+                            for (var j = 0; j < cfgCps.length; j++) {
+                                if (cfgCps[j].u === cp2.shortUrl && j === cIdx) {
+                                    cp2.completed = (cp2.completed || 0) + 1;
+                                    var leftAt2 = ls(H + '_t', 0);
+                                    if (leftAt2) {
+                                        var spent = (Date.now() - leftAt2) / 1000;
+                                        cp2.avgTimeSec = cp2.avgTimeSec ? (cp2.avgTimeSec * 0.7 + spent * 0.3) : spent;
+                                    }
+                                    updated = true;
+                                }
+                            }
+                        });
+                    });
+                    if (updated) lss(k, d);
+                }
+            }
+        } catch (e) {}
+        location.href = 'reward.html?r=' + rStr + '&done=' + cIdx;
+    };
+})();
+</script>
+</body>
+</html>

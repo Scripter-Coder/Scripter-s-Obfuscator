@@ -107,11 +107,14 @@ function buildSecurityWrapper(options, meta) {
     parts.push('--[[' + hex(40) + ' | protected payload | ' + hex(40) + ']]');
 
     // ---------- KEY GATE (keys are embedded HASHED - never plaintext) ----------
+    // keyMode: 'default' = Roblox Core notifications + popup key card
+    //          'custom'  = silent gate, exposes API globals for the user's own GUI
     if (options.keyGate && options.keyGate.keys && options.keyGate.keys.length) {
         var kgSalt = hex(16);
+        var keyMode = options.keyGate.mode === 'custom' ? 'custom' : 'default';
         var S = n[31], E = n[32], H = n[33], V = n[34], OKV = n[35], IVK = n[36];
         var FRM = n[37], TTL = n[38], BOX = n[39], BTN = n[40], SGR = n[41], TGT = n[42], T0K = n[43];
-        var NT = n[44];
+        var NT = n[44], CLS = n[45], API = n[46], GENV = n[47];
         var entries = options.keyGate.keys.map(function (k) {
             var exp = k.expires ? Math.floor(k.expires / 1000) : 0;
             return '{' + keyHash(k.key + kgSalt) + ',' + exp + '}';
@@ -123,6 +126,16 @@ function buildSecurityWrapper(options, meta) {
             ' local function ' + NT + '(t,d)',
             '  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text=t,Duration=d or 4,Icon="rbxassetid://7734059095"}) end)',
             ' end',
+            // ---- API GLOBALS (Task 16): ScripterHubKeyValid/Incorrect/Expired/Status + WebsiteStatus
+            ' local function ' + API + '(st)',
+            '  local ' + GENV + '=(getgenv and getgenv()) or _G',
+            '  ' + GENV + '.ScripterHubKeyValid=(st=="Valid")',
+            '  ' + GENV + '.ScripterHubKeyIncorrect=(st=="Incorrect")',
+            '  ' + GENV + '.ScripterHubKeyExpired=(st=="Expired")',
+            '  ' + GENV + '.ScripterHubKeyStatus=st',
+            '  ' + GENV + '.ScripterHubWebsiteStatus="Online"',
+            ' end',
+            // ---- classify: "Valid" | "Expired" | "Incorrect"
             ' local function ' + H + '(s)',
             '  local a,b=0,0',
             '  for i=1,#s do',
@@ -132,73 +145,96 @@ function buildSecurityWrapper(options, meta) {
             '  end',
             '  return (a*65537+b)%4294967296',
             ' end',
-            ' local function ' + V + '(k)',
-            '  if type(k)~="string" then return false end',
+            ' local function ' + CLS + '(k)',
+            '  if type(k)~="string" then return "Incorrect" end',
             '  local hk=' + H + '(k..' + S + ')',
             '  for i=1,#' + E + ' do',
             '   local e=' + E + '[i]',
-            '   if e[1]==hk and (e[2]==0 or os.time()<=e[2]) then return true end',
-            '  end',
-            '  return false',
-            ' end',
-            ' local ' + OKV + '=' + V + '((getgenv and getgenv().ScripterHubKey) or _G.ScripterHubKey)',
-            ' if ' + OKV + ' then ' + NT + '("Key accepted! Loading script...",5) end',
-            ' if not ' + OKV + ' then',
-            '  ' + NT + '("Key required! Set getgenv().ScripterHubKey or use the key card.",6)',
-            // interactive key card (executor): textbox + verify button
-            '  pcall(function()',
-            '   local plrs=game:GetService("Players")',
-            '   local lp=plrs and plrs.LocalPlayer',
-            '   local pg=lp and lp:FindFirstChild("PlayerGui")',
-            '   local ' + TGT + '=pg or (gethui and gethui()) or nil',
-            '   if not ' + TGT + ' then return end',
-            '   local ' + SGR + '=Instance.new("ScreenGui")',
-            '   ' + SGR + '.Name="SHKeyGate" ' + SGR + '.ResetOnSpawn=false',
-            '   local ' + FRM + '=Instance.new("Frame")',
-            '   ' + FRM + '.Size=UDim2.new(0,360,0,180) ' + FRM + '.Position=UDim2.new(0.5,-180,0.5,-90)',
-            '   ' + FRM + '.BackgroundColor3=Color3.fromRGB(20,20,35) ' + FRM + '.BorderSizePixel=0',
-            '   local u1=Instance.new("UICorner") u1.CornerRadius=UDim.new(0,14) u1.Parent=' + FRM,
-            '   local ' + TTL + '=Instance.new("TextLabel")',
-            '   ' + TTL + '.Size=UDim2.new(1,-24,0,28) ' + TTL + '.Position=UDim2.new(0,12,0,10)',
-            '   ' + TTL + '.BackgroundTransparency=1 ' + TTL + '.TextColor3=Color3.fromRGB(255,80,80)',
-            '   ' + TTL + '.Font=Enum.Font.GothamBold ' + TTL + '.TextSize=16',
-            '   ' + TTL + '.Text="Key Required"',
-            '   ' + TTL + '.Parent=' + FRM,
-            '   local ' + BOX + '=Instance.new("TextBox")',
-            '   ' + BOX + '.Size=UDim2.new(1,-24,0,42) ' + BOX + '.Position=UDim2.new(0,12,0,48)',
-            '   ' + BOX + '.BackgroundColor3=Color3.fromRGB(10,10,20) ' + BOX + '.TextColor3=Color3.fromRGB(255,255,255)',
-            '   ' + BOX + '.Font=Enum.Font.Gotham ' + BOX + '.TextSize=14 ' + BOX + '.PlaceholderText="Paste your key here..."',
-            '   ' + BOX + '.Text="" ' + BOX + '.ClearTextOnFocus=false',
-            '   local u2=Instance.new("UICorner") u2.CornerRadius=UDim.new(0,10) u2.Parent=' + BOX,
-            '   ' + BOX + '.Parent=' + FRM,
-            '   local ' + BTN + '=Instance.new("TextButton")',
-            '   ' + BTN + '.Size=UDim2.new(1,-24,0,46) ' + BTN + '.Position=UDim2.new(0,12,0,102)',
-            '   ' + BTN + '.BackgroundColor3=Color3.fromRGB(108,59,255) ' + BTN + '.TextColor3=Color3.fromRGB(255,255,255)',
-            '   ' + BTN + '.Font=Enum.Font.GothamBold ' + BTN + '.TextSize=15 ' + BTN + '.Text="Verify Key"',
-            '   local u3=Instance.new("UICorner") u3.CornerRadius=UDim.new(0,10) u3.Parent=' + BTN,
-            '   ' + BTN + '.Parent=' + FRM,
-            '   ' + FRM + '.Parent=' + SGR,
-            '   ' + SGR + '.Parent=' + TGT,
-            '   local function ' + T0K + '()',
-            '    if ' + V + '(' + BOX + '.Text) then ' + OKV + '=true pcall(function() ' + SGR + ':Destroy() end) ' + NT + '("Key accepted! Loading script...",5) else ' + TTL + '.Text="Invalid or expired key!" ' + NT + '("Invalid or expired key!",4) end',
+            '   if e[1]==hk then',
+            '    if e[2]==0 or os.time()<=e[2] then return "Valid" end',
+            '    return "Expired"',
             '   end',
-            '   ' + BTN + '.MouseButton1Click:Connect(' + T0K + ')',
-            '   ' + BOX + '.FocusLost:Connect(function(en) if en then ' + T0K + '() end end)',
-            '  end)',
-            // wait up to 300s for interactive entry (executor only)
-            '  if not ' + OKV + ' then',
-            '   pcall(function()',
-            '    if task and task.wait then',
-            '     local t0=os.time()',
-            '     while not ' + OKV + ' and os.time()-t0<300 do task.wait(0.1) end',
-            '    end',
-            '   end)',
             '  end',
+            '  return "Incorrect"',
+            ' end',
+            ' local function ' + V + '(k) return ' + CLS + '(k)=="Valid" end',
+            ' local ' + OKV + '=false',
+            ' local ' + IVK + '=' + CLS + '((getgenv and getgenv().ScripterHubKey) or _G.ScripterHubKey)',
+            ' ' + API + '(' + IVK + ')',
+            ' if ' + IVK + '=="Valid" then ' + OKV + '=true end',
+            keyMode === 'default' ? ' if ' + OKV + ' then ' + NT + '("Key accepted! Loading script...",5) end' : null,
+            ' if not ' + OKV + ' then',
+            keyMode === 'default' ? '  ' + NT + '("Key required! Set getgenv().ScripterHubKey or use the key card.",6)' : null,
+            // interactive key card (executor, DEFAULT mode only): textbox + verify button
+            keyMode === 'default' ? '  pcall(function()' : null,
+            keyMode === 'default' ? '   local plrs=game:GetService("Players")' : null,
+            keyMode === 'default' ? '   local lp=plrs and plrs.LocalPlayer' : null,
+            keyMode === 'default' ? '   local pg=lp and lp:FindFirstChild("PlayerGui")' : null,
+            keyMode === 'default' ? '   local ' + TGT + '=pg or (gethui and gethui()) or nil' : null,
+            keyMode === 'default' ? '   if not ' + TGT + ' then return end' : null,
+            keyMode === 'default' ? '   local ' + SGR + '=Instance.new("ScreenGui")' : null,
+            keyMode === 'default' ? '   ' + SGR + '.Name="SHKeyGate" ' + SGR + '.ResetOnSpawn=false' : null,
+            keyMode === 'default' ? '   local ' + FRM + '=Instance.new("Frame")' : null,
+            keyMode === 'default' ? '   ' + FRM + '.Size=UDim2.new(0,360,0,180) ' + FRM + '.Position=UDim2.new(0.5,-180,0.5,-90)' : null,
+            keyMode === 'default' ? '   ' + FRM + '.BackgroundColor3=Color3.fromRGB(20,20,35) ' + FRM + '.BorderSizePixel=0' : null,
+            keyMode === 'default' ? '   local u1=Instance.new("UICorner") u1.CornerRadius=UDim.new(0,14) u1.Parent=' + FRM : null,
+            keyMode === 'default' ? '   local ' + TTL + '=Instance.new("TextLabel")' : null,
+            keyMode === 'default' ? '   ' + TTL + '.Size=UDim2.new(1,-24,0,28) ' + TTL + '.Position=UDim2.new(0,12,0,10)' : null,
+            keyMode === 'default' ? '   ' + TTL + '.BackgroundTransparency=1 ' + TTL + '.TextColor3=Color3.fromRGB(255,80,80)' : null,
+            keyMode === 'default' ? '   ' + TTL + '.Font=Enum.Font.GothamBold ' + TTL + '.TextSize=16' : null,
+            keyMode === 'default' ? '   ' + TTL + '.Text="Key Required"' : null,
+            keyMode === 'default' ? '   ' + TTL + '.Parent=' + FRM : null,
+            keyMode === 'default' ? '   local ' + BOX + '=Instance.new("TextBox")' : null,
+            keyMode === 'default' ? '   ' + BOX + '.Size=UDim2.new(1,-24,0,42) ' + BOX + '.Position=UDim2.new(0,12,0,48)' : null,
+            keyMode === 'default' ? '   ' + BOX + '.BackgroundColor3=Color3.fromRGB(10,10,20) ' + BOX + '.TextColor3=Color3.fromRGB(255,255,255)' : null,
+            keyMode === 'default' ? '   ' + BOX + '.Font=Enum.Font.Gotham ' + BOX + '.TextSize=14 ' + BOX + '.PlaceholderText="Paste your key here..."' : null,
+            keyMode === 'default' ? '   ' + BOX + '.Text="" ' + BOX + '.ClearTextOnFocus=false' : null,
+            keyMode === 'default' ? '   local u2=Instance.new("UICorner") u2.CornerRadius=UDim.new(0,10) u2.Parent=' + BOX : null,
+            keyMode === 'default' ? '   ' + BOX + '.Parent=' + FRM : null,
+            keyMode === 'default' ? '   local ' + BTN + '=Instance.new("TextButton")' : null,
+            keyMode === 'default' ? '   ' + BTN + '.Size=UDim2.new(1,-24,0,46) ' + BTN + '.Position=UDim2.new(0,12,0,102)' : null,
+            keyMode === 'default' ? '   ' + BTN + '.BackgroundColor3=Color3.fromRGB(108,59,255) ' + BTN + '.TextColor3=Color3.fromRGB(255,255,255)' : null,
+            keyMode === 'default' ? '   ' + BTN + '.Font=Enum.Font.GothamBold ' + BTN + '.TextSize=15 ' + BTN + '.Text="Verify Key"' : null,
+            keyMode === 'default' ? '   local u3=Instance.new("UICorner") u3.CornerRadius=UDim.new(0,10) u3.Parent=' + BTN : null,
+            keyMode === 'default' ? '   ' + BTN + '.Parent=' + FRM : null,
+            keyMode === 'default' ? '   ' + FRM + '.Parent=' + SGR : null,
+            keyMode === 'default' ? '   ' + SGR + '.Parent=' + TGT : null,
+            keyMode === 'default' ? '   local function ' + T0K + '()' : null,
+            keyMode === 'default' ? '    local st=' + CLS + '(' + BOX + '.Text)' : null,
+            keyMode === 'default' ? '    ' + API + '(st)' : null,
+            keyMode === 'default' ? '    if st=="Valid" then ' + OKV + '=true pcall(function() ' + SGR + ':Destroy() end) ' + NT + '("Key accepted! Loading script...",5) else ' + TTL + '.Text="Invalid or expired key!" ' + NT + '("Invalid or expired key!",4) end' : null,
+            keyMode === 'default' ? '   end' : null,
+            keyMode === 'default' ? '   ' + BTN + '.MouseButton1Click:Connect(' + T0K + ')' : null,
+            keyMode === 'default' ? '   ' + BOX + '.FocusLost:Connect(function(en) if en then ' + T0K + '() end end)' : null,
+            keyMode === 'default' ? '  end)' : null,
+            // wait up to 300s for a valid key (default: after popup; custom: poll ScripterHubKey set by user's GUI)
+            '  pcall(function()',
+            '   if task and task.wait then',
+            '    local t0=os.time()',
+            '    while not ' + OKV + ' and os.time()-t0<300 do',
+            keyMode === 'custom' ? '     local st=' + CLS + '((getgenv and getgenv().ScripterHubKey) or _G.ScripterHubKey) ' + API + '(st) if st=="Valid" then ' + OKV + '=true end' : null,
+            '     task.wait(0.1)',
+            '    end',
+            '   end',
+            '  end)',
             '  if not ' + OKV + ' then',
             '   print("[ScripterHub] Valid key required. Set getgenv().ScripterHubKey = \\"YOUR_KEY\\" and re-execute.")',
             '   return',
             '  end',
             ' end',
+            'end'
+        );
+    } else {
+        // no key gate - still expose the API globals
+        var S2 = n[31], API2 = n[32], GENV2 = n[33];
+        parts.push(
+            'do',
+            ' local ' + GENV2 + '=(getgenv and getgenv()) or _G',
+            ' ' + GENV2 + '.ScripterHubKeyValid=true',
+            ' ' + GENV2 + '.ScripterHubKeyIncorrect=false',
+            ' ' + GENV2 + '.ScripterHubKeyExpired=false',
+            ' ' + GENV2 + '.ScripterHubKeyStatus="No Key Required"',
+            ' ' + GENV2 + '.ScripterHubWebsiteStatus="Online"',
             'end'
         );
     }
@@ -330,7 +366,7 @@ function buildSecurityWrapper(options, meta) {
     }
 
     parts.push('-- ==== ORIGINAL SCRIPT ====');
-    return parts.join('\n') + '\n';
+    return parts.filter(Boolean).join('\n') + '\n';
 }
 
 // ============================================================
@@ -472,7 +508,22 @@ export function applyCustomObfuscator(code, options, debugInfo) {
 
     if (debugInfo) debugInfo.payload = payload;
 
-    return '-- ScripterHub Custom Obfuscator v3.2 KEY-GATE (anti-logger safe-mode + embedded hashed key system) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
+    return '-- ScripterHub Custom Obfuscator v4 (key modes + API globals + anti-logger) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
+}
+
+// Build the security wrapper + source payload without encrypting it.
+// Used by the Aegis Obfuscator engine: the wrapper (key gate, anti-logger,
+// env logging, watermark...) wraps the source, then Aegis obfuscates the whole thing.
+export function buildWrappedPayload(code, options, debugInfo) {
+    options = options || {};
+    var meta = {
+        id: options.scriptId || ('sh_' + hex(8)),
+        name: options.scriptName || 'script',
+        owner: options.owner || 'unknown'
+    };
+    var payload = buildSecurityWrapper(options, meta) + code;
+    if (debugInfo) debugInfo.payload = payload;
+    return payload;
 }
 
 if (typeof window !== 'undefined') window.applyCustomObfuscator = applyCustomObfuscator;

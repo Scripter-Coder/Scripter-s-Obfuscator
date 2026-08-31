@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScripterHub Reward</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0a0a0f; color: #fff; min-height: 100vh; display: flex; justify-content: center; padding: 30px 16px; }
+        .wrap { width: 100%; max-width: 720px; }
+        .card { background: rgba(20,20,35,0.8); border: 1px solid rgba(255,255,255,0.07); border-radius: 16px; padding: 26px; margin-bottom: 18px; }
+        h1 { font-size: 24px; }
+        .sub { color: #8888aa; font-size: 13px; margin-top: 6px; }
+        .progress-row { display: flex; align-items: center; gap: 16px; margin-top: 18px; }
+        .progress-bar { flex: 1; height: 12px; background: rgba(255,255,255,0.07); border-radius: 8px; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #66ff66, #00cc44); border-radius: 8px; transition: width .6s; }
+        .progress-label { color: #8888aa; font-size: 13px; white-space: nowrap; }
+        .btn { border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-family: inherit; transition: all .2s; }
+        .btn-start { padding: 12px 34px; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); }
+        .btn-start.done { background: transparent; border: 2px solid #66ff66; color: #66ff66; }
+        .btn-start:disabled { opacity: 0.35; cursor: not-allowed; }
+        .btn-key { width: 100%; padding: 14px; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); margin-top: 16px; }
+        .btn-key:disabled { opacity: 0.35; cursor: not-allowed; background: #333; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; background: rgba(108,59,255,0.25); color: #8a6bff; border: 1px solid rgba(108,59,255,0.35); cursor: pointer; }
+        .btn-sm:hover { background: rgba(108,59,255,0.5); color: #fff; }
+        .btn-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+        table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+        th { text-align: left; color: #8888aa; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        td { padding: 10px 8px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .keymono { font-family: monospace; color: #66ccff; word-break: break-all; }
+        .status-active { color: #66ff66; } .status-expired { color: #ff6b6b; }
+        .notif { position: fixed; top: 20px; right: 20px; left: 20px; background: linear-gradient(135deg, #0ca84c, #66ff66); color: #fff; padding: 14px 20px; border-radius: 12px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.5); opacity: 0; transform: translateY(-20px); transition: all .35s; z-index: 100; text-align: center; }
+        .notif.show { opacity: 1; transform: translateY(0); }
+        .cooldown-note { color: #ffd700; font-size: 13px; margin-top: 12px; text-align: center; }
+        .err { text-align: center; color: #ff4444; font-size: 22px; font-weight: 700; padding: 80px 0; }
+    </style>
+</head>
+<body>
+    <div class="notif" id="notif">Key Created Successfully</div>
+    <div class="wrap" id="app"><div class="err">Loading reward...</div></div>
+<script>
+(function () {
+    function b64d(s) {
+        s = s.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        return decodeURIComponent(escape(atob(s)));
+    }
+    function hash(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 999999937; return h; }
+    function ls(k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+    function lss(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    function genKey() {
+        var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+        var s = '';
+        for (var i = 0; i < 25; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+        return s;
+    }
+    function notify(msg) {
+        var n = document.getElementById('notif');
+        n.textContent = msg;
+        n.classList.add('show');
+        setTimeout(function () { n.classList.remove('show'); }, 3500);
+    }
+    function fmtLeft(ms) {
+        if (ms <= 0) return 'Expired';
+        var h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+        if (h >= 24) { var d = Math.floor(h / 24); return d + 'd ' + (h % 24) + 'h'; }
+        return h + 'h ' + m + 'm';
+    }
+
+    var q = new URLSearchParams(location.search);
+    var rStr = q.get('r');
+    if (!rStr) { document.getElementById('app').innerHTML = '<div class="err">Invalid reward link</div>'; return; }
+    var cfg;
+    try { cfg = JSON.parse(b64d(rStr)); } catch (e) { document.getElementById('app').innerHTML = '<div class="err">Invalid reward link</div>'; return; }
+    if (!cfg || !cfg.n) { document.getElementById('app').innerHTML = '<div class="err">Reward not found</div>'; return; }
+
+    // owner-side visitor counting (works when the owner's browser opens the link;
+    // real cross-visitor counting needs a backend endpoint)
+    try {
+        if (!sessionStorage.getItem('sh_visited_' + hash(rStr))) {
+            sessionStorage.setItem('sh_visited_' + hash(rStr), '1');
+            for (var oi = 0; oi < localStorage.length; oi++) {
+                var ok = localStorage.key(oi);
+                if (ok && ok.indexOf('sh_rewards_') === 0) {
+                    var od = JSON.parse(localStorage.getItem(ok));
+                    var changed = false;
+                    (od.rewards || []).forEach(function (rw) {
+                        if (rw.name === cfg.n && rw.keyDurationH === cfg.d && (rw.checkpoints || []).length === (cfg.cps || []).length) {
+                            od.visitors = (od.visitors || 0) + 1;
+                            changed = true;
+                        }
+                    });
+                    if (changed) localStorage.setItem(ok, JSON.stringify(od));
+                }
+            }
+        }
+    } catch (e) {}
+
+    var H = 'shrw_' + hash(rStr);
+    var progress = ls(H + '_p', { done: [], started: 0 });
+    var keys = ls(H + '_k', []);
+    var blacklist = ls('sh_blacklist', { strikes: 0, until: 0 });
+    if (blacklist.until && blacklist.until > Date.now()) {
+        document.getElementById('app').innerHTML = '<div class="card" style="text-align:center;"><div style="font-size:56px;">⛔</div><h1 style="color:#ff4444; margin-top:12px;">You are blacklisted for ' + fmtLeft(blacklist.until - Date.now()) + '</h1><p class="sub" style="margin-top:8px;">because you tried to bypass a checkpoint</p></div>';
+        return;
+    }
+
+    var total = (cfg.cps || []).length;
+    var doneCount = progress.done.filter(function (i) { return i < total; }).length;
+    var complete = total > 0 && doneCount >= total;
+    var cooldownEnd = (progress.lastCompletion || 0) + (cfg.cd || 0) * 3600000;
+    var inCooldown = cfg.cd > 0 && cooldownEnd > Date.now();
+
+    function saveAll() { lss(H + '_p', progress); lss(H + '_k', keys); }
+
+    function render() {
+        doneCount = progress.done.filter(function (i) { return i < total; }).length;
+        complete = total > 0 && doneCount >= total;
+        var activeKeys = keys.filter(function (k) { return k.expires > Date.now() || k.renewed; });
+        var html = '';
+        html += '<div class="card">';
+        html += '<h1>🎁 ' + cfg.n + '</h1>';
+        html += '<p class="sub">Complete all checkpoints to earn a key (' + (cfg.d || 1) + ' hour key)</p>';
+        html += '<div class="progress-row">';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + (total ? doneCount / total * 100 : 0) + '%"></div></div>';
+        html += '<span class="progress-label">Progress: ' + doneCount + '/' + total + '</span>';
+        html += '<button class="btn btn-start' + (complete ? ' done' : '') + '" id="startBtn">' + (complete ? 'DONE' : (doneCount > 0 ? 'Next' : 'Start')) + '</button>';
+        html += '</div>';
+        if (inCooldown && complete) html += '<div class="cooldown-note">❄️ Cooldown active - you can complete this reward again in ' + fmtLeft(cooldownEnd - Date.now()) + '</div>';
+        html += '</div>';
+
+        html += '<div class="card">';
+        html += '<h2 style="font-size:17px;">🔑 Your Keys (' + keys.length + '/' + (cfg.mk || 1) + ')</h2>';
+        if (keys.length === 0) {
+            html += '<p class="sub" style="margin-top:10px;">No keys yet - complete all checkpoints, then click "Get A New Key".</p>';
+        } else {
+            html += '<table><tr><th>Key</th><th>Time Left</th><th>Status</th><th>Actions</th></tr>';
+            keys.forEach(function (k, i) {
+                var expired = k.expires <= Date.now();
+                html += '<tr>';
+                html += '<td class="keymono">' + k.key + '</td>';
+                html += '<td>' + fmtLeft(k.expires - Date.now()) + '</td>';
+                html += '<td class="' + (expired ? 'status-expired' : 'status-active') + '">' + (expired ? 'expired' : 'active') + '</td>';
+                html += '<td>';
+                if (expired) html += '<button class="btn-sm" onclick="renewKey(' + i + ')">🔄 Renew</button> ';
+                if (cfg.ext) html += '<button class="btn-sm" onclick="extendKey(' + i + ')" ' + (expired ? 'disabled' : '') + '> +' + (cfg.eh || 6) + 'H</button>';
+                html += '</td>';
+                html += '</tr>';
+            });
+            html += '</table>';
+        }
+        var maxed = keys.length >= (cfg.mk || 1);
+        var keyBtnDisabled = !complete || maxed;
+        html += '<button class="btn btn-key" id="newKeyBtn" ' + (keyBtnDisabled ? 'disabled' : '') + '>🔑 Get A New Key</button>';
+        if (!complete && total > 0) html += '<p class="sub" style="text-align:center; margin-top:8px;">Complete All Checkpoints First</p>';
+        if (maxed && complete) html += '<p class="sub" style="text-align:center; margin-top:8px;">You\'ve hit your max key limit (' + (cfg.mk || 1) + ')</p>';
+        html += '</div>';
+        document.getElementById('app').innerHTML = html;
+
+        var startBtn = document.getElementById('startBtn');
+        if (startBtn) startBtn.onclick = function () {
+            if (complete) { notify('All checkpoints completed! Use the buttons below.'); return; }
+            progress.started = progress.started || Date.now();
+            saveAll();
+            var next = 0;
+            for (var i = 0; i < total; i++) { if (progress.done.indexOf(i) === -1) { next = i; break; } }
+            var url = (cfg.cps[next] && cfg.cps[next].u) || 'about:blank';
+            lss(H + '_t', Date.now());
+            location.href = url;
+        };
+        var keyBtn = document.getElementById('newKeyBtn');
+        if (keyBtn) keyBtn.onclick = function () {
+            if (!complete || keys.length >= (cfg.mk || 1)) return;
+            keys.push({ key: genKey(), expires: Date.now() + (cfg.d || 1) * 3600000, created: Date.now() });
+            saveAll();
+            notify('Key Created Successfully');
+            render();
+        };
+    }
+
+    window.renewKey = function (i) {
+        if (!keys[i]) return;
+        keys[i].expires = Date.now() + (cfg.d || 1) * 3600000;
+        keys[i].renewed = true;
+        saveAll();
+        notify('Key Renewed - Reactivated');
+        render();
+    };
+    window.extendKey = function (i) {
+        if (!keys[i]) return;
+        var maxMs = (cfg.mh || 0) * 3600000;
+        var add = (cfg.eh || 6) * 3600000;
+        var base = Math.max(keys[i].expires, Date.now());
+        var newExp = base + add;
+        if (maxMs > 0 && newExp - Date.now() > maxMs) { notify('Max hours limit reached (' + cfg.mh + 'h)'); return; }
+        keys[i].expires = newExp;
+        keys[i].renewed = false;
+        saveAll();
+        notify('+' + (cfg.eh || 6) + ' Hours Added');
+        render();
+    };
+
+    // returning from a checkpoint? checkpoint.html redirects back with ?r=...&done=N
+    var doneParam = q.get('done');
+    if (doneParam !== null) {
+        var idx = parseInt(doneParam, 10);
+        if (!isNaN(idx) && progress.done.indexOf(idx) === -1 && idx < total) {
+            progress.done.push(idx);
+            if (progress.done.filter(function (i) { return i < total; }).length >= total) progress.lastCompletion = Date.now();
+            saveAll();
+        }
+        history.replaceState(null, '', location.pathname + '?r=' + rStr);
+    }
+
+    render();
+})();
+</script>
+</body>
+</html>
