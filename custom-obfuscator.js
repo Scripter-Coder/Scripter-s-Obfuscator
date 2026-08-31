@@ -101,7 +101,7 @@ function buildSecurityWrapper(options, meta) {
     var antiLogger = options.antiLogger !== false;
     var wm = 'SHv2::' + hex(12) + '::' + meta.name + '::' + meta.owner + '::' + hex(6);
     var wmSum = wmChecksum(wm);
-    var n = makeNames(48);
+    var n = makeNames(56);
     var parts = [];
 
     parts.push('--[[' + hex(40) + ' | protected payload | ' + hex(40) + ']]');
@@ -363,6 +363,34 @@ function buildSecurityWrapper(options, meta) {
             ' end)',
             'end'
         );
+    }
+
+    // ---------- EXECUTION STATS BEACON (Cloudflare Worker) ----------
+    // Every execution of this script pings the owner's worker so the
+    // Live Executions Chart shows REAL data. Silent (pcall'd) + async-safe.
+    if (options.statsEndpoint) {
+        var beaconUrl = String(options.statsEndpoint).replace(/\/+$/, '');
+        var BN1 = n[48], BN2 = n[49], BN3 = n[50];
+        parts.push(
+            'do',
+            ' pcall(function()',
+            '  local ' + BN1 + '="' + luaEscape(beaconUrl) + '"',
+            '  if ' + BN1 + '~="" then',
+            '   local ' + BN2 + '=syn and syn.request or http_request or request',
+            '   if ' + BN2 + ' then',
+            '    local ' + BN3 + '="unknown"',
+            '    pcall(function() if identifyexecutor then ' + BN3 + '=tostring(identifyexecutor()) end end)',
+            '    pcall(' + BN2 + ',{Url=' + BN1 + '"/track",Method="POST",Headers={["Content-Type"]="application/json"},Body=game:GetService("HttpService"):JSONEncode({executor=' + BN3 + ',scriptId="' + luaEscape(meta.id) + '",scriptName="' + luaEscape(meta.name) + '",key=tostring((getgenv and getgenv().ScripterHubKey) or "")})})',
+            '   end',
+            '  end',
+            ' end)',
+            'end'
+        );
+    }
+
+    // ---------- SILENT MODE ----------
+    if (options.silentMode) {
+        parts.push('do local _p=print print=function() end local _w=warn warn=function() end end');
     }
 
     parts.push('-- ==== ORIGINAL SCRIPT ====');

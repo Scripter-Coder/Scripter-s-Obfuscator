@@ -74,10 +74,10 @@
     try { cfg = JSON.parse(b64d(rStr)); } catch (e) { document.getElementById('app').innerHTML = '<div class="err">Invalid reward link</div>'; return; }
     if (!cfg || !cfg.n) { document.getElementById('app').innerHTML = '<div class="err">Reward not found</div>'; return; }
 
-    // owner-side visitor counting (works when the owner's browser opens the link;
-    // real cross-visitor counting needs a backend endpoint)
+    // owner-side visitor counting (local fallback when no worker is configured;
+    // with a worker configured, visitors are counted server-side instead)
     try {
-        if (!sessionStorage.getItem('sh_visited_' + hash(rStr))) {
+        if (!cfg.w && !sessionStorage.getItem('sh_visited_' + hash(rStr))) {
             sessionStorage.setItem('sh_visited_' + hash(rStr), '1');
             for (var oi = 0; oi < localStorage.length; oi++) {
                 var ok = localStorage.key(oi);
@@ -100,6 +100,21 @@
     var progress = ls(H + '_p', { done: [], started: 0 });
     var keys = ls(H + '_k', []);
     var blacklist = ls('sh_blacklist', { strikes: 0, until: 0 });
+
+    // visitor limit check against the Cloudflare Worker (when configured)
+    if (cfg.w) {
+        try {
+            fetch(cfg.w + '/visitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(function () {});
+            if (cfg.mv > 0) {
+                fetch(cfg.w + '/v3/realtime_stats').then(function (r) { return r.json(); }).then(function (d) {
+                    if (d && typeof d.totalVisitors === 'number' && d.totalVisitors > cfg.mv) {
+                        document.getElementById('app').innerHTML = '<div class="card" style="text-align:center;"><div class="big">🚫</div><h1 style="color:#ff4444; margin-top:12px;">Visitor Limit Reached</h1><p class="sub" style="margin-top:8px;">This reward reached its maximum registered visitors (' + cfg.mv + ').</p></div>';
+                    }
+                }).catch(function () {});
+            }
+        } catch (e) {}
+    }
+
     if (blacklist.until && blacklist.until > Date.now()) {
         document.getElementById('app').innerHTML = '<div class="card" style="text-align:center;"><div style="font-size:56px;">⛔</div><h1 style="color:#ff4444; margin-top:12px;">You are blacklisted for ' + fmtLeft(blacklist.until - Date.now()) + '</h1><p class="sub" style="margin-top:8px;">because you tried to bypass a checkpoint</p></div>';
         return;

@@ -17,6 +17,18 @@ const REWARD_PROVIDERS = [
     { id: 'rinku', name: 'Rinku.pro' }
 ];
 
+// safe accessors into main.js module scope (exposed on window)
+function shPlan() {
+    var pc = window.PLAN_CONFIGS || {};
+    var u = window.currentUser || {};
+    return pc[u.plan] || pc['Basic'] || { visitors: 25000, checkpoints: 12 };
+}
+
+function shNotify(title, msg, type, dur) {
+    if (window.showNotification) shNotify(title, msg, type, dur);
+    else console.log('[SH] ' + title + ': ' + msg);
+}
+
 function loadRewardsData() {
     try {
         var uid = (window.currentUser && window.currentUser.id) || '';
@@ -33,7 +45,8 @@ function saveRewardsData(d) {
 }
 
 function encodeRewardCfg(r) {
-    var cfg = { n: r.name, d: r.keyDurationH, mk: r.maxKeys, cd: r.cooldownH, mh: r.maxHours || 0, ext: r.allowExtending ? 1 : 0, eh: r.extHours || 6, cps: [] };
+    var plan = shPlan();
+    var cfg = { n: r.name, d: r.keyDurationH, mk: r.maxKeys, cd: r.cooldownH, mh: r.maxHours || 0, ext: r.allowExtending ? 1 : 0, eh: r.extHours || 6, mv: plan.visitors === Infinity ? 0 : plan.visitors, w: (window.SH_STATS_ENDPOINT || ''), cps: [] };
     (r.checkpoints || []).forEach(function (cp) { cfg.cps.push({ u: cp.shortUrl, p: cp.provider }); });
     var json = JSON.stringify(cfg);
     return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -65,7 +78,7 @@ function renderRewardsTab() {
     var listEl = document.getElementById('rewardsList');
     if (!statsRow || !listEl) return;
     var d = loadRewardsData();
-    var plan = (window.PLAN_CONFIGS && PLAN_CONFIGS[(window.currentUser && currentUser.plan) || 'Basic']) || PLAN_CONFIGS['Basic'];
+    var plan = shPlan();
     var visitorsMax = plan.visitors === Infinity ? '∞' : (plan.visitors >= 1000 ? (plan.visitors / 1000) + 'k' : plan.visitors);
     var cpsMax = plan.checkpoints === Infinity ? '∞' : plan.checkpoints;
     var cpsUsed = totalCheckpointsUsed(d);
@@ -145,13 +158,13 @@ function confirmCreateReward() {
     var name = document.getElementById('rewardName').value.trim();
     var dur = parseFloat(document.getElementById('rewardKeyDuration').value);
     var maxKeys = parseInt(document.getElementById('rewardMaxKeys').value, 10);
-    if (!name) { window.showNotification('Error', 'Reward name is required.', 'error'); return; }
-    if (isNaN(dur) || dur <= 0) { window.showNotification('Error', 'Key Duration (hours) is required.', 'error'); return; }
-    if (isNaN(maxKeys) || maxKeys < 1) { window.showNotification('Error', 'Max Keys must be at least 1.', 'error'); return; }
+    if (!name) { shNotify('Error', 'Reward name is required.', 'error'); return; }
+    if (isNaN(dur) || dur <= 0) { shNotify('Error', 'Key Duration (hours) is required.', 'error'); return; }
+    if (isNaN(maxKeys) || maxKeys < 1) { shNotify('Error', 'Max Keys must be at least 1.', 'error'); return; }
     var d = loadRewardsData();
-    var plan = (window.PLAN_CONFIGS && PLAN_CONFIGS[(window.currentUser && currentUser.plan) || 'Basic']) || PLAN_CONFIGS['Basic'];
+    var plan = shPlan();
     if (plan.checkpoints !== Infinity && totalCheckpointsUsed(d) >= plan.checkpoints) {
-        window.showNotification('Plan Limit', 'You reached your Total Checkpoints limit (' + plan.checkpoints + '). Upgrade your plan to add more.', 'error');
+        shNotify('Plan Limit', 'You reached your Total Checkpoints limit (' + plan.checkpoints + '). Upgrade your plan to add more.', 'error');
         return;
     }
     var blocked = [];
@@ -179,7 +192,7 @@ function confirmCreateReward() {
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     renderRewardsTab();
-    window.showNotification('Reward Created', 'Now add checkpoints to "' + name + '"!', 'success');
+    shNotify('Reward Created', 'Now add checkpoints to "' + name + '"!', 'success');
 }
 
 function findReward(id) {
@@ -194,7 +207,7 @@ function deleteReward(id) {
     d.rewards = d.rewards.filter(function (r) { return r.id !== id; });
     saveRewardsData(d);
     renderRewardsTab();
-    window.showNotification('Deleted', 'Reward deleted.', 'warning');
+    shNotify('Deleted', 'Reward deleted.', 'warning');
 }
 
 // ---------- Reward Settings ----------
@@ -260,7 +273,7 @@ function confirmRewardSettings(id) {
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     renderRewardsTab();
-    window.showNotification('Saved', 'Reward settings updated.', 'success');
+    shNotify('Saved', 'Reward settings updated.', 'success');
 }
 
 // ---------- Checkpoint Manager ----------
@@ -268,7 +281,7 @@ function openCheckpointManagerUI(id) {
     var found = findReward(id);
     if (!found) return;
     var r = found.reward;
-    var plan = (window.PLAN_CONFIGS && PLAN_CONFIGS[(window.currentUser && currentUser.plan) || 'Basic']) || PLAN_CONFIGS['Basic'];
+    var plan = shPlan();
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
@@ -376,13 +389,13 @@ function confirmAddCheckpoint(id) {
     var name = document.getElementById('cpName').value.trim();
     var shortUrl = document.getElementById('cpShortUrl').value.trim();
     var provider = document.getElementById('cpProvider').value;
-    if (!name) { window.showNotification('Error', 'Checkpoint name is required.', 'error'); return; }
-    if (!shortUrl) { window.showNotification('Error', 'Short URL is required.', 'error'); return; }
-    if (!provider) { window.showNotification('Error', 'Select a provider.', 'error'); return; }
-    var plan = (window.PLAN_CONFIGS && PLAN_CONFIGS[(window.currentUser && currentUser.plan) || 'Basic']) || PLAN_CONFIGS['Basic'];
+    if (!name) { shNotify('Error', 'Checkpoint name is required.', 'error'); return; }
+    if (!shortUrl) { shNotify('Error', 'Short URL is required.', 'error'); return; }
+    if (!provider) { shNotify('Error', 'Select a provider.', 'error'); return; }
+    var plan = shPlan();
     var d = found.data;
     if (plan.checkpoints !== Infinity && totalCheckpointsUsed(d) >= plan.checkpoints) {
-        window.showNotification('Plan Limit', 'You reached your Total Checkpoints limit (' + plan.checkpoints + ').', 'error');
+        shNotify('Plan Limit', 'You reached your Total Checkpoints limit (' + plan.checkpoints + ').', 'error');
         return;
     }
     var settings = {};
@@ -400,7 +413,7 @@ function confirmAddCheckpoint(id) {
     if (modal) modal.remove();
     renderRewardsTab();
     openCheckpointManagerUI(id);
-    window.showNotification('Checkpoint Added', '"' + name + '" added.', 'success');
+    shNotify('Checkpoint Added', '"' + name + '" added.', 'success');
 }
 
 function moveCheckpoint(id, index, dir) {
@@ -426,7 +439,7 @@ function deleteCheckpoint(id, index) {
     if (modal) modal.remove();
     renderRewardsTab();
     openCheckpointManagerUI(id);
-    window.showNotification('Deleted', 'Checkpoint deleted.', 'warning');
+    shNotify('Deleted', 'Checkpoint deleted.', 'warning');
 }
 
 function editCheckpointUI(id, index) {
@@ -476,7 +489,7 @@ function confirmEditCheckpoint(id, index) {
     if (modal) modal.remove();
     renderRewardsTab();
     openCheckpointManagerUI(id);
-    window.showNotification('Saved', 'Checkpoint updated.', 'success');
+    shNotify('Saved', 'Checkpoint updated.', 'success');
 }
 
 function clearCheckpointStats(id, index) {
@@ -489,7 +502,7 @@ function clearCheckpointStats(id, index) {
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     openCheckpointManagerUI(id);
-    window.showNotification('Stats Cleared', 'Checkpoint stats reset.', 'info');
+    shNotify('Stats Cleared', 'Checkpoint stats reset.', 'info');
 }
 
 // expose to main.js inline onclick handlers

@@ -30,6 +30,38 @@ const PLAN_CONFIGS = {
     'God': { fileSize: 102400, keys: Infinity, projects: 10000, scripts: 250000, visitors: Infinity, checkpoints: 100, price: 50, label: 'God' },
     'Custom': { fileSize: Infinity, keys: Infinity, projects: Infinity, scripts: Infinity, visitors: Infinity, checkpoints: Infinity, price: 'Custom', label: 'Custom' }
 };
+// expose module-scope values for other modules (rewards.js) and inline handlers
+window.PLAN_CONFIGS = PLAN_CONFIGS;
+window.showNotification = showNotification;
+
+// ============ CLOUDFLARE WORKER STATS ENDPOINT ============
+// Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
+// worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
+const SH_STATS_ENDPOINT = '';
+window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
+
+// ============ PLAN LIMIT ENFORCEMENT ============
+function checkPlanLimit(kind, extraCount, extraBytes) {
+    if (!currentUser) return null;
+    var plan = PLAN_CONFIGS[currentUser.plan] || PLAN_CONFIGS['Basic'];
+    var stats = computeStats(currentUser);
+    if (kind === 'projects' && plan.projects !== Infinity && stats.projects.used + (extraCount || 1) > plan.projects) {
+        return 'You reached your Projects limit (' + stats.projects.used + '/' + plan.projects + ') on the ' + currentUser.plan + ' plan. Upgrade to create more!';
+    }
+    if (kind === 'scripts' && plan.scripts !== Infinity && stats.scripts.used + (extraCount || 1) > plan.scripts) {
+        return 'You reached your Scripts limit (' + stats.scripts.used + '/' + plan.scripts + ') on the ' + currentUser.plan + ' plan. Upgrade to create more!';
+    }
+    if (kind === 'keys' && plan.keys !== Infinity && stats.keys.used + (extraCount || 1) > plan.keys) {
+        return 'You reached your Keys limit (' + stats.keys.used + '/' + plan.keys + ') on the ' + currentUser.plan + ' plan. Upgrade to create more!';
+    }
+    if (kind === 'storage' && plan.fileSize !== Infinity) {
+        var newMB = stats.storage.usedMB + (extraBytes || 0) / (1024 * 1024);
+        if (newMB > plan.fileSize) {
+            return 'You reached your Storage limit (' + formatSizeMB(stats.storage.usedMB) + ' / ' + formatSizeMB(plan.fileSize) + ') on the ' + currentUser.plan + ' plan. Upgrade for more space!';
+        }
+    }
+    return null;
+}
 
 // ============ SESSION PERSISTENCE ============
 function saveSession(user) {
@@ -330,6 +362,8 @@ function saveKeys(keyData) {
 }
 
 function createKey(scriptId, keyType, expiresDays) {
+    var limitErr = checkPlanLimit('keys');
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return null; }
     var keyData = loadKeys();
     var expires = null;
     var days = parseInt(expiresDays, 10);
@@ -605,6 +639,8 @@ function openAddUserUI() {
 }
 
 function confirmAddUserUI() {
+    var limitErr = checkPlanLimit('keys');
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var note = document.getElementById('addUserNote').value.trim();
     var discordId = document.getElementById('addUserDiscord').value.trim();
     var hwid = document.getElementById('addUserHwid').value.trim();
@@ -691,6 +727,8 @@ function massGenerateKeys() {
     var daysRaw = document.getElementById('massGenDays').value.trim();
     var note = document.getElementById('massGenNote').value.trim();
     if (isNaN(amount) || amount < 1 || amount > 1000) { showNotification('Error', 'Amount must be between 1 and 1000.', 'error'); return; }
+    var limitErr = checkPlanLimit('keys', amount);
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var days = daysRaw === '' ? null : parseInt(daysRaw, 10);
     var keyData = loadKeys();
     for (var i = 0; i < amount; i++) {
@@ -756,6 +794,8 @@ function importUsersFile() {
         try {
             var imported = JSON.parse(e.target.result);
             if (!Array.isArray(imported)) throw new Error('Not a valid users array');
+            var limitErr = checkPlanLimit('keys', imported.length);
+            if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
             var keyData = loadKeys();
             var added = 0;
             for (var i = 0; i < imported.length; i++) {
@@ -947,6 +987,7 @@ function updateUIForUser(user) {
     if (!user) return;
     isLoggedIn = true;
     currentUser = user;
+    window.currentUser = user;
     setCurrentUser(user);
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
@@ -1214,7 +1255,7 @@ function refreshAnalyticsUI() {
     setAnalyticsValue('totalThreats', a.threats.length + localThreats);
     renderExecutorDailyStats(a);
     var ep = document.getElementById('liveChartEndpoint');
-    if (ep && !ep.textContent) ep.textContent = getBasePath() + 'v3/realtime_stats';
+    if (ep && !ep.textContent) ep.textContent = SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT + '/v3/realtime_stats' : 'local simulation (deploy For Cloudflare/worker.js and set SH_STATS_ENDPOINT in main.js)';
 }
 
 // executor daily lines: 5 rows, dotted lines with per-day dots (last 10 days)
@@ -1256,12 +1297,8 @@ function initLiveChart() {
     liveChart.ctx = canvas.getContext('2d');
     liveChart.history = {};
     liveChart.visible = {};
-    SH_EXECUTORS.forEach(function(e, i) { liveChart.visible[e] = true; });
-    // seed history with a plausible baseline so the chart is never empty
-    SH_EXECUTORS.forEach(function(e) {
-        liveChart.history[e] = [];
-        for (var i = 0; i < 30; i++) liveChart.history[e].push(0);
-    });
+    var series = SH_EXECUTORS.concat(['Other']);
+    series.forEach(function(e) { liveChart.visible[e] = true; liveChart.history[e] = []; for (var i = 0; i < 30; i++) liveChart.history[e].push(0); });
     renderLiveChartLegend();
     drawLiveChart();
     canvas.onmousemove = function(ev) { liveChart.hover = getChartHover(ev, canvas); drawLiveChart(); };
@@ -1271,25 +1308,55 @@ function initLiveChart() {
 
 function startLiveChartPolling() {
     if (liveChart.timer) clearInterval(liveChart.timer);
-    liveChart.timer = setInterval(function() {
+    var poll = function() {
         if (liveChart.paused || !liveChart.canvas) return;
-        // poll "endpoint" (local realtime layer): per-executor executions-per-second
-        var a = loadAnalytics();
-        var perExec = {};
-        SH_EXECUTORS.forEach(function(e) { perExec[e] = 0; });
-        var now = Date.now();
-        for (var i = 0; i < a.executions.length; i++) {
-            if (now - a.executions[i].t < 30000) perExec[a.executions[i].executor] = (perExec[a.executions[i].executor] || 0) + 1;
+        if (SH_STATS_ENDPOINT) {
+            // REAL data from your Cloudflare Worker (see For Cloudflare/worker.js)
+            fetch(SH_STATS_ENDPOINT + '/v3/realtime_stats')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data) return;
+                    var exec = data.executors || {};
+                    var series = SH_EXECUTORS.concat(['Other']);
+                    series.forEach(function(e) {
+                        var v = e === 'Other' ? 0 : (exec[e] && typeof exec[e].perSecond === 'number' ? exec[e].perSecond : 0);
+                        liveChart.history[e].push(v);
+                        if (liveChart.history[e].length > 60) liveChart.history[e].shift();
+                    });
+                    // unknown executors from the worker merge into 'Other'
+                    var other = 0;
+                    for (var k in exec) {
+                        if (SH_EXECUTORS.indexOf(k) === -1 && typeof exec[k].perSecond === 'number') other += exec[k].perSecond;
+                    }
+                    var oh = liveChart.history['Other'];
+                    if (oh) { oh[oh.length - 1] = other; }
+                    drawLiveChart();
+                    if (typeof data.totalExecutions === 'number') setAnalyticsValue('totalExecutions', data.totalExecutions);
+                    if (typeof data.threatsBlocked === 'number') setAnalyticsValue('totalThreats', data.threatsBlocked);
+                })
+                .catch(function() {});
+        } else {
+            // local simulation fallback (no worker configured yet)
+            var a = loadAnalytics();
+            var perExec = {};
+            SH_EXECUTORS.forEach(function(e) { perExec[e] = 0; });
+            var now = Date.now();
+            for (var i = 0; i < a.executions.length; i++) {
+                if (now - a.executions[i].t < 30000) perExec[a.executions[i].executor] = (perExec[a.executions[i].executor] || 0) + 1;
+            }
+            var series = SH_EXECUTORS.concat(['Other']);
+            series.forEach(function(e) {
+                var base = { 'Delta': 1.2, 'Volt': 0.8, 'Arceus X': 1.0, 'Hydrogen': 0.6, 'Wave': 0.4, 'Synapse Z': 0.3, 'Krnl': 0.2, 'Fluxus': 0.3, 'Other': 0.1 }[e] || 0.2;
+                var recent = perExec[e] || 0;
+                var eps = Math.max(0, base + recent * 0.5 + (Math.random() - 0.5) * base * 0.6);
+                liveChart.history[e].push(eps);
+                if (liveChart.history[e].length > 60) liveChart.history[e].shift();
+            });
+            drawLiveChart();
         }
-        SH_EXECUTORS.forEach(function(e) {
-            var base = { 'Delta': 1.2, 'Volt': 0.8, 'Arceus X': 1.0, 'Hydrogen': 0.6, 'Wave': 0.4, 'Synapse Z': 0.3, 'Krnl': 0.2, 'Fluxus': 0.3 }[e] || 0.2;
-            var recent = perExec[e] || 0;
-            var eps = Math.max(0, base + recent * 0.5 + (Math.random() - 0.5) * base * 0.6);
-            liveChart.history[e].push(eps);
-            if (liveChart.history[e].length > 60) liveChart.history[e].shift();
-        });
-        drawLiveChart();
-    }, 5000);
+    };
+    poll();
+    liveChart.timer = setInterval(poll, 5000);
 }
 
 function toggleLiveChartPause() {
@@ -1308,7 +1375,7 @@ function renderLiveChartLegend() {
     var legend = document.querySelector('#tab-dashboard #liveChartLegend') || document.getElementById('liveChartLegend');
     if (!legend) return;
     var html = '';
-    SH_EXECUTORS.forEach(function(e, i) {
+    SH_EXECUTORS.concat(['Other']).forEach(function(e, i) {
         var col = executorColor(i);
         html += '<button class="legend-item' + (liveChart.visible[e] ? '' : ' off') + '" onclick="toggleLiveChartSeries(\'' + e + '\')">' +
             '<span class="legend-swatch" style="background:' + col + '"></span>' + e + '</button>';
@@ -1344,7 +1411,7 @@ function drawLiveChart() {
     ctx.font = '10px Segoe UI';
     ctx.lineWidth = 1;
     var maxV = 0.5;
-    SH_EXECUTORS.forEach(function(e) { var m = Math.max.apply(null, liveChart.history[e] || [0]); if (m > maxV) maxV = m; });
+    SH_EXECUTORS.concat(['Other']).forEach(function(e) { var m = Math.max.apply(null, liveChart.history[e] || [0]); if (m > maxV) maxV = m; });
     maxV = Math.ceil(maxV * 1.2 * 10) / 10;
     for (var g = 0; g <= 4; g++) {
         var y = padT + ch - (ch * g / 4);
@@ -1355,7 +1422,8 @@ function drawLiveChart() {
     ctx.fillText('-5m', padL, h - 8);
     ctx.fillText('now', w - padR - 22, h - 8);
     // lines
-    SH_EXECUTORS.forEach(function(e, idx) {
+    var seriesList = SH_EXECUTORS.concat(['Other']);
+    seriesList.forEach(function(e, idx) {
         if (!liveChart.visible[e]) return;
         var data = liveChart.history[e] || [];
         var col = executorColor(idx);
@@ -1377,11 +1445,10 @@ function drawLiveChart() {
             var x = padL + (cw * idx2 / 59);
             ctx.strokeStyle = 'rgba(255,255,255,0.25)';
             ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ch); ctx.stroke();
-            var lines = [];
             var yBase = padT + 6;
             ctx.fillStyle = 'rgba(10,10,20,0.92)';
-            ctx.fillRect(x + 8, yBase, 150, 14 + SH_EXECUTORS.length * 14);
-            SH_EXECUTORS.forEach(function(e, i2) {
+            ctx.fillRect(x + 8, yBase, 160, 14 + seriesList.length * 14);
+            seriesList.forEach(function(e, i2) {
                 var v = (liveChart.history[e] || [])[idx2];
                 if (v === undefined) return;
                 ctx.fillStyle = executorColor(i2);
@@ -1453,6 +1520,7 @@ function updateBar(name, used, max) {
 function logout() {
     isLoggedIn = false;
     currentUser = null;
+    window.currentUser = null;
     clearCurrentUser();
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
@@ -1568,149 +1636,6 @@ function handleLogin(event) {
     delete userData.password;
     updateUIForUser(userData);
     console.log('✅ User logged in:', userData.username);
-}
-
-// ============ SOCIAL AUTH (Google / Discord) ============
-// Optional real OAuth: create apps and paste your Client IDs here.
-// Discord: https://discord.com/developers/applications -> OAuth2 -> add redirect = your site URL
-// Google: https://console.cloud.google.com/apis/credentials -> authorized redirect = your site URL
-// While empty, buttons use quick local social accounts (username based).
-const SOCIAL_OAUTH = {
-    discord: '',
-    google: ''
-};
-
-function handleSocial(provider) {
-    var clientId = SOCIAL_OAUTH[provider];
-    if (clientId) {
-        // real OAuth2 implicit flow
-        var redirect = encodeURIComponent(window.location.origin + window.location.pathname);
-        var url;
-        if (provider === 'discord') {
-            url = 'https://discord.com/oauth2/authorize?client_id=' + clientId + '&redirect_uri=' + redirect + '&response_type=token&scope=' + encodeURIComponent('identify email');
-        } else {
-            url = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=' + clientId + '&redirect_uri=' + redirect + '&response_type=token&scope=' + encodeURIComponent('openid email profile');
-        }
-        window.location.href = url + '&state=sh_' + provider;
-        return;
-    }
-    openSocialLoginUI(provider);
-}
-
-function openSocialLoginUI(provider) {
-    var icon = provider === 'discord' ? '🎮' : '🔴';
-    var overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.display = 'flex';
-    overlay.style.zIndex = '2000';
-    overlay.innerHTML = `
-        <div class="modal" style="max-width: 420px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            <h2 style="font-size:20px;">${icon} Continue with ${provider === 'discord' ? 'Discord' : 'Google'}</h2>
-            <p class="sub" style="margin-bottom:14px;">No ${provider === 'discord' ? 'Gmail needed - your Discord username becomes your account name.' : 'password needed.'}</p>
-            <div class="form-group"><label>Your ${provider === 'discord' ? 'Discord Username' : 'Google Name'}</label><input type="text" id="socialUsername" placeholder="${provider === 'discord' ? 'e.g. kurosaki_koyuki' : 'e.g. Scripter'}"></div>
-            <div style="display:flex; gap:12px; margin-top:8px;">
-                <button onclick="confirmSocialLogin('${provider}')" class="btn ${provider === 'discord' ? 'btn-discord' : 'btn-google'}" style="flex:1; padding:12px;">${icon} Continue</button>
-                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px;">Cancel</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-    var inp = document.getElementById('socialUsername');
-    if (inp) inp.focus();
-}
-
-function confirmSocialLogin(provider) {
-    var username = document.getElementById('socialUsername').value.trim();
-    if (!username || username.length < 2) {
-        showNotification('Error', 'Please enter a valid username (min 2 characters).', 'error');
-        return;
-    }
-    socialLoginOrCreate(provider, username, username.toLowerCase().replace(/[^a-z0-9]/g, '') + '@' + provider + '.local', null);
-}
-
-function socialLoginOrCreate(provider, username, email, avatarUrl) {
-    loadUsers();
-    // login if account exists
-    for (var key in users) {
-        if (users[key].email === email || (users[key].socialProvider === provider && users[key].username.toLowerCase() === username.toLowerCase())) {
-            var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-            if (modal) modal.remove();
-            closeModal('login');
-            closeModal('signup');
-            var ud = { ...users[key] };
-            delete ud.password;
-            updateUIForUser(ud);
-            showNotification('Welcome Back!', 'Logged in with ' + (provider === 'discord' ? 'Discord' : 'Google') + ' as ' + users[key].username + '!', 'success');
-            return;
-        }
-    }
-    for (var key in users) {
-        if (users[key].username.toLowerCase() === username.toLowerCase()) {
-            username = username + '_' + Math.floor(Math.random() * 1000);
-            break;
-        }
-    }
-    var user = {
-        id: 'user_' + Date.now(),
-        email: email,
-        username: username,
-        password: btoa('social_' + Date.now() + Math.random()),
-        plan: 'Basic',
-        description: 'Signed in via ' + provider,
-        socialProvider: provider,
-        createdAt: new Date().toISOString(),
-        isAdmin: false,
-        isScripter: false,
-        profileImage: avatarUrl || '',
-        bannerImage: '',
-        theme: 'default',
-        stats: { projects: { used: 0, max: 1 }, keys: { used: 0, max: 2 }, scripts: { used: 0, max: 3 }, fileSize: { used: 0, max: 5 } }
-    };
-    users[email] = user;
-    saveUsers();
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    closeModal('login');
-    closeModal('signup');
-    var userData = { ...user };
-    delete userData.password;
-    updateUIForUser(userData);
-    showNotification('Welcome!', 'Account created via ' + (provider === 'discord' ? 'Discord' : 'Google') + '! You are logged in as ' + username, 'success');
-}
-
-// OAuth callback: runs on page load if #access_token + state present
-function handleOAuthCallback() {
-    try {
-        var hash = window.location.hash || '';
-        if (!hash.includes('access_token')) return;
-        var params = {};
-        hash.substring(1).split('&').forEach(function (p) {
-            var kv = p.split('=');
-            params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
-        });
-        if (!params.state || params.state.indexOf('sh_') !== 0) return;
-        var provider = params.state.replace('sh_', '');
-        var token = params.access_token;
-        history.replaceState(null, '', window.location.pathname);
-        if (provider === 'discord') {
-            fetch('https://discord.com/api/users/@me', { headers: { Authorization: 'Bearer ' + token } })
-                .then(function (r) { return r.json(); })
-                .then(function (u) {
-                    var name = u.global_name || u.username;
-                    var avatar = u.avatar ? ('https://cdn.discordapp.com/avatars/' + u.id + '/' + u.avatar + '.png?size=128') : null;
-                    socialLoginOrCreate('discord', name, (u.email || (u.id + '@discord.local')), avatar);
-                })
-                .catch(function () { showNotification('Error', 'Discord login failed. Please try again.', 'error'); });
-        } else if (provider === 'google') {
-            fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + token } })
-                .then(function (r) { return r.json(); })
-                .then(function (u) {
-                    socialLoginOrCreate('google', u.name || (u.email || '').split('@')[0], u.email, u.picture || null);
-                })
-                .catch(function () { showNotification('Error', 'Google login failed. Please try again.', 'error'); });
-        }
-    } catch (e) { console.error('OAuth callback error:', e); }
 }
 
 // ============ ACCOUNT SETTINGS (disable / enable / delete) ============
@@ -2350,6 +2275,8 @@ function confirmCreateProject() {
     var autoDeleteExpired = document.getElementById('projectAutoDeleteExpired').checked;
     var allowClonedSharing = document.getElementById('projectAllowClonedSharing').checked;
     if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
+    var limitErr = checkPlanLimit('projects');
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var projects = loadProjects();
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].name.toLowerCase() === name.toLowerCase()) {
@@ -3003,6 +2930,9 @@ function confirmCreateScript(projectId) {
     if (envLogging && !webhookUrl) {
         showNotification('Warning', 'Environment Logging enabled without webhook URL - logs will only be saved locally on the executor.', 'warning');
     }
+    // plan limit pre-checks (scripts count + storage estimate, code ~6x after obfuscation)
+    var limitErr = checkPlanLimit('scripts') || checkPlanLimit('storage', 0, code.length * 6);
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     // collect active keys for the key gate
     var keyGateKeys = [];
     if (requireKey) {
@@ -3035,6 +2965,7 @@ function confirmCreateScript(projectId) {
         envLogging: envLogging,
         webhookUrl: webhookUrl,
         keyGate: requireKey ? { keys: keyGateKeys, mode: keyMode } : null,
+        statsEndpoint: SH_STATS_ENDPOINT || null,
         silentMode: silentMode,
         scriptName: name,
         scriptId: 'script_' + Date.now(),
@@ -3044,6 +2975,13 @@ function confirmCreateScript(projectId) {
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
     obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+        // exact storage check with the real obfuscated size
+        var exactErr = checkPlanLimit('storage', 0, code.length + obfuscatedCode.length);
+        if (exactErr) {
+            if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
+            showNotification('🚫 Limit Reached', exactErr, 'error', 6000);
+            return;
+        }
         var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
         var script = {
             id: 'script_' + Date.now(),
@@ -3127,7 +3065,6 @@ function obfuscateScriptCode(code, engine, options) {
 // ============ OPEN SCRIPT RAW (Owner Raw URL) ============
 function openScriptRaw(loaderId) {
     var rawUrl = getBasePath() + 'raw.html?id=' + loaderId + '&key=' + OWNER_KEY + '&format=debug';
-    recordExecution('Owner Browser', loaderId);
     window.open(rawUrl, '_blank');
 }
 
@@ -3498,6 +3435,7 @@ function confirmEditScript(projectId, scriptId) {
         envLogging: envLogging,
         webhookUrl: webhookUrl,
         keyGate: requireKey ? { keys: keyGateKeys, mode: keyMode } : null,
+        statsEndpoint: SH_STATS_ENDPOINT || null,
         silentMode: silentMode,
         scriptName: name,
         scriptId: scriptId,
@@ -3506,6 +3444,17 @@ function confirmEditScript(projectId, scriptId) {
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
     obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+        // storage delta check (only if the script grew)
+        var oldBytes = ((prevScript && prevScript.code ? prevScript.code.length : 0) + (prevScript && prevScript.originalCode ? prevScript.originalCode.length : 0));
+        var newBytes = code.length + obfuscatedCode.length;
+        if (newBytes > oldBytes) {
+            var storageErr = checkPlanLimit('storage', 0, newBytes - oldBytes);
+            if (storageErr) {
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
+                showNotification('🚫 Limit Reached', storageErr, 'error', 6000);
+                return;
+            }
+        }
         for (var i = 0; i < projects.length; i++) {
             if (projects[i].id === projectId) {
                 if (projects[i].scripts) {
@@ -3740,7 +3689,6 @@ function showHomePage() {
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
     console.log('🚀 Streaming Obfuscation System loaded');
-    handleOAuthCallback();
     checkAuth();
     var signupForm = document.getElementById('signupForm');
     if (signupForm) { signupForm.addEventListener('submit', handleSignup); }
@@ -3761,7 +3709,6 @@ document.addEventListener('DOMContentLoaded', function() {
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
 window.handleSignup = handleSignup;
 window.handleLogin = handleLogin;
-window.handleSocial = handleSocial;
 window.logout = logout;
 window.openModal = openModal;
 window.closeModal = closeModal;
@@ -3820,7 +3767,6 @@ window.openCreateKeyUI = openCreateKeyUI;
 window.confirmCreateKeyUI = confirmCreateKeyUI;
 window.toggleEmail = toggleEmail;
 window.toggleCreditMore = toggleCreditMore;
-window.confirmSocialLogin = confirmSocialLogin;
 window.refreshStatsUI = refreshStatsUI;
 window.setExecRange = setExecRange;
 window.setObfRange = setObfRange;
