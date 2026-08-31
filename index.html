@@ -7,22 +7,24 @@
     <link rel="stylesheet" href="css/style.css">
     <script>
         // Credits image fallback chain - inline so it exists before images load.
-        // Tries: images/X.png (dist build) -> public/images/X.png (Pages root serving)
-        // -> lowercase variant -> Roblox avatar (Scripter) -> styled badge.
+        // Tries every plausible filename/location before giving up with a styled badge.
         function shImgErr(img) {
             try {
-                var base = img.getAttribute('data-img') || '';
+                var who = img.getAttribute('alt') || '';
                 var step = parseInt(img.getAttribute('data-step') || '0', 10) + 1;
                 img.setAttribute('data-step', String(step));
-                var paths = ['public/images/' + base + '.png', 'public/images/' + base.toLowerCase() + '.png'];
-                if (step <= paths.length) { img.src = paths[step - 1]; return; }
-                if (base === 'Scripter' && step === 3) {
-                    img.src = 'https://www.roblox.com/headshot-thumbnail/image?userId=7292254678&width=420&height=420&format=png';
-                    return;
+                var candidates = [];
+                if (who.indexOf('Scripter') === 0) {
+                    candidates = ['images/scripter.png', 'public/images/Scripter.png', 'public/images/scripter.png',
+                        'https://www.roblox.com/headshot-thumbnail/image?userId=7292254678&width=420&height=420&format=png'];
+                } else {
+                    candidates = ['images/Kurusaki_Koyuki.png', 'images/Kurosaki_Koyuki.png', 'images/Kurosaki_koyuki.png',
+                        'public/images/kurosaki_koyuki.png', 'public/images/Kurusaki_Koyuki.png', 'public/images/Kurosaki_Koyuki.png'];
                 }
+                if (step <= candidates.length) { img.src = candidates[step - 1]; return; }
                 img.style.display = 'none';
                 var wrap = img.parentElement;
-                if (wrap) wrap.innerHTML = '<div class="credit-avatar-fallback">' + (base.charAt(0) === 'K' ? 'KK' : 'S') + '</div>';
+                if (wrap) wrap.innerHTML = '<div class="credit-avatar-fallback">' + (who.indexOf('Kuro') === 0 ? 'KK' : 'S') + '</div>';
             } catch (e) {}
         }
     </script>
@@ -78,7 +80,8 @@
                             <li>1k Keys limit</li>
                             <li>10 Projects limit</li>
                             <li>20 Scripts limit</li>
-                            <li>Community Support</li>
+                            <li>Registered Visitors: 25k</li>
+                            <li>Total Checkpoints: 12</li>
                         </ul>
                         <button class="btn btn-primary" onclick="openModal('signup')">Get Started</button>
                     </div>
@@ -90,7 +93,8 @@
                             <li>10k Keys limit</li>
                             <li>50 Projects limit</li>
                             <li>100 Scripts limit</li>
-                            <li>Priority Support</li>
+                            <li>Registered Visitors: 50k</li>
+                            <li>Total Checkpoints: 25</li>
                         </ul>
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
@@ -102,7 +106,8 @@
                             <li>100k Keys limit</li>
                             <li>500 Projects limit</li>
                             <li>300 Scripts limit</li>
-                            <li>Priority Support</li>
+                            <li>Registered Visitors: 100k</li>
+                            <li>Total Checkpoints: 50</li>
                         </ul>
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
@@ -114,7 +119,8 @@
                             <li>∞ Keys limit</li>
                             <li>10k Projects limit</li>
                             <li>250k Scripts limit</li>
-                            <li>24/7 Premium Support</li>
+                            <li>Registered Visitors: ∞</li>
+                            <li>Total Checkpoints: 100</li>
                         </ul>
                         <button class="btn btn-primary" onclick="openModal('signup')">Choose Plan</button>
                     </div>
@@ -126,7 +132,8 @@
                             <li>∞ Keys limit</li>
                             <li>∞ Projects limit</li>
                             <li>∞ Scripts limit</li>
-                            <li>Full Customization</li>
+                            <li>Registered Visitors: ∞</li>
+                            <li>Total Checkpoints: ∞</li>
                         </ul>
                         <button class="btn btn-primary" onclick="openModal('signup')">Contact Us</button>
                     </div>
@@ -138,6 +145,10 @@
                     <div class="mini-card"><div class="mini-icon">⚡</div><div class="mini-title">Fast & Simple</div><div class="mini-text">Create a project, paste your script and get a protected file in seconds - no setup needed.</div></div>
                     <div class="mini-card"><div class="mini-icon">🔑</div><div class="mini-title">Built-in Key System</div><div class="mini-text">Whitelist who can run your scripts with keys you fully control - expire them anytime.</div></div>
                     <div class="mini-card"><div class="mini-icon">🕵️</div><div class="mini-title">Anti-Skid Protection</div><div class="mini-text">Automatic detection of loggers, spies and deobfuscation tools trying to tamper with your work.</div></div>
+                    <div class="mini-card"><div class="mini-icon">📡</div><div class="mini-title">Know Your Users</div><div class="mini-text">Environment logging shows exactly who runs your script, on what executor and hardware.</div></div>
+                    <div class="mini-card"><div class="mini-icon">🎁</div><div class="mini-title">Rewards & Ads Integration</div><div class="mini-text">Let visitors earn keys through ad checkpoints and monetize your scripts automatically.</div></div>
+                    <div class="mini-card"><div class="mini-icon">📊</div><div class="mini-title">Live Analytics</div><div class="mini-text">Track executions, obfuscations and blocked threats with a live chart in real time.</div></div>
+                    <div class="mini-card"><div class="mini-icon">💸</div><div class="mini-title">100% Free To Start</div><div class="mini-text">The Basic plan is free forever - no credit card, no hidden fees, upgrade only if you need more.</div></div>
                 </div>
 
                 <h3 class="section-title">✨ What features it has?</h3>
@@ -146,6 +157,10 @@
                     <div class="mini-card"><div class="mini-icon">🎨</div><div class="mini-title">8 Themes</div><div class="mini-text">Personalize everything with themes, custom profile images and banner images.</div></div>
                     <div class="mini-card"><div class="mini-icon">📡</div><div class="mini-title">Environment Logging</div><div class="mini-text">Know exactly who runs your script - username, executor, HWID and more, sent to your webhook.</div></div>
                     <div class="mini-card"><div class="mini-icon">🌐</div><div class="mini-title">Raw Script Hosting</div><div class="mini-text">Every script gets a protected raw URL ready to use with any executor loadstring.</div></div>
+                    <div class="mini-card"><div class="mini-icon">👑</div><div class="mini-title">Users Keys Manager</div><div class="mini-text">Full key management: notes, Discord IDs, HWID resets, bans, mass generate, import & export.</div></div>
+                    <div class="mini-card"><div class="mini-icon">💎</div><div class="mini-title">Two Obfuscators</div><div class="mini-text">Choose between the ScripterHub Default engine or the Aegis Obfuscator right when creating a script.</div></div>
+                    <div class="mini-card"><div class="mini-icon">⚔️</div><div class="mini-title">Anti-Bypass Checkpoints</div><div class="mini-text">Ad checkpoint system with bot detection and doubling blacklist penalties for bypassers.</div></div>
+                    <div class="mini-card"><div class="mini-icon">🔌</div><div class="mini-title">Custom Key APIs</div><div class="mini-text">Build your own key GUI using ScripterHubKeyValid, ScripterHubKeyStatus and more APIs.</div></div>
                 </div>
             </section>
         </div>
@@ -259,13 +274,68 @@
                     </div>
                 </div>
             </div>
+
+            <div class="analytics-grid">
+                <div class="stat-card analytics-card">
+                    <div class="analytics-header">
+                        <div class="stat-label">⚡ Total Executions</div>
+                        <div class="time-pills">
+                            <button onclick="setExecRange('day', this)">Per Day</button>
+                            <button onclick="setExecRange('week', this)">Per Week</button>
+                            <button onclick="setExecRange('month', this)">Per Month</button>
+                            <button onclick="setExecRange('year', this)">Per Year</button>
+                            <button onclick="setExecRange('all', this)" class="active">All Time</button>
+                        </div>
+                    </div>
+                    <div class="stat-value"><span id="totalExecutions">0</span></div>
+                </div>
+                <div class="stat-card analytics-card">
+                    <div class="analytics-header">
+                        <div class="stat-label">💎 Obfuscations</div>
+                        <div class="time-pills">
+                            <button onclick="setObfRange('day', this)">Per Day</button>
+                            <button onclick="setObfRange('week', this)">Per Week</button>
+                            <button onclick="setObfRange('month', this)">Per Month</button>
+                            <button onclick="setObfRange('year', this)">Per Year</button>
+                            <button onclick="setObfRange('all', this)" class="active">All Time</button>
+                        </div>
+                    </div>
+                    <div class="stat-value"><span id="totalObfuscations">0</span></div>
+                </div>
+                <div class="stat-card analytics-card">
+                    <div class="analytics-header">
+                        <div class="stat-label">🛡️ Threats Blocked</div>
+                    </div>
+                    <div class="stat-value"><span id="totalThreats">0</span></div>
+                    <div class="stat-sub">Bypass attempts on key system & checkpoints</div>
+                </div>
+            </div>
+
+            <div class="executor-daily-card">
+                <div class="stat-label" style="margin-bottom:10px;">📈 Executor Statistics (daily, last 10 days)</div>
+                <div id="executorDailyStats"></div>
+            </div>
+
+            <div class="live-chart-card">
+                <div class="live-chart-header">
+                    <div>
+                        <h3 style="margin:0; color:#fff; font-size:16px;">📈 Live Executions Chart</h3>
+                        <div style="color:#555577; font-size:11px; margin-top:3px;">Endpoint: <span id="liveChartEndpoint"></span></div>
+                    </div>
+                    <button class="btn btn-close-dropdown" id="liveChartPauseBtn" onclick="toggleLiveChartPause()">⏸ Pause</button>
+                </div>
+                <canvas id="liveChartCanvas" height="340"></canvas>
+                <div class="live-chart-legend" id="liveChartLegend"></div>
+                <div class="live-chart-tips">💡 Tip = Click legend items to toggle lines. Hover to inspect values. Pause = Stops polling but keeps the chart interactive.</div>
+            </div>
         </div>
         
         <!-- TABS NAVIGATION -->
         <div class="tabs-nav" id="tabsNav" style="display:none;">
             <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Dashboard</button>
             <button class="tab-btn" data-tab="scripts" onclick="switchTab('scripts')">📜 Scripts</button>
-            <button class="tab-btn" data-tab="keys" onclick="switchTab('keys')">🔑 Keys</button>
+            <button class="tab-btn" data-tab="keys" onclick="switchTab('keys')">🔑 Users Keys</button>
+            <button class="tab-btn" data-tab="rewards" onclick="switchTab('rewards')">🎁 Rewards</button>
             <button class="tab-btn" data-tab="credits" onclick="switchTab('credits')">💰 Credits</button>
             <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙️ Settings</button>
         </div>
@@ -286,23 +356,49 @@
             </div>
         </div>
 
-<!-- KEYS TAB -->
+<!-- USERS KEYS TAB -->
 <div class="tab-content" id="tab-keys" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-        <h2 style="color:#fff; margin:0;">🔑 Your Keys</h2>
-        <button class="btn btn-primary" onclick="openCreateKeyUI()">🔑 Create Key</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
+        <h2 style="color:#fff; margin:0;">🔑 Users Keys</h2>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="openAddUserUI()">➕ Add User</button>
+            <button class="btn btn-primary" onclick="toggleUserKeysList()" id="editUserKeysBtn">✏️ Edit Users Keys</button>
+            <button class="btn btn-close-dropdown" onclick="openUserKeysSettingsUI()">⚙️ Settings</button>
+        </div>
     </div>
-    <div style="background:rgba(20,20,35,0.6); border-radius:12px; padding:16px; margin-bottom:16px; border:1px solid rgba(255,255,255,0.05);">
-        <p style="color:#8888aa; font-size:13px; margin:0;">
-            💡 Keys are used to whitelist users. Each key is unique (30 characters) and can only be used once.
-            When creating a key you choose how many days it stays active - set 0 or Unlimited for a key that never expires.
-            Users add <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> before their loadstring to gain access.
-        </p>
+    <div class="keys-toolbar">
+        <div class="keys-search">
+            <input type="text" id="userKeysSearch" placeholder="Search keys, notes, discord ids...">
+            <button class="btn btn-primary" onclick="userKeysDoSearch()">Search</button>
+        </div>
+        <div class="keys-range">
+            <span style="color:#8888aa; font-size:13px;">Showing Users Keys:</span>
+            <button class="btn-sm btn-sm-primary" onclick="userKeysPage(-1)">&lt;</button>
+            <span id="userKeysRange" style="color:#fff; font-size:13px; min-width:70px; text-align:center;">0-0</span>
+            <button class="btn-sm btn-sm-primary" onclick="userKeysPage(1)">&gt;</button>
+        </div>
     </div>
-    <div id="keysList" style="display:grid; grid-template-columns:1fr; gap:8px;">
-        <p style="color:#8888aa; text-align:center; padding:20px 0;">No keys generated yet.</p>
+    <div id="userKeysApiDocs" style="background:rgba(20,20,35,0.6); border-radius:12px; padding:16px; margin:14px 0; border:1px solid rgba(255,255,255,0.05);">
+        <p style="color:#8a6bff; font-size:13px; margin:0 0 8px 0; font-weight:600;">🔌 Custom Key System APIs (use these in your own key GUI with "Custom (You Make It)" mode):</p>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:6px; font-size:12px;">
+            <code style="color:#66ff66;">ScripterHubKeyValid</code><span style="color:#8888aa;">= Key Valid (true/false)</span>
+            <code style="color:#66ff66;">ScripterHubKeyIncorrect</code><span style="color:#8888aa;">= Key Incorrect (true/false)</span>
+            <code style="color:#66ff66;">ScripterHubKeyExpired</code><span style="color:#8888aa;">= Key Expired (true/false)</span>
+            <code style="color:#66ff66;">ScripterHubKeyStatus</code><span style="color:#8888aa;">= Key Status ("Valid"/"Incorrect"/"Expired") - make info stats in your custom key system gui</span>
+            <code style="color:#66ff66;">ScripterHubWebsiteStatus</code><span style="color:#8888aa;">= Website Status ("Online")</span>
+        </div>
     </div>
+    <div id="keysList"></div>
 </div>
+
+        <!-- REWARDS TAB -->
+        <div class="tab-content" id="tab-rewards" style="display:none;">
+            <h2 style="color:#fff;">🎁 Rewards</h2>
+            <p style="color:#8888aa; font-size:13px; margin:4px 0 16px 0;">Let visitors obtain keys through ad-link checkpoints.</p>
+            <div id="rewardsStatsRow" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:14px; margin-bottom:18px;"></div>
+            <button class="btn btn-primary" onclick="openCreateRewardUI()" style="margin-bottom:18px;">🎁 Create Reward</button>
+            <div id="rewardsList" style="display:grid; grid-template-columns:1fr; gap:12px;"></div>
+        </div>
 
         <!-- CREDITS TAB -->
         <div class="tab-content" id="tab-credits" style="display:none;">
@@ -310,13 +406,13 @@
             <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px,1fr)); gap:20px; margin-top:16px;">
                 <div class="credit-card">
                     <div class="credit-avatar-wrap">
-                        <img class="credit-avatar-img" data-img="Scripter" src="images/Scripter.png" alt="Scripter" onerror="shImgErr(this)">
+                        <img class="credit-avatar-img" src="images/Scripter.png" alt="Scripter" onerror="shImgErr(this)">
                     </div>
                     <div style="font-size:22px; font-weight:700; color:#ffd700; margin-top:14px;">Scripter</div>
                     <div style="color:#8888aa; margin-top:4px; font-size:14px;">Owner</div>
                     <div style="margin-top:10px;"><span class="credit-badge" style="background:rgba(255,215,0,0.15); color:#ffd700;">⚡ Creator</span></div>
-                    <button type="button" class="btn-credit-more" onclick="toggleCreditMore('scripter')">+ More</button>
-                    <div class="credit-more" id="creditMoreScripter">
+                    <button type="button" class="btn-credit-more" onclick="toggleCreditMore(this)">+ More</button>
+                    <div class="credit-more">
                         <div class="credit-row"><span class="credit-row-label">📺 YouTube Channel</span><a href="https://www.youtube.com/@Scripter-Coder" target="_blank" rel="noopener" class="credit-link">youtube.com/@Scripter-Coder</a></div>
                         <div class="credit-row"><span class="credit-row-label">👥 Subscribers</span><span class="credit-val">722</span></div>
                         <div class="credit-row"><span class="credit-row-label">💬 Discord Server</span><a href="https://discord.gg/v5swRqZzBG" target="_blank" rel="noopener" class="credit-link">discord.gg/v5swRqZzBG</a></div>
@@ -328,13 +424,13 @@
                 </div>
                 <div class="credit-card">
                     <div class="credit-avatar-wrap">
-                        <img class="credit-avatar-img" data-img="Kurusaki_Koyuki" src="images/Kurusaki_Koyuki.png" alt="Kurosaki Koyuki" onerror="shImgErr(this)">
+                        <img class="credit-avatar-img" src="images/kurosaki_koyuki.png" alt="Kurosaki Koyuki" onerror="shImgErr(this)">
                     </div>
                     <div style="font-size:22px; font-weight:700; color:#8a6bff; margin-top:14px;">Kurosaki Koyuki</div>
                     <div style="color:#8888aa; margin-top:4px; font-size:14px;">Co Owner</div>
                     <div style="margin-top:10px;"><span class="credit-badge" style="background:rgba(108,59,255,0.15); color:#8a6bff;">🌙 Friend-Helper</span></div>
-                    <button type="button" class="btn-credit-more" onclick="toggleCreditMore('kurosaki')">+ More</button>
-                    <div class="credit-more" id="creditMoreKurosaki">
+                    <button type="button" class="btn-credit-more" onclick="toggleCreditMore(this)">+ More</button>
+                    <div class="credit-more">
                         <div class="credit-row"><span class="credit-row-label">💬 Discord Server</span><a href="https://discord.gg/dQsATVNXVK" target="_blank" rel="noopener" class="credit-link">discord.gg/dQsATVNXVK</a></div>
                         <div class="credit-row"><span class="credit-row-label">🏷️ Server Name</span><span class="credit-val">VietPoLua</span></div>
                         <div class="credit-row"><span class="credit-row-label">👥 Members</span><span class="credit-val">27</span></div>
@@ -346,7 +442,14 @@
         <!-- SETTINGS TAB -->
         <div class="tab-content" id="tab-settings" style="display:none;">
             <h2 style="color:#fff;">⚙️ Settings</h2>
-            <p style="color:#8888aa;">Coming soon...</p>
+            <div class="settings-danger-zone">
+                <button class="btn-settings-danger" onclick="logout()">🚪 Log Out</button>
+                <button class="btn-settings-danger" onclick="disableAccount()">🚫 Disable Account</button>
+                <button class="btn-settings-danger" onclick="enableAccount()">✅ Enable Account</button>
+                <button class="btn-settings-danger" onclick="openDeleteAccountUI()">🗑️ Delete Account</button>
+            </div>
+            <h3 style="color:#fff; margin-top:28px;">📋 Rules</h3>
+            <p style="color:#8888aa;">Coming Soon… we will add it later….</p>
         </div>
     </div>
 
@@ -576,7 +679,13 @@
                     return;
                 }
 
-                // Everyone else -> Not Allowed
+                // Everyone else -> Not Allowed (record as blocked threat, same browser)
+                try {
+                    var shThreats = JSON.parse(localStorage.getItem('sh_threats_local') || '[]');
+                    shThreats.push({ t: Date.now(), reason: 'unauthorized raw access: ' + (scriptId || '?') });
+                    if (shThreats.length > 500) shThreats = shThreats.slice(-500);
+                    localStorage.setItem('sh_threats_local', JSON.stringify(shThreats));
+                } catch (e) {}
                 document.write('<!DOCTYPE html><html><head><title>Not Allowed</title><style>body{background:#0a0a0f;color:#ff4444;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-size:28px;font-weight:700;text-align:center;}.container{padding:40px;border:2px solid rgba(255,68,68,0.3);border-radius:16px;background:rgba(255,68,68,0.05);}.sub{font-size:14px;color:#555577;font-weight:400;margin-top:12px;}</style></head><body><div class="container">⛔ Not Allowed<div class="sub">This raw endpoint is protected. Unauthorized access is prohibited.</div></div></body></html>');
                 document.close();
                 return;
