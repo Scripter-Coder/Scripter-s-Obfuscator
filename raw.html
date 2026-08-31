@@ -224,7 +224,13 @@
             }
 
             // ============ EVERYONE ELSE SEES "NOT ALLOWED" ============
-            // The page already shows "Not Allowed" via HTML
+            // record the unauthorized access as a blocked threat (same browser)
+            try {
+                var threats = JSON.parse(localStorage.getItem('sh_threats_local') || '[]');
+                threats.push({ t: Date.now(), reason: 'unauthorized raw access: ' + (scriptId || '?') });
+                if (threats.length > 500) threats = threats.slice(-500);
+                localStorage.setItem('sh_threats_local', JSON.stringify(threats));
+            } catch (e) {}
             console.clear();
         })();
     </script>
