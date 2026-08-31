@@ -37,7 +37,7 @@ window.showNotification = showNotification;
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
-const SH_STATS_ENDPOINT = '';
+const SH_STATS_ENDPOINT = 'https://scripterhub-stats.dubovikstanislav51.workers.dev/';
 window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
 
 // ============ PLAN LIMIT ENFORCEMENT ============
