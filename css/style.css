@@ -2000,3 +2000,413 @@ select option {
     font-size: 13px;
     font-weight: 600;
 }
+
+.credit-more.open {
+    display: block;
+}
+
+/* ===== FIELD HINTS / FORM ROWS ===== */
+.field-hint {
+    color: #555577;
+    font-size: 11px;
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+.form-row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+@media (max-width: 640px) {
+    .form-row-2 { grid-template-columns: 1fr; }
+}
+
+/* ===== ANALYTICS (dashboard) ===== */
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+    margin-top: 14px;
+}
+
+.analytics-card {
+    display: flex;
+    flex-direction: column;
+}
+
+.analytics-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.time-pills {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.time-pills button {
+    background: rgba(255, 255, 255, 0.06);
+    color: #8888aa;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.time-pills button:hover {
+    color: #fff;
+    border-color: var(--primary-color, #6c3bff);
+}
+
+.time-pills button.active {
+    background: linear-gradient(135deg, var(--primary-color, #6c3bff), var(--secondary-color, #00bfff));
+    color: #fff;
+    border-color: transparent;
+}
+
+.stat-sub {
+    color: #555577;
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+/* ===== EXECUTOR DAILY STATS ===== */
+.executor-daily-card {
+    background: var(--card-color, rgba(20, 20, 35, 0.8));
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+    padding: 18px;
+    margin-top: 14px;
+}
+
+.executor-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 0;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
+.executor-row:last-child { border-bottom: none; }
+
+.executor-name {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    width: 90px;
+    flex-shrink: 0;
+}
+
+.executor-count {
+    color: #66ccff;
+    font-size: 13px;
+    font-weight: 700;
+    width: 50px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.spark-line {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+}
+
+.spark-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(108, 59, 255, 0.5);
+    flex-shrink: 0;
+}
+
+.spark-dot.warm { background: #ffd700; }
+.spark-dot.hot { background: #ff4444; }
+
+.spark-gap {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px dashed rgba(255, 255, 255, 0.15);
+    flex-shrink: 0;
+}
+
+.spark-sep {
+    flex: 1;
+    min-width: 8px;
+    border-bottom: 1px dotted rgba(255, 255, 255, 0.12);
+    height: 1px;
+    margin: 0 2px;
+}
+
+/* ===== LIVE CHART ===== */
+.live-chart-card {
+    background: var(--card-color, rgba(20, 20, 35, 0.8));
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+    padding: 18px;
+    margin-top: 14px;
+}
+
+.live-chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+#liveChartCanvas {
+    width: 100%;
+    display: block;
+}
+
+.live-chart-legend {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    color: #fff;
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.legend-item.off { opacity: 0.35; }
+
+.legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+}
+
+.live-chart-tips {
+    color: #555577;
+    font-size: 11px;
+    margin-top: 10px;
+}
+
+/* ===== USERS KEYS TABLE ===== */
+.keys-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+}
+
+.keys-search {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    min-width: 240px;
+}
+
+.keys-search input {
+    flex: 1;
+    background: #0a0a15;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    color: #fff;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.keys-range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.keys-table {
+    background: var(--card-color, rgba(20, 20, 35, 0.8));
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    overflow-x: auto;
+}
+
+.keys-table-header, .keys-table-row {
+    display: grid;
+    grid-template-columns: 90px minmax(160px, 1.4fr) 100px 90px 110px 90px 90px 60px 50px 100px 170px;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    min-width: 1180px;
+}
+
+.keys-table-header {
+    color: #8888aa;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.keys-table-row {
+    font-size: 12px;
+    color: #ccc;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.keys-table-row:hover { background: rgba(255, 255, 255, 0.025); }
+
+/* ===== SETTINGS DANGER ZONE ===== */
+.settings-danger-zone {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.btn-settings-danger {
+    background: linear-gradient(135deg, rgba(255, 40, 40, 0.25), rgba(180, 0, 0, 0.25));
+    border: 2px solid rgba(255, 60, 60, 0.5);
+    color: #ff6b6b;
+    border-radius: 14px;
+    padding: 18px 14px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+
+.btn-settings-danger:hover {
+    background: linear-gradient(135deg, rgba(255, 40, 40, 0.5), rgba(180, 0, 0, 0.5));
+    color: #fff;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(255, 0, 0, 0.25);
+}
+
+/* ===== SETTINGS BLOCKS (key mass ops) ===== */
+.settings-block {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    padding: 16px;
+    margin-top: 14px;
+}
+
+.settings-block h3 {
+    color: #fff;
+    font-size: 14px;
+    margin: 0 0 4px 0;
+}
+
+/* ===== REWARDS ===== */
+.reward-card {
+    background: var(--card-color, rgba(20, 20, 35, 0.8));
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+    padding: 16px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.reward-name {
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.reward-link {
+    color: #66ccff;
+    font-size: 12px;
+    cursor: pointer;
+    word-break: break-all;
+    margin-top: 4px;
+}
+
+.reward-link:hover { text-decoration: underline; }
+
+.reward-meta {
+    color: #8888aa;
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+.reward-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.provider-panel {
+    background: rgba(108, 59, 255, 0.06);
+    border: 1px solid rgba(108, 59, 255, 0.2);
+    border-radius: 12px;
+    padding: 14px;
+    margin-top: 10px;
+}
+
+.provider-desc {
+    color: #8888aa;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+/* ===== CHECKPOINT TABLE ===== */
+.cp-table-header, .cp-row {
+    display: grid;
+    grid-template-columns: 44px minmax(180px, 1fr) 110px 100px 90px 150px;
+    gap: 8px;
+    align-items: center;
+    padding: 10px;
+}
+
+.cp-table-header {
+    color: #8888aa;
+    font-size: 10px;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 14px;
+}
+
+.cp-row {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 12px;
+}
+
+.cp-order { color: #ffd700; font-weight: 700; text-align: center; }
+
+.cp-name strong { color: #fff; font-size: 11px; display: block; }
+
+.cp-link {
+    color: #66ccff;
+    font-size: 10px;
+    text-decoration: none;
+    word-break: break-all;
+}
+
+.cp-link:hover { text-decoration: underline; }
+
+.cp-stats, .cp-avg { color: #8888aa; text-align: center; }
+
+.cp-move, .cp-actions { display: flex; gap: 4px; justify-content: center; }
