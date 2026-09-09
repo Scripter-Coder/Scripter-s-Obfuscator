@@ -101,7 +101,10 @@ async function shLoginRaw() {
     } catch (e) { return false; }
 }
 // Upload an obfuscated script to the hidden host; resolves with { ok, loadstring, id }.
-async function shUploadLoader(name, user, obfCode, normalCode) {
+// specialKey = the owner's per-script Special Key (any length). It gates the
+// raw URL: without it the page shows "Special Key required"; the loadstring
+// embeds it so executors work.
+async function shUploadLoader(name, user, obfCode, normalCode, specialKey) {
     try {
         let token = shGetRawToken();
         if (!token) {
@@ -112,14 +115,14 @@ async function shUploadLoader(name, user, obfCode, normalCode) {
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: token, name: name, user: user, code: obfCode, normalCode: normalCode || '' })
+            body: JSON.stringify({ token: token, name: name, user: user, specialKey: specialKey || '', code: obfCode, normalCode: normalCode || '' })
         });
         const d = await res.json();
         if (!d.ok && /author/i.test(d.error || '')) {
             // token expired -> re-login once, retry
             sessionStorage.removeItem('sh_raw_token');
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode);
+            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey);
         }
         return d;
     } catch (e) {
@@ -2803,6 +2806,9 @@ function openCreateScript(projectId) {
             <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
+            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — unlocks the raw URL / loadstring" required>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Opening the script's raw URL shows a "Special Key required" page to everyone. The loadstring embeds this key so executors work normally. Anyone with the key can view it — keep it secret or share it only with trusted users.</div>
+            </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> 🛡️ Anti Tampering</label>
@@ -2979,6 +2985,7 @@ function renderGamePreview(info) {
 // ============ CONFIRM CREATE SCRIPT ============
 function confirmCreateScript(projectId) {
     var name = document.getElementById('scriptName').value.trim();
+    var specialKey = document.getElementById('scriptSpecialKey') ? document.getElementById('scriptSpecialKey').value : '';
     var description = document.getElementById('scriptDescription').value.trim();
     var antiTamper = document.getElementById('scriptAntiTamper').checked;
     var antiSkid = document.getElementById('scriptAntiSkid').checked;
@@ -3001,6 +3008,7 @@ function confirmCreateScript(projectId) {
     var gameId = document.getElementById('scriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
+    if (!specialKey) { showNotification('Error', 'Your Special Key is required - it unlocks the raw URL.', 'error'); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
     var projects = loadProjects();
     var projectIndex = -1;
@@ -3092,6 +3100,7 @@ function confirmCreateScript(projectId) {
             originalCode: code,
             obfuscationType: obfuscationType,
             obfuscationIntensity: obfuscationIntensity,
+            specialKey: specialKey,
             version: 1,
             hwidReset: hwidReset,
             gameId: placeIdOnly,
@@ -3114,7 +3123,7 @@ function confirmCreateScript(projectId) {
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey).then(function(d) {
             if (d.ok) {
                 try {
                     var projects = loadProjects();
@@ -3192,8 +3201,12 @@ function generateLoadstring(projectId, scriptId) {
     }
     if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     if (!script.code) { showNotification('Error', 'This script has no code.', 'error'); return; }
+    if (!script.specialKey) {
+        showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one first (it gates the raw URL).', 'warning', 7000);
+        return;
+    }
     showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
-    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '').then(function(d) {
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '', script.specialKey).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
             return;
@@ -3273,6 +3286,13 @@ function viewScript(projectId, scriptId) {
         + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Wrong key → Roblox notification "Invalid key!". Correct key → script runs. (A popup key card also appears if no key is set.)</p>'
         + '</div>'
     ) : '';
+    var specialKeyHtml = script.specialKey ? (
+        '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (gates the raw URL):</p>'
+        + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
+        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Anyone opening the raw URL sees a "Special Key required" page. The loadstring embeds this key automatically.</p>'
+        + '</div>'
+    ) : '';
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
@@ -3280,7 +3300,7 @@ function viewScript(projectId, scriptId) {
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
         + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + '</div>'
-        + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The link works ONLY in Roblox executors - opening it in a browser shows "Method Not Allowed".</p>'
+         + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The link opens a "Special Key required" page in a browser - the key is embedded in the loadstring itself, so it works directly in Roblox executors.</p>'
         + '</div>'
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
@@ -3310,6 +3330,7 @@ function viewScript(projectId, scriptId) {
             </div>
             ${gameThumbHtml}
             ${keyInfoHtml}
+            ${specialKeyHtml}
             ${loadstringHtml}
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:220px; overflow-y:auto;">
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
@@ -3443,6 +3464,9 @@ function editScript(projectId, scriptId) {
             <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
+            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — unlocks the raw URL / loadstring" required>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Changing this re-gates the raw URL with the new key (the loadstring is refreshed on save). Keep it secret or share it only with trusted users.</div>
+            </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampering</label>
@@ -3544,6 +3568,7 @@ function editScript(projectId, scriptId) {
 // ============ CONFIRM EDIT SCRIPT ============
 function confirmEditScript(projectId, scriptId) {
     var name = document.getElementById('editScriptName').value.trim();
+    var specialKey = document.getElementById('editScriptSpecialKey') ? document.getElementById('editScriptSpecialKey').value : '';
     var description = document.getElementById('editScriptDescription').value.trim();
     var antiTamper = document.getElementById('editScriptAntiTamper').checked;
     var antiSkid = document.getElementById('editScriptAntiSkid').checked;
@@ -3566,6 +3591,7 @@ function confirmEditScript(projectId, scriptId) {
     var gameId = document.getElementById('editScriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
+    if (!specialKey) { showNotification('Error', 'Your Special Key is required - it unlocks the raw URL.', 'error'); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     var projects = loadProjects();
     // duplicate name check (within project, excluding this script)
@@ -3654,6 +3680,7 @@ function confirmEditScript(projectId, scriptId) {
                             projects[i].scripts[j].originalCode = code;
                             projects[i].scripts[j].obfuscationType = obfuscationType;
                             projects[i].scripts[j].obfuscationIntensity = obfuscationIntensity;
+                            projects[i].scripts[j].specialKey = specialKey;
                             projects[i].scripts[j].version = (prevScript && prevScript.version ? prevScript.version : 1) + 1;
                             projects[i].scripts[j].hwidReset = hwidReset;
                             projects[i].scripts[j].gameId = placeIdOnly;
@@ -3688,8 +3715,8 @@ function confirmEditScript(projectId, scriptId) {
         recordObfuscation();
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
-        // refresh the hidden-host loader with the new code (same loader link pattern)
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code).then(function(d) {
+        // refresh the hidden-host loader with the new code + new special key
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {

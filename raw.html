@@ -177,6 +177,9 @@
             <input type="text" id="scriptName" placeholder="My awesome script">
             <label>Your Username</label>
             <input type="text" id="userName" placeholder="username">
+            <label>Your Special Key</label>
+            <input type="text" id="specialKey" placeholder="Any length key — required to view/use this script">
+            <div class="hint" style="margin:4px 0 0;">The raw URL will show a "Special Key required" page to everyone. Only requests with this key (it's embedded in the loadstring) get the script.</div>
             <label>Upload .txt/.lua file</label>
             <input type="file" id="scriptFile" accept=".txt,.lua" style="color:#8888aa;">
             <label>Paste Lua code</label>
@@ -187,9 +190,10 @@
             </div>
             <div class="err" id="createErr"></div>
             <div class="loadout" id="loadout">
-                ✅ Script created! Your loadstring:
+                ✅ Script created! Your loadstring (key is embedded):
                 <code id="loadstringOut"></code>
                 <button class="btn" onclick="copyLoad()">📋 Copy Loadstring</button>
+                <div class="hint" style="margin-top:8px;">Opening the link in a browser shows a "Special Key required" page — only the loadstring (or the key itself) unlocks it.</div>
             </div>
         </div>
     </div>
@@ -292,10 +296,12 @@
             if (!token) { location.reload(); return; }
             var name = document.getElementById('scriptName').value.trim() || 'script';
             var user = document.getElementById('userName').value.trim() || 'unknown';
+            var specialKey = document.getElementById('specialKey').value;
             var code = document.getElementById('scriptCode').value;
             var errEl = document.getElementById('createErr');
             errEl.textContent = '';
             if (!code.trim()) { errEl.textContent = 'Paste or upload some Lua code first.'; return; }
+            if (!specialKey) { errEl.textContent = 'Set a Special Key first (any length) - the script is gated behind it.'; return; }
             var btn = document.getElementById('createBtn');
             btn.disabled = true; btn.textContent = '⏳ Obfuscating & uploading...';
             // obfuscate locally (same engine as the dashboard), then upload only the OBFUSCATED code
@@ -314,6 +320,7 @@
                         token: token,
                         name: name,
                         user: user,
+                        specialKey: specialKey,
                         code: obf,
                         normalCode: code
                     })
