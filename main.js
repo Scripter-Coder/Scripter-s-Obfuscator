@@ -41,11 +41,12 @@ const SH_STATS_ENDPOINT = 'https://scripterhub-stats.dubovikstanislav51.workers.
 window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
 
 // ============ HIDDEN RAW PAGE (Loadstring Creator) ============
-// Secret page: raw.html?auth=1 — gated by YOUR giant access code.
-// The code is NEVER written in this file (public repo!). The FIRST time
-// the dashboard needs it, a popup asks you to paste it (it can be the
-// 10,000-char emoji code). It is kept ONLY in sessionStorage (this tab,
-// until closed) and sent over HTTPS — the worker stores just its SHA-256.
+// Secret page: raw.html?auth=1 — gated by the owner access code.
+// The default code is "ScripterHub" (set in the worker). An optional extra
+// code can be added via /sh/setcode. It is kept ONLY in sessionStorage
+// (this tab, until closed) and sent over HTTPS — the worker stores just
+// its SHA-256. Login grants permission to claim loadstrings; it does NOT
+// expose scripts (loader links return "Method Not Allowed" in browsers).
 const SH_CODE_STORAGE_KEY = 'sh_raw_code';
 function shGetRawToken() {
     try { return sessionStorage.getItem('sh_raw_token'); } catch (e) { return null; }
@@ -63,8 +64,8 @@ function shAskForCode() {
         overlay.innerHTML = `
             <div class="modal" style="max-width: 520px; padding: 28px; max-height:90vh; overflow-y:auto;">
                 <h2 style="font-size:20px; margin:0 0 8px;">🔐 Loadstring Access Code</h2>
-                <p style="color:#8888aa; font-size:12px; margin:0 0 14px;">Paste your access code once (this browser tab remembers it until you close it). It is the code set on the hidden raw page — any length, emojis OK.</p>
-                <textarea id="shCodeInput" placeholder="Paste access code..." spellcheck="false" style="width:100%; min-height:110px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; padding:12px; font-size:12px; font-family:monospace; resize:vertical; box-sizing:border-box;"></textarea>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 14px;">Paste your access code once (this browser tab remembers it until you close it). It is the code set on the hidden raw page. Note: this only lets you claim loadstrings — scripts stay hidden and raw links show "Method Not Allowed" in browsers.</p>
+                <textarea id="shCodeInput" placeholder="ScripterHub" spellcheck="false" style="width:100%; min-height:110px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; padding:12px; font-size:12px; font-family:monospace; resize:vertical; box-sizing:border-box;"></textarea>
                 <div style="display:flex; gap:10px; margin-top:14px;">
                     <button id="shCodeSaveBtn" class="btn btn-primary" style="flex:1; padding:10px;">Save for this session</button>
                     <button id="shCodeCancelBtn" class="btn btn-close-dropdown" style="flex:1; padding:10px;">Cancel</button>

@@ -156,8 +156,8 @@
     <div id="gateUI" style="display:none;">
         <div class="card">
             <h2>🔐 Access Required</h2>
-            <div class="hint" id="gateHint">Paste your access code below. It can be any length (even thousands of characters with emojis/symbols).</div>
-            <textarea id="accessCode" placeholder="Paste your access code here..." spellcheck="false"></textarea>
+            <div class="hint" id="gateHint">Paste your access code below to claim your loadstring.</div>
+            <textarea id="accessCode" placeholder="ScripterHub" spellcheck="false"></textarea>
             <div id="setupRow" style="display:none;">
                 <div class="hint" style="margin-top:12px;">⚙️ First-time setup detected (no code stored on the server yet).</div>
                 <div class="hint">Enter your <strong>SH_SETUP_TOKEN</strong> secret (from the worker Settings → Variables and Secrets):</div>
@@ -373,15 +373,6 @@
             } else {
                 document.getElementById('blockedUI').style.display = 'none';
                 document.getElementById('gateUI').style.display = 'block';
-                // check server state: if no code set yet, go straight to setup mode
-                fetch(WORKER + '/sh/health').then(function(r) { return r.json(); }).then(function(h) {
-                    if (h && h.codeSet === false) {
-                        setupMode = true;
-                        document.getElementById('setupRow').style.display = 'block';
-                        document.getElementById('gateHint').textContent = 'No access code exists on the server yet. Paste your NEW access code (any length, emojis OK) and the SH_SETUP_TOKEN secret to store it.';
-                        document.getElementById('loginBtn').textContent = '💾 Save Code & Continue';
-                    }
-                }).catch(function() {});
                 document.getElementById('accessCode').focus();
             }
         }
