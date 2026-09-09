@@ -40,6 +40,92 @@ window.showNotification = showNotification;
 const SH_STATS_ENDPOINT = 'https://scripterhub-stats.dubovikstanislav51.workers.dev/';
 window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
 
+// ============ HIDDEN RAW PAGE (Loadstring Creator) ============
+// Secret page: raw.html?auth=1 — gated by YOUR giant access code.
+// The code is NEVER written in this file (public repo!). The FIRST time
+// the dashboard needs it, a popup asks you to paste it (it can be the
+// 10,000-char emoji code). It is kept ONLY in sessionStorage (this tab,
+// until closed) and sent over HTTPS — the worker stores just its SHA-256.
+const SH_CODE_STORAGE_KEY = 'sh_raw_code';
+function shGetRawToken() {
+    try { return sessionStorage.getItem('sh_raw_token'); } catch (e) { return null; }
+}
+// ask the owner for the access code (once per session; cached in sessionStorage)
+function shAskForCode() {
+    var existing = null;
+    try { existing = sessionStorage.getItem(SH_CODE_STORAGE_KEY); } catch (e) {}
+    if (existing) return Promise.resolve(existing);
+    return new Promise(function(resolve) {
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.display = 'flex';
+        overlay.style.zIndex = '4000';
+        overlay.innerHTML = `
+            <div class="modal" style="max-width: 520px; padding: 28px; max-height:90vh; overflow-y:auto;">
+                <h2 style="font-size:20px; margin:0 0 8px;">🔐 Loadstring Access Code</h2>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 14px;">Paste your access code once (this browser tab remembers it until you close it). It is the code set on the hidden raw page — any length, emojis OK.</p>
+                <textarea id="shCodeInput" placeholder="Paste access code..." spellcheck="false" style="width:100%; min-height:110px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; padding:12px; font-size:12px; font-family:monospace; resize:vertical; box-sizing:border-box;"></textarea>
+                <div style="display:flex; gap:10px; margin-top:14px;">
+                    <button id="shCodeSaveBtn" class="btn btn-primary" style="flex:1; padding:10px;">Save for this session</button>
+                    <button id="shCodeCancelBtn" class="btn btn-close-dropdown" style="flex:1; padding:10px;">Cancel</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#shCodeSaveBtn').onclick = function() {
+            var val = overlay.querySelector('#shCodeInput').value;
+            if (!val.trim()) return;
+            try { sessionStorage.setItem(SH_CODE_STORAGE_KEY, val); } catch (e) {}
+            overlay.remove();
+            resolve(val);
+        };
+        overlay.querySelector('#shCodeCancelBtn').onclick = function() {
+            overlay.remove();
+            resolve(null);
+        };
+    });
+}
+async function shLoginRaw() {
+    try {
+        const code = await shAskForCode();
+        if (!code) return false;
+        const res = await fetch(SH_STATS_ENDPOINT + 'sh/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code })
+        });
+        const d = await res.json();
+        if (d.ok) { try { sessionStorage.setItem('sh_raw_token', d.token); } catch (e) {} }
+        return d.ok === true;
+    } catch (e) { return false; }
+}
+// Upload an obfuscated script to the hidden host; resolves with { ok, loadstring, id }.
+async function shUploadLoader(name, user, obfCode, normalCode) {
+    try {
+        let token = shGetRawToken();
+        if (!token) {
+            const ok = await shLoginRaw();
+            if (!ok) return { ok: false, error: 'login failed (wrong code or canceled)' };
+            token = shGetRawToken();
+        }
+        const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token, name: name, user: user, code: obfCode, normalCode: normalCode || '' })
+        });
+        const d = await res.json();
+        if (!d.ok && /author/i.test(d.error || '')) {
+            // token expired -> re-login once, retry
+            sessionStorage.removeItem('sh_raw_token');
+            const ok2 = await shLoginRaw();
+            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode);
+        }
+        return d;
+    } catch (e) {
+        return { ok: false, error: e.message };
+    }
+}
+
 // ============ PLAN LIMIT ENFORCEMENT ============
 function checkPlanLimit(kind, extraCount, extraBytes) {
     if (!currentUser) return null;
@@ -3026,6 +3112,29 @@ function confirmCreateScript(projectId) {
         recordObfuscation();
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
+        // also push to the hidden loader host (loadstring system) — silent, non-blocking
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code).then(function(d) {
+            if (d.ok) {
+                try {
+                    var projects = loadProjects();
+                    outer: for (var pi = 0; pi < projects.length; pi++) {
+                        if (projects[pi].id === projectId && projects[pi].scripts) {
+                            for (var sj = 0; sj < projects[pi].scripts.length; sj++) {
+                                if (projects[pi].scripts[sj].id === script.id) {
+                                    projects[pi].scripts[sj].loaderUrl = d.loadstring;
+                                    projects[pi].scripts[sj].loaderId = d.id;
+                                    break outer;
+                                }
+                            }
+                        }
+                    }
+                    saveProjects(projects);
+                    showNotification('Loadstring Ready', 'Loader link generated for "' + name + '" - see the script View modal.', 'success', 6000);
+                } catch (e) {}
+            } else {
+                showNotification('Loadstring Warning', 'Hidden host upload failed: ' + (d.error || 'unknown') + ' (deploy the worker + KV first)', 'warning', 7000);
+            }
+        });
         renderProjects();
     }).catch(function(e) {
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
@@ -3068,6 +3177,47 @@ function openScriptRaw(loaderId) {
     window.open(rawUrl, '_blank');
 }
 
+// ============ GENERATE LOADSTRING (on demand for older scripts) ============
+function generateLoadstring(projectId, scriptId) {
+    var projects = loadProjects();
+    var script = null;
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId && projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].id === scriptId) { script = projects[i].scripts[j]; break; }
+            }
+        }
+    }
+    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
+    if (!script.code) { showNotification('Error', 'This script has no code.', 'error'); return; }
+    showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '').then(function(d) {
+        if (!d.ok) {
+            showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
+            return;
+        }
+        // save onto the script record
+        var projects2 = loadProjects();
+        outer: for (var pi = 0; pi < projects2.length; pi++) {
+            if (projects2[pi].id === projectId && projects2[pi].scripts) {
+                for (var sj = 0; sj < projects2[pi].scripts.length; sj++) {
+                    if (projects2[pi].scripts[sj].id === scriptId) {
+                        projects2[pi].scripts[sj].loaderUrl = d.loadstring;
+                        projects2[pi].scripts[sj].loaderId = d.id;
+                        break outer;
+                    }
+                }
+            }
+        }
+        saveProjects(projects2);
+        showNotification('Loadstring Ready', 'Copy it from the script View modal.', 'success', 5000);
+        // re-open the view modal with the fresh loadstring
+        var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+        if (modal) modal.remove();
+        viewScript(projectId, scriptId);
+    });
+}
+
 // ============ VIEW SCRIPT ============
 function viewScript(projectId, scriptId) {
     var projects = loadProjects();
@@ -3097,6 +3247,12 @@ function viewScript(projectId, scriptId) {
     storeScriptForRawAccess(script.loaderId, script.code, script.name);
     storeScriptForRawAccess(script.id, script.code, script.name);
     var ownerUrl = getBasePath() + 'raw.html?id=' + script.loaderId + '&key=' + OWNER_KEY + '&format=debug';
+    // hidden-host loadstring (the real executor link) - uploaded at create/edit time
+    var loaderUrl = script.loaderUrl || '';
+    if (!loaderUrl) {
+        // not uploaded yet (older scripts) - offer to generate on demand
+        loaderUrl = '';
+    }
     var obfType = script.obfuscationType || 'custom';
     var obfDisplay = OBFUSCATION_TYPES[obfType] || 'Custom Obfuscator';
     var gameThumbHtml = '';
@@ -3115,6 +3271,21 @@ function viewScript(projectId, scriptId) {
         + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Wrong key → Roblox notification "Invalid key!". Correct key → script runs. (A popup key card also appears if no key is set.)</p>'
         + '</div>'
     ) : '';
+    var loadstringHtml = loaderUrl ? (
+        '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
+        + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl + '</code>'
+        + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
+        + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
+        + '</div>'
+        + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The link works ONLY in Roblox executors - opening it in a browser shows "Method Not Allowed".</p>'
+        + '</div>'
+    ) : (
+        '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
+        + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">📜 No loadstring yet (created before the hidden host). Re-save the script or generate one:</p>'
+        + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">⚡ Generate Loadstring</button>'
+        + '</div>'
+    );
     overlay.innerHTML = `
         <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
@@ -3137,6 +3308,7 @@ function viewScript(projectId, scriptId) {
             </div>
             ${gameThumbHtml}
             ${keyInfoHtml}
+            ${loadstringHtml}
             <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:220px; overflow-y:auto;">
                 <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
                 <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated - use Owner Raw URL for full code)' : ''}</pre>
@@ -3514,6 +3686,25 @@ function confirmEditScript(projectId, scriptId) {
         recordObfuscation();
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
+        // refresh the hidden-host loader with the new code (same loader link pattern)
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code).then(function(d) {
+            if (d.ok) {
+                var projects2 = loadProjects();
+                outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
+                    if (projects2[pi2].id === projectId && projects2[pi2].scripts) {
+                        for (var sj2 = 0; sj2 < projects2[pi2].scripts.length; sj2++) {
+                            if (projects2[pi2].scripts[sj2].id === scriptId) {
+                                projects2[pi2].scripts[sj2].loaderUrl = d.loadstring;
+                                projects2[pi2].scripts[sj2].loaderId = d.id;
+                                break outer2;
+                            }
+                        }
+                    }
+                }
+                saveProjects(projects2);
+                showNotification('Loadstring Updated', 'Loader link regenerated (new code now served).', 'success', 6000);
+            }
+        });
         renderProjects();
     }).catch(function(e) {
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
@@ -3794,5 +3985,7 @@ window.enableAccount = enableAccount;
 window.openDeleteAccountUI = openDeleteAccountUI;
 window.confirmDeleteAccount = confirmDeleteAccount;
 window.openScriptRaw = openScriptRaw;
+window.generateLoadstring = generateLoadstring;
+window.shUploadLoader = shUploadLoader;
 window.recordExecution = recordExecution;
 window.recordThreat = recordThreat;

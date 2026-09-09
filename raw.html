@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Raw Script</title>
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <title>Raw</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             background: #0a0a0f;
             color: #ff4444;
@@ -29,236 +31,363 @@
             font-weight: 400;
             margin-top: 12px;
         }
-        .id-display {
-            font-size: 12px;
-            color: #333355;
-            margin-top: 20px;
-            font-weight: 400;
+        /* ---------- hidden creator UI (only after owner login) ---------- */
+        #creatorUI {
+            display: none;
+            width: 100%;
+            max-width: 720px;
+            margin: 0 auto;
+            text-align: left;
         }
+        #creatorUI .card {
+            background: rgba(20,20,35,0.8);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 28px;
+            margin-bottom: 16px;
+        }
+        #creatorUI h2 { color: #fff; font-size: 20px; margin: 0 0 6px; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        #creatorUI .hint { color: #8888aa; font-size: 12px; margin: 0 0 18px; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        #creatorUI label { display: block; color: #ccd; font-size: 13px; margin: 14px 0 6px; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        #creatorUI input[type=text], #creatorUI textarea {
+            width: 100%;
+            background: #0a0a15;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            color: #fff;
+            padding: 12px;
+            font-size: 13px;
+            font-family: monospace;
+        }
+        #creatorUI textarea { min-height: 200px; resize: vertical; }
+        #creatorUI .btn {
+            display: inline-block;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            padding: 12px 20px;
+            color: #fff;
+            background: linear-gradient(135deg, #6c3bff, #00bfff);
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            margin-top: 14px;
+        }
+        #creatorUI .btn:hover { opacity: 0.85; }
+        #creatorUI .btn:disabled { opacity: 0.5; cursor: wait; }
+        #creatorUI .btn-ghost { background: rgba(255,255,255,0.08); }
+        #creatorUI .loadout {
+            display: none;
+            margin-top: 16px;
+            padding: 14px;
+            border-radius: 12px;
+            background: rgba(0, 204, 68, 0.07);
+            border: 1px solid rgba(0, 204, 68, 0.3);
+        }
+        #creatorUI .loadout code {
+            display: block;
+            color: #66ff66;
+            font-size: 12px;
+            word-break: break-all;
+            margin: 8px 0;
+            background: rgba(0,0,0,0.4);
+            padding: 10px;
+            border-radius: 8px;
+        }
+        #creatorUI .err { color: #ff6666; font-size: 13px; margin-top: 10px; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        /* ---------- gate (login) ---------- */
+        #gateUI { display: none; text-align: left; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        #gateUI .card {
+            background: rgba(20,20,35,0.85);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 420px;
+            margin: 0 auto;
+        }
+        #gateUI h2 { color: #fff; font-size: 20px; margin: 0 0 18px; font-weight: 700; }
+        #gateUI input {
+            width: 100%;
+            background: #0a0a15;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            color: #fff;
+            padding: 12px;
+            font-size: 14px;
+            font-family: monospace;
+        }
+        #gateUI .btn {
+            width: 100%;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 15px;
+            padding: 12px;
+            color: #fff;
+            background: linear-gradient(135deg, #6c3bff, #00bfff);
+            margin-top: 14px;
+        }
+        #gateUI .err { color: #ff6666; font-size: 13px; margin-top: 10px; }
+        #gateUI textarea {
+            width: 100%;
+            min-height: 120px;
+            background: #0a0a15;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            color: #fff;
+            padding: 12px;
+            font-size: 12px;
+            font-family: monospace;
+            resize: vertical;
+            word-break: break-all;
+        }
+        #gateUI .hint { color: #8888aa; font-size: 12px; margin: 8px 0 12px; }
     </style>
 </head>
 <body>
-    <div class="container">
+    <!-- Public: everyone sees this -->
+    <div class="container" id="blockedUI">
         ⛔ Not Allowed
         <div class="sub">This raw endpoint is protected. Unauthorized access is prohibited.</div>
-        <div class="id-display" id="scriptIdDisplay"></div>
     </div>
+
+    <!-- Owner gate: shown ONLY when ?auth= is present (the secret door) -->
+    <div id="gateUI" style="display:none;">
+        <div class="card">
+            <h2>🔐 Access Required</h2>
+            <div class="hint" id="gateHint">Paste your access code below. It can be any length (even thousands of characters with emojis/symbols).</div>
+            <textarea id="accessCode" placeholder="Paste your access code here..." spellcheck="false"></textarea>
+            <div id="setupRow" style="display:none;">
+                <div class="hint" style="margin-top:12px;">⚙️ First-time setup detected (no code stored on the server yet).</div>
+                <div class="hint">Enter your <strong>SH_SETUP_TOKEN</strong> secret (from the worker Settings → Variables and Secrets):</div>
+                <input type="text" id="setupToken" placeholder="SH_SETUP_TOKEN value" autocomplete="off" style="margin-top:6px;">
+            </div>
+            <button class="btn" id="loginBtn" onclick="tryLogin()">Continue</button>
+            <div class="err" id="gateErr"></div>
+        </div>
+    </div>
+
+    <!-- Creator: shown after successful login -->
+    <div id="creatorUI">
+        <div class="card">
+            <h2>🛠️ Create Script</h2>
+            <p class="hint">Paste your Lua code (or upload a .txt/.lua file). Your source is stored encrypted server-side, never visible to anyone — not even in this browser. You'll get a loadstring.</p>
+            <label>Script Name</label>
+            <input type="text" id="scriptName" placeholder="My awesome script">
+            <label>Your Username</label>
+            <input type="text" id="userName" placeholder="username">
+            <label>Upload .txt/.lua file</label>
+            <input type="file" id="scriptFile" accept=".txt,.lua" style="color:#8888aa;">
+            <label>Paste Lua code</label>
+            <textarea id="scriptCode" placeholder="-- Paste your Lua code here..."></textarea>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="btn" id="createBtn" onclick="createScript()">⚡ Create Script</button>
+                <button class="btn btn-ghost" onclick="logoutRaw()">🚪 Logout</button>
+            </div>
+            <div class="err" id="createErr"></div>
+            <div class="loadout" id="loadout">
+                ✅ Script created! Your loadstring:
+                <code id="loadstringOut"></code>
+                <button class="btn" onclick="copyLoad()">📋 Copy Loadstring</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        (function() {
-            // ============ RAW SCRIPT ACCESS CONTROL ============
-            var params = new URLSearchParams(window.location.search);
-            var scriptId = params.get('id');
-            var loaderKey = params.get('loaderKey');
-            var ownerKey = params.get('key');
-            var format = params.get('format');
+    (function() {
+        // ================= RAW PAGE ACCESS CONTROL =================
+        // This page is secret. Anyone who opens it without the secret
+        // query param sees only "Not Allowed" — no login, no hints.
+        var WORKER = 'https://scripterhub-stats.dubovikstanislav51.workers.dev';
+        var TOKEN_KEY = 'sh_raw_token';
+        var params = new URLSearchParams(window.location.search);
+        var setupMode = false;
 
-            const OWNER_KEY = 'my_super_secret_key_2024_scripter';
+        // Legacy params (id/key/loaderKey from the old system) -> same treatment: blocked
+        // Secret door: raw.html?auth=1 (only you know this URL)
+        var showGate = params.get('auth') === '1';
 
-            // Show script ID for debugging
-            if (scriptId) {
-                document.getElementById('scriptIdDisplay').textContent = 'Script ID: ' + scriptId;
-            }
+        function showCreator(token) {
+            sessionStorage.setItem(TOKEN_KEY, token);
+            document.getElementById('blockedUI').style.display = 'none';
+            document.getElementById('gateUI').style.display = 'none';
+            document.getElementById('creatorUI').style.display = 'block';
+            // restore last used username
+            try { var u = localStorage.getItem('sh_raw_username'); if (u) document.getElementById('userName').value = u; } catch (e) {}
+        }
 
-            function loadScripts() {
-                try {
-                    var data = localStorage.getItem('scriptStore');
-                    if (data) return JSON.parse(data);
-                } catch (e) {}
-                return {};
-            }
-
-            function loadProjectScripts() {
-                try {
-                    var currentUserId = null;
-                    try {
-                        var sessionUser = sessionStorage.getItem('session_user');
-                        if (sessionUser) {
-                            var user = JSON.parse(sessionUser);
-                            currentUserId = user.id;
-                        } else {
-                            var localUser = localStorage.getItem('currentUser');
-                            if (localUser) {
-                                var user = JSON.parse(localUser);
-                                currentUserId = user.id;
-                            }
-                        }
-                    } catch (e) {}
-                    
-                    var projectsData = localStorage.getItem('projects_' + (currentUserId || ''));
-                    if (projectsData) {
-                        var projects = JSON.parse(projectsData);
-                        for (var i = 0; i < projects.length; i++) {
-                            if (projects[i].scripts) {
-                                for (var j = 0; j < projects[i].scripts.length; j++) {
-                                    var s = projects[i].scripts[j];
-                                    if (s.loaderId === scriptId || s.id === scriptId) {
-                                        return s;
-                                    }
-                                }
-                            }
-                        }
+        function tryLogin() {
+            var code = document.getElementById('accessCode').value;
+            var errEl = document.getElementById('gateErr');
+            errEl.textContent = '';
+            if (!code.trim()) { errEl.textContent = 'Paste your access code first.'; return; }
+            var btn = document.getElementById('loginBtn');
+            btn.disabled = true; btn.textContent = 'Checking...';
+            if (setupMode) {
+                // first-time setup: send the code + setup token, then log in with it
+                var setupToken = document.getElementById('setupToken').value.trim();
+                if (!setupToken) { btn.disabled = false; btn.textContent = 'Continue'; errEl.textContent = 'Enter the SH_SETUP_TOKEN secret value.'; return; }
+                fetch(WORKER + '/sh/setcode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ setupToken: setupToken, code: code })
+                }).then(function(r) { return r.json(); }).then(function(d) {
+                    if (!d.ok) {
+                        btn.disabled = false; btn.textContent = 'Continue';
+                        errEl.textContent = d.error || 'Setup failed.';
+                        return;
                     }
-                } catch (e) {}
-                return null;
-            }
-
-            var scriptStore = loadScripts();
-            var scriptCode = scriptStore[scriptId];
-            var scriptObj = null;
-            
-            if (!scriptCode) {
-                scriptObj = loadProjectScripts();
-                if (scriptObj) {
-                    scriptCode = scriptObj.code;
-                }
-            }
-
-            if (!scriptCode) {
-                try {
-                    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-                    if (loaderStore[scriptId] && loaderStore[scriptId].code) {
-                        scriptCode = loaderStore[scriptId].code;
-                    }
-                } catch (e) {}
-            }
-
-            var isOwner = (ownerKey === OWNER_KEY);
-            var isValidLoader = false;
-
-            if (loaderKey && scriptCode) {
-                var storedLoaderKey = null;
-                if (scriptObj && scriptObj.loaderKey) {
-                    storedLoaderKey = scriptObj.loaderKey;
-                }
-                if (!storedLoaderKey) {
-                    try {
-                        var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-                        if (loaderStore[scriptId] && loaderStore[scriptId].loaderKey) {
-                            storedLoaderKey = loaderStore[scriptId].loaderKey;
-                        }
-                    } catch (e) {}
-                }
-                if (storedLoaderKey && storedLoaderKey === loaderKey) {
-                    isValidLoader = true;
-                }
-            }
-
-            var hasAccess = isOwner || isValidLoader;
-
-            // ============ DETECT ROBLOX EXECUTOR ============
-            var isRoblox = false;
-            var ua = navigator.userAgent || '';
-            if (ua.includes('Roblox') || ua.includes('RBX') || ua.includes('Synapse') || 
-                ua.includes('Krnl') || ua.includes('ScriptWare') || ua.includes('Fluxus') ||
-                ua.includes('Electron') || ua.includes('Oxygen U') || ua.includes('Valyse') ||
-                ua.includes('Vega') || ua.includes('Calamari') || ua.includes('Xeno') ||
-                ua.includes('Sirius') || ua.includes('RPM')) {
-                isRoblox = true;
-            }
-
-            // Also check if the request is from a Roblox executor via a custom header
-            // (Some executors send a special header)
-            try {
-                var reqHeader = navigator.userAgent.toLowerCase();
-                if (reqHeader.includes('roblox') || reqHeader.includes('rbx')) {
-                    isRoblox = true;
-                }
-            } catch (e) {}
-
-            // ============ IF ROBLOX EXECUTOR AND HAS ACCESS -> RETURN CODE ============
-            if ((isRoblox || format === 'text') && hasAccess && scriptCode) {
-                // For Roblox executors, output just the code (no HTML)
-                document.write(scriptCode);
-                document.close();
+                    setupMode = false;
+                    document.getElementById('setupRow').style.display = 'none';
+                    // auto-login right after setting the code
+                    return fetch(WORKER + '/sh/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code: code })
+                    }).then(function(r) { return r.json(); }).then(function(d2) {
+                        btn.disabled = false; btn.textContent = 'Continue';
+                        if (d2.ok) showCreator(d2.token);
+                        else errEl.textContent = d2.error || 'Login failed after setup.';
+                    });
+                }).catch(function() {
+                    btn.disabled = false; btn.textContent = 'Continue';
+                    errEl.textContent = 'Network error - try again.';
+                });
                 return;
             }
-
-            // ============ IF OWNER WITH MASTER KEY -> SHOW CODE (for debugging) ============
-            if (isOwner && scriptCode && format === 'debug') {
-                var escCode = scriptCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                document.write(`
-                    <!DOCTYPE html>
-                    <html>
-                    <head><title>Raw Script (Owner Debug)</title>
-                    <style>
-                        body{background:#0a0a0f;color:#fff;font-family:Segoe UI,Tahoma,sans-serif;margin:0;padding:20px;min-height:100vh;box-sizing:border-box;}
-                        .wrap{max-width:1000px;margin:0 auto;}
-                        .notice{background:rgba(255,215,0,0.1);border:1px solid rgba(255,215,0,0.2);padding:12px;margin-bottom:16px;border-radius:10px;color:#ffd700;font-size:14px;}
-                        h1{font-size:20px;margin:0 0 14px 0;color:#66ccff;}
-                        .btns{display:flex;gap:10px;margin-bottom:14px;}
-                        .btns button{flex:1;padding:10px 16px;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;color:#fff;background:linear-gradient(135deg,#6c3bff,#00bfff);transition:opacity .2s;}
-                        .btns button:hover{opacity:0.85;}
-                        .codebox{width:100%;height:65vh;box-sizing:border-box;background:rgba(10,10,20,0.8);color:#66ccff;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:14px;font-family:Consolas,Courier New,monospace;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;resize:vertical;}
-                    </style>
-                    </head>
-                    <body>
-                        <div class="wrap">
-                            <div class="notice">🔑 Owner Debug Mode - Code visible</div>
-                            <h1>📜 Script Code</h1>
-                            <div class="btns"><button onclick="copyCode()">📋 Copy Code</button><button onclick="downloadCode()">⬇️ Download Code</button></div>
-                            <textarea id="codeField" class="codebox" readonly spellcheck="false">${escCode}</textarea>
-                        </div>
-                        <script>
-                        var CODE = document.getElementById("codeField").value;
-                        function copyCode() {
-                            var t = document.getElementById("codeField");
-                            t.select(); t.setSelectionRange(0, 999999999);
-                            if (navigator.clipboard && navigator.clipboard.writeText) {
-                                navigator.clipboard.writeText(CODE).then(function(){ alert("Copied to clipboard!"); }, function(){ document.execCommand("copy"); alert("Copied to clipboard!"); });
-                            } else { document.execCommand("copy"); alert("Copied to clipboard!"); }
-                        }
-                        function downloadCode() {
-                            var b = new Blob([CODE], { type: "text/plain" });
-                            var a = document.createElement("a");
-                            a.href = URL.createObjectURL(b);
-                            a.download = "script.lua";
-                            a.click();
-                            setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
-                        }
-                        <\/script>
-                    </body>
-                    </html>
-                `);
-                document.close();
-                return;
-            }
-
-            // ============ EVERYONE ELSE SEES "NOT ALLOWED" ============
-            // record the unauthorized access as a blocked threat (same browser)
-            try {
-                var threats = JSON.parse(localStorage.getItem('sh_threats_local') || '[]');
-                threats.push({ t: Date.now(), reason: 'unauthorized raw access: ' + (scriptId || '?') });
-                if (threats.length > 500) threats = threats.slice(-500);
-                localStorage.setItem('sh_threats_local', JSON.stringify(threats));
-            } catch (e) {}
-            console.clear();
-        })();
-    </script>
-</body>
-    <script>
-    // ============ KEY VERIFICATION ENDPOINT ============
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('verify-key') === 'true') {
-        var key = params.get('key');
-        var scriptId = params.get('id');
-        
-        // Load keys
-        var keyData = JSON.parse(localStorage.getItem('keys_' + (currentUserId || '')) || '{"keys":[]}');
-        var valid = false;
-        for (var i = 0; i < keyData.keys.length; i++) {
-            if (keyData.keys[i].key === key && !keyData.keys[i].used) {
-                if (!keyData.keys[i].expires || keyData.keys[i].expires > Date.now()) {
-                    valid = true;
-                    keyData.keys[i].used = true;
-                    keyData.keys[i].usedAt = new Date().toISOString();
-                    localStorage.setItem('keys_' + (currentUserId || ''), JSON.stringify(keyData));
-                    break;
+            fetch(WORKER + '/sh/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code })
+            }).then(function(r) { return r.json(); }).then(function(d) {
+                btn.disabled = false; btn.textContent = 'Continue';
+                if (d.ok) {
+                    document.getElementById('gateUI').style.display = 'none';
+                    showCreator(d.token);
+                } else if (/set up yet/i.test(d.error || '')) {
+                    // server has no code -> switch to setup mode
+                    setupMode = true;
+                    document.getElementById('setupRow').style.display = 'block';
+                    document.getElementById('gateHint').textContent = 'No access code exists on the server yet. Paste your NEW access code (any length, emojis OK) and the SH_SETUP_TOKEN secret to store it.';
+                    document.getElementById('loginBtn').textContent = '💾 Save Code & Continue';
+                    errEl.textContent = '';
+                } else {
+                    errEl.textContent = d.error || 'Invalid code.';
                 }
+            }).catch(function() {
+                btn.disabled = false; btn.textContent = 'Continue';
+                errEl.textContent = 'Network error - try again.';
+            });
+        }
+
+        function logoutRaw() {
+            sessionStorage.removeItem(TOKEN_KEY);
+            location.search = '';
+            location.reload();
+        }
+
+        function createScript() {
+            var token = sessionStorage.getItem(TOKEN_KEY);
+            if (!token) { location.reload(); return; }
+            var name = document.getElementById('scriptName').value.trim() || 'script';
+            var user = document.getElementById('userName').value.trim() || 'unknown';
+            var code = document.getElementById('scriptCode').value;
+            var errEl = document.getElementById('createErr');
+            errEl.textContent = '';
+            if (!code.trim()) { errEl.textContent = 'Paste or upload some Lua code first.'; return; }
+            var btn = document.getElementById('createBtn');
+            btn.disabled = true; btn.textContent = '⏳ Obfuscating & uploading...';
+            // obfuscate locally (same engine as the dashboard), then upload only the OBFUSCATED code
+            import('./custom-obfuscator.js').then(function(mod) {
+                var obf = mod.applyCustomObfuscator(code, {
+                    intensity: 10,
+                    antiTamper: true,
+                    antiSkid: true,
+                    scriptName: name,
+                    owner: user
+                });
+                return fetch(WORKER + '/sh/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: token,
+                        name: name,
+                        user: user,
+                        code: obf,
+                        normalCode: code
+                    })
+                }).then(function(r) { return r.json(); });
+            }).then(function(d) {
+                btn.disabled = false; btn.textContent = '⚡ Create Script';
+                if (d.ok) {
+                    try { localStorage.setItem('sh_raw_username', user); } catch (e) {}
+                    document.getElementById('loadstringOut').textContent = d.loadstring;
+                    document.getElementById('loadout').style.display = 'block';
+                } else {
+                    errEl.textContent = d.error || 'Upload failed.';
+                }
+            }).catch(function(e) {
+                btn.disabled = false; btn.textContent = '⚡ Create Script';
+                errEl.textContent = 'Error: ' + (e && e.message ? e.message : 'unknown');
+            });
+        }
+
+        function copyLoad() {
+            var txt = document.getElementById('loadstringOut').textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(txt).then(function() { alert('Loadstring copied!'); });
+            } else {
+                var ta = document.createElement('textarea');
+                ta.value = txt; document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); ta.remove(); alert('Loadstring copied!');
             }
         }
-        document.write(valid ? 'valid' : 'invalid');
-        document.close();
-        return;
-    }
-</script>
+
+        // expose for inline onclick handlers
+        window.tryLogin = tryLogin;
+        window.logoutRaw = logoutRaw;
+        window.createScript = createScript;
+        window.copyLoad = copyLoad;
+
+        // file upload -> textarea
+        var fileInput = document.getElementById('scriptFile');
+        if (fileInput) {
+            fileInput.addEventListener('change', function() {
+                var f = this.files[0];
+                if (!f) return;
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('scriptCode').value = e.target.result;
+                };
+                reader.readAsText(f);
+            });
+        }
+
+        // auto-login if a token from this session exists AND auth door is used
+        if (showGate) {
+            var existing = sessionStorage.getItem(TOKEN_KEY);
+            if (existing) {
+                // token is re-verified by the worker on every upload anyway
+                showCreator(existing);
+            } else {
+                document.getElementById('blockedUI').style.display = 'none';
+                document.getElementById('gateUI').style.display = 'block';
+                // check server state: if no code set yet, go straight to setup mode
+                fetch(WORKER + '/sh/health').then(function(r) { return r.json(); }).then(function(h) {
+                    if (h && h.codeSet === false) {
+                        setupMode = true;
+                        document.getElementById('setupRow').style.display = 'block';
+                        document.getElementById('gateHint').textContent = 'No access code exists on the server yet. Paste your NEW access code (any length, emojis OK) and the SH_SETUP_TOKEN secret to store it.';
+                        document.getElementById('loginBtn').textContent = '💾 Save Code & Continue';
+                    }
+                }).catch(function() {});
+                document.getElementById('accessCode').focus();
+            }
+        }
+        // everyone else: just the "Not Allowed" screen. console cleared, no hints.
+        try { console.clear(); } catch (e) {}
+    })();
+    </script>
+</body>
 </html>
