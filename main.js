@@ -1,6 +1,7 @@
 // ============ STATE ============
 import { applyCustomObfuscator, buildWrappedPayload } from './custom-obfuscator.js';
 import { initRewards, renderRewardsTab, openCreateRewardUI } from './rewards.js';
+import { shEncryptPayload } from './sh-crypto.js';
 
 let currentUser = null;
 let isLoggedIn = false;
@@ -100,12 +101,20 @@ async function shLoginRaw() {
         return d.ok === true;
     } catch (e) { return false; }
 }
-// Upload an obfuscated script to the hidden host; resolves with { ok, loadstring, id }.
-// specialKey = the owner's per-script Special Key (any length). It gates the
-// raw URL: without it the page shows "Special Key required"; the loadstring
-// embeds it so executors work.
-async function shUploadLoader(name, user, obfCode, normalCode, specialKey) {
+// Upload a script to the hidden host; resolves with { ok, loadstring, id }.
+// specialKey = the owner's per-script Special Key (any length). The script
+// is ENCRYPTED IN THIS BROWSER with the key (sh-crypto.js) BEFORE upload —
+// the worker only ever receives ciphertext. The loadstring contains NO key;
+// users are asked for it at runtime (in-game popup / getgenv().ScripterHubKey).
+async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces) {
     try {
+        if (!specialKey) return { ok: false, error: 'Special Key is required' };
+        // 1) encrypt locally — the key never leaves this browser
+        const cipher = shEncryptPayload(obfCode, specialKey);
+        const keyHash = await (async () => {
+            const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
+            return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+        })();
         let token = shGetRawToken();
         if (!token) {
             const ok = await shLoginRaw();
@@ -115,14 +124,14 @@ async function shUploadLoader(name, user, obfCode, normalCode, specialKey) {
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: token, name: name, user: user, specialKey: specialKey || '', code: obfCode, normalCode: normalCode || '' })
+            body: JSON.stringify({ token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' })
         });
         const d = await res.json();
         if (!d.ok && /author/i.test(d.error || '')) {
             // token expired -> re-login once, retry
             sessionStorage.removeItem('sh_raw_token');
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey);
+            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces);
         }
         return d;
     } catch (e) {
@@ -2806,8 +2815,8 @@ function openCreateScript(projectId) {
             <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
-            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — unlocks the raw URL / loadstring" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Opening the script's raw URL shows a "Special Key required" page to everyone. The loadstring embeds this key so executors work normally. Anyone with the key can view it — keep it secret or share it only with trusted users.</div>
+            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — required to decrypt the script" required>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users are asked for the key at runtime (in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3288,9 +3297,9 @@ function viewScript(projectId, scriptId) {
     ) : '';
     var specialKeyHtml = script.specialKey ? (
         '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (gates the raw URL):</p>'
+        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (decrypts the script - NEVER in the loadstring):</p>'
         + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
-        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Anyone opening the raw URL sees a "Special Key required" page. The loadstring embeds this key automatically.</p>'
+        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Users are asked for this key at runtime (in-game popup). Share it only with people who should run the script. Keep it safe - it is never sent to the server and cannot be recovered.</p>'
         + '</div>'
     ) : '';
     var loadstringHtml = loaderUrl ? (
@@ -3300,7 +3309,7 @@ function viewScript(projectId, scriptId) {
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
         + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + '</div>'
-         + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The link opens a "Special Key required" page in a browser - the key is embedded in the loadstring itself, so it works directly in Roblox executors.</p>'
+         + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - it asks for the Special Key at runtime (in-game popup or getgenv().ScripterHubKey = "KEY"). Opening the link in a browser shows the key page. The loadstring itself contains NO key.</p>'
         + '</div>'
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
@@ -3464,8 +3473,8 @@ function editScript(projectId, scriptId) {
             <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
-            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — unlocks the raw URL / loadstring" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Changing this re-gates the raw URL with the new key (the loadstring is refreshed on save). Keep it secret or share it only with trusted users.</div>
+            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required to decrypt the script" required>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users enter the key at runtime (in-game popup). Keep it safe: it is NEVER sent to the server.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3715,8 +3724,10 @@ function confirmEditScript(projectId, scriptId) {
         recordObfuscation();
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
-        // refresh the hidden-host loader with the new code + new special key
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey).then(function(d) {
+        // refresh the hidden-host loader: encrypt with the (new) special key,
+        // kill the old loader link (replaces) so old ids stop working
+        var oldLoaderId = prevScript && prevScript.loaderId ? prevScript.loaderId : '';
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, oldLoaderId).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
