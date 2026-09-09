@@ -3171,10 +3171,11 @@ function obfuscateScriptCode(code, engine, options) {
     });
 }
 
-// ============ OPEN SCRIPT RAW (Owner Raw URL) ============
+// ============ OPEN SCRIPT RAW (hidden Loadstring Creator) ============
+// The legacy ?id=&key=&format=debug debug URL is gone (raw.html now blocks
+// it). "Raw" now opens the hidden raw page (the loadstring creator).
 function openScriptRaw(loaderId) {
-    var rawUrl = getBasePath() + 'raw.html?id=' + loaderId + '&key=' + OWNER_KEY + '&format=debug';
-    window.open(rawUrl, '_blank');
+    window.open(getBasePath() + 'raw.html?auth=1', '_blank');
 }
 
 // ============ GENERATE LOADSTRING (on demand for older scripts) ============
@@ -3246,7 +3247,7 @@ function viewScript(projectId, scriptId) {
     storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
     storeScriptForRawAccess(script.loaderId, script.code, script.name);
     storeScriptForRawAccess(script.id, script.code, script.name);
-    var ownerUrl = getBasePath() + 'raw.html?id=' + script.loaderId + '&key=' + OWNER_KEY + '&format=debug';
+    var ownerUrl = getBasePath() + 'raw.html?auth=1';
     // hidden-host loadstring (the real executor link) - uploaded at create/edit time
     var loaderUrl = script.loaderUrl || '';
     if (!loaderUrl) {
@@ -3320,10 +3321,10 @@ function viewScript(projectId, scriptId) {
                 <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' || !script.keyTime ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
             </div>
             <details style="margin-top:12px;">
-                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Owner Raw URL</summary>
+                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Hidden Raw Page (Create Loadstring)</summary>
                 <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${ownerUrl}</code>
-                    <button onclick="copyText('${ownerUrl}')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
+                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${getBasePath()}raw.html?auth=1</code>
+                    <button onclick="copyText('${getBasePath()}raw.html?auth=1')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
                 </div>
             </details>
         </div>
