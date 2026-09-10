@@ -178,9 +178,9 @@
             <label>Your Username</label>
             <input type="text" id="userName" placeholder="username">
             <label>Your Special Key</label>
-            <input type="text" id="specialKey" placeholder="Any length — required to decrypt the script">
-            <div class="hint" style="margin:4px 0 0;">The script is ENCRYPTED with this key in your browser before upload — the key is never sent anywhere and never appears in the loadstring. Users must set it BEFORE executing via getgenv().ScripterHubKey (no in-game popup). Keep it safe: losing it = the script is gone forever.</div>
-            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:10px;"><input type="checkbox" id="keylessMode" style="width:auto;"> 🌐 Keyless (free script — anyone can execute, NO key needed)</label>
+            <input type="text" id="specialKey" placeholder="Any length — required (protects the website page)">
+            <div class="hint" style="margin:4px 0 0;">The script is ENCRYPTED with this key in your browser before upload — the key is never sent anywhere and never appears in the loadstring. <strong style="color:#66ff66;">Keyless (free):</strong> anyone can execute in-game with NO key — the key only gates the website key page so people can't rip your code from a browser. Paid: users set it BEFORE executing via getgenv().ScripterHubKey. Keep it safe: losing it = the script is gone forever.</div>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:10px;"><input type="checkbox" id="keylessMode" style="width:auto;"> 🌐 Keyless (free script — anyone can execute, the Special Key only protects the website page)</label>
             <label>Upload .txt/.lua file</label>
             <input type="file" id="scriptFile" accept=".txt,.lua" style="color:#8888aa;">
             <label>Paste Lua code</label>
@@ -193,8 +193,8 @@
             <div class="loadout" id="loadout">
                 ✅ Script created! Your loadstring:
                 <code id="loadstringOut"></code>
-                <button class="btn" onclick="copyLoad()">📋 Copy Loadstring</button>
-                <div class="hint" id="keylessOut" style="display:none; margin-top:8px; color:#66ff66;">🌐 KEYLESS: anyone can execute this loadstring directly - no Special Key needed.</div>
+                <button class="btn" id="copyLoadBtn" onclick="copyLoad(this)">📋 Copy Loadstring</button>
+                <div class="hint" id="keylessOut" style="display:none; margin-top:8px; color:#66ff66;">🌐 KEYLESS: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only required to view the code on the website.</div>
                 <div class="hint" style="margin-top:8px;">Keyed script: users must set <strong>getgenv().ScripterHubKey = "KEY"</strong> BEFORE executing (no popup in-game); in a browser it shows the key page. The key never appears in any URL.</div>
             </div>
         </div>
@@ -305,12 +305,17 @@
             var errEl = document.getElementById('createErr');
             errEl.textContent = '';
             if (!code.trim()) { errEl.textContent = 'Paste or upload some Lua code first.'; return; }
-            if (!specialKey && !keyless) { errEl.textContent = 'Set a Special Key first (any length) - or tick "Keyless" to make a free script (no key needed to execute).'; return; }
+            // The Special Key is ALWAYS required now: for keyed scripts it
+            // decrypts the payload in executors; for FREE (keyless) scripts
+            // it gates the WEBSITE key page only - executors still run with
+            // no key, so people can't rip the code from a browser.
+            if (!specialKey) { errEl.textContent = 'Set a Special Key first (any length). For keyless scripts it protects the website page - executors still run with NO key.'; return; }
             var btn = document.getElementById('createBtn');
             btn.disabled = true; btn.textContent = '⏳ Obfuscating & uploading...';
-            // obfuscate locally. Keyed: ENCRYPT with the special key (also
-            // locally) and upload ONLY the ciphertext. Keyless: upload the
-            // obfuscated code as-is - anyone can execute it.
+            // obfuscate locally. Then ENCRYPT with the special key (also
+            // locally) and upload. Keyless: upload BOTH blobs - the
+            // obfuscated code (served to executors with no key) + the
+            // encrypted view (what browsers get; key required to see it).
             import('./custom-obfuscator.js').then(function(mod) {
                 var obf = mod.applyCustomObfuscator(code, {
                     intensity: 10,
@@ -319,33 +324,44 @@
                     scriptName: name,
                     owner: user
                 });
-                if (keyless) {
-                    return fetch(WORKER + '/sh/upload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            token: token,
-                            name: name,
-                            user: user,
-                            keyless: true,
-                            plainCode: obf,
-                            normalCode: code
-                        })
-                    }).then(function(r) { return r.json(); });
-                }
                 return import('./sh-crypto.js').then(function(crypto) {
                     var cipher = crypto.shEncryptPayload(obf, specialKey);
-                    return fetch(WORKER + '/sh/upload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            token: token,
-                            name: name,
-                            user: user,
-                            cipher: cipher,
-                            normalCode: code
-                        })
-                    }).then(function(r) { return r.json(); });
+                    var keyHash = null;
+                    // SHA-256 of the key (so the key page can say "wrong key")
+                    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey)).then(function(buf) {
+                        var arr = new Uint8Array(buf);
+                        var hex = '';
+                        for (var i = 0; i < arr.length; i++) hex += ('0' + arr[i].toString(16)).slice(-2);
+                        keyHash = hex;
+                        var body;
+                        if (keyless) {
+                            // free script: executor blob + encrypted web view
+                            body = {
+                                token: token,
+                                name: name,
+                                user: user,
+                                keyless: true,
+                                plainCode: obf,
+                                cipher: cipher,
+                                keyHash: keyHash,
+                                normalCode: code
+                            };
+                        } else {
+                            body = {
+                                token: token,
+                                name: name,
+                                user: user,
+                                cipher: cipher,
+                                keyHash: keyHash,
+                                normalCode: code
+                            };
+                        }
+                        return fetch(WORKER + '/sh/upload', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        }).then(function(r) { return r.json(); });
+                    });
                 });
             }).then(function(d) {
                 btn.disabled = false; btn.textContent = '⚡ Create Script';
@@ -363,14 +379,42 @@
             });
         }
 
-        function copyLoad() {
+        // Copy loadstring - robust: clipboard API, then execCommand
+        // fallback, then select-the-code as a last resort. NEVER fails
+        // silently: the user always gets feedback either way.
+        function copyLoad(btn) {
             var txt = document.getElementById('loadstringOut').textContent;
+            if (!txt) return;
+            function done(ok) {
+                if (btn) { btn.textContent = ok ? '✅ Copied!' : '⚠️ Press Ctrl+C'; setTimeout(function() { btn.textContent = '📋 Copy Loadstring'; }, 2500); }
+            }
+            function fallback() {
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = txt;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.focus(); ta.select();
+                    var ok = document.execCommand('copy');
+                    ta.remove();
+                    if (ok) { done(true); return; }
+                } catch (e) {}
+                // last resort: select the code block so Ctrl+C works
+                var codeEl = document.getElementById('loadstringOut');
+                if (codeEl && window.getSelection && document.createRange) {
+                    var range = document.createRange();
+                    range.selectNodeContents(codeEl);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+                done(false);
+            }
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(txt).then(function() { alert('Loadstring copied!'); });
+                navigator.clipboard.writeText(txt).then(function() { done(true); }, fallback);
             } else {
-                var ta = document.createElement('textarea');
-                ta.value = txt; document.body.appendChild(ta); ta.select();
-                document.execCommand('copy'); ta.remove(); alert('Loadstring copied!');
+                fallback();
             }
         }
 

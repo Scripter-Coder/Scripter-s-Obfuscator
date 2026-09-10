@@ -185,12 +185,28 @@ assert.strictEqual(marker2, 'RAN_OK_7355608', 'double-wrapped script must execut
 console.log('    OK: decrypted through 2 shells + executed in', Date.now() - t1, 'ms');
 
 console.log('[9] Anti-tamper: flipping ONE byte must break the script...');
-const tampered = outRun.replace(/"(\\\d{1,3}(?:\\\d{1,3})*)"/, (m) => {
-    // change one byte code in the middle of the payload
-    const idx = Math.floor(m.length / 2);
-    return m.slice(0, idx) + (m[idx] === '9' ? '8' : '9') + m.slice(idx + 1);
+const t9dbg = {};
+const outRun9 = applyCustomObfuscator(runnable, { intensity: 5, antiTamper: true, antiSkid: false, _debug: true }, t9dbg);
+const t9stride = t9dbg ? (JSON.parse(outRun9.match(/--\[shdebug:(\{.*?\})\]/)[1]).stride) : 19;
+const tampered = outRun9.replace(/"(\\\d{1,3}(?:\\\d{1,3})*)"/, (m) => {
+    // flip a REAL payload byte: noise bytes sit at every (stride+1)th
+    // position; flipping those does nothing (they are stripped). Pick the
+    // middle-most NON-noise byte so the flip always changes the payload.
+    const seqs = [...m.matchAll(/\\\d{1,3}/g)].map(x => ({ i: x.index, s: x[0] }));
+    const SS = t9stride + 1;
+    for (let off = 0; off < seqs.length; off++) {
+        for (const cand of [Math.floor(seqs.length / 2) + off, Math.floor(seqs.length / 2) - off]) {
+            if (cand < 0 || cand >= seqs.length) continue;
+            const pos1 = cand + 1; // 1-based position of this byte
+            if ((pos1 - 1) % SS === t9stride) continue; // noise position - skip
+            const s = seqs[cand];
+            const flipped = s.s.startsWith('\\9') ? s.s.replace(/9/, '8') : s.s.replace(/\\(\d?)/, '\\9');
+            if (flipped !== s.s) return m.slice(0, s.i) + flipped + m.slice(s.i + s.s.length);
+        }
+    }
+    return m.replace(/\\(\d)/, '\\9');
 });
-assert(tampered !== outRun, 'tampering applied');
+assert(tampered !== outRun9, 'tampering applied');
 const Lt = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lt);
 lauxlib.luaL_dostring(Lt, to_luastring(PRELUDE));
@@ -198,8 +214,8 @@ const statusT = lauxlib.luaL_dostring(Lt, to_luastring(tampered));
 lua.lua_getglobal(Lt, to_luastring('GLOBAL_MARKER'));
 const markerTRaw = lua.lua_tostring(Lt, -1);
 const markerT = markerTRaw ? to_jsstring(markerTRaw) : null;
-assert(statusT !== lua.LUA_OK || markerT !== 'RAN_OK_7355608', 'tampered script must NOT run');
-console.log('    OK: tampered script refuses to run (silently or with error)');
+assert(markerT !== 'RAN_OK_7355608', 'tampered script must NOT run the real code');
+console.log('    OK: tampered script refuses to run the real code');
 
 // ============ ANTI-LOGGER DETECTION TESTS ============
 // payload is directly executable; PRELUDE fakes the Roblox executor env
@@ -219,9 +235,17 @@ const detSrc = 'MARKER="ok"\n';
 const detObf = applyCustomObfuscator(detSrc, { intensity: 3, antiTamper: true, antiSkid: false, antiLogger: true }, dbgObj);
 luaparse.parse(detObf);
 assert(dbgObj.payload && dbgObj.payload.includes('Shutdown'), 'payload must contain kill logic');
+// anti-crack: payload-only runs need the loader's canary preset. Extract
+// name+magic from the emitted loader (genuine runs register it).
+function canaryPrelude(obfText) {
+    const m = obfText.match(/do local g=\(getgenv and getgenv\(\)\) or _G g\.(_shc[0-9a-f]+)=(\d+) end/);
+    assert(m, 'loader must register the anti-crack canary');
+    return '_G.' + m[1] + '=' + m[2] + '\n';
+}
+const DET_CANARY = canaryPrelude(detObf);
 const Lc = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lc);
-lauxlib.luaL_dostring(Lc, to_luastring(PRELUDE));
+lauxlib.luaL_dostring(Lc, to_luastring(PRELUDE + '\n' + DET_CANARY));
 const stC = lauxlib.luaL_dostring(Lc, to_luastring(dbgObj.payload));
 assert.strictEqual(stC, lua.LUA_OK, 'clean env: payload must run without error');
 assert.strictEqual(getGlobal(Lc, 'MARKER'), 'ok', 'clean env: user code must run');
@@ -231,7 +255,7 @@ console.log('    OK: clean executor env -> script runs normally, no shutdown');
 console.log('[11] Anti-logger: spy global (oldrequest / HTTP spy) MUST trigger game:Shutdown()...');
 const Lh = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lh);
-lauxlib.luaL_dostring(Lh, to_luastring(PRELUDE + '\noldrequest=function() end')); // HTTP spy artifact
+lauxlib.luaL_dostring(Lh, to_luastring(PRELUDE + '\n' + DET_CANARY + 'oldrequest=function() end')); // HTTP spy artifact
 const stH = lauxlib.luaL_dostring(Lh, to_luastring(dbgObj.payload));
 assert(getBool(Lh, 'SHUTDOWN'), 'spy global detected -> game:Shutdown() fired');
 assert(getGlobal(Lh, 'MARKER') !== 'ok', 'user code must NOT run after detection');
@@ -242,7 +266,7 @@ console.log('[12] Anti-logger: Lua-wrapped loadstring (many executors) must NOT 
 const Lw = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lw);
 const hookPre = PRELUDE + '\nlocal _ls=load or loadstring\nloadstring=function(s) return _ls(s) end'; // Lua-implemented loadstring (executor reality)
-const preW = lauxlib.luaL_dostring(Lw, to_luastring(hookPre));
+const preW = lauxlib.luaL_dostring(Lw, to_luastring(hookPre + '\n' + DET_CANARY));
 assert.strictEqual(preW, lua.LUA_OK, 'hook prelude must be valid');
 lauxlib.luaL_dostring(Lw, to_luastring(dbgObj.payload));
 assert.strictEqual(getBool(Lw, 'SHUTDOWN'), false, 'Lua-wrapped loadstring must NOT trigger (executors do this legitimately)');
@@ -253,7 +277,7 @@ console.log('[13] Anti-logger: NATIVE loadstring (real executor) must NOT trigge
 const Ln = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Ln);
 // a C-registered loadstring, like every real executor provides
-lauxlib.luaL_dostring(Ln, to_luastring(PRELUDE + '\nloadstring=load'));
+lauxlib.luaL_dostring(Ln, to_luastring(PRELUDE + '\n' + DET_CANARY + 'loadstring=load'));
 lauxlib.luaL_dostring(Ln, to_luastring(dbgObj.payload));
 assert.strictEqual(getBool(Ln, 'SHUTDOWN'), false, 'native loadstring must NOT trigger shutdown');
 assert.strictEqual(getGlobal(Ln, 'MARKER'), 'ok', 'user code must run with native loadstring');
@@ -263,7 +287,7 @@ console.log('[14] Anti-logger: overridden print/warn (executor console) must NOT
 const Lp = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lp);
 // executors replace print/warn with their own logger console functions
-lauxlib.luaL_dostring(Lp, to_luastring(PRELUDE + '\nprint=function() end\nwarn=function() end'));
+lauxlib.luaL_dostring(Lp, to_luastring(PRELUDE + '\n' + DET_CANARY + 'print=function() end\nwarn=function() end'));
 lauxlib.luaL_dostring(Lp, to_luastring(dbgObj.payload));
 assert.strictEqual(getBool(Lp, 'SHUTDOWN'), false, 'overridden print/warn must NOT trigger (regression fix)');
 assert.strictEqual(getGlobal(Lp, 'MARKER'), 'ok', 'user code must run');
@@ -285,7 +309,7 @@ const execEnv = PRELUDE + '\n' + [
     'http={request=function() end}', 'websocket={connect=function() end}',
     'loadstring=load', 'setreadonly=function() end'
 ].join('\n');
-const preE = lauxlib.luaL_dostring(Le, to_luastring(execEnv));
+const preE = lauxlib.luaL_dostring(Le, to_luastring(execEnv + '\n' + DET_CANARY));
 assert.strictEqual(preE, lua.LUA_OK, 'executor env prelude must be valid');
 lauxlib.luaL_dostring(Le, to_luastring(dbgObj.payload));
 assert.strictEqual(getBool(Le, 'SHUTDOWN'), false, 'executor built-ins incl. decompile must NOT trigger (the v3.0 bug you hit)');
@@ -298,7 +322,7 @@ lualib.luaL_openlibs(Lb);
 // fake task lib BEFORE payload so the watcher registers: spawn stores the
 // callback; wait succeeds once per "tick" then aborts the loop (one scan/run)
 const taskEnv = 'local _t={} _WATCHERS=_t _WOK=true task={spawn=function(f) table.insert(_t,f) end,wait=function() if _WOK then _WOK=false else error("stop") end end,delay=function() end,defer=function(f) f() end}';
-lauxlib.luaL_dostring(Lb, to_luastring(execEnv + '\n' + taskEnv));
+lauxlib.luaL_dostring(Lb, to_luastring(execEnv + '\n' + DET_CANARY + '\n' + taskEnv));
 lauxlib.luaL_dostring(Lb, to_luastring(dbgObj.payload)); // clean start, watcher registered
 // tick 1: clean environment -> no kill
 lauxlib.luaL_dostring(Lb, to_luastring('_WOK=true for _,f in ipairs(_WATCHERS) do pcall(f) end'));
@@ -323,6 +347,7 @@ const kgOpts = {
 const kgDbg = {};
 const kgObf = applyCustomObfuscator('MARKER="ok"\n', kgOpts, kgDbg);
 luaparse.parse(kgObf);
+const KG_CANARY = canaryPrelude(kgObf);
 assert(!kgObf.includes(VALID_KEY) && !kgObf.includes('EXPIRED-KEY-9999'), 'keys must NEVER appear in plaintext');
 assert(kgDbg.payload && !kgDbg.payload.includes(VALID_KEY), 'keys must never appear in decrypted wrapper either');
 console.log('[17] Key gate: keys embedded hashed, zero plaintext...');
@@ -331,7 +356,7 @@ console.log('    OK: no key string in output or wrapper');
 console.log('[18] Key gate: NO key -> script must abort...');
 const Lk0 = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lk0);
-lauxlib.luaL_dostring(Lk0, to_luastring(PRELUDE + '\n' + GENV));
+lauxlib.luaL_dostring(Lk0, to_luastring(PRELUDE + '\n' + GENV + KG_CANARY));
 lauxlib.luaL_dostring(Lk0, to_luastring(kgDbg.payload));
 assert.notStrictEqual(getGlobal(Lk0, 'MARKER'), 'ok', 'no key -> user code must NOT run');
 console.log('    OK: no key -> aborted');
@@ -339,7 +364,7 @@ console.log('    OK: no key -> aborted');
 console.log('[19] Key gate: WRONG key -> script must abort...');
 const Lk1 = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lk1);
-lauxlib.luaL_dostring(Lk1, to_luastring(PRELUDE + '\n' + GENV + '\nScripterHubKey="WRONG-KEY-0000"'));
+lauxlib.luaL_dostring(Lk1, to_luastring(PRELUDE + '\n' + GENV + '\n' + KG_CANARY + 'ScripterHubKey="WRONG-KEY-0000"'));
 lauxlib.luaL_dostring(Lk1, to_luastring(kgDbg.payload));
 assert.notStrictEqual(getGlobal(Lk1, 'MARKER'), 'ok', 'wrong key -> user code must NOT run');
 console.log('    OK: wrong key -> aborted');
@@ -347,7 +372,7 @@ console.log('    OK: wrong key -> aborted');
 console.log('[20] Key gate: VALID key -> script must run...');
 const Lk2 = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lk2);
-lauxlib.luaL_dostring(Lk2, to_luastring(PRELUDE + '\n' + GENV + '\nScripterHubKey="' + VALID_KEY + '"'));
+lauxlib.luaL_dostring(Lk2, to_luastring(PRELUDE + '\n' + GENV + '\n' + KG_CANARY + 'ScripterHubKey="' + VALID_KEY + '"'));
 lauxlib.luaL_dostring(Lk2, to_luastring(kgDbg.payload));
 assert.strictEqual(getGlobal(Lk2, 'MARKER'), 'ok', 'valid key -> user code MUST run');
 console.log('    OK: valid key -> script runs');
@@ -355,7 +380,7 @@ console.log('    OK: valid key -> script runs');
 console.log('[21] Key gate: EXPIRED key -> script must abort...');
 const Lk3 = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(Lk3);
-lauxlib.luaL_dostring(Lk3, to_luastring(PRELUDE + '\n' + GENV + '\nScripterHubKey="EXPIRED-KEY-9999"'));
+lauxlib.luaL_dostring(Lk3, to_luastring(PRELUDE + '\n' + GENV + '\n' + KG_CANARY + 'ScripterHubKey="EXPIRED-KEY-9999"'));
 lauxlib.luaL_dostring(Lk3, to_luastring(kgDbg.payload));
 assert.notStrictEqual(getGlobal(Lk3, 'MARKER'), 'ok', 'expired key -> user code must NOT run');
 console.log('    OK: expired key -> aborted');
@@ -375,5 +400,123 @@ lauxlib.luaL_dostring(Lk5, to_luastring(PRELUDE + '\n' + GENV));
 lauxlib.luaL_dostring(Lk5, to_luastring(kgFull));
 assert.notStrictEqual(getGlobal(Lk5, 'MARKER'), 'ok', 'full obf file without key -> aborts');
 console.log('    OK: full pipeline respects key gate');
+
+// ============ CUSTOM KEY MODE + API GLOBALS TESTS ============
+console.log('[23] Custom key mode: API globals + no built-in UI, silent wait for ScripterHubKey...');
+const customOpts = {
+    intensity: 3, antiTamper: true, antiSkid: false, antiLogger: false,
+    keyGate: { keys: [{ key: VALID_KEY, expires: null }], mode: 'custom' }
+};
+const customDbg = {};
+const customObf = applyCustomObfuscator('MARKER="ok"\n', customOpts, customDbg);
+luaparse.parse(customObf);
+const CUSTOM_CANARY = canaryPrelude(customObf);
+assert(customDbg.payload.includes('ScripterHubKeyStatus'), 'custom payload must expose API globals');
+assert(!customDbg.payload.includes('SendNotification') || customDbg.payload.includes('pcall'), 'notifications only via pcall');
+// no key -> custom mode aborts silently, but sets globals first
+const Lc1 = lauxlib.luaL_newstate();
+lualib.luaL_openlibs(Lc1);
+lauxlib.luaL_dostring(Lc1, to_luastring(PRELUDE + '\n' + GENV + CUSTOM_CANARY));
+lauxlib.luaL_dostring(Lc1, to_luastring(customDbg.payload));
+assert.notStrictEqual(getGlobal(Lc1, 'MARKER'), 'ok', 'custom mode: no key -> no run');
+lua.lua_getglobal(Lc1, to_luastring('ScripterHubKeyIncorrect'));
+assert.strictEqual(lua.lua_toboolean(Lc1, -1), true, 'ScripterHubKeyIncorrect must be true');
+lua.lua_getglobal(Lc1, to_luastring('ScripterHubKeyValid'));
+assert.strictEqual(lua.lua_toboolean(Lc1, -1), false, 'ScripterHubKeyValid must be false');
+assert.strictEqual(getGlobal(Lc1, 'ScripterHubKeyStatus'), 'Incorrect', 'ScripterHubKeyStatus must be "Incorrect"');
+assert.strictEqual(getGlobal(Lc1, 'ScripterHubWebsiteStatus'), 'Online', 'ScripterHubWebsiteStatus must be "Online"');
+console.log('    OK: no key -> Incorrect globals set, script aborts');
+// valid key -> runs + Valid globals
+const Lc2 = lauxlib.luaL_newstate();
+lualib.luaL_openlibs(Lc2);
+lauxlib.luaL_dostring(Lc2, to_luastring(PRELUDE + '\n' + GENV + '\n' + CUSTOM_CANARY + 'ScripterHubKey="' + VALID_KEY + '"'));
+lauxlib.luaL_dostring(Lc2, to_luastring(customDbg.payload));
+assert.strictEqual(getGlobal(Lc2, 'MARKER'), 'ok', 'custom mode: valid key -> runs');
+assert.strictEqual(getGlobal(Lc2, 'ScripterHubKeyStatus'), 'Valid', 'ScripterHubKeyStatus must be "Valid"');
+lua.lua_getglobal(Lc2, to_luastring('ScripterHubKeyValid'));
+assert.strictEqual(lua.lua_toboolean(Lc2, -1), true, 'ScripterHubKeyValid must be true');
+console.log('    OK: valid key -> Valid globals, script runs');
+
+console.log('[24] No-key scripts: API globals say "No Key Required"...');
+const noKeyObf = applyCustomObfuscator('MARKER="ok"\n', { intensity: 2 });
+const Ln2 = lauxlib.luaL_newstate();
+lualib.luaL_openlibs(Ln2);
+lauxlib.luaL_dostring(Ln2, to_luastring(PRELUDE + '\n' + GENV));
+lauxlib.luaL_dostring(Ln2, to_luastring(noKeyObf));
+assert.strictEqual(getGlobal(Ln2, 'MARKER'), 'ok', 'no-key script must run');
+assert.strictEqual(getGlobal(Ln2, 'ScripterHubKeyStatus'), 'No Key Required', 'status must be No Key Required');
+lua.lua_getglobal(Ln2, to_luastring('ScripterHubKeyValid'));
+assert.strictEqual(lua.lua_toboolean(Ln2, -1), true, 'ScripterHubKeyValid must be true for keyless scripts');
+console.log('    OK: keyless scripts expose No Key Required + run');
+
+console.log('[25] Stats beacon: worker endpoint embedded when statsEndpoint set...');
+const beaconDbg = {};
+const beaconObf = applyCustomObfuscator('MARKER="ok"\n', { intensity: 2, statsEndpoint: 'https://scripterhub-stats.test.workers.dev' }, beaconDbg);
+luaparse.parse(beaconObf);
+assert(beaconDbg.payload.includes('/track'), 'beacon must ping /track');
+// URL is escaped as \ddd byte sequences inside the Lua string - check its escaped form
+const escUrl = 'https://scripterhub-stats.test.workers.dev'.split('').map(c => '\\' + c.charCodeAt(0)).join('');
+assert(beaconDbg.payload.includes(escUrl), 'worker URL embedded (escaped)');
+assert(beaconDbg.payload.includes('identifyexecutor'), 'beacon reports executor name');
+const plainDbg = {};
+applyCustomObfuscator('MARKER="ok"\n', { intensity: 2 }, plainDbg);
+assert(!plainDbg.payload.includes('/track'), 'no beacon when statsEndpoint not set');
+console.log('    OK: beacon only present when statsEndpoint configured');
+
+// ============ ANTI-CRACK CANARY / DECOY TESTS ============
+// capture prints so we can verify the decoy output
+function runWithPrintCapture(pre, code) {
+    const L = lauxlib.luaL_newstate();
+    lualib.luaL_openlibs(L);
+    lauxlib.luaL_dostring(L, to_luastring('print=function(...) local p={} for i=1,select("#",...) do p[#p+1]=tostring((select(i,...))) end PRINTED=table.concat(p," ") end'));
+    lauxlib.luaL_dostring(L, to_luastring(pre));
+    lauxlib.luaL_dostring(L, to_luastring(code));
+    return L;
+}
+
+console.log('[26] Anti-crack: loader registers canary before loadstring...');
+assert(canaryPrelude(beaconObf), 'canary registration present in loader output');
+console.log('    OK: canary emitted');
+
+console.log('[27] Anti-crack: DUMPED payload (standalone run) must hit the DECOY, not the real code...');
+const acSrc = 'MARKER="REAL_CODE_RAN"\n';
+const acDbg = {};
+const acObf = applyCustomObfuscator(acSrc, { intensity: 3, antiTamper: true, antiSkid: false, antiLogger: false }, acDbg);
+luaparse.parse(acObf);
+assert(!acDbg.payload.includes('Goodluck Sonion'), 'decoy message must be encrypted, never plaintext');
+// the dump: run the payload standalone WITHOUT the loader's registration
+const Ld = runWithPrintCapture(PRELUDE + '\n' + GENV, acDbg.payload);
+assert.notStrictEqual(getGlobal(Ld, 'MARKER'), 'REAL_CODE_RAN', 'dumped payload must NOT run the real code');
+const dumped = getGlobal(Ld, 'PRINTED') || '';
+assert(dumped.includes('Goodluck Sonion'), 'dump must print the anti-crack message, got: ' + JSON.stringify(dumped));
+console.log('    OK: dump attack -> decoy fires ("' + dumped + '")');
+
+console.log('[28] Anti-crack: GENUINE run (canary registered by loader) must run the real code...');
+const Lg = runWithPrintCapture(PRELUDE + '\n' + GENV, acObf);
+assert.strictEqual(getGlobal(Lg, 'MARKER'), 'REAL_CODE_RAN', 'genuine run must execute the real code');
+console.log('    OK: genuine run -> real code executes');
+
+console.log('[29] Anti-crack: canary is ONE-SHOT (re-running the dump again fails too)...');
+// run 1 WITH the canary pre-registered = genuine; then clear MARKER and run
+// the same payload again: the canary was consumed -> run 2 must hit the decoy
+const Ls = runWithPrintCapture(PRELUDE + '\n' + GENV + canaryPrelude(acObf), acDbg.payload);
+assert.strictEqual(getGlobal(Ls, 'MARKER'), 'REAL_CODE_RAN', 'run 1 (canary present) must run the real code');
+lauxlib.luaL_dostring(Ls, to_luastring('MARKER=nil PRINTED=nil'));
+lauxlib.luaL_dostring(Ls, to_luastring(acDbg.payload));
+assert.notStrictEqual(getGlobal(Ls, 'MARKER'), 'REAL_CODE_RAN', 'second run must not re-run real code');
+const printed2 = getGlobal(Ls, 'PRINTED') || '';
+assert(printed2.includes('Goodluck Sonion'), 'second run must hit the decoy too');
+console.log('    OK: one-shot canary -> re-run lands on decoy');
+
+console.log('[30] Anti-crack: custom anti-crack message honored + never leaked...');
+const acCustomDbg = {};
+const acCustom = applyCustomObfuscator(acSrc, { intensity: 2, antiCrackMessage: 'nice try skid', _debug: true }, acCustomDbg);
+luaparse.parse(acCustom);
+assert(!acCustom.includes('nice try skid'), 'custom message must not leak in plaintext');
+const Lcc = runWithPrintCapture(PRELUDE + '\n' + GENV, acCustomDbg.payload);
+// (decoded payload = what a cracker would dump)
+const printed3 = getGlobal(Lcc, 'PRINTED') || '';
+assert(printed3.includes('nice try skid'), 'custom decoy message must fire');
+console.log('    OK: custom message fires on dump');
 
 console.log('\nALL TESTS PASSED - Custom Obfuscator works.');

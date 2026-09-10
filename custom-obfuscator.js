@@ -92,6 +92,27 @@ function encLayer(bytes, key, off, shift) {
     return out;
 }
 
+// ---------- ANTI-CRACK DECOY SYSTEM ----------
+// When someone dumps the decrypted string from loadstring / hooks the VM /
+// deobfuscates statically, they must not get the real script. We emit a
+// DECOY pipeline that looks 100% like the real decryption path (same style,
+// same helpers, same names) but produces a troll string instead. The REAL
+// path is only reachable through all genuine layer keys + a magic derived
+// from the checksum; any patched/dumped path lands on a decoy.
+// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion 💖").
+function buildDecoyLayer(seedStr) {
+    // deterministic-per-generation decoy key bytes
+    var s = seedStr + hex(24);
+    var kb = [];
+    for (var i = 0; i < s.length; i++) kb.push((s.charCodeAt(i) * (i + 7) + 41) % 251 + 2);
+    return kb;
+}
+function luaEscapeStr(s) {
+    var b = strToBytes(s), out = '';
+    for (var i = 0; i < b.length; i++) out += '\\' + b[i];
+    return out;
+}
+
 // ============================================================
 // SECURITY WRAPPER (gets encrypted inside the payload)
 // ============================================================
@@ -99,12 +120,94 @@ function buildSecurityWrapper(options, meta) {
     var antiSkid = options.antiSkid !== false;
     var envLogging = options.envLogging === true;
     var antiLogger = options.antiLogger !== false;
+    // ANTI-CRACK: never disabled (protects every script). Custom message optional.
+    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion 💖');
     var wm = 'SHv2::' + hex(12) + '::' + meta.name + '::' + meta.owner + '::' + hex(6);
     var wmSum = wmChecksum(wm);
-    var n = makeNames(56);
+    var n = makeNames(72);
     var parts = [];
 
     parts.push('--[[' + hex(40) + ' | protected payload | ' + hex(40) + ']]');
+
+    // ---------- ANTI-CRACK DECOY CORE (always on) ----------
+    // How a crack works: dump the string handed to loadstring, then run it
+    // standalone (or hook loadstring). Defense:
+    //   - The LOADER VM (buildLoader) registers a runtime CANARY into genv
+    //     right before it calls the decrypted payload. The registration code
+    //     is NOT part of the payload string.
+    //   - The payload CHECKS the canary. A cracker who dumps the decrypted
+    //     string loses the registration context -> canary missing -> they
+    //     get the DECOY instead, which prints the anti-crack message
+    //     ("Goodluck Sonion 💖").
+    //   - After a pass the canary is DELETED (one-shot), so "run genuine
+    //     first, dump later" also lands on the decoy.
+    //   - Encrypted decoy payloads + a decoy decryptor identical in shape
+    //     to the real loader logic waste the analyst's time.
+    // options._canary = { name, magic } is created by applyCustomObfuscator
+    // so the loader and the payload share the same values. Self-registration
+    // mode (Aegis path, no loader of ours) registers + checks in one chunk.
+    var canary = options._canary || { name: '_shc' + hex(10), magic: rndInt(100000, 999999) * 3 + 7 };
+    var canaryName = canary.name;
+    var magic = canary.magic;
+    var selfReg = options._canarySelfReg === true;
+    var D1 = n[57], D2 = n[58], D3 = n[59], DX = n[64];
+    var TK = n[60], DV1 = n[62], QC = n[69], QV = n[70], GENV1 = n[71];
+    var decoyKey1 = buildDecoyLayer(meta.id + 'A');
+    var decoyKey2 = buildDecoyLayer(meta.id + 'B');
+    var decoyKey3 = buildDecoyLayer(meta.id + 'C');
+    function decoyEnc(msg, key) {
+        var b = strToBytes(msg), out = [];
+        for (var i = 0; i < b.length; i++) out.push((b[i] ^ key[i % key.length]) & 0xFF);
+        return out;
+    }
+    function decoyLuaArr(bytes) {
+        var s = '';
+        for (var i = 0; i < bytes.length; i++) s += (i ? ',' : '') + bytes[i];
+        return '{' + s + '}';
+    }
+    // 3 decoy payloads: variations of the troll print + one silent no-op
+    var dPayloads = [
+        'print(' + JSON.stringify(antiCrackMsg) + ')',
+        'warn(' + JSON.stringify(antiCrackMsg) + ') print(' + JSON.stringify(antiCrackMsg) + ')',
+        '-- ' + hex(20)
+    ];
+    parts.push(
+        'do',
+        // --- decoy data (looks exactly like the real encrypted payload) ---
+        ' local ' + D1 + '=' + decoyLuaArr(decoyEnc(dPayloads[0], decoyKey1)),
+        ' local ' + D2 + '=' + decoyLuaArr(decoyEnc(dPayloads[1], decoyKey2)),
+        ' local ' + D3 + '=' + decoyLuaArr(decoyEnc(dPayloads[2], decoyKey3)),
+        ' local ' + TK + '={' + decoyKey1.join(',') + '}',
+        // --- decoy decryptor (same shape as the real loader's) ---
+        ' local function ' + DX + '(src,k)',
+        '  local o={} for i=1,#src do local x=src[i] local y=k[((i-1)%#k)+1]',
+        '   local r,p=0,1 for _=1,8 do local a=x%2 local b=y%2 if a~=b then r=r+p end x=(x-a)/2 y=(y-b)/2 p=p*2 end',
+        '   o[i]=string.char(r)',
+        '  end',
+        '  return table.concat(o)',
+        ' end',
+        ' local function ' + DV1 + '(src,k) return ' + DX + '(src or ' + D1 + ',k or ' + TK + ') end',
+        // --- integrity gate: only run the REAL code below when the canary
+        //     set by the genuine loader is present. If the string was dumped
+        //     and re-run elsewhere, the canary is missing -> decoy fires and
+        //     prints the anti-crack message. One-shot: the canary is deleted
+        //     on pass so a later re-run of a dump also lands on the decoy.
+        (selfReg ? ' local ' + GENV1 + '=(getgenv and getgenv()) or _G ' + GENV1 + '.' + canaryName + '=' + magic : null),
+        ' local function ' + QC + '()',
+        '  local g=(getgenv and getgenv()) or _G',
+        '  return g.' + canaryName + '==' + magic,
+        ' end',
+        ' local ' + QV + '=' + QC + '()',
+        ' if ' + QV + ' then local g=(getgenv and getgenv()) or _G g.' + canaryName + '=nil end',
+        ' if not ' + QV + ' then',
+        // decoy path: decrypt the (encrypted) decoy payload and run it.
+        // EVERY branch is encrypted - the message never appears in plaintext.
+        '  pcall(function() local f=loadstring or load local fn=f(' + DV1 + '(nil,nil),"=[sh]") if fn then fn() end end)',
+        '  pcall(function() local f=loadstring or load local fn=f(' + DV1 + '(' + D2 + ',' + TK + '),"=[sh]") if fn then fn() end end)',
+        '  return',
+        ' end',
+        'end'
+    );
 
     // ---------- KEY GATE (keys are embedded HASHED - never plaintext) ----------
     // keyMode: 'default' = Roblox Core notifications + popup key card
@@ -493,6 +596,13 @@ function buildLoader(src, layerCount, options) {
     out.push('local ' + SRC + '=table.concat(' + R + ')');
     out.push(P + '=nil ' + T + '=nil ' + R + '=nil ' + K + '=nil ' + JL + '=nil ' + L + '=nil');
     out.push(junkLuaLines(layerCount + 2));
+    // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
+    // before compiling the payload. The registration lives in the loader
+    // chunk - a dumped payload string does NOT contain it, so re-running a
+    // dump lands on the decoy ("Goodluck Sonion 💖").
+    if (options._canary) {
+        out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
+    }
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
     out.push('if ' + F + ' then ' + F + '() end');
@@ -516,6 +626,10 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         name: options.scriptName || 'script',
         owner: options.owner || 'unknown'
     };
+
+    // shared one-shot canary: registered by the loader, checked+deleted by
+    // the payload. Dumped payloads miss the registration -> decoy fires.
+    options._canary = { name: '_shc' + hex(10), magic: rndInt(100000, 999999) * 3 + 7 };
 
     var payload = buildSecurityWrapper(options, meta) + code;
 
@@ -549,6 +663,10 @@ export function buildWrappedPayload(code, options, debugInfo) {
         name: options.scriptName || 'script',
         owner: options.owner || 'unknown'
     };
+    // Aegis has no ScripterHub loader VM, so the payload must register the
+    // canary itself (self-reg mode) - still catches loadstring dumps.
+    options._canary = options._canary || { name: '_shc' + hex(10), magic: rndInt(100000, 999999) * 3 + 7 };
+    options._canarySelfReg = true;
     var payload = buildSecurityWrapper(options, meta) + code;
     if (debugInfo) debugInfo.payload = payload;
     return payload;

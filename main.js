@@ -107,8 +107,11 @@ async function shLoginRaw() {
 // the worker only ever receives ciphertext. The loadstring contains NO key;
 // users set it BEFORE executing via getgenv().ScripterHubKey (no in-game
 // popup GUI ships in the payload - just the getgenv read + notifications).
-// KEYLESS MODE (specialKey empty + keyless=true): for free scripts - the
-// obfuscated code is uploaded as-is and executes directly, NO key needed.
+// KEYLESS MODE (free scripts): the Special Key is REQUIRED here too - it
+// gates the WEBSITE key page only. Executors still run the script with NO
+// key (the worker serves the executor blob directly), but browsers must
+// supply the key to view the code. That makes free scripts much harder to
+// rip from the website while keeping them free to execute in-game.
 async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces, keyless) {
     try {
         let token = shGetRawToken();
@@ -117,18 +120,20 @@ async function shUploadLoader(name, user, obfCode, normalCode, specialKey, repla
             if (!ok) return { ok: false, error: 'login failed (wrong code or canceled)' };
             token = shGetRawToken();
         }
+        // keyless scripts ALSO require the Special Key now (website gate)
+        if (!specialKey) return { ok: false, error: 'Special Key is required' };
+        // 1) encrypt locally — the key never leaves this browser
+        const cipher = shEncryptPayload(obfCode, specialKey);
+        const keyHash = await (async () => {
+            const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
+            return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+        })();
         let payload;
         if (keyless) {
-            // free script: store the obfuscated code as-is (no key gate)
-            payload = { token: token, name: name, user: user, keyless: true, plainCode: obfCode, replaces: replaces || '', normalCode: normalCode || '' };
+            // free script: executor blob (plainCode, no key needed in-game)
+            // + browser view (cipher, Special Key required on the website)
+            payload = { token: token, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
         } else {
-            if (!specialKey) return { ok: false, error: 'Special Key is required' };
-            // 1) encrypt locally — the key never leaves this browser
-            const cipher = shEncryptPayload(obfCode, specialKey);
-            const keyHash = await (async () => {
-                const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
-                return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-            })();
             payload = { token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
         }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
@@ -2284,13 +2289,16 @@ function confirmChangePlan(email) {
     if (user.plan === newPlan) { showNotification('Info', 'User already has this plan.', 'info'); return; }
     if (!confirm('Are you sure you want to change ' + user.username + '\'s plan from ' + user.plan + ' to ' + newPlan + '?')) return;
     user.plan = newPlan;
+    if (!user.stats) user.stats = { projects: { used: 0, max: 1 }, keys: { used: 0, max: 2 }, scripts: { used: 0, max: 3 }, fileSize: { used: 0, max: 5 } };
+    if (!user.stats.projects) user.stats.projects = { used: 0, max: 1 };
+    if (!user.stats.keys) user.stats.keys = { used: 0, max: 2 };
+    if (!user.stats.scripts) user.stats.scripts = { used: 0, max: 3 };
+    if (!user.stats.fileSize) user.stats.fileSize = { used: 0, max: 5 };
     user.stats.projects.max = config.projects;
     user.stats.keys.max = config.keys;
     user.stats.scripts.max = config.scripts;
     user.stats.fileSize.max = config.fileSize;
     saveUsers();
-    // sync the plan change to every other device
-    shPushCloudUserUpdate(email, user);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
@@ -2301,6 +2309,17 @@ function confirmChangePlan(email) {
         delete userData.password;
         updateUIForUser(userData);
     }
+    // sync the plan change to the cloud (every other device). AWAITED with
+    // error reporting - a silent 401 here used to mean nobody ever got
+    // their plan (the old bug).
+    var btnText = 'Plan synced to the cloud ✓';
+    shPushCloudUserUpdate(email, { ...user }).then(function(d) {
+        if (d && d.ok) {
+            showNotification('Cloud Synced', btnText, 'success', 4000);
+        } else {
+            showNotification('Cloud Sync Failed', (d && d.error) || 'Plan saved locally but NOT synced to other devices. Check the worker deployment / owner password.', 'warning', 8000);
+        }
+    });
 }
 
 // ============ CHANGE OWN PLAN ============
@@ -3023,8 +3042,8 @@ function openCreateScript(projectId) {
             <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
-            <div class="form-group"><label>Your Special Key <span style="color:#555577;">(skip for keyless)</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — required to decrypt the script">
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever. <strong style="color:#66ff66;">Leave empty + tick "Free For Everyone" = keyless script (anyone can execute, no key).</strong></div>
+            <div class="form-group"><label>Your Special Key</label><input type="text" id="scriptSpecialKey" placeholder="Any length — required (protects the website page)">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute it in-game with NO key - the key only gates the website key page (so people can't rip your code from the browser). <strong style="color:#ff9999;">Paid:</strong> users must set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server; losing it = the script is gone forever.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3071,7 +3090,7 @@ function openCreateScript(projectId) {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptLightningMode"> ⚡ Lightning Mode</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSecurityUpdates" checked> 🔄 Enable Security Updates</label>
             </div>
-            <div class="field-hint" style="margin-bottom:10px;">🌐 Free For Everyone = anyone can execute. 🔇 Silent = no console outputs (not recommended). 💓 Heartbeat = more secure (recommended). ⚡ Lightning = faster but removes some inline security checks. 🔄 Security Updates = stores your raw script encrypted for automated updates (recommended).</div>
+            <div class="field-hint" style="margin-bottom:10px;">🌐 Free For Everyone = anyone can execute (NO key in executors - the Special Key only gates the website page). 🔇 Silent = no console outputs (not recommended). 💓 Heartbeat = more secure (recommended). ⚡ Lightning = faster but removes some inline security checks. 🔄 Security Updates = stores your raw script encrypted for automated updates (recommended).</div>
             ${project.type === 'key' ? `
             <div class="form-group">
                 <label>🔑 Choose How Key Works</label>
@@ -3225,10 +3244,12 @@ function confirmCreateScript(projectId) {
     var gameId = document.getElementById('scriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
-    // Special Key only required for protected scripts - keyless (free for
-    // everyone) scripts execute directly with NO key
+    // The Special Key is ALWAYS required now - for paid scripts it decrypts
+    // the payload in executors; for FREE scripts it gates the WEBSITE key
+    // page only (executors run free scripts with no key, but the code can
+    // only be VIEWED on the website with the key).
     var isKeyless = freeForEveryone;
-    if (!specialKey && !isKeyless) { showNotification('Error', 'Your Special Key is required - or check "Free For Everyone" to make this script keyless (no key needed to execute).', 'error', 7000); return; }
+    if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
     var projects = loadProjects();
     var projectIndex = -1;
@@ -3417,9 +3438,9 @@ function generateLoadstring(projectId, scriptId) {
     }
     if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     if (!script.code) { showNotification('Error', 'This script has no code.', 'error'); return; }
-    var isKeyless = !!script.keyless || (script.freeForEveryone && !script.specialKey);
-    if (!script.specialKey && !isKeyless) {
-        showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one (or check "Free For Everyone" for a keyless script).', 'warning', 7000);
+    var isKeyless = !!script.keyless || !!script.freeForEveryone;
+    if (!script.specialKey) {
+        showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one - it encrypts the script (paid) or gates the website page (free).', 'warning', 7000);
         return;
     }
     showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
@@ -3561,8 +3582,8 @@ function editScript(projectId, scriptId) {
             <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
-            <div class="form-group"><label>Your Special Key <span style="color:#555577;">(skip for keyless)</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required to decrypt the script">
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server. <strong style="color:#66ff66;">Leave empty + tick "Free For Everyone" = keyless script (anyone can execute, no key).</strong></div>
+            <div class="form-group"><label>Your Special Key</label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required (protects the website page)">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute in-game with NO key - the key only gates the website key page. <strong style="color:#ff9999;">Paid:</strong> users set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3688,10 +3709,10 @@ function confirmEditScript(projectId, scriptId) {
     var gameId = document.getElementById('editScriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
-    // Special Key only required for protected scripts - keyless (free for
-    // everyone) scripts execute directly with NO key
+    // The Special Key is ALWAYS required (paid: decrypts in executors;
+    // free: gates the website page only - executors run it keyless)
     var isKeyless = freeForEveryone;
-    if (!specialKey && !isKeyless) { showNotification('Error', 'Your Special Key is required - or check "Free For Everyone" to make this script keyless (no key needed to execute).', 'error', 7000); return; }
+    if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     var projects = loadProjects();
     // duplicate name check (within project, excluding this script)
@@ -3911,7 +3932,7 @@ function openScriptSettings(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     var loaderUrl = script.loaderUrl || '';
-    var isKeyless = !!script.keyless || (script.freeForEveryone && !script.specialKey);
+    var isKeyless = !!script.keyless || !!script.freeForEveryone;
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
@@ -3920,7 +3941,7 @@ function openScriptSettings(projectId, scriptId) {
         + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + '</div>'
         + (isKeyless
-            ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 KEYLESS script: anyone can execute this loadstring directly - NO key needed. (The code is still obfuscated.)</p>'
+            ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 FREE script: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only needed to VIEW the code on the website (the key page). The code is obfuscated.</p>'
             : '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>')
         + '</div>'
     ) : (
@@ -3933,13 +3954,15 @@ function openScriptSettings(projectId, scriptId) {
         '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (decrypts the script - NEVER in the loadstring):</p>'
         + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
-        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Users must set this key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> - there is no popup. Share it only with people who should run the script.</p>'
+        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">' + (isKeyless
+            ? 'FREE script: the key is only needed to view the code on the <strong>website</strong> key page - executors run the script with NO key.'
+            : 'Users must set this key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> - there is no popup. Share it only with people who should run the script.') + '</p>'
         + '</div>'
-    ) : (isKeyless
-        ? '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#66ff66; font-size:13px; margin:0; font-weight:600;">🌐 Keyless script - no Special Key. Anyone can execute the loadstring.</p>'
+    ) : (
+        '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
+        + '<p style="color:#8888aa; font-size:12px; margin:0;">⚠️ No Special Key on this script. Edit the script and set one (paid: decrypts in executors; free: gates the website page).</p>'
         + '</div>'
-        : '');
+    );
     var keyInfoHtml = script.requireKey ? (
         '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script also requires a Users Key!</p>'
@@ -4062,6 +4085,21 @@ async function shRefreshOwnCloudRecord(localRecord) {
         }
     } catch (e) { /* offline: local record stays */ }
 }
+
+// keep the logged-in user's plan/profile in sync: poll the cloud every
+// 60s and whenever the tab regains focus, so plan changes made by the
+// owner land on every device WITHOUT a manual page refresh.
+setInterval(function() {
+    if (!currentUser || !currentUser.email) return;
+    var lu = users[currentUser.email];
+    if (lu && lu.password) shRefreshOwnCloudRecord(lu);
+}, 60000);
+document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && currentUser && currentUser.email) {
+        var lu = users[currentUser.email];
+        if (lu && lu.password) shRefreshOwnCloudRecord(lu);
+    }
+});
 
 function showHomePage() {
     var homePage = document.getElementById('homePage');
