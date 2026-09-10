@@ -105,7 +105,8 @@ async function shLoginRaw() {
 // specialKey = the owner's per-script Special Key (any length). The script
 // is ENCRYPTED IN THIS BROWSER with the key (sh-crypto.js) BEFORE upload —
 // the worker only ever receives ciphertext. The loadstring contains NO key;
-// users are asked for it at runtime (in-game popup / getgenv().ScripterHubKey).
+// users set it BEFORE executing via getgenv().ScripterHubKey (no in-game
+// popup GUI ships in the payload - just the getgenv read + notifications).
 async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces) {
     try {
         if (!specialKey) return { ok: false, error: 'Special Key is required' };
@@ -137,6 +138,142 @@ async function shUploadLoader(name, user, obfCode, normalCode, specialKey, repla
     } catch (e) {
         return { ok: false, error: e.message };
     }
+}
+
+// ============ CROSS-DEVICE USER SYNC (Cloudflare KV) ============
+// The Users/Admin panels used to read only localStorage, so they only
+// showed accounts created on the SAME device. Accounts are now mirrored
+// to the worker KV, so every device sees every user, and users can log
+// in from any device. Local storage stays the working copy (offline
+// fallback); cloud is the source of truth for the panels.
+
+function shApi(endpoint, body) {
+    return fetch(SH_STATS_ENDPOINT + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+    }).then(function(r) { return r.json(); }).catch(function() { return { ok: false, error: 'network' }; });
+}
+
+// push one local user record to the cloud (public fields only)
+function shPushUser(user) {
+    if (!user || !user.email) return Promise.resolve({ ok: false });
+    return shApi('sh/user-sync', {
+        email: user.email,
+        password: '', // no password change for existing records
+        user: {
+            id: user.id, email: user.email, username: user.username,
+            plan: user.plan, description: user.description || '',
+            createdAt: user.createdAt, profileImage: user.profileImage || '',
+            bannerImage: user.bannerImage || '', theme: user.theme || 'default',
+            stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
+            disabled: !!user.disabled
+        }
+    });
+}
+
+// full login sync: push the local record, then pull the cloud map
+// (only the owner 'Scripter' account gets admin flags preserved)
+async function shSyncUsersOnLogin(user, rawPassword) {
+    try {
+        if (user && user.email && rawPassword) {
+            await shApi('sh/user-sync', {
+                email: user.email,
+                password: rawPassword,
+                user: {
+                    id: user.id, email: user.email, username: user.username,
+                    plan: user.plan, description: user.description || '',
+                    createdAt: user.createdAt, profileImage: user.profileImage || '',
+                    bannerImage: user.bannerImage || '', theme: user.theme || 'default',
+                    stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
+                    disabled: !!user.disabled
+                }
+            });
+        }
+        if (currentUser && currentUser.username === 'Scripter') {
+            var cloud = await shPullCloudUsers();
+            if (cloud) {
+                // merge cloud users into local (cloud wins for records that
+                // exist in both, but keep any local-only users too)
+                var changed = false;
+                for (var k in cloud) {
+                    var cu = cloud[k];
+                    var lu = users[k];
+                    if (!lu) { users[k] = cu; changed = true; }
+                    else if (JSON.stringify(lu) !== JSON.stringify(cu)) { users[k] = cu; changed = true; }
+                }
+                if (changed) saveUsers();
+            }
+        }
+    } catch (e) { /* offline: keep working locally */ }
+}
+
+// owner-token pull of all cloud users -> { email: user } (no passwords)
+async function shPullCloudUsers() {
+    try {
+        let token = shGetRawToken();
+        if (!token) {
+            const ok = await shLoginRaw();
+            if (!ok) return null;
+            token = shGetRawToken();
+        }
+        const res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token));
+        let d = await res.json();
+        if (!d.ok && /author/i.test(d.error || '')) {
+            sessionStorage.removeItem('sh_raw_token');
+            const ok2 = await shLoginRaw();
+            if (ok2) {
+                const res2 = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(shGetRawToken()));
+                d = await res2.json();
+            }
+        }
+        if (d.ok && d.users) {
+            // re-attach local passwords where we have them (panels need them
+            // for delete/edit flows; cloud never stores them in responses)
+            for (var k in d.users) {
+                if (users[k] && users[k].password) d.users[k].password = users[k].password;
+            }
+            return d.users;
+        }
+        return null;
+    } catch (e) { return null; }
+}
+
+// owner-token upsert/delete of cloud user records (plan changes, deletes)
+async function shPushCloudUserUpdate(email, userRecord) {
+    try {
+        let token = shGetRawToken();
+        if (!token) {
+            const ok = await shLoginRaw();
+            if (!ok) return { ok: false };
+            token = shGetRawToken();
+        }
+        return await shApi('sh/users', { token: token, email: email, user: userRecord });
+    } catch (e) { return { ok: false }; }
+}
+
+async function shDeleteCloudUser(email) {
+    try {
+        let token = shGetRawToken();
+        if (!token) {
+            const ok = await shLoginRaw();
+            if (!ok) return { ok: false };
+            token = shGetRawToken();
+        }
+        return await shApi('sh/users-delete', { token: token, email: email });
+    } catch (e) { return { ok: false }; }
+}
+
+async function shClearCloudUsers(keepEmails) {
+    try {
+        let token = shGetRawToken();
+        if (!token) {
+            const ok = await shLoginRaw();
+            if (!ok) return { ok: false };
+            token = shGetRawToken();
+        }
+        return await shApi('sh/users-clear', { token: token, keep: (keepEmails || []).join(',') });
+    } catch (e) { return { ok: false }; }
 }
 
 // ============ PLAN LIMIT ENFORCEMENT ============
@@ -393,32 +530,28 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// ============ SCRIPT STORAGE FOR RAW ACCESS ============
-function storeScriptForRawAccess(scriptId, code, scriptName) {
-    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
-    scriptStore[scriptId] = code;
-    localStorage.setItem('scriptStore', JSON.stringify(scriptStore));
-    var scriptNames = JSON.parse(localStorage.getItem('scriptNames') || '{}');
-    scriptNames[scriptId] = scriptName;
-    localStorage.setItem('scriptNames', JSON.stringify(scriptNames));
+// ============ LEGACY SCRIPT STORAGE (REMOVED) ============
+// The old raw/local loader system stored full obfuscated code copies in
+// localStorage ('scriptStore' / 'scriptNames' / 'loaderStore') — this
+// blew past the browser storage quota on every "Create Script" and
+// served no purpose anymore (raw hosting + loadstrings now live on the
+// hidden Cloudflare worker host). These are no-op stubs so old callers
+// don't break, and they purge any leftover data to free the quota.
+function purgeLegacyScriptStores() {
+    try { localStorage.removeItem('scriptStore'); } catch (e) {}
+    try { localStorage.removeItem('scriptNames'); } catch (e) {}
+    try { localStorage.removeItem('loaderStore'); } catch (e) {}
 }
+purgeLegacyScriptStores();
 
-function getScriptForRawAccess(scriptId) {
-    var scriptStore = JSON.parse(localStorage.getItem('scriptStore') || '{}');
-    return scriptStore[scriptId] || null;
-}
+function storeScriptForRawAccess(scriptId, code, scriptName) { /* removed: see purgeLegacyScriptStores */ }
 
-// ============ SCRIPT LOADER SYSTEM ============
-function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) {
-    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-    loaderStore[scriptId] = { code: scriptCode, name: scriptName, loaderKey: loaderKey || '', timestamp: Date.now() };
-    localStorage.setItem('loaderStore', JSON.stringify(loaderStore));
-}
+function getScriptForRawAccess(scriptId) { return null; }
 
-function getScriptForLoader(scriptId) {
-    var loaderStore = JSON.parse(localStorage.getItem('loaderStore') || '{}');
-    return loaderStore[scriptId] ? loaderStore[scriptId].code : null;
-}
+// ============ SCRIPT LOADER SYSTEM (legacy local loader — removed) ============
+function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) { /* removed: see purgeLegacyScriptStores */ }
+
+function getScriptForLoader(scriptId) { return null; }
 
 // ============ GENERATE KEY ============
 // 30 characters with Uppercase + Lowercase + Numbers + Symbols
@@ -1696,6 +1829,11 @@ function handleSignup(event) {
     saveUsers();
     closeModal('signup');
     showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
+    // mirror the account to the cloud so it shows on every device
+    shApi('sh/user-signup', {
+        email: email, username: username, password: password,
+        description: description || '', id: user.id, createdAt: user.createdAt
+    }).catch(function() {});
     document.getElementById('signupForm').reset();
     var userData = { ...user };
     delete userData.password;
@@ -1720,12 +1858,25 @@ function handleLogin(event) {
             break;
         }
     }
-    if (!foundUser) {
-        showNotification('Error', 'Invalid email/username or password.', 'error');
-        return;
-    }
-    if (btoa(password) !== foundUser.password) {
-        showNotification('Error', 'Invalid email/username or password.', 'error');
+    if (!foundUser || btoa(password) !== foundUser.password) {
+        // not in this device's storage -> try the cloud (cross-device login)
+        shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: password }).then(function(d) {
+            if (d.ok && d.user) {
+                users[d.user.email] = d.user;
+                users[d.user.email].password = btoa(password);
+                saveUsers();
+                closeModal('login');
+                showNotification('Welcome Back!', 'Logged in successfully!', 'success');
+                document.getElementById('loginForm').reset();
+                var cloudData = { ...d.user };
+                delete cloudData.password;
+                updateUIForUser(cloudData);
+                shSyncUsersOnLogin(d.user, password);
+                console.log('✅ User logged in (cloud):', d.user.username);
+            } else {
+                showNotification('Error', 'Invalid email/username or password.', 'error');
+            }
+        });
         return;
     }
     closeModal('login');
@@ -1734,6 +1885,8 @@ function handleLogin(event) {
     var userData = { ...foundUser };
     delete userData.password;
     updateUIForUser(userData);
+    // cross-device: push this login to the cloud + pull all users (owner)
+    shSyncUsersOnLogin(foundUser, password);
     console.log('✅ User logged in:', userData.username);
 }
 
@@ -1742,7 +1895,7 @@ function disableAccount() {
     if (!currentUser) return;
     if (!confirm('Disable your account? Your account is kept, but all your projects/scripts/keys will be disabled until you enable it again.')) return;
     for (var key in users) {
-        if (users[key].id === currentUser.id) { users[key].disabled = true; break; }
+        if (users[key].id === currentUser.id) { users[key].disabled = true; shPushUser(users[key]); break; }
     }
     saveUsers();
     showNotification('Account Disabled', 'All your projects, scripts and keys are now disabled. Use "Enable Account" to restore.', 'warning', 6000);
@@ -1755,6 +1908,7 @@ function enableAccount() {
         if (users[key].id === currentUser.id) {
             wasDisabled = !!users[key].disabled;
             users[key].disabled = false;
+            shPushUser(users[key]);
             break;
         }
     }
@@ -1783,15 +1937,19 @@ function openDeleteAccountUI() {
 
 function confirmDeleteAccount() {
     if (!currentUser) return;
+    var selfEmail = currentUser.email;
+    var selfId = currentUser.id;
     // remove user + all their data
     for (var key in users) {
-        if (users[key].id === currentUser.id) { delete users[key]; break; }
+        if (users[key].id === selfId) { delete users[key]; break; }
     }
     saveUsers();
-    try { localStorage.removeItem('projects_' + currentUser.id); } catch (e) {}
-    try { localStorage.removeItem('keys_' + currentUser.id); } catch (e) {}
-    try { localStorage.removeItem('sh_analytics_' + currentUser.id); } catch (e) {}
-    try { localStorage.removeItem('sh_rewards_' + currentUser.id); } catch (e) {}
+    // remove from the cloud too so the account is gone everywhere
+    if (selfEmail) { shApi('sh/user-delete', { email: selfEmail, password: '' }).catch(function() {}); }
+    try { localStorage.removeItem('projects_' + selfId); } catch (e) {}
+    try { localStorage.removeItem('keys_' + selfId); } catch (e) {}
+    try { localStorage.removeItem('sh_analytics_' + selfId); } catch (e) {}
+    try { localStorage.removeItem('sh_rewards_' + selfId); } catch (e) {}
     clearCurrentUser();
     location.reload();
 }
@@ -1812,6 +1970,24 @@ function openUsersPanel() {
     renderUsersList();
     updatePanelButtons();
     document.body.style.overflow = 'hidden';
+    // refresh from the cloud (all devices' users), then re-render
+    shRefreshUsersListFromCloud();
+}
+
+// pull cloud users and re-render the open panels with the merged list
+async function shRefreshUsersListFromCloud() {
+    var cloud = await shPullCloudUsers();
+    if (!cloud) return;
+    var changed = false;
+    for (var k in cloud) {
+        var cu = cloud[k];
+        var lu = users[k];
+        if (!lu) { users[k] = cu; changed = true; }
+        else if ((lu.plan || 'Basic') !== (cu.plan || 'Basic') || (lu.username || '') !== (cu.username || '')) { users[k] = cu; changed = true; }
+    }
+    if (changed) saveUsers();
+    renderUsersList();
+    renderAdminUserListFull();
 }
 
 function closeUsersPanel() {
@@ -1917,6 +2093,8 @@ function panelDeleteUser() {
     if (confirm('Are you sure you want to delete ' + user.username + '? This cannot be undone!')) {
         delete users[selectedUserEmail];
         saveUsers();
+        // remove from the cloud too so it disappears from every device
+        shDeleteCloudUser(selectedUserEmail);
         showNotification('Deleted', user.username + ' has been deleted.', 'success');
         selectedUserEmail = null;
         renderUsersList();
@@ -1940,6 +2118,8 @@ function openAdminPanel() {
     }
     openModal('admin');
     renderAdminUserListFull();
+    // refresh from the cloud (all devices' users), then re-render
+    shRefreshUsersListFromCloud();
 }
 
 function renderAdminUserListFull() {
@@ -1984,8 +2164,9 @@ function deleteUser(email) {
     if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
         delete users[email];
         saveUsers();
+        // remove from the cloud too so it disappears from every device
+        shDeleteCloudUser(email);
         showNotification('Deleted', 'User deleted successfully!', 'success');
-        renderUserList();
         renderAdminUserListFull();
     }
 }
@@ -1999,13 +2180,14 @@ function deleteAllUsers() {
         if (scripterAccount) { users['dubovikstanislav51@gmail.com'] = scripterAccount; }
         if (adminAccount) { users['admin@example.com'] = adminAccount; }
         saveUsers();
+        // clear the cloud list too (keeps the creator + admin accounts)
+        shClearCloudUsers(['dubovikstanislav51@gmail.com', 'admin@example.com']);
         showNotification('Cleared', 'All users have been deleted.', 'warning');
-        renderUserList();
         renderAdminUserListFull();
     }
 }
 
-function filterUsers() { renderUserList(); }
+function filterUsers() { renderUsersList(); }
 
 // ============ CHANGE USER PLAN ============
 function changeUserPlan(email) {
@@ -2084,10 +2266,12 @@ function confirmChangePlan(email) {
     user.stats.scripts.max = config.scripts;
     user.stats.fileSize.max = config.fileSize;
     saveUsers();
+    // sync the plan change to every other device
+    shPushCloudUserUpdate(email, user);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Plan Updated', user.username + '\'s plan changed to ' + newPlan + '!', 'success');
-    renderUserList();
+    renderUsersList();
     renderAdminUserListFull();
     if (currentUser && currentUser.id === user.id) {
         var userData = { ...user };
@@ -2203,6 +2387,7 @@ function uploadProfileImage() {
                 if (users[key].id === currentUser.id) {
                     users[key].profileImage = imageData;
                     saveUsers();
+                    shPushUser(users[key]); // sync to cloud (all devices)
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
@@ -2232,6 +2417,7 @@ function uploadBannerImage() {
                 if (users[key].id === currentUser.id) {
                     users[key].bannerImage = imageData;
                     saveUsers();
+                    shPushUser(users[key]); // sync to cloud (all devices)
                     var userData = { ...users[key] };
                     delete userData.password;
                     updateUIForUser(userData);
@@ -2252,6 +2438,7 @@ function changeTheme(themeName) {
         if (users[key].id === currentUser.id) {
             users[key].theme = themeName;
             saveUsers();
+            shPushUser(users[key]); // sync to cloud (all devices)
             applyTheme(themeName);
             showNotification('Theme Changed', 'Theme updated to ' + themeName.charAt(0).toUpperCase() + themeName.slice(1), 'success', 1500);
             break;
@@ -2463,10 +2650,8 @@ function viewProject(projectId) {
                         </div>
                     </div>
                     <div class="script-actions">
-                        <button onclick="viewScript('${project.id}','${script.id}')" class="btn-sm btn-sm-primary">👁️ View</button>
                         <button onclick="editScript('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
                         <button onclick="openScriptSettings('${project.id}','${script.id}')" class="btn-sm btn-sm-edit">⚙️ Settings</button>
-                        <button onclick="openScriptRaw('${script.loaderId}')" class="btn-sm btn-sm-edit">📄 Raw</button>
                         <button onclick="deleteScript('${project.id}','${script.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
                     </div>
                 </div>
@@ -2816,7 +3001,7 @@ function openCreateScript(projectId) {
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
             <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — required to decrypt the script" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users are asked for the key at runtime (in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever.</div>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3122,10 +3307,6 @@ function confirmCreateScript(projectId) {
         if (!projects[projectIndex].scripts) { projects[projectIndex].scripts = []; }
         projects[projectIndex].scripts.push(script);
         saveProjects(projects);
-        storeScriptForLoader(script.loaderId, obfuscatedCode, script.name, script.loaderKey);
-        storeScriptForLoader(script.id, obfuscatedCode, script.name, script.loaderKey);
-        storeScriptForRawAccess(script.loaderId, obfuscatedCode, script.name);
-        storeScriptForRawAccess(script.id, obfuscatedCode, script.name);
         var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
         if (modal) modal.remove();
         recordObfuscation();
@@ -3190,12 +3371,11 @@ function obfuscateScriptCode(code, engine, options) {
     });
 }
 
-// ============ OPEN SCRIPT RAW (hidden Loadstring Creator) ============
-// The legacy ?id=&key=&format=debug debug URL is gone (raw.html now blocks
-// it). "Raw" now opens the hidden raw page (the loadstring creator).
-function openScriptRaw(loaderId) {
-    window.open(getBasePath() + 'raw.html?auth=1', '_blank');
-}
+// ============ OPEN SCRIPT RAW (removed) ============
+// The Raw button was removed from script cards (it just opened the hidden
+// loadstring creator page, which was confusing). Loadstrings live in the
+// script View/Edit modal and the hidden raw page directly.
+function openScriptRaw(loaderId) { /* removed */ }
 
 // ============ GENERATE LOADSTRING (on demand for older scripts) ============
 function generateLoadstring(projectId, scriptId) {
@@ -3234,135 +3414,15 @@ function generateLoadstring(projectId, scriptId) {
             }
         }
         saveProjects(projects2);
-        showNotification('Loadstring Ready', 'Copy it from the script View modal.', 'success', 5000);
-        // re-open the view modal with the fresh loadstring
+        showNotification('Loadstring Ready', 'Copy it from the script Settings modal.', 'success', 5000);
+        // re-open the settings modal with the fresh loadstring
         var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
         if (modal) modal.remove();
-        viewScript(projectId, scriptId);
+        openScriptSettings(projectId, scriptId);
     });
 }
 
-// ============ VIEW SCRIPT ============
-function viewScript(projectId, scriptId) {
-    var projects = loadProjects();
-    var project = null;
-    var script = null;
-    for (var i = 0; i < projects.length; i++) {
-        if (projects[i].id === projectId) {
-            project = projects[i];
-            if (project.scripts) {
-                for (var j = 0; j < project.scripts.length; j++) {
-                    if (project.scripts[j].id === scriptId) {
-                        script = project.scripts[j];
-                        break;
-                    }
-                }
-            }
-            break;
-        }
-    }
-    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
-    var overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.display = 'flex';
-    overlay.style.zIndex = '2000';
-    storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
-    storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
-    storeScriptForRawAccess(script.loaderId, script.code, script.name);
-    storeScriptForRawAccess(script.id, script.code, script.name);
-    var ownerUrl = getBasePath() + 'raw.html?auth=1';
-    // hidden-host loadstring (the real executor link) - uploaded at create/edit time
-    var loaderUrl = script.loaderUrl || '';
-    if (!loaderUrl) {
-        // not uploaded yet (older scripts) - offer to generate on demand
-        loaderUrl = '';
-    }
-    var obfType = script.obfuscationType || 'custom';
-    var obfDisplay = OBFUSCATION_TYPES[obfType] || 'Custom Obfuscator';
-    var gameThumbHtml = '';
-    var placeId = extractPlaceId(script.gameId) || (script.gameId && script.gameId.match(/^\d+$/) ? script.gameId : null);
-    if (placeId) {
-        gameThumbHtml = '<div style="margin-top:12px; display:flex; align-items:center; gap:14px; background:rgba(10,10,15,0.6); border-radius:10px; padding:12px; border:1px solid rgba(255,255,255,0.05);">'
-            + '<a href="https://www.roblox.com/games/' + placeId + '" target="_blank" rel="noopener"><img src="https://www.roblox.com/asset-thumbnail/image?assetId=' + placeId + '&width=150&height=150&format=png" style="width:80px; height:80px; border-radius:12px; object-fit:cover;" alt="Game"></a>'
-            + '<div><div style="color:#fff; font-weight:600; font-size:14px;">🎮 Game</div><div style="color:#8888aa; font-size:12px; margin-top:4px;">Place ID: ' + placeId + '</div></div>'
-            + '</div>';
-    }
-    var keyInfoHtml = script.requireKey ? (
-        '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script requires a key!</p>'
-        + '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">Users must add this line <strong style="color:#66ccff;">before</strong> their loadstring:</p>'
-        + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_KEY_HERE"</code>'
-        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Wrong key → Roblox notification "Invalid key!". Correct key → script runs. (A popup key card also appears if no key is set.)</p>'
-        + '</div>'
-    ) : '';
-    var specialKeyHtml = script.specialKey ? (
-        '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (decrypts the script - NEVER in the loadstring):</p>'
-        + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
-        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Users are asked for this key at runtime (in-game popup). Share it only with people who should run the script. Keep it safe - it is never sent to the server and cannot be recovered.</p>'
-        + '</div>'
-    ) : '';
-    var loadstringHtml = loaderUrl ? (
-        '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
-        + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl + '</code>'
-        + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
-        + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
-        + '</div>'
-         + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - it asks for the Special Key at runtime (in-game popup or getgenv().ScripterHubKey = "KEY"). Opening the link in a browser shows the key page. The loadstring itself contains NO key.</p>'
-        + '</div>'
-    ) : (
-        '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">📜 No loadstring yet (created before the hidden host). Re-save the script or generate one:</p>'
-        + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">⚡ Generate Loadstring</button>'
-        + '</div>'
-    );
-    overlay.innerHTML = `
-        <div class="modal" style="max-width: 650px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
-            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                    <h2 style="font-size:22px; margin:0; color:#fff;">${script.name}</h2>
-                    <p style="color:#8888aa; margin:4px 0 0; font-size:13px;">${script.description || 'No description'}</p>
-                    <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-                        <span style="background:rgba(255,0,204,0.15); color:#ff66cc; padding:2px 12px; border-radius:12px; font-size:11px;">💎 ${obfDisplay}</span>
-                        ${script.antiTamper ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🛡️ Anti-Tamper</span>' : ''}
-                        ${script.antiSkid ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🔒 Anti-Skid</span>' : ''}
-                        ${script.envLogging ? '<span style="background:rgba(0,191,255,0.2); color:#00bfff; padding:2px 12px; border-radius:12px; font-size:11px;">📡 Env Logging</span>' : ''}
-                        ${script.requireKey ? '<span style="background:rgba(255,215,0,0.2); color:#ffd700; padding:2px 12px; border-radius:12px; font-size:11px;">🔑 Key Required</span>' : ''}
-                    </div>
-                </div>
-                <div style="display:flex; gap:8px; flex-shrink:0; flex-wrap:wrap;">
-                    <button onclick="editScript('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">✏️ Edit</button>
-                    <button onclick="openScriptSettings('${projectId}','${scriptId}')" class="btn btn-close-dropdown" style="padding:4px 12px; font-size:11px;">⚙️ Settings</button>
-                </div>
-            </div>
-            ${gameThumbHtml}
-            ${keyInfoHtml}
-            ${specialKeyHtml}
-            ${loadstringHtml}
-            <div style="margin-top:12px; background:rgba(10,10,15,0.6); border-radius:8px; padding:12px; border:1px solid rgba(255,255,255,0.05); max-height:220px; overflow-y:auto;">
-                <p style="color:#8888aa; font-size:12px; margin:0 0 4px 0;">💻 Script Code:</p>
-                <pre style="color:#66ccff; font-size:12px; margin:0; white-space:pre-wrap; word-break:break-all;">${script.code.substring(0, 500)}${script.code.length > 500 ? '\n... (truncated - use Owner Raw URL for full code)' : ''}</pre>
-            </div>
-            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#555577;">
-                <span>🆔 ${script.id}</span>
-                <span>📅 ${new Date(script.createdAt).toLocaleDateString()}</span>
-                ${script.gameId ? '<span>🎮 ' + script.gameId + '</span>' : ''}
-                <span>⏱️ ${script.keyTime === 'unlimited' || script.keyUnit === 'unlimited' || !script.keyTime ? '♾️ Unlimited' : script.keyTime + ' ' + script.keyUnit}</span>
-            </div>
-            <details style="margin-top:12px;">
-                <summary style="color:#8888aa; font-size:12px; cursor:pointer;">🔒 Hidden Raw Page (Create Loadstring)</summary>
-                <div style="margin-top:6px; padding:8px; background:rgba(10,10,15,0.6); border-radius:8px;">
-                    <code style="color:#66ccff; font-size:12px; word-break:break-all;">${getBasePath()}raw.html?auth=1</code>
-                    <button onclick="copyText('${getBasePath()}raw.html?auth=1')" class="btn btn-primary" style="margin-top:6px; padding:4px 12px; font-size:12px;">📋 Copy</button>
-                </div>
-            </details>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-}
-
+// ============ VIEW SCRIPT (removed - the View button was deleted; the loadstring + Special Key now live in the Script Settings modal) ============
 // ============ EDIT PROJECT ============
 function editProject(projectId) {
     var projects = loadProjects();
@@ -3474,7 +3534,7 @@ function editScript(projectId, scriptId) {
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
             <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required to decrypt the script" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users enter the key at runtime (in-game popup). Keep it safe: it is NEVER sent to the server.</div>
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3702,23 +3762,6 @@ function confirmEditScript(projectId, scriptId) {
             }
         }
         saveProjects(projects);
-        for (var i = 0; i < projects.length; i++) {
-            if (projects[i].id === projectId) {
-                if (projects[i].scripts) {
-                    for (var j = 0; j < projects[i].scripts.length; j++) {
-                        if (projects[i].scripts[j].id === scriptId) {
-                            var script = projects[i].scripts[j];
-                            storeScriptForLoader(script.loaderId, script.code, script.name, script.loaderKey);
-                            storeScriptForLoader(script.id, script.code, script.name, script.loaderKey);
-                            storeScriptForRawAccess(script.loaderId, script.code, script.name);
-                            storeScriptForRawAccess(script.id, script.code, script.name);
-                            break;
-                        }
-                    }
-                }
-                break;
-            }
-        }
         var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
         if (modal) modal.remove();
         recordObfuscation();
@@ -3834,11 +3877,44 @@ function openScriptSettings(projectId, scriptId) {
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
+    var loaderUrl = script.loaderUrl || '';
+    var loadstringHtml = loaderUrl ? (
+        '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
+        + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl + '</code>'
+        + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
+        + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
+        + '</div>'
+        + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>'
+        + '</div>'
+    ) : (
+        '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
+        + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">📜 No loadstring yet. Re-save the script (Edit) or generate one:</p>'
+        + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">⚡ Generate Loadstring</button>'
+        + '</div>'
+    );
+    var specialKeyHtml = script.specialKey ? (
+        '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (decrypts the script - NEVER in the loadstring):</p>'
+        + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
+        + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Users must set this key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> - there is no popup. Share it only with people who should run the script.</p>'
+        + '</div>'
+    ) : '';
+    var keyInfoHtml = script.requireKey ? (
+        '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script also requires a Users Key!</p>'
+        + '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">Users must add this line <strong style="color:#66ccff;">before</strong> their loadstring:</p>'
+        + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_USERS_KEY_HERE"</code>'
+        + '</div>'
+    ) : '';
     overlay.innerHTML = `
-        <div class="modal" style="max-width: 450px; padding: 32px;">
+        <div class="modal" style="max-width: 500px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:22px;">⚙️ Script Settings</h2>
             <p class="sub">Manage "${script.name}"</p>
+            ${loadstringHtml}
+            ${specialKeyHtml}
+            ${keyInfoHtml}
             <div class="form-group"><label>Visibility</label><select id="scriptVisibility"><option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
                 <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>
@@ -3972,7 +4048,6 @@ window.renderProjects = renderProjects;
 window.viewProject = viewProject;
 window.openCreateScript = openCreateScript;
 window.confirmCreateScript = confirmCreateScript;
-window.viewScript = viewScript;
 window.editProject = editProject;
 window.confirmEditProject = confirmEditProject;
 window.deleteProject = deleteProject;
