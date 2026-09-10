@@ -107,32 +107,41 @@ async function shLoginRaw() {
 // the worker only ever receives ciphertext. The loadstring contains NO key;
 // users set it BEFORE executing via getgenv().ScripterHubKey (no in-game
 // popup GUI ships in the payload - just the getgenv read + notifications).
-async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces) {
+// KEYLESS MODE (specialKey empty + keyless=true): for free scripts - the
+// obfuscated code is uploaded as-is and executes directly, NO key needed.
+async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces, keyless) {
     try {
-        if (!specialKey) return { ok: false, error: 'Special Key is required' };
-        // 1) encrypt locally — the key never leaves this browser
-        const cipher = shEncryptPayload(obfCode, specialKey);
-        const keyHash = await (async () => {
-            const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
-            return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-        })();
         let token = shGetRawToken();
         if (!token) {
             const ok = await shLoginRaw();
             if (!ok) return { ok: false, error: 'login failed (wrong code or canceled)' };
             token = shGetRawToken();
         }
+        let payload;
+        if (keyless) {
+            // free script: store the obfuscated code as-is (no key gate)
+            payload = { token: token, name: name, user: user, keyless: true, plainCode: obfCode, replaces: replaces || '', normalCode: normalCode || '' };
+        } else {
+            if (!specialKey) return { ok: false, error: 'Special Key is required' };
+            // 1) encrypt locally — the key never leaves this browser
+            const cipher = shEncryptPayload(obfCode, specialKey);
+            const keyHash = await (async () => {
+                const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
+                return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+            })();
+            payload = { token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+        }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' })
+            body: JSON.stringify(payload)
         });
         const d = await res.json();
         if (!d.ok && /author/i.test(d.error || '')) {
             // token expired -> re-login once, retry
             sessionStorage.removeItem('sh_raw_token');
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces);
+            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces, keyless);
         }
         return d;
     } catch (e) {
@@ -155,12 +164,23 @@ function shApi(endpoint, body) {
     }).then(function(r) { return r.json(); }).catch(function() { return { ok: false, error: 'network' }; });
 }
 
-// push one local user record to the cloud (public fields only)
+// owner proof = b64 password of the owner (Scripter) account - lets the
+// panels sync (plan changes, deletes) without the raw-page access code
+function shOwnerProof() {
+    if (!currentUser || currentUser.username !== 'Scripter') return '';
+    var u = users[currentUser.email];
+    return (u && u.password) ? u.password : '';
+}
+
+// push one local user record to the cloud (public fields only).
+// Proves identity with the account's b64 password from the local db.
 function shPushUser(user) {
     if (!user || !user.email) return Promise.resolve({ ok: false });
+    var u = users[user.email];
+    var proof = (u && u.password) ? u.password : ''; // b64 password
     return shApi('sh/user-sync', {
         email: user.email,
-        password: '', // no password change for existing records
+        password: proof,
         user: {
             id: user.id, email: user.email, username: user.username,
             plan: user.plan, description: user.description || '',
@@ -208,23 +228,26 @@ async function shSyncUsersOnLogin(user, rawPassword) {
     } catch (e) { /* offline: keep working locally */ }
 }
 
-// owner-token pull of all cloud users -> { email: user } (no passwords)
+// owner pull of all cloud users -> { email: user } (no passwords).
+// Auth: raw-page token OR ownerProof (b64 owner password) - the proof
+// keeps the panels working without the raw-page access-code prompt.
 async function shPullCloudUsers() {
     try {
         let token = shGetRawToken();
         if (!token) {
             const ok = await shLoginRaw();
-            if (!ok) return null;
-            token = shGetRawToken();
+            if (!ok) token = ''; // no raw-page code in this session - fall back to ownerProof
+            token = shGetRawToken() || '';
         }
-        const res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token));
+        const proof = shOwnerProof();
+        let res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
         let d = await res.json();
         if (!d.ok && /author/i.test(d.error || '')) {
             sessionStorage.removeItem('sh_raw_token');
             const ok2 = await shLoginRaw();
             if (ok2) {
-                const res2 = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(shGetRawToken()));
-                d = await res2.json();
+                res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(shGetRawToken()) + '&ownerProof=' + encodeURIComponent(proof));
+                d = await res.json();
             }
         }
         if (d.ok && d.users) {
@@ -239,40 +262,22 @@ async function shPullCloudUsers() {
     } catch (e) { return null; }
 }
 
-// owner-token upsert/delete of cloud user records (plan changes, deletes)
+// owner upsert/delete of cloud user records (plan changes, deletes)
 async function shPushCloudUserUpdate(email, userRecord) {
     try {
-        let token = shGetRawToken();
-        if (!token) {
-            const ok = await shLoginRaw();
-            if (!ok) return { ok: false };
-            token = shGetRawToken();
-        }
-        return await shApi('sh/users', { token: token, email: email, user: userRecord });
+        return await shApi('sh/users', { ownerProof: shOwnerProof(), email: email, user: userRecord });
     } catch (e) { return { ok: false }; }
 }
 
 async function shDeleteCloudUser(email) {
     try {
-        let token = shGetRawToken();
-        if (!token) {
-            const ok = await shLoginRaw();
-            if (!ok) return { ok: false };
-            token = shGetRawToken();
-        }
-        return await shApi('sh/users-delete', { token: token, email: email });
+        return await shApi('sh/users-delete', { ownerProof: shOwnerProof(), email: email });
     } catch (e) { return { ok: false }; }
 }
 
 async function shClearCloudUsers(keepEmails) {
     try {
-        let token = shGetRawToken();
-        if (!token) {
-            const ok = await shLoginRaw();
-            if (!ok) return { ok: false };
-            token = shGetRawToken();
-        }
-        return await shApi('sh/users-clear', { token: token, keep: (keepEmails || []).join(',') });
+        return await shApi('sh/users-clear', { ownerProof: shOwnerProof(), keep: (keepEmails || []).join(',') });
     } catch (e) { return { ok: false }; }
 }
 
@@ -1945,7 +1950,10 @@ function confirmDeleteAccount() {
     }
     saveUsers();
     // remove from the cloud too so the account is gone everywhere
-    if (selfEmail) { shApi('sh/user-delete', { email: selfEmail, password: '' }).catch(function() {}); }
+    var selfRec = users[selfEmail];
+    if (selfEmail && selfRec && selfRec.password) {
+        shApi('sh/user-delete', { email: selfEmail, password: selfRec.password }).catch(function() {});
+    }
     try { localStorage.removeItem('projects_' + selfId); } catch (e) {}
     try { localStorage.removeItem('keys_' + selfId); } catch (e) {}
     try { localStorage.removeItem('sh_analytics_' + selfId); } catch (e) {}
@@ -1979,13 +1987,28 @@ async function shRefreshUsersListFromCloud() {
     var cloud = await shPullCloudUsers();
     if (!cloud) return;
     var changed = false;
+    var selfChanged = null;
     for (var k in cloud) {
         var cu = cloud[k];
         var lu = users[k];
-        if (!lu) { users[k] = cu; changed = true; }
-        else if ((lu.plan || 'Basic') !== (cu.plan || 'Basic') || (lu.username || '') !== (cu.username || '')) { users[k] = cu; changed = true; }
+        if (!lu) {
+            users[k] = cu; changed = true;
+        } else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
+            // keep the local password (cloud responses never include it)
+            cu.password = lu.password;
+            users[k] = cu; changed = true;
+        }
+        if (currentUser && cu.id === currentUser.id) selfChanged = users[k];
     }
     if (changed) saveUsers();
+    // if the owner changed OUR own record via another panel/device,
+    // refresh the session + dashboard so the plan badge updates live
+    if (selfChanged) {
+        var userData = { ...selfChanged };
+        delete userData.password;
+        saveSession(userData);
+        updateUIForUser(userData);
+    }
     renderUsersList();
     renderAdminUserListFull();
 }
@@ -3000,8 +3023,8 @@ function openCreateScript(projectId) {
             <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
-            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — required to decrypt the script" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever.</div>
+            <div class="form-group"><label>Your Special Key <span style="color:#555577;">(skip for keyless)</span></label><input type="text" id="scriptSpecialKey" placeholder="Any length — required to decrypt the script">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server, and losing it = the script is gone forever. <strong style="color:#66ff66;">Leave empty + tick "Free For Everyone" = keyless script (anyone can execute, no key).</strong></div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3202,7 +3225,10 @@ function confirmCreateScript(projectId) {
     var gameId = document.getElementById('scriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
-    if (!specialKey) { showNotification('Error', 'Your Special Key is required - it unlocks the raw URL.', 'error'); return; }
+    // Special Key only required for protected scripts - keyless (free for
+    // everyone) scripts execute directly with NO key
+    var isKeyless = freeForEveryone;
+    if (!specialKey && !isKeyless) { showNotification('Error', 'Your Special Key is required - or check "Free For Everyone" to make this script keyless (no key needed to execute).', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
     var projects = loadProjects();
     var projectIndex = -1;
@@ -3295,6 +3321,7 @@ function confirmCreateScript(projectId) {
             obfuscationType: obfuscationType,
             obfuscationIntensity: obfuscationIntensity,
             specialKey: specialKey,
+            keyless: isKeyless,
             version: 1,
             hwidReset: hwidReset,
             gameId: placeIdOnly,
@@ -3313,7 +3340,7 @@ function confirmCreateScript(projectId) {
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, '', isKeyless).then(function(d) {
             if (d.ok) {
                 try {
                     var projects = loadProjects();
@@ -3329,7 +3356,7 @@ function confirmCreateScript(projectId) {
                         }
                     }
                     saveProjects(projects);
-                    showNotification('Loadstring Ready', 'Loader link generated for "' + name + '" - see the script View modal.', 'success', 6000);
+                    showNotification('Loadstring Ready', (isKeyless ? 'Keyless loadstring generated for "' + name + '" - anyone can execute it, NO key needed.' : 'Loader link generated for "' + name + '" - see the script Settings modal.'), 'success', 6000);
                 } catch (e) {}
             } else {
                 showNotification('Loadstring Warning', 'Hidden host upload failed: ' + (d.error || 'unknown') + ' (deploy the worker + KV first)', 'warning', 7000);
@@ -3390,12 +3417,13 @@ function generateLoadstring(projectId, scriptId) {
     }
     if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
     if (!script.code) { showNotification('Error', 'This script has no code.', 'error'); return; }
-    if (!script.specialKey) {
-        showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one first (it gates the raw URL).', 'warning', 7000);
+    var isKeyless = !!script.keyless || (script.freeForEveryone && !script.specialKey);
+    if (!script.specialKey && !isKeyless) {
+        showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one (or check "Free For Everyone" for a keyless script).', 'warning', 7000);
         return;
     }
     showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
-    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '', script.specialKey).then(function(d) {
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '', script.specialKey, '', isKeyless).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
             return;
@@ -3533,8 +3561,8 @@ function editScript(projectId, scriptId) {
             <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
-            <div class="form-group"><label>Your Special Key <span class="required">*</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required to decrypt the script" required>
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server.</div>
+            <div class="form-group"><label>Your Special Key <span style="color:#555577;">(skip for keyless)</span></label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required to decrypt the script">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it — users must set it BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). Keep it safe: it is NEVER sent to the server. <strong style="color:#66ff66;">Leave empty + tick "Free For Everyone" = keyless script (anyone can execute, no key).</strong></div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
@@ -3660,7 +3688,10 @@ function confirmEditScript(projectId, scriptId) {
     var gameId = document.getElementById('editScriptGameId').value.trim();
     var placeIdOnly = extractPlaceId(gameId) || gameId;
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
-    if (!specialKey) { showNotification('Error', 'Your Special Key is required - it unlocks the raw URL.', 'error'); return; }
+    // Special Key only required for protected scripts - keyless (free for
+    // everyone) scripts execute directly with NO key
+    var isKeyless = freeForEveryone;
+    if (!specialKey && !isKeyless) { showNotification('Error', 'Your Special Key is required - or check "Free For Everyone" to make this script keyless (no key needed to execute).', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     var projects = loadProjects();
     // duplicate name check (within project, excluding this script)
@@ -3750,6 +3781,7 @@ function confirmEditScript(projectId, scriptId) {
                             projects[i].scripts[j].obfuscationType = obfuscationType;
                             projects[i].scripts[j].obfuscationIntensity = obfuscationIntensity;
                             projects[i].scripts[j].specialKey = specialKey;
+                            projects[i].scripts[j].keyless = isKeyless;
                             projects[i].scripts[j].version = (prevScript && prevScript.version ? prevScript.version : 1) + 1;
                             projects[i].scripts[j].hwidReset = hwidReset;
                             projects[i].scripts[j].gameId = placeIdOnly;
@@ -3767,10 +3799,11 @@ function confirmEditScript(projectId, scriptId) {
         recordObfuscation();
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
-        // refresh the hidden-host loader: encrypt with the (new) special key,
-        // kill the old loader link (replaces) so old ids stop working
+        // refresh the hidden-host loader: encrypt with the (new) special key
+        // (or upload keyless), kill the old loader link (replaces) so old
+        // ids stop working
         var oldLoaderId = prevScript && prevScript.loaderId ? prevScript.loaderId : '';
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, oldLoaderId).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, oldLoaderId, isKeyless).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
@@ -3785,7 +3818,7 @@ function confirmEditScript(projectId, scriptId) {
                     }
                 }
                 saveProjects(projects2);
-                showNotification('Loadstring Updated', 'Loader link regenerated (new code now served).', 'success', 6000);
+                showNotification('Loadstring Updated', isKeyless ? 'Keyless loadstring regenerated - anyone can execute it, NO key needed.' : 'Loader link regenerated (new code now served).', 'success', 6000);
             }
         });
         renderProjects();
@@ -3878,6 +3911,7 @@ function openScriptSettings(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     var loaderUrl = script.loaderUrl || '';
+    var isKeyless = !!script.keyless || (script.freeForEveryone && !script.specialKey);
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
@@ -3885,7 +3919,9 @@ function openScriptSettings(projectId, scriptId) {
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
         + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + '</div>'
-        + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>'
+        + (isKeyless
+            ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 KEYLESS script: anyone can execute this loadstring directly - NO key needed. (The code is still obfuscated.)</p>'
+            : '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>')
         + '</div>'
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
@@ -3899,7 +3935,11 @@ function openScriptSettings(projectId, scriptId) {
         + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
         + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">Users must set this key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> - there is no popup. Share it only with people who should run the script.</p>'
         + '</div>'
-    ) : '';
+    ) : (isKeyless
+        ? '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#66ff66; font-size:13px; margin:0; font-weight:600;">🌐 Keyless script - no Special Key. Anyone can execute the loadstring.</p>'
+        + '</div>'
+        : '');
     var keyInfoHtml = script.requireKey ? (
         '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script also requires a Users Key!</p>'
@@ -3971,6 +4011,9 @@ function checkAuth() {
                 var userData = { ...users[key] };
                 delete userData.password;
                 updateUIForUser(userData);
+                // refresh this user's record from the cloud (plan changes
+                // made by the owner on another device show up on refresh)
+                shRefreshOwnCloudRecord(users[key]);
                 break;
             }
         }
@@ -3981,6 +4024,43 @@ function checkAuth() {
     } else {
         showHomePage();
     }
+}
+
+// pull the logged-in user's fresh cloud record (plan, profile, bans...).
+// Needs the stored b64 password as proof. On success the local users db,
+// the session, and the whole UI get updated.
+async function shRefreshOwnCloudRecord(localRecord) {
+    try {
+        if (!localRecord || !localRecord.email || !localRecord.password) return;
+        const d = await shApi('sh/user-get', { email: localRecord.email, password: localRecord.password });
+        if (!d.ok || !d.user) return;
+        const cloud = d.user;
+        const email = cloud.email || localRecord.email;
+        // merge the cloud record into the local users db (keep local password)
+        var changed = false;
+        var lu = users[email];
+        if (!lu) {
+            users[email] = { ...cloud, password: localRecord.password };
+            changed = true;
+        } else {
+            for (var k in cloud) {
+                if (k === 'password') continue;
+                if (JSON.stringify(lu[k]) !== JSON.stringify(cloud[k])) { lu[k] = cloud[k]; changed = true; }
+            }
+        }
+        if (!changed) return;
+        saveUsers();
+        // refresh the session + UI if this is the logged-in user
+        if (currentUser && currentUser.id === (cloud.id || localRecord.id)) {
+            var userData = { ...users[email] };
+            delete userData.password;
+            saveSession(userData);
+            updateUIForUser(userData);
+            if (cloud.plan && cloud.plan !== localRecord.plan) {
+                showNotification('Plan Updated', 'Your plan is now ' + cloud.plan + '!', 'success', 5000);
+            }
+        }
+    } catch (e) { /* offline: local record stays */ }
 }
 
 function showHomePage() {
