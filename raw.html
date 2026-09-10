@@ -316,14 +316,22 @@
             // locally) and upload. Keyless: upload BOTH blobs - the
             // obfuscated code (served to executors with no key) + the
             // encrypted view (what browsers get; key required to see it).
+            // SERVER-KEY-SPLIT: the loader id is generated up front so the
+            // key-fetch URL baked into the file matches what /sh/upload
+            // stores; the final layer key is uploaded to the worker and
+            // NEVER embedded - static peelers stop one layer short.
             import('./custom-obfuscator.js').then(function(mod) {
+                var wantId = 'ScripterHub' + String(Date.now()).slice(-10);
+                var dbgInfo = {};
                 var obf = mod.applyCustomObfuscator(code, {
                     intensity: 10,
                     antiTamper: true,
                     antiSkid: true,
                     scriptName: name,
-                    owner: user
-                });
+                    owner: user,
+                    serverKey: { keyUrl: WORKER + '/sh/k', scriptRef: wantId }
+                }, dbgInfo);
+                var splitKey = dbgInfo.splitKey || null;
                 return import('./sh-crypto.js').then(function(crypto) {
                     var cipher = crypto.shEncryptPayload(obf, specialKey);
                     var keyHash = null;
@@ -355,6 +363,10 @@
                                 keyHash: keyHash,
                                 normalCode: code
                             };
+                        }
+                        if (splitKey) {
+                            body.wantId = wantId;
+                            body.splitKey = splitKey;
                         }
                         return fetch(WORKER + '/sh/upload', {
                             method: 'POST',

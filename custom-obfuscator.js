@@ -504,6 +504,13 @@ function buildSecurityWrapper(options, meta) {
 // LOADER BUILDER
 // encrypts `src` with `layerCount` layers and emits a
 // self-contained Lua decryption VM.
+//
+// SPLIT-KEY MODE (options.splitKey = { url }):
+// The LAST layer's key is NOT embedded in the file. At runtime the
+// loader fetches it from the ScripterHub worker (executor-only route),
+// time-unpad'ed with the t0 the response carries. A static peeler
+// therefore always misses the final layer key -> the file alone can
+// NEVER decrypt, no matter how good the analyst's Python is.
 // ============================================================
 function buildLoader(src, layerCount, options) {
     options = options || {};
@@ -524,6 +531,31 @@ function buildLoader(src, layerCount, options) {
 
     // emitted (stored) outer key = real key XOR (chk % 256)
     var storedOuter = layers[layerCount - 1].key.map(function (b) { return b ^ mod; });
+
+    // ---- SPLIT-KEY: pad the stored outer key with a TIME PAD and export it
+    // via options.splitKey (uploaded to the worker, NEVER embedded here).
+    // Pad = djb2-style hash chain over t0's digits + byte index:
+    //   h = 5381; for each step: h = (h*33 + c) % 2^32   (c = digit or idx)
+    // h*33 stays < 2^37 - EXACT in JS doubles and Lua 5.1/5.3/luau doubles,
+    // so JS and Lua always regenerate the identical stream. A response is
+    // only valid with the exact t0 baked into the file (worker-enforced).
+    var split = !!options.splitKey;
+    var t0 = 0;
+    if (split) {
+        t0 = Date.now();
+        var tstr = String(t0);
+        var h = 5381;
+        var padded = storedOuter.map(function (b, idx) {
+            // mix the next t0 digit (wrapping) + the byte index
+            var c1 = tstr.charCodeAt(idx % tstr.length) - 48; // 0-9
+            h = (h * 33 + c1 + (idx % 256) * 7) % 4294967296;
+            return b ^ (h % 256);
+        });
+        options.splitKey.paddedKey = padded;
+        options.splitKey.t0 = t0;
+        options.splitKey.chk = chk;
+        options.splitKey.keyLen = storedOuter.length;
+    }
 
     // noise stride: junk byte after every S real bytes
     var stride = options.stride || Math.max(3, 25 - layerCount * 2);
@@ -555,6 +587,12 @@ function buildLoader(src, layerCount, options) {
         var lk = (i === layerCount - 1) ? storedOuter : layers[i].key;
         keyTableParts.push('{{' + lk.join(',') + '},' + layers[i].off + ',' + layers[i].shift + '}');
     }
+    // SPLIT-KEY: the last layer entry carries NO key bytes - the key
+    // arrives at runtime from the worker. Placeholder zeros keep the
+    // table shape identical (a peeler can't tell from the table alone).
+    if (split) {
+        keyTableParts[layerCount - 1] = '{{' + new Array(storedOuter.length).fill(0).join(',') + '},' + layers[layerCount - 1].off + ',' + layers[layerCount - 1].shift + '}';
+    }
 
     var out = [];
     out.push('--[[' + hex(60));
@@ -574,10 +612,53 @@ function buildLoader(src, layerCount, options) {
     out.push('local ' + C + '=0');
     out.push('for ' + IV + '=1,#' + P + ' do if (' + IV + '-1)%' + SS + '~=' + SS + '-1 then ' + C + '=' + C + '+1 ' + T + '[' + C + ']=string.byte(' + P + ',' + IV + ') end end');
     out.push('local ' + SUM + '=0 local ' + XF + '=0');
-    out.push('for ' + IV + '=1,' + C + ' do ' + SUM + '=(' + SUM + '+' + T + '[' + IV + '])%1000000007 ' + XF + '=' + X + '(' + XF + ',' + T + '[' + IV + ']) end');
+    out.push('for ' + IV + '=1,' + C + ' do ' + SUM + '=' + '(' + SUM + '+' + T + '[' + IV + '])%1000000007 ' + XF + '=' + X + '(' + XF + ',' + T + '[' + IV + ']) end');
     out.push('local ' + CH + '=(' + SUM + '+' + XF + '*31)%1000000007');
     if (antiTamper) {
         out.push('if ' + CH + '~=' + chk + ' then return end');
+    }
+    if (split) {
+        // ---- SPLIT-KEY: fetch the missing last-layer key from the worker ----
+        // The file is missing the final layer's key bytes entirely, so a
+        // static peeler always stops one layer short. The response is
+        // time-locked (worker rejects stale t0), so saved responses can't
+        // be replayed.
+        // The script reference id comes from options.splitKey.id (the
+        // caller generates the loader id up front and asks /sh/upload to
+        // use it, so the id is known BEFORE the file is generated).
+        var keyUrl = options.splitKey.url + '/' + options.splitKey.id + '?t=' + t0;
+        // names for the runtime fetch block
+        var SN = makeNames(9);
+        var GO = SN[0], RP = SN[1], PT = SN[2], KT = SN[3], KC = SN[4];
+        var SD = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
+        out.push('do');
+        out.push(' local ' + GO + '=game and game.HttpGet');
+        out.push(' if not ' + GO + ' then return end');
+        out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
+        out.push(' if not ok or type(' + RP + ')~="string" then return end');
+        // response: "SHK\n<t0> <chk> <padded bytes...>"
+        out.push(' if ' + RP + ':sub(1,3)~="SHK" then return end');
+        out.push(' local ' + PT + '={}');
+        out.push(' for n in ' + RP + ':gmatch("%-?%d+") do ' + PT + '[#' + PT + '+1]=tonumber(n) end');
+        out.push(' if #' + PT + '<3 then return end');
+        out.push(' local ' + KT + '=' + PT + '[1] local ' + KC + '=' + PT + '[2]');
+        // accept the EXACT t0 (worker only re-issues fresh ones anyway)
+        out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then return end');
+        // regenerate the SAME djb2 hash-chain pad from t0 (exact in doubles)
+        out.push(' local ' + SD + '="' + String(t0) + '"');
+        out.push(' local ' + PB + '={}');
+        out.push(' local ' + HN + '=5381');
+        out.push(' for j=3,#' + PT + ' do');
+        out.push('  local c=string.byte(' + SD + ',((j-3)%#' + SD + ')+1)-48');
+        out.push('  ' + HN + '=(' + HN + '*33+c+((j-3)%256)*7)%4294967296');
+        out.push('  ' + PB + '[#' + PB + '+1]=' + X + '(' + PT + '[j],(' + HN + '%256))');
+        out.push(' end');
+        // fill the last layer key slot (stored form; the MI flow un-XORs
+        // chk%256 later, exactly like a normal embedded key)
+        out.push(' local ' + KK2 + '=' + K + '[#' + K + '][1]');
+        out.push(' for j=1,#' + PB + ' do ' + KK2 + '[j]=' + PB + '[j] end');
+        out.push(' if #' + PB + ' ~= #' + KK2 + ' then return end');
+        out.push('end');
     }
     out.push('do');
     out.push(' local ' + KK + '=' + K + '[#' + K + '][1]');
@@ -633,24 +714,65 @@ export function applyCustomObfuscator(code, options, debugInfo) {
 
     var payload = buildSecurityWrapper(options, meta) + code;
 
+    // SPLIT-KEY container: buildLoader fills it with the padded key + t0;
+    // the caller uploads it to the worker (/sh/upload -> splitKey) and the
+    // loader fetches it at runtime (executor-only, time-locked). When set,
+    // the generated file can NOT be decrypted statically - it is missing
+    // the final layer key entirely.
+    // IMPORTANT: only the LAST buildLoader call may carry the split - the
+    // others keep fully embedded keys (each wrap is peeled in sequence, and
+    // only the deepest one needs the fetched key).
+    var splitContainer = null;
+    if (options.serverKey) {
+        splitContainer = { url: options.serverKey.keyUrl, id: options.serverKey.scriptRef || 'pending' };
+    }
+    var willDoubleWrap = intensity >= 8 && options.doubleWrap !== false;
+
     // layers scale with intensity (1..10 => 1..10 layers)
-    var loader = buildLoader(payload, intensity, options);
+    // (single wrap: the split goes on this loader; double wrap: on the inner)
+    var loaderOpts = options;
+    if (willDoubleWrap && splitContainer) {
+        // first (inner-payload) loader: fully embedded key, no split
+        loaderOpts = { antiTamper: options.antiTamper !== false, stride: options.stride, _debug: options._debug };
+    } else if (splitContainer) {
+        // single wrap with split: hand the container to buildLoader
+        loaderOpts = Object.assign({}, options, { splitKey: splitContainer });
+    }
+    if (willDoubleWrap && !splitContainer && options.splitKey) splitContainer = options.splitKey;
+    var loader = buildLoader(payload, intensity, loaderOpts);
 
     // double-wrap for max intensity: the whole loader gets
-    // encrypted again inside a second shell
-    if (intensity >= 8 && options.doubleWrap !== false) {
+    // encrypted again inside a second shell. The OUTER shell keeps its own
+    // fully-embedded key (it wraps everything); in split-key mode the
+    // INNER loader carries the fetch so the deepest layer needs the
+    // worker key - peeling the outer shell alone still never yields a
+    // runnable script.
+    if (willDoubleWrap) {
         var innerOpts = {
             antiTamper: options.antiTamper !== false,
             stride: Math.max(5, 20 - intensity),
+            splitKey: splitContainer,
+            _canary: options._canary,   // the DEEPEST loader registers the canary
             _debug: options._debug
         };
         loader = buildLoader(loader, Math.min(3, intensity), innerOpts);
         if (debugInfo) debugInfo.wrapped = true;
+    } else if (splitContainer) {
+        options.splitKey = splitContainer;
     }
 
     if (debugInfo) debugInfo.payload = payload;
+    if (splitContainer && splitContainer.paddedKey) {
+        debugInfo.splitKey = {
+            paddedKey: splitContainer.paddedKey,
+            t0: splitContainer.t0,
+            chk: splitContainer.chk,
+            keyLen: splitContainer.keyLen
+        };
+    }
 
-    return '-- ScripterHub Custom Obfuscator v4 (key modes + API globals + anti-logger) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
+    var headerNote = options.splitKey ? 'server-key-split' : 'self-contained';
+    return '-- ScripterHub Custom Obfuscator v5 (' + headerNote + ' + key modes + API globals + anti-logger + anti-crack) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
 }
 
 // Build the security wrapper + source payload without encrypting it.

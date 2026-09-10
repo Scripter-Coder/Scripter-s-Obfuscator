@@ -102,6 +102,10 @@ async function shLoginRaw() {
     } catch (e) { return false; }
 }
 // Upload a script to the hidden host; resolves with { ok, loadstring, id }.
+// obfResult = the obfuscated code (string) OR { code, splitKey, wantId } from
+// obfuscateScriptCode. splitKey (server-key-split mode) = the padded final
+// layer key: uploaded to the worker, NEVER inside the file - a static peeler
+// always stops one layer short, and the runtime fetch is time-locked.
 // specialKey = the owner's per-script Special Key (any length). The script
 // is ENCRYPTED IN THIS BROWSER with the key (sh-crypto.js) BEFORE upload —
 // the worker only ever receives ciphertext. The loadstring contains NO key;
@@ -112,8 +116,11 @@ async function shLoginRaw() {
 // key (the worker serves the executor blob directly), but browsers must
 // supply the key to view the code. That makes free scripts much harder to
 // rip from the website while keeping them free to execute in-game.
-async function shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces, keyless) {
+async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless) {
     try {
+        const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
+        const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
+        const wantId = (obfResult && typeof obfResult === 'object' && obfResult.wantId) ? obfResult.wantId : '';
         let token = shGetRawToken();
         if (!token) {
             const ok = await shLoginRaw();
@@ -136,6 +143,11 @@ async function shUploadLoader(name, user, obfCode, normalCode, specialKey, repla
         } else {
             payload = { token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
         }
+        if (splitKey) {
+            // server-key-split: worker holds the missing final-layer key
+            payload.wantId = wantId;
+            payload.splitKey = splitKey;
+        }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -146,7 +158,7 @@ async function shUploadLoader(name, user, obfCode, normalCode, specialKey, repla
             // token expired -> re-login once, retry
             sessionStorage.removeItem('sh_raw_token');
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfCode, normalCode, specialKey, replaces, keyless);
+            if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless);
         }
         return d;
     } catch (e) {
@@ -3310,7 +3322,9 @@ function confirmCreateScript(projectId) {
     // async: Aegis needs an API roundtrip
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
-    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(result) {
+        // result: plain string (legacy/aegis) or { code, splitKey, wantId }
+        var obfuscatedCode = (result && typeof result === 'object') ? result.code : result;
         // exact storage check with the real obfuscated size
         var exactErr = checkPlanLimit('storage', 0, code.length + obfuscatedCode.length);
         if (exactErr) {
@@ -3343,6 +3357,10 @@ function confirmCreateScript(projectId) {
             obfuscationIntensity: obfuscationIntensity,
             specialKey: specialKey,
             keyless: isKeyless,
+            // server-key-split: the file ships WITHOUT the final layer key
+            // (worker holds it; runtime fetch is executor-only + time-locked)
+            serverKeySplit: !!(result && typeof result === 'object' && result.splitKey),
+            splitKeyData: (result && typeof result === 'object' && result.splitKey) ? result.splitKey : null,
             version: 1,
             hwidReset: hwidReset,
             gameId: placeIdOnly,
@@ -3361,7 +3379,7 @@ function confirmCreateScript(projectId) {
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, '', isKeyless).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless).then(function(d) {
             if (d.ok) {
                 try {
                     var projects = loadProjects();
@@ -3391,6 +3409,10 @@ function confirmCreateScript(projectId) {
 }
 
 // ============ OBFUSCATE (Default engine or Aegis API) ============
+// Resolves with either a plain string (legacy) or an object
+// { code, splitKey } when the server-key-split mode is used.
+// splitKey = the padded final-layer key the worker must hold; the file
+// itself ships without it, so static peelers always stop one layer short.
 function obfuscateScriptCode(code, engine, options) {
     return new Promise(function(resolve, reject) {
         try {
@@ -3413,7 +3435,21 @@ function obfuscateScriptCode(code, engine, options) {
                     resolve('-- Obfuscated with Aegis Obfuscator via ScripterHub | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + txt);
                 }).catch(function(err) { reject(err); });
             } else {
-                resolve(applyCustomObfuscator(code, options));
+                // Default engine: SPLIT-KEY mode - the last layer key never
+                // ships inside the file. The worker serves it at runtime
+                // (executor-only, time-locked). Loader id is generated HERE
+                // so the baked-in key URL matches the id /sh/upload will use.
+                var dbgInfo = {};
+                var wantId = 'ScripterHub' + String(Date.now()).slice(-10);
+                var withServerKey = Object.assign({}, options, {
+                    serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId }
+                });
+                var out = applyCustomObfuscator(code, withServerKey, dbgInfo);
+                if (dbgInfo.splitKey && dbgInfo.splitKey.paddedKey) {
+                    resolve({ code: out, splitKey: dbgInfo.splitKey, wantId: wantId });
+                } else {
+                    resolve(out);
+                }
             }
         } catch (e) { reject(e); }
     });
@@ -3444,7 +3480,10 @@ function generateLoadstring(projectId, scriptId) {
         return;
     }
     showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
-    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', script.code, script.originalCode || '', script.specialKey, '', isKeyless).then(function(d) {
+    // server-key-split scripts: pass the stored split-key data so the worker
+    // gets the padded final-layer key (the file itself doesn't contain it)
+    var uploadArg = script.splitKeyData ? { code: script.code, splitKey: script.splitKeyData, wantId: 'ScripterHub' + String(Date.now()).slice(-10) } : script.code;
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
             return;
@@ -3764,7 +3803,9 @@ function confirmEditScript(projectId, scriptId) {
     };
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
-    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(obfuscatedCode) {
+    obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(result) {
+        // result: plain string (legacy/aegis) or { code, splitKey, wantId }
+        var obfuscatedCode = (result && typeof result === 'object') ? result.code : result;
         // storage delta check (only if the script grew)
         var oldBytes = ((prevScript && prevScript.code ? prevScript.code.length : 0) + (prevScript && prevScript.originalCode ? prevScript.originalCode.length : 0));
         var newBytes = code.length + obfuscatedCode.length;
@@ -3803,6 +3844,8 @@ function confirmEditScript(projectId, scriptId) {
                             projects[i].scripts[j].obfuscationIntensity = obfuscationIntensity;
                             projects[i].scripts[j].specialKey = specialKey;
                             projects[i].scripts[j].keyless = isKeyless;
+                            projects[i].scripts[j].serverKeySplit = !!(result && typeof result === 'object' && result.splitKey);
+                            projects[i].scripts[j].splitKeyData = (result && typeof result === 'object' && result.splitKey) ? result.splitKey : null;
                             projects[i].scripts[j].version = (prevScript && prevScript.version ? prevScript.version : 1) + 1;
                             projects[i].scripts[j].hwidReset = hwidReset;
                             projects[i].scripts[j].gameId = placeIdOnly;
@@ -3824,7 +3867,7 @@ function confirmEditScript(projectId, scriptId) {
         // (or upload keyless), kill the old loader link (replaces) so old
         // ids stop working
         var oldLoaderId = prevScript && prevScript.loaderId ? prevScript.loaderId : '';
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', obfuscatedCode, code, specialKey, oldLoaderId, isKeyless).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
