@@ -29,8 +29,12 @@ function getGlobal(L, name) {
     return v ? to_jsstring(v) : null;
 }
 
-// The CRACKER's peeler (transcribed from their Python description) - used
-// here to prove it NO LONGER works against split-key builds.
+// The CRACKER's peeler, updated to the NEW slot-table format (seeds + chain
+// params). Even understanding the format, they cannot win:
+//   - split builds: the START seed is zeros - nothing to peel with
+//   - the "key" for each byte is (seed*c1 + prev*c2 + n1*31)%251+5 with
+//     cipher feedback - a naive seeds-as-keys XOR produces garbage
+// Used here to prove static peeling still fails against split-key builds.
 function crackerPeel(text, depth) {
     const results = [];
     let cur = text;
@@ -45,10 +49,12 @@ function crackerPeel(text, depth) {
         const allBytes = [...pm[1].matchAll(/\\(\d{1,3})/g)].map(m => parseInt(m[1], 10));
         const km = cur.match(/local _0x[0-9a-f]+=(\{\{[\d,{}]+\}\})/);
         if (!km) break;
-        // parse the {{key},off,sub} layers from the table
-        const layers = [...km[1].matchAll(/\{([\d,]+)\},(\d+),(\d+)\}/g)].map(m => ({
-            key: m[1].split(',').map(Number), off: Number(m[2]), sub: Number(m[3])
+        // parse the new slot entries: {seeds},iv,c1,c2,flags,shift,madd,next
+        const layers = [...km[1].matchAll(/\{([\d,]+)\},(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\}/g)].map(m => ({
+            seed: m[1].split(',').map(Number), iv: Number(m[2]), c1: Number(m[3]), c2: Number(m[4]),
+            flags: Number(m[5]), shift: Number(m[6]), madd: Number(m[7]), next: Number(m[8])
         }));
+        if (!layers.length) break;
         const SS = (stride || 10) + 1;
         const T = [];
         for (let pos = 1; pos <= allBytes.length; pos++) {
@@ -58,11 +64,12 @@ function crackerPeel(text, depth) {
         for (const b of T) { sum = (sum + b) % 1000000007; xf = (xf ^ b) & 0xFF; }
         const chkCalc = (sum + xf * 31) % 1000000007;
         if (chk !== null && chkCalc !== chk) { results.push({ tamper: true }); break; }
-        const outer = layers[layers.length - 1];
-        if (chk !== null) outer.key = outer.key.map(b => b ^ (chk % 256));
-        for (let l = layers.length - 1; l >= 0; l--) {
-            const { key, off, sub } = layers[l];
-            for (let i = 0; i < T.length; i++) T[i] = (((T[i] - sub) % 256 + 256) % 256) ^ key[(i + off) % key.length];
+        // naive attempt: treat every seed entry as a plain XOR key (this is
+        // ALL a static analyst can do without the full chain algorithm)
+        let mod = chk !== null ? chk % 256 : 0;
+        for (const lay of layers) {
+            const key = lay.seed.map(b => b ^ mod);
+            for (let i = 0; i < T.length; i++) T[i] = (((T[i] - lay.shift) % 256 + 256) % 256) ^ key[i % key.length];
         }
         const s = T.map(b => String.fromCharCode(b)).join('');
         results.push(s);

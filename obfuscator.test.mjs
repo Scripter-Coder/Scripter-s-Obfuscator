@@ -38,8 +38,9 @@ function bytesToUtf8(bytes) {
     return decodeURIComponent(escape(s));
 }
 
-// JS transcription of the generated Lua VM (strip noise, checksum,
-// key derivation, reverse layers) - decodes a loader text back to its source
+// JS transcription of the generated slot-chain VM (strip noise, checksum,
+// unmask START seed, walk the hidden linked list reversing each chain
+// layer with cipher feedback) - decodes a loader text back to its source
 function decodeLoader(text) {
     const dbgMatch = text.match(/--\[shdebug:(\{.*?\})\]/);
     assert(dbgMatch, 'shdebug header found');
@@ -49,20 +50,13 @@ function decodeLoader(text) {
     assert(payloadMatch, 'payload string found');
     const allBytes = [...payloadMatch[1].matchAll(/\\(\d{1,3})/g)].map(m => parseInt(m[1], 10));
 
-    const keyMatch = text.match(/local _0x[0-9a-f]+=(\{[\d,{}]+\})/);
-    assert(keyMatch, 'key table found');
-    const ints = [...keyMatch[1].matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
-
-    // regroup keys: for each layer: keyLens[l] key ints, then off, shift
-    const layers = [];
-    let p = 0;
-    for (let l = 0; l < dbg.layerCount; l++) {
-        const kl = dbg.keyLens[l];
-        const key = ints.slice(p, p + kl); p += kl;
-        const off = ints[p]; p += 1;
-        const shift = ints[p]; p += 1;
-        layers.push({ key, off, shift });
-    }
+    // slot table: {seed,iv,c1,c2,flags,shift,madd,next} per entry
+    const tableMatch = text.match(/local _0x[0-9a-f]+=(\{\{[\d,{}]+\}\})/);
+    assert(tableMatch, 'slot table found');
+    const entries = [...tableMatch[1].matchAll(/\{([\d,]+)\},(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\}/g)].map(m => ({
+        seed: m[1].split(',').map(Number), iv: Number(m[2]), c1: Number(m[3]), c2: Number(m[4]),
+        flags: Number(m[5]), shift: Number(m[6]), madd: Number(m[7]), next: Number(m[8])
+    }));
 
     // strip noise (junk where (pos-1) % (stride+1) == stride, 1-based pos)
     const S1 = dbg.stride + 1;
@@ -77,18 +71,30 @@ function decodeLoader(text) {
     const chk = (sum + xf * 31) % 1000000007;
     assert.strictEqual(chk, dbg.chk, 'runtime checksum matches emitted checksum');
 
-    // derive outer key (stored XOR chk%256)
-    const outer = layers[dbg.layerCount - 1];
+    // unmask START seed (stored XOR chk%256), then walk the hidden chain
     const mod = chk % 256;
-    outer.key = outer.key.map(b => b ^ mod);
-
-    // reverse layers N..1
-    for (let l = dbg.layerCount - 1; l >= 0; l--) {
-        const { key, off, shift } = layers[l];
-        for (let i = 0; i < T.length; i++) {
-            T[i] = (((T[i] - shift) % 256 + 256) % 256) ^ key[(i + off) % key.length];
+    let entry = entries[dbg.start - 1];
+    entry.seed = entry.seed.map(b => b ^ mod);
+    let en = dbg.start;
+    let count = 0;
+    while (en > 0) {
+        const e = entries[en - 1];
+        const rev = (e.flags % 2) === 1;
+        const C = T.length;
+        let prev = e.iv;
+        for (let i = 0; i < C; i++) {
+            const n1 = rev ? C - i : i + 1;
+            const q = ((e.seed[(n1 - 1) % e.seed.length] * e.c1 + prev * e.c2 + n1 * 31) % 251) + 5;
+            let v = (T[n1 - 1] - e.shift - (i % 3) * e.madd) % 256;
+            if (v < 0) v += 256;
+            T[n1 - 1] = v ^ q;
+            prev = T[n1 - 1];
         }
+        en = e.next;
+        count++;
+        if (count > dbg.layerCount + 5) throw new Error('chain walk overflow - corrupt table');
     }
+    assert.strictEqual(count, dbg.layerCount, 'walked exactly the real chain (decoys skipped)');
     return bytesToUtf8(T);
 }
 

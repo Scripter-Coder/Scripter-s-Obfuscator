@@ -92,6 +92,50 @@ function encLayer(bytes, key, off, shift) {
     return out;
 }
 
+// ---------- SEED-CHAIN LAYER CRYPTO (Luraph-style) ----------
+// No key table ever exists in the output. Each layer emits a table of
+// short SEEDS; the key for byte i is derived at runtime as
+//   ((seed[j]*C1 + prev*C2 + i*31) % 251 + 5)
+// where `prev` is the PLAINTEXT byte decrypted just before (cipher
+// feedback). Consequences for crackers:
+//   - there is no key to extract; the "key" changes every byte and
+//     depends on the data itself
+//   - tables contain DECOY seeds (parity-marked via off%2) that produce
+//     garbage when peeled, indistinguishable from real ones
+//   - every build randomizes C1/C2/IV/walk direction, so each
+//     generation is a different algorithm
+function encChain(bytes, l) {
+    // mirror of the Lua slot-walker: for i=0..C-1, n1 = rev ? C-i : i+1
+    // (1-based), q = ((seed[(n1-1)%len]*c1 + prev*c2 + n1*31) % 251) + 5,
+    // v = (plain[n1] ^ q) then +sh+(i%3)*ma mod 256; prev = plain[n1].
+    var n = bytes.length;
+    var out = new Array(n);
+    var prev = l.iv & 0xFF;
+    for (var i = 0; i < n; i++) {
+        var n1 = l.rev ? n - i : i + 1;
+        var pb = bytes[n1 - 1];
+        var q = ((l.seed[(n1 - 1) % l.seed.length] * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+        var v = (pb ^ q) + l.shift + (i % 3) * l.madd;
+        out[n1 - 1] = v & 0xFF;
+        prev = pb;
+    }
+    return out;
+}
+function genChainParams(count) {
+    var arr = [];
+    for (var i = 0; i < count; i++) {
+        var seedLen = rndInt(8, 24);
+        var seed = [];
+        for (var s = 0; s < seedLen; s++) seed.push(rndInt(29, 251));
+        arr.push({
+            seed: seed, iv: rndInt(0, 255), c1: rndInt(31, 251), c2: rndInt(2, 97),
+            rev: Math.random() < 0.5, off: rndInt(1, 64), // off doubles as decoy parity marker
+            shift: rndInt(1, 255), madd: rndInt(0, 97)
+        });
+    }
+    return arr;
+}
+
 // ---------- ANTI-CRACK DECOY SYSTEM ----------
 // When someone dumps the decrypted string from loadstring / hooks the VM /
 // deobfuscates statically, they must not get the real script. We emit a
@@ -516,23 +560,21 @@ function buildLoader(src, layerCount, options) {
     options = options || {};
     var bytes = strToBytes(src);
 
-    // apply layers
-    var layers = [];
-    for (var i = 0; i < layerCount; i++) {
-        var key = genKey();
-        var off = rndInt(0, key.length - 1);
-        var shift = rndInt(1, 255);
-        layers.push({ key: key, off: off, shift: shift });
-        bytes = encLayer(bytes, key, off, shift);
-    }
+    // apply SEED-CHAIN layers: no key table exists - each byte's key is
+    // derived from seed + previous PLAINTEXT byte (cipher feedback) +
+    // position, with per-build randomized constants/direction. Every
+    // generation emits a different algorithm, so no generic peeler works.
+    var layers = genChainParams(layerCount);
+    for (var i = 0; i < layerCount; i++) bytes = encChain(bytes, layers[i]);
 
     var chk = checksum(bytes);
     var mod = chk % 256;
 
-    // emitted (stored) outer key = real key XOR (chk % 256)
-    var storedOuter = layers[layerCount - 1].key.map(function (b) { return b ^ mod; });
+    // START layer = last-encryption layer (peeled first). Its seed is
+    // stored XOR (chk % 256); the loader unmasks it before walking.
+    var startSeed = layers[layerCount - 1].seed.map(function (b) { return b ^ mod; });
 
-    // ---- SPLIT-KEY: pad the stored outer key with a TIME PAD and export it
+    // ---- SPLIT-KEY: pad the stored START seed with a TIME PAD and export it
     // via options.splitKey (uploaded to the worker, NEVER embedded here).
     // Pad = djb2-style hash chain over t0's digits + byte index:
     //   h = 5381; for each step: h = (h*33 + c) % 2^32   (c = digit or idx)
@@ -545,7 +587,7 @@ function buildLoader(src, layerCount, options) {
         t0 = Date.now();
         var tstr = String(t0);
         var h = 5381;
-        var padded = storedOuter.map(function (b, idx) {
+        var padded = startSeed.map(function (b, idx) {
             // mix the next t0 digit (wrapping) + the byte index
             var c1 = tstr.charCodeAt(idx % tstr.length) - 48; // 0-9
             h = (h * 33 + c1 + (idx % 256) * 7) % 4294967296;
@@ -554,7 +596,7 @@ function buildLoader(src, layerCount, options) {
         options.splitKey.paddedKey = padded;
         options.splitKey.t0 = t0;
         options.splitKey.chk = chk;
-        options.splitKey.keyLen = storedOuter.length;
+        options.splitKey.keyLen = startSeed.length;
     }
 
     // noise stride: junk byte after every S real bytes
@@ -573,25 +615,57 @@ function buildLoader(src, layerCount, options) {
     }
 
     var antiTamper = options.antiTamper !== false;
-    var N = makeNames(22);
+    var N = makeNames(31);
     var P = N[0], K = N[1], X = N[2], SS = N[3], T = N[4], C = N[5],
         SUM = N[6], XF = N[7], CH = N[8], KK = N[9], L = N[10],
         R = N[11], SRC = N[12], F = N[13], IV = N[14], JL = N[15],
-        OV = N[16], SH = N[17], KV = N[18], LOOP = N[19], MI = N[20], FN = N[21];
+        MI = N[20], FN = N[21];
+    var EN = N[22], SD = N[23], PV = N[24], QR = N[25], JW = N[26],
+        KX = N[27], VV = N[28], IDX = N[29], N1 = N[30];
 
     // junk locals/strings for confusion
     var junkStrs = [];
-    for (var i = 0; i < layerCount * 2 + 4; i++) junkStrs.push('"' + hex(rndInt(8, 40)) + '"');
-    var keyTableParts = [];
-    for (var i = 0; i < layerCount; i++) {
-        var lk = (i === layerCount - 1) ? storedOuter : layers[i].key;
-        keyTableParts.push('{{' + lk.join(',') + '},' + layers[i].off + ',' + layers[i].shift + '}');
+    for (var i = 0; i < layerCount * 3 + 8; i++) junkStrs.push('"' + hex(rndInt(8, 40)) + '"');
+
+    // ---- SLOT LAYOUT: real layer entries + DECOY entries share one table.
+    // Real entries form a hidden linked list (each tuple's last field points
+    // to the next); decoys are never visited but look identical. A cracker
+    // iterating the whole table processes decoys -> garbage.
+    var M = layerCount + rndInt(2, layerCount + 3);
+    var slotPool = [];
+    for (var i = 0; i < M; i++) slotPool.push(i + 1);
+    for (var i = slotPool.length - 1; i > 0; i--) {
+        var j2 = rnd(i + 1); var tmp = slotPool[i]; slotPool[i] = slotPool[j2]; slotPool[j2] = tmp;
     }
-    // SPLIT-KEY: the last layer entry carries NO key bytes - the key
-    // arrives at runtime from the worker. Placeholder zeros keep the
-    // table shape identical (a peeler can't tell from the table alone).
-    if (split) {
-        keyTableParts[layerCount - 1] = '{{' + new Array(storedOuter.length).fill(0).join(',') + '},' + layers[layerCount - 1].off + ',' + layers[layerCount - 1].shift + '}';
+    var slotOf = {};   // encryption-layer index -> table slot
+    for (var i = 0; i < layerCount; i++) slotOf[layerCount - 1 - i] = slotPool[i]; // peel order
+    var START = slotOf[layerCount - 1];
+    var nextOf = {};   // peel chain: layer n-1 -> n-2 -> ... -> 0 -> stop
+    for (var e = layerCount - 1; e >= 0; e--) nextOf[e] = e > 0 ? slotOf[e - 1] : 0;
+
+    var keyTableParts = new Array(M);
+    for (var li = 0; li < layerCount; li++) {
+        var lay = layers[li];
+        // START seed stored XOR mod (or zeroed in split mode - worker serves it)
+        var sd = (li === layerCount - 1)
+            ? (split ? new Array(lay.seed.length).fill(0) : startSeed)
+            : lay.seed;
+        // flags: parity bit = reverse-walk direction, upper bits = junk
+        var flags = (lay.rev ? 1 : 0) + 2 * rndInt(0, 60);
+        keyTableParts[slotOf[li] - 1] = '{{' + sd.join(',') + '},' + lay.iv + ',' + lay.c1 + ','
+            + lay.c2 + ',' + flags + ',' + lay.shift + ',' + lay.madd + ',' + nextOf[li] + '}';
+    }
+    // decoys: identical shape, random params; some point INTO the real chain
+    // to poison naive "follow every pointer" analysis
+    for (var s = 0; s < M; s++) {
+        if (keyTableParts[s] === undefined) {
+            var ds = []; var dlen = rndInt(5, 11);
+            for (var q = 0; q < dlen; q++) ds.push(rndInt(1, 255));
+            var dnext = Math.random() < 0.4 ? slotOf[rnd(layerCount)] : 0;
+            var dflags = (Math.random() < 0.5 ? 1 : 0) + 2 * rndInt(0, 60);
+            keyTableParts[s] = '{{' + ds.join(',') + '},' + rndInt(0, 255) + ',' + rndInt(31, 251) + ','
+                + rndInt(2, 97) + ',' + dflags + ',' + rndInt(1, 255) + ',' + rndInt(0, 97) + ',' + dnext + '}';
+        }
     }
 
     var out = [];
@@ -618,60 +692,74 @@ function buildLoader(src, layerCount, options) {
         out.push('if ' + CH + '~=' + chk + ' then return end');
     }
     if (split) {
-        // ---- SPLIT-KEY: fetch the missing last-layer key from the worker ----
-        // The file is missing the final layer's key bytes entirely, so a
+        // ---- SPLIT-KEY: fetch the missing START seed from the worker ----
+        // The file is missing the final layer's seed entirely, so a
         // static peeler always stops one layer short. The response is
         // time-locked (worker rejects stale t0), so saved responses can't
-        // be replayed.
-        // The script reference id comes from options.splitKey.id (the
-        // caller generates the loader id up front and asks /sh/upload to
-        // use it, so the id is known BEFORE the file is generated).
+        // be replayed. Wire format: "SHK <t0> <chk> <padded...>".
         var keyUrl = options.splitKey.url + '/' + options.splitKey.id + '?t=' + t0;
-        // names for the runtime fetch block
         var SN = makeNames(9);
         var GO = SN[0], RP = SN[1], PT = SN[2], KT = SN[3], KC = SN[4];
-        var SD = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
+        var SD2 = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
         out.push('do');
         out.push(' local ' + GO + '=game and game.HttpGet');
         out.push(' if not ' + GO + ' then return end');
         out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
         out.push(' if not ok or type(' + RP + ')~="string" then return end');
-        // response: "SHK\n<t0> <chk> <padded bytes...>"
         out.push(' if ' + RP + ':sub(1,3)~="SHK" then return end');
         out.push(' local ' + PT + '={}');
         out.push(' for n in ' + RP + ':gmatch("%-?%d+") do ' + PT + '[#' + PT + '+1]=tonumber(n) end');
         out.push(' if #' + PT + '<3 then return end');
         out.push(' local ' + KT + '=' + PT + '[1] local ' + KC + '=' + PT + '[2]');
-        // accept the EXACT t0 (worker only re-issues fresh ones anyway)
         out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then return end');
-        // regenerate the SAME djb2 hash-chain pad from t0 (exact in doubles)
-        out.push(' local ' + SD + '="' + String(t0) + '"');
+        out.push(' local ' + SD2 + '="' + String(t0) + '"');
         out.push(' local ' + PB + '={}');
         out.push(' local ' + HN + '=5381');
         out.push(' for j=3,#' + PT + ' do');
-        out.push('  local c=string.byte(' + SD + ',((j-3)%#' + SD + ')+1)-48');
+        out.push('  local c=string.byte(' + SD2 + ',((j-3)%#' + SD2 + ')+1)-48');
         out.push('  ' + HN + '=(' + HN + '*33+c+((j-3)%256)*7)%4294967296');
         out.push('  ' + PB + '[#' + PB + '+1]=' + X + '(' + PT + '[j],(' + HN + '%256))');
         out.push(' end');
-        // fill the last layer key slot (stored form; the MI flow un-XORs
-        // chk%256 later, exactly like a normal embedded key)
-        out.push(' local ' + KK2 + '=' + K + '[#' + K + '][1]');
+        // write the fetched seed into the START slot (stored/masked form)
+        out.push(' local ' + KK2 + '=' + K + '[' + START + '][1]');
         out.push(' for j=1,#' + PB + ' do ' + KK2 + '[j]=' + PB + '[j] end');
         out.push(' if #' + PB + ' ~= #' + KK2 + ' then return end');
         out.push('end');
     }
+    // ---- unmask the START seed (stored XOR chk%256) ----
     out.push('do');
-    out.push(' local ' + KK + '=' + K + '[#' + K + '][1]');
+    out.push(' local ' + KK + '=' + K + '[' + START + '][1]');
     out.push(' local ' + MI + '=' + CH + '%256');
-    out.push(' for ' + KV + '=1,#' + KK + ' do ' + KK + '[' + KV + ']=' + X + '(' + KK + '[' + KV + '],' + MI + ') end');
+    out.push(' for ' + IV + '=1,#' + KK + ' do ' + KK + '[' + IV + ']=' + X + '(' + KK + '[' + IV + '],' + MI + ') end');
     out.push('end');
-    out.push('for ' + LOOP + '=#' + K + ',1,-1 do');
-    out.push(' local ' + KK + '=' + K + '[' + LOOP + '][1]');
-    out.push(' local ' + OV + '=' + K + '[' + LOOP + '][2]');
-    out.push(' local ' + SH + '=' + K + '[' + LOOP + '][3]');
-    out.push(' for ' + IV + '=0,' + C + '-1 do');
-    out.push('  ' + T + '[' + IV + '+1]=' + X + '((' + T + '[' + IV + '+1]-' + SH + ')%256,' + KK + '[(' + IV + '+' + OV + ')%#' + KK + '+1])');
+    // ---- SLOT-CHAIN WALKER: peel layers through the hidden linked list.
+    // Only real slots are visited; decoys poison anyone who iterates the
+    // whole table. Each byte's key = (seed*C1 + prev*C2 + pos*31) % 251 + 5
+    // with cipher feedback - there is no key table to extract.
+    out.push('local ' + EN + '=' + START);
+    out.push('while ' + EN + '>0 do');
+    out.push(' local ' + KX + '=' + K + '[' + EN + ']');
+    out.push(' local ' + VV + '=' + KX + '[5]%2==1');
+    out.push(' local kk=' + KX + '[1]');
+    out.push(' local c1=' + KX + '[3]');
+    out.push(' local c2=' + KX + '[4]');
+    out.push(' local sh=' + KX + '[6]');
+    out.push(' local ma=' + KX + '[7]');
+    out.push(' local ' + PV + '=' + KX + '[2]');
+    out.push(' local i=0');
+    out.push(' while i<' + C + ' do');
+    out.push('  local n1');
+    out.push('  if ' + VV + ' then n1=' + C + '-i else n1=i+1 end');
+    out.push('  local s=kk[((n1-1)%#kk)+1]');
+    out.push('  local q=((s*c1+' + PV + '*c2+n1*31)%251)+5');
+    out.push('  local v=' + T + '[n1]');
+    out.push('  v=(v-sh-(i%3)*ma)%256');
+    out.push('  if v<0 then v=v+256 end');
+    out.push('  ' + T + '[n1]=' + X + '(v,q)');
+    out.push('  ' + PV + '=' + T + '[n1]');
+    out.push('  i=i+1');
     out.push(' end');
+    out.push(' ' + EN + '=' + KX + '[8]');
     out.push('end');
     out.push('for ' + IV + '=1,' + C + ' do ' + R + '[' + IV + ']=string.char(' + T + '[' + IV + ']) end');
     out.push('local ' + SRC + '=table.concat(' + R + ')');
@@ -691,7 +779,7 @@ function buildLoader(src, layerCount, options) {
     var result = out.join('\n');
 
     if (options._debug) {
-        result = '--[shdebug:' + JSON.stringify({ stride: stride, chk: chk, layerCount: layerCount, keyLens: layers.map(function (l) { return l.key.length; }) }) + ']\n' + result;
+        result = '--[shdebug:' + JSON.stringify({ stride: stride, chk: chk, layerCount: layerCount, keyLens: layers.map(function (l) { return l.seed.length; }), slots: M, start: START }) + ']\n' + result;
     }
     return result;
 }
