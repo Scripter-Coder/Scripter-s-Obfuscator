@@ -1,22 +1,32 @@
 // ============================================================
-// ScripterHub Custom Obfuscator Engine v2.0
+// ScripterHub Custom Obfuscator Engine v3.0
 // ------------------------------------------------------------
 // A REAL working Lua/Luau obfuscator that runs fully in JS:
-//   1. The entire source is encrypted with N dynamic layers
-//      (rotating-key XOR + additive shift), interleaved with
-//      noise bytes and rebuilt byte-by-byte at runtime, so the
-//      original source NEVER appears anywhere in the output.
-//   2. Anti-Tampering: a checksum of the encrypted payload is
+//   1. VM PASS: the source is FIRST compiled through a Luarmor-style
+//      transform (vm-pass.js) - all strings/numbers move into an
+//      encrypted vault, calls route through a proxy dispatcher,
+//      member keys are vaulted, locals are morphed. A cracker who
+//      peels every encryption layer lands on VM-ified code, NEVER
+//      the original source. This is the tier-2 defense.
+//   2. SEED-CHAIN LAYERS: N dynamic encryption layers where each
+//      byte's key is derived from seed + previous PLAINTEXT byte
+//      (cipher feedback) + position, with per-build randomized
+//      constants and a decoy-filled slot table. There is no key
+//      table to extract, and every build is a different cipher.
+//   3. Anti-Tampering: a checksum of the encrypted payload is
 //      verified AND used to derive the outer decryption key.
 //      Changing a single byte silently destroys the script.
-//   3. Environment Logging: collects executor/game/user info and
+//   4. Environment Logging: collects executor/game/user info and
 //      reports it to a webhook and/or a local log file.
-//   4. Anti-Skidding: loadstring hook/canary detection, sandbox
+//   5. Anti-Skidding: loadstring hook/canary detection, sandbox
 //      detection, and an encrypted embedded watermark.
-//   Output is unique on every generation (random keys, offsets,
-//   shifts, strides, identifiers, junk) => practically
-//   impossible to statically deobfuscate.
+//   6. ANTI-CRACK: one-shot canary + decoy payloads - dumped
+//      loadstrings print the troll message instead of the code.
+//   Output is unique on every generation => practically
+//      impossible to statically deobfuscate.
 // ============================================================
+
+import { applyVmPass } from './vm-pass.js';
 
 // ---------- helpers ----------
 function rnd(n) { return Math.floor(Math.random() * n); }
@@ -91,8 +101,6 @@ function encLayer(bytes, key, off, shift) {
     }
     return out;
 }
-
-// ---------- SEED-CHAIN LAYER CRYPTO (Luraph-style) ----------
 // No key table ever exists in the output. Each layer emits a table of
 // short SEEDS; the key for byte i is derived at runtime as
 //   ((seed[j]*C1 + prev*C2 + i*31) % 251 + 5)
@@ -143,7 +151,7 @@ function genChainParams(count) {
 // same helpers, same names) but produces a troll string instead. The REAL
 // path is only reachable through all genuine layer keys + a magic derived
 // from the checksum; any patched/dumped path lands on a decoy.
-// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion 💖").
+// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion ðŸ’–").
 function buildDecoyLayer(seedStr) {
     // deterministic-per-generation decoy key bytes
     var s = seedStr + hex(24);
@@ -165,7 +173,7 @@ function buildSecurityWrapper(options, meta) {
     var envLogging = options.envLogging === true;
     var antiLogger = options.antiLogger !== false;
     // ANTI-CRACK: never disabled (protects every script). Custom message optional.
-    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion 💖');
+    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion ðŸ’–');
     var wm = 'SHv2::' + hex(12) + '::' + meta.name + '::' + meta.owner + '::' + hex(6);
     var wmSum = wmChecksum(wm);
     var n = makeNames(72);
@@ -182,7 +190,7 @@ function buildSecurityWrapper(options, meta) {
     //   - The payload CHECKS the canary. A cracker who dumps the decrypted
     //     string loses the registration context -> canary missing -> they
     //     get the DECOY instead, which prints the anti-crack message
-    //     ("Goodluck Sonion 💖").
+    //     ("Goodluck Sonion ðŸ’–").
     //   - After a pass the canary is DELETED (one-shot), so "run genuine
     //     first, dump later" also lands on the decoy.
     //   - Encrypted decoy payloads + a decoy decryptor identical in shape
@@ -768,7 +776,7 @@ function buildLoader(src, layerCount, options) {
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
     // chunk - a dumped payload string does NOT contain it, so re-running a
-    // dump lands on the decoy ("Goodluck Sonion 💖").
+    // dump lands on the decoy ("Goodluck Sonion ðŸ’–").
     if (options._canary) {
         out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
@@ -800,7 +808,16 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // the payload. Dumped payloads miss the registration -> decoy fires.
     options._canary = { name: '_shc' + hex(10), magic: rndInt(100000, 999999) * 3 + 7 };
 
-    var payload = buildSecurityWrapper(options, meta) + code;
+    // ---- VM PASS (tier 2): VM-ify the USER'S CODE first. The security
+    // wrapper stays plain (it gates/aborts before user code runs); the
+    // user's actual script becomes vault+proxy code. Anyone who peels all
+    // encryption layers lands on VM-ified source, never the original.
+    // applyVmPass falls back to the raw source automatically if the
+    // code uses syntax the pass cannot transform safely.
+    var vmCode = options.vmPass === false ? code : applyVmPass(code);
+    if (debugInfo && vmCode !== code) debugInfo.vmApplied = true;
+
+    var payload = buildSecurityWrapper(options, meta) + vmCode;
 
     // SPLIT-KEY container: buildLoader fills it with the padded key + t0;
     // the caller uploads it to the worker (/sh/upload -> splitKey) and the

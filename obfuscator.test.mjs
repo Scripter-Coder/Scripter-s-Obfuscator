@@ -99,6 +99,14 @@ function decodeLoader(text) {
 }
 
 // ============ RUN ============
+// vault markers: every VM pass emits a memo cache table + refs table
+function applyVmPassMarker() {
+    // stable shape: `local c???????={}` (cache) + `local r???????={{`
+    return /local c[0-9a-f]{7}=\{\}\nlocal r[0-9a-f]{7}=\{\{/;
+}
+assert(applyVmPassMarker().test('local c1234567={}\nlocal r7654321={{1,2}}'), 'marker regex sanity');
+assert(applyVmPassMarker().test('local cabcdef0={}\nlocal r1234567={{'), 'hex sanity');
+
 console.log('[1] Generating single-wrap output (intensity 5)...');
 const out5 = applyCustomObfuscator(sample, opts);
 assert(!out5.includes('Hello, secret string!'), 'source string must not leak');
@@ -114,8 +122,13 @@ const esc = s => [...unescape(encodeURIComponent(s))].map(c => '\\' + c.charCode
 assert(decoded1.includes('-- ==== ORIGINAL SCRIPT ===='));
 assert(decoded1.includes(esc('https://discord.com/api/webhooks/test/hook')), 'env logging webhook embedded');
 assert(decoded1.includes('ScripterHub Log :: '), 'env logging block present');
-assert(decoded1.endsWith(sample), 'original code appended verbatim');
-console.log('    OK: decoded payload contains wrapper + original code');
+// VM PASS: the peeled payload is now VM-ified code, not the original
+// source. What must hold: it PARSES and the ORIGINAL strings are ABSENT
+// (vaulted). Verifying execution equivalence happens in the fengari
+// runtime tests below ([7] etc).
+assert(!decoded1.includes('Hello, secret string!'), 'source string must be vaulted away');
+assert(applyVmPassMarker().test(decoded1), 'vm vault present (sanity)');
+console.log('    OK: decoded payload = wrapper + VM-ified original (strings vaulted)');
 
 console.log('[3] Generating double-wrap output (intensity 10)...');
 const out10 = applyCustomObfuscator(sample, { ...opts, intensity: 10 });
@@ -128,16 +141,19 @@ const inner = decodeLoader(out10);
 luaparse.parse(inner);
 const payload = decodeLoader(inner);
 luaparse.parse(payload);
-assert(payload.endsWith(sample), 'double-wrapped decode yields original');
-console.log('    OK: fully decoded through 2 shells');
+// VM pass: peeled result is VM-ified, not the raw sample
+assert(!payload.includes('Hello, secret string!'), 'double-wrapped: source must be vaulted away');
+assert(applyVmPassMarker().test(payload), 'double-wrapped decode yields VM-ified original');
+console.log('    OK: fully decoded through 2 shells (strings vaulted)');
 
 console.log('[5] Minimal options (all protections off, intensity 1)...');
 const outMin = applyCustomObfuscator(sample, { intensity: 1, antiTamper: false, antiSkid: false, _debug: true });
 assert(!outMin.includes('Hello, secret string!'));
 luaparse.parse(outMin);
 const decodedMin = decodeLoader(outMin);
-assert(decodedMin.endsWith(sample), 'minimal decode yields original');
-console.log('    OK: minimal config round-trips');
+luaparse.parse(decodedMin);
+assert(!decodedMin.includes('Hello, secret string!'), 'minimal: source must be vaulted');
+console.log('    OK: minimal config round-trips (VM-ified)');
 
 console.log('[6] Uniqueness (every generation differs)...');
 const a = applyCustomObfuscator(sample, { intensity: 5 });

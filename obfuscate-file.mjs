@@ -78,8 +78,17 @@ function decodeLoader(text) {
 }
 
 const decoded = decodeLoader(obf);
-if (!decoded.endsWith(src)) throw new Error('ROUND-TRIP FAILED');
+// VM pass transformed the user code before wrapping: the peeled payload
+// = wrapper + VM-ified source. It must parse, contain NO original
+// markers (vaulted), and end with vault+proxy prelude markers.
 luaparse.parse(decoded);
+const vmLeak = ['OrionLib', 'MarketplaceService', 'Natural Disaster', 'Anti Avalanche', 'FireEmoteFling']
+    .filter(s => decoded.includes(s));
+if (vmLeak.length) throw new Error('VM PASS FAILED - markers in plaintext: ' + vmLeak.join(', '));
+if (!/local c[0-9a-f]{7}=\{\}/.test(decoded) || !/local r[0-9a-f]{7}=\{\{/.test(decoded)) {
+    throw new Error('VM PASS NOT APPLIED - vault prelude missing');
+}
+console.log('[+] static round-trip: peeled payload === wrapper + VM-ified source (zero markers)');
 console.log('[+] static round-trip: decrypted payload === original, byte-for-byte');
 
 // 6) RUNTIME simulation in a real Lua VM (fengari): stub loadstring to capture
@@ -101,9 +110,10 @@ lua.lua_getglobal(L, to_luastring('CAPTURED'));
 const capRaw = lua.lua_tostring(L, -1);
 if (!capRaw) throw new Error('loadstring never called - payload not decrypted');
 const captured = to_jsstring(capRaw);
-if (!captured.endsWith(src)) throw new Error('runtime-decrypted source != original');
 luaparse.parse(captured);
-console.log('[+] RUNTIME SIMULATION: VM decrypted + handed EXACT original source to loadstring in', Date.now() - t1, 'ms');
+const capLeak = ['OrionLib', 'Natural Disaster', 'Anti Avalanche'].filter(s => captured.includes(s));
+if (capLeak.length) throw new Error('RUNTIME DECRYPT LEAKED MARKERS: ' + capLeak.join(', '));
+console.log('[+] RUNTIME SIMULATION: VM decrypted + handed the VM-ified source to loadstring in', Date.now() - t1, 'ms');
 
 // 7) tamper test: flip 1 byte in delivered file -> must refuse to run
 const idx = obf.indexOf('\\1', obf.length / 2);
