@@ -14,7 +14,29 @@
 //   4. Locals morphed to random hex names (scope-tracked).
 // If the source fails to parse, the pass returns it untouched.
 // ============================================================
-import luaparse from 'luaparse';
+// luaparse resolver: this file must stay BARE-IMPORT FREE because the
+// site serves it directly as a browser ES module (bare specifiers
+// cannot resolve there). The parser is resolved in this order:
+//   1. an injected parser (opts.luaparse / vmSetLuaparse) - tests/CLI
+//   2. window.luaparse (index.html loads vendor/luaparse.js first)
+//   3. Node require('luaparse') (tests / CLI under Node)
+// vite's dist build never sees this file's own import - custom-
+// obfuscator.js calls vmSetLuaparse at runtime.
+var _injectedLuaparse = null;
+export function vmSetLuaparse(p) { _injectedLuaparse = p; }
+function resolveLuaparse() {
+    if (_injectedLuaparse) return _injectedLuaparse;
+    if (typeof window !== 'undefined' && window.luaparse) return window.luaparse;
+    if (typeof globalThis !== 'undefined' && globalThis.luaparse) return globalThis.luaparse;
+    // Node (tests/CLI): CJS require via a lazy shim
+    if (typeof require === 'function') return require('luaparse');
+    if (typeof module !== 'undefined' && typeof module.createRequire === 'function') {
+        return module.createRequire(import.meta.url)('luaparse');
+    }
+    // ESM Node without require: dynamic import is async - not usable
+    // here. The caller MUST inject in that case (tests do).
+    throw new Error('luaparse unavailable - call vmSetLuaparse() or load vendor/luaparse.js');
+}
 
 function rnd(n) { return Math.floor(Math.random() * n); }
 function rndInt(min, max) { return min + rnd(max - min + 1); }
@@ -34,7 +56,7 @@ export function applyVmPass(src, opts) {
     opts = opts || {};
     var ast;
     try {
-        ast = luaparse.parse(src, { luaVersion: '5.1' });
+        ast = resolveLuaparse().parse(src, { luaVersion: '5.1' });
     } catch (e) {
         return src;
     }

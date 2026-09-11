@@ -1,7 +1,13 @@
 // ============ STATE ============
 import { applyCustomObfuscator, buildWrappedPayload } from './custom-obfuscator.js';
+import { vmSetLuaparse } from './vm-pass.js';
 import { initRewards, renderRewardsTab, openCreateRewardUI } from './rewards.js';
 import { shEncryptPayload } from './sh-crypto.js';
+
+// VM pass needs a Lua parser. index.html loads vendor/luaparse.js (UMD)
+// as a plain script BEFORE this module, which sets window.luaparse -
+// works both for the raw source deploy and inside the vite bundle.
+vmSetLuaparse(window.luaparse);
 
 let currentUser = null;
 let isLoggedIn = false;
