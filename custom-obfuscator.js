@@ -27,6 +27,7 @@
 // ============================================================
 
 import { applyVmPass } from './vm-pass.js';
+import { applyBytecodeVm, vmBCSetLuaparse } from './vm-bytecode.js';
 
 // ---------- helpers ----------
 function rnd(n) { return Math.floor(Math.random() * n); }
@@ -776,9 +777,16 @@ function buildLoader(src, layerCount, options) {
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
     // chunk - a dumped payload string does NOT contain it, so re-running a
-    // dump lands on the decoy ("Goodluck Sonion ðŸ’–").
+    // dump lands on the decoy ("Goodluck Sonion 💖").
     if (options._canary) {
         out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
+    }
+    // SERVER-BOUND VM SEED: deliver the bytecode VM's vault seed into
+    // genv right before the payload compiles - the payload reads it at
+    // boot. A peeled/dumped stub never sees this write, so its vault
+    // stays locked. (Only present in split-key builds.)
+    if (options._vmSeedGenv && options._vmSeedValue !== undefined) {
+        out.push('do local g=(getgenv and getgenv()) or _G g.' + options._vmSeedGenv + '=' + options._vmSeedValue + ' end');
     }
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
@@ -811,11 +819,41 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // ---- VM PASS (tier 2): VM-ify the USER'S CODE first. The security
     // wrapper stays plain (it gates/aborts before user code runs); the
     // user's actual script becomes vault+proxy code. Anyone who peels all
-    // encryption layers lands on VM-ified source, never the original.
-    // applyVmPass falls back to the raw source automatically if the
-    // code uses syntax the pass cannot transform safely.
-    var vmCode = options.vmPass === false ? code : applyVmPass(code);
-    if (debugInfo && vmCode !== code) debugInfo.vmApplied = true;
+    // encryption layers lands on VM-ified code, never the original.
+    // Tier order: BYTECODE VM (Luraph-style - source dies at compile
+    // time, only opcode blob + interpreter ship) -> vm-pass lite (vault
+    // + proxies, still lua) -> raw source. Each tier falls back
+    // automatically on any unsupported construct.
+    // SERVER-BOUND SEED: in split-key mode the bytecode VM's vault seed
+    // is NOT embedded - the loader writes it into genv after the worker
+    // key fetch, so even a fully peeled stub cannot decrypt constants.
+    var splitMode = !!(options.serverKey || options.splitKey);
+    var vmCode;
+    if (options.vmPass === false) {
+        vmCode = code;
+    } else if (options.vmTier === 'lite') {
+        vmCode = applyVmPass(code);
+        if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+    } else {
+        var bc = null;
+        var bcOpts = {};
+        if (splitMode) {
+            // server-bound seed: random value, delivered via genv at runtime
+            options._vmSeedGenv = '_shs' + hex(10);
+            options._vmSeedValue = rndInt(29, 251);
+            bcOpts.seedFromGenv = options._vmSeedGenv;
+            bcOpts.seedOverride = options._vmSeedValue;
+        }
+        try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
+        if (bc) {
+            vmCode = bc;
+            if (debugInfo) debugInfo.vmApplied = 'bytecode';
+        } else {
+            options._vmSeedGenv = null;
+            vmCode = applyVmPass(code);
+            if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+        }
+    }
 
     var payload = buildSecurityWrapper(options, meta) + vmCode;
 
@@ -858,6 +896,8 @@ export function applyCustomObfuscator(code, options, debugInfo) {
             stride: Math.max(5, 20 - intensity),
             splitKey: splitContainer,
             _canary: options._canary,   // the DEEPEST loader registers the canary
+            _vmSeedGenv: options._vmSeedGenv,   // ...and delivers the VM seed
+            _vmSeedValue: options._vmSeedValue,
             _debug: options._debug
         };
         loader = buildLoader(loader, Math.min(3, intensity), innerOpts);
