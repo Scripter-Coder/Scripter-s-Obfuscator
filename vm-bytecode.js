@@ -916,34 +916,53 @@ function emitVM(build) {
     // ONCE, not inline (and/or would evaluate both branches and crash)
     var UNP = nm('u');
     L.push('local ' + UNP + '=table.unpack or unpack');
-    // pack helper: {n=count,...} nil-safe
+    // pack helper: {[marker]=true, n=count,...} nil-safe. The MARKER is a
+    // random per-build key - a plain user table passed as the LAST call
+    // argument (e.g. f({n=5}) or any {..}) can NEVER be mistaken for a
+    // packed multi-result table, because the flatten check tests for the
+    // marker, not for a guessable .n field.
+    var MARK = JSON.stringify('m' + hex(10));
+    var UNPKM = nm('q');
     L.push('local ' + PK + '=function(...)');
     L.push(' local t={n=select("#",...)}');
     L.push(' for i=1,t.n do t[i]=select(i,...) end');
+    L.push(' t[' + MARK + ']=true');
     L.push(' return t');
     L.push('end');
+    L.push('local ' + UNPKM + '=function(t) return type(t)=="table" and t[' + MARK + ']==true end');
     // ---- CHUNK BLOB: length-prefixed records, stream-encrypted ----
-    // record per chunk: [nParams, params as 2 bytes LE each...,
-    // vararg(0/1), nCode, code words as 4 bytes LITTLE-endian...].
+    // record per chunk: [nParams (2 bytes LE), params as 2 bytes LE
+    // each..., vararg (0/1), nCode (4 bytes LE), code words as 4 bytes
+    // LITTLE-endian...]. nCode MUST be 4 bytes: big scripts produce
+    // chunks with >255 code words (a 1-byte length was mangled by the
+    // XOR %256 step and the decoder ran off the blob end -> "attempt
+    // to perform arithmetic on a nil value" / "(mul) on nil and number").
     // Cipher: k(i) = (i*i*7 + i*3 + 90) % 251 + 4 over the flat blob.
     var blob = [];
     for (var ci = 0; ci < build.chunks.length; ci++) {
         var ch = build.chunks[ci];
-        blob.push(ch.params.length);
+        blob.push(ch.params.length % 256, Math.floor(ch.params.length / 256) % 256);
         for (var pi = 0; pi < ch.params.length; pi++) {
             blob.push(ch.params[pi] % 256, Math.floor(ch.params[pi] / 256) % 256);
         }
         blob.push(ch.vararg ? 1 : 0);
-        blob.push(ch.code.length);
-        for (var wi = 0; wi < ch.code.length; wi++) {
+        var nCode = ch.code.length;
+        blob.push(nCode % 256, Math.floor(nCode / 256) % 256, Math.floor(nCode / 65536) % 256, Math.floor(nCode / 16777216) % 256);
+        for (var wi = 0; wi < nCode; wi++) {
             var w = ch.code[wi];
             blob.push(w % 256, Math.floor(w / 256) % 256, Math.floor(w / 65536) % 256, Math.floor(w / 16777216) % 256);
         }
     }
-    // 1-BASED positions to match the Lua-side decrypt loop (i = 1..#src)
+    // 1-BASED positions to match the Lua-side decrypt loop (i = 1..#src).
+    // The cipher arithmetic MUST be laundered with %4294967296 before the
+    // %251: on 32-bit-integer runtimes (and our fengari test harness)
+    // i*i*7 wraps past 2^31 for blobs > ~17.5KB and the wrapped value mod
+    // 251 differs from the double-precise value. Laundering first makes
+    // JS, Lua 5.1/5.3 and Luau all compute the IDENTICAL stream.
     for (var bi = 0; bi < blob.length; bi++) {
         var p1 = bi + 1;
-        blob[bi] = (blob[bi] ^ (((p1 * p1 * 7 + p1 * 3 + 90) % 251) + 4)) % 256;
+        var k = (((p1 * p1 * 7 + p1 * 3 + 90) % 4294967296) % 251) + 4;
+        blob[bi] = (blob[bi] ^ k) % 256;
     }
     var BL = nm('b');
     // emit the blob as a DECRYPTING constructor: encrypted bytes inline,
@@ -952,7 +971,8 @@ function emitVM(build) {
     L.push('do');
     L.push(' local src={' + blob.join(',') + '}');
     L.push(' for i=1,#src do');
-    L.push('  local a=src[i] local b=(i*i*7+i*3+90)%251+4');
+    // laundered cipher: identical on doubles AND 32-bit-int runtimes
+    L.push('  local a=src[i] local b=((i*i*7+i*3+90)%4294967296)%251+4');
     L.push('  local r,pw=0,1');
     L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
     L.push('  ' + BL + '[i]=r');
@@ -963,11 +983,11 @@ function emitVM(build) {
     L.push('do');
     L.push(' local rp=1');
     L.push(' while rp<=#' + BL + ' do');
-    L.push('  local np=' + BL + '[rp] rp=rp+1');
+    L.push('  local np=' + BL + '[rp] + ' + BL + '[rp+1]*256 rp=rp+2');
     L.push('  local ps={}');
     L.push('  for j=1,np do ps[j]=' + BL + '[rp] + ' + BL + '[rp+1]*256 rp=rp+2 end');
     L.push('  local va=(' + BL + '[rp]==1) rp=rp+1');
-    L.push('  local nc=' + BL + '[rp] rp=rp+1');
+    L.push('  local nc=' + BL + '[rp] + ' + BL + '[rp+1]*256 + ' + BL + '[rp+2]*65536 + ' + BL + '[rp+3]*16777216 rp=rp+4');
     L.push('  local cd={}');
     L.push('  for j=1,nc do');
     L.push('   cd[j]=' + BL + '[rp] + ' + BL + '[rp+1]*256 + ' + BL + '[rp+2]*65536 + ' + BL + '[rp+3]*16777216');
@@ -1083,7 +1103,7 @@ function emitVM(build) {
                 L.push('   for j=1,n do a[j]=' + S + '[' + SP + '-n+j] end');
                 L.push('   ' + SP + '=' + SP + '-n-1');
                 L.push('   local la=#a');
-                L.push('   if la>0 and type(a[la])=="table" and a[la].n~=nil then');
+                L.push('   if la>0 and ' + UNPKM + '(a[la]) then');
                 L.push('    local pt=a[la] local flat={} local fi=0');
                 L.push('    for j=1,la-1 do fi=fi+1 flat[fi]=a[j] end');
                 L.push('    for j=1,pt.n do fi=fi+1 flat[fi]=pt[j] end');
@@ -1111,8 +1131,9 @@ function emitVM(build) {
                 break;
                 break;
             case 'VARGP':
-                // push packed varargs
-                L.push('   if not ' + VA + ' then ' + VA + '={n=0} end');
+                // push packed varargs (marker-tagged so the CALL flatten
+                // check can identify it - never a plain user table)
+                L.push('   if not ' + VA + ' then local t={n=0} t[' + MARK + ']=true ' + VA + '=t end');
                 L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + VA);
                 break;
             case 'NEWF':
