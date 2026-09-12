@@ -368,6 +368,40 @@
                             body.wantId = wantId;
                             body.splitKey = splitKey;
                         }
+                        // LARGE SCRIPTS: the obfuscated code > ~45MB goes to
+                        // the GitHub Storage Keeper (parts of 40MB, up to
+                        // 10GB per script). Small scripts keep /sh/upload.
+                        if (obf.length > 45 * 1024 * 1024) {
+                            var ghId = 'ScripterHub' + String(Date.now()).slice(-10);
+                            var PART = 40 * 1024 * 1024;
+                            var parts = Math.ceil(obf.length / PART);
+                            var chain = Promise.resolve();
+                            for (var pi = 0; pi < parts; pi++) {
+                                (function(idx) {
+                                    chain = chain.then(function() {
+                                        return fetch(WORKER + '/sh/gh-put', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ token: token, id: ghId, part: idx, content: obf.slice(idx * PART, (idx + 1) * PART) })
+                                        }).then(function(r) { return r.json(); }).then(function(pd) {
+                                            if (!pd.ok) throw new Error('Storage Keeper part ' + (idx + 1) + '/' + parts + ' failed: ' + (pd.error || 'unknown'));
+                                            errEl.textContent = 'Uploading to Storage Keeper... part ' + (idx + 1) + '/' + parts;
+                                        });
+                                    });
+                                })(pi);
+                            }
+                            return chain.then(function() {
+                                return fetch(WORKER + '/sh/gh-finalize', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        token: token, id: ghId, n: parts, len: obf.length,
+                                        name: name, user: user, keyless: keyless,
+                                        webKey: true, keyHash: keyHash, authRequired: false
+                                    })
+                                }).then(function(r) { return r.json(); });
+                            });
+                        }
                         return fetch(WORKER + '/sh/upload', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },

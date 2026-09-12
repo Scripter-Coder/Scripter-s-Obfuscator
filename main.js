@@ -109,6 +109,53 @@ async function shLoginRaw() {
         return d.ok === true;
     } catch (e) { return false; }
 }
+// ---- STORAGE KEEPER (GitHub) big-script upload ----
+// For obfuscated scripts > ~45MB (KV ceiling). Slices the code into
+// 40MB parts, streams each to the worker (which forwards them to the
+// private GitHub storage repo), then finalizes. Executors later fetch
+// the parts through the worker proxy (/sh/g/*) - GitHub never exposed.
+// Hard ceiling: 256 parts x 40MB = ~10GB per script (repo-size guidance
+// keeps total usage under ~10GB too).
+const SH_GH_PART_SIZE = 40 * 1024 * 1024;
+async function shUploadGithub(o) {
+    try {
+        const id = 'ScripterHub' + String(Date.now()).slice(-10);
+        const n = Math.ceil(o.obfCode.length / SH_GH_PART_SIZE);
+        if (n > 256) return { ok: false, error: 'script exceeds 10 GB (256 parts). Split it.' };
+        // 1) upload parts sequentially (progress via console + optional callback)
+        for (let i = 0; i < n; i++) {
+            const part = o.obfCode.slice(i * SH_GH_PART_SIZE, (i + 1) * SH_GH_PART_SIZE);
+            const res = await fetch(SH_STATS_ENDPOINT + 'sh/gh-put', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: o.token, id: id, part: i, content: part })
+            });
+            const d = await res.json();
+            if (!d.ok) return { ok: false, error: 'Storage Keeper part ' + (i + 1) + '/' + n + ' failed: ' + (d.error || 'unknown') };
+            try { console.log('[Storage Keeper] part ' + (i + 1) + '/' + n + ' uploaded'); } catch (e) {}
+            if (typeof window.__shGhProgress === 'function') { try { window.__shGhProgress(i + 1, n); } catch (e) {} }
+        }
+        // 2) finalize: register loader meta + optional web-view cipher tail
+        const fres = await fetch(SH_STATS_ENDPOINT + 'sh/gh-finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                token: o.token, id: id, n: n, len: o.obfCode.length,
+                name: o.name, user: o.user,
+                keyless: !!o.keyless, webKey: !!o.cipher, keyHash: o.keyHash || '',
+                authRequired: !!o.requireAuth,
+                replaces: o.replaces || '',
+                normalCode: (o.normalCode && o.normalCode.length < 45 * 1024 * 1024) ? o.normalCode : ''
+            })
+        });
+        const fd = await fres.json();
+        if (!fd.ok) return { ok: false, error: 'Storage Keeper finalize failed: ' + (fd.error || 'unknown') };
+        return { ok: true, id: fd.id, loadstring: fd.loadstring, storage: 'github', parts: n };
+    } catch (e) {
+        return { ok: false, error: 'Storage Keeper upload failed: ' + (e && e.message ? e.message : 'network') };
+    }
+}
+
 // Upload a script to the hidden host; resolves with { ok, loadstring, id }.
 // obfResult = the obfuscated code (string) OR { code, splitKey, wantId } from
 // obfuscateScriptCode. splitKey (server-key-split mode) = the padded final
@@ -158,6 +205,25 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // server-key-split: worker holds the missing final-layer key
             payload.wantId = wantId;
             payload.splitKey = splitKey;
+        }
+        // SIZE PRE-CHECK: KV/JSON path caps at ~50MB (Cloudflare). Larger
+        // scripts automatically switch to the GitHub Storage Keeper path
+        // below (up to ~10GB). Anything above 10GB cannot be stored.
+        const approxBody = (payload.plainCode ? payload.plainCode.length : 0) + (payload.cipher ? payload.cipher.length : 0) + (payload.normalCode ? payload.normalCode.length : 0);
+        if (approxBody > 10 * 1024 * 1024 * 1024) {
+            return { ok: false, error: 'too large: scripts cap at 10 GB (Storage Keeper repo limit of 256 x 40MB parts). Split the script.' };
+        }
+        // ---- STORAGE KEEPER (GitHub) path for obfuscated code > ~45MB ----
+        // Parts of 40MB stream to the worker (-> private GitHub repo),
+        // then one finalize call registers the loader. Small scripts keep
+        // the single-request KV path.
+        const GH_SWITCH = 45 * 1024 * 1024;
+        const obfLen = obfCode.length;
+        if (!keyless && obfLen > GH_SWITCH) {
+            return await shUploadGithub({ token, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
+        }
+        if (keyless && obfLen > GH_SWITCH) {
+            return await shUploadGithub({ token, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
         }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
@@ -360,7 +426,7 @@ function checkPlanLimit(kind, extraCount, extraBytes) {
     if (kind === 'storage' && plan.fileSize !== Infinity) {
         var newMB = stats.storage.usedMB + (extraBytes || 0) / (1024 * 1024);
         if (newMB > plan.fileSize) {
-            return 'You reached your Storage limit (' + formatSizeMB(stats.storage.usedMB) + ' / ' + formatSizeMB(plan.fileSize) + ') on the ' + currentUser.plan + ' plan. Upgrade for more space!';
+            return 'Not enough storage space on your plan (' + formatSizeMB(stats.storage.usedMB) + ' used, limit ' + formatSizeMB(plan.fileSize) + '). Remove some stuff or upgrade to a better plan!';
         }
     }
     return null;
@@ -2629,7 +2695,34 @@ function loadProjects() {
 function saveProjects(projects) {
     try {
         localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(projects));
-    } catch (e) { console.error('Error saving projects:', e); }
+    } catch (e) {
+        // localStorage quota (~5-10MB) exceeded - usually a HUGE obfuscated
+        // script. Degrade gracefully: strip the bulky code fields from the
+        // OLDEST scripts until it fits, keeping every script entry + the
+        // newest code. The loadstring stays functional (the worker holds
+        // the real copy); only the local "view code" needs re-obfuscation.
+        console.error('Error saving projects:', e);
+        try {
+            var trimmed = JSON.parse(JSON.stringify(projects));
+            var idx = 0;
+            while (idx < trimmed.length) {
+                var freed = false;
+                if (trimmed[idx].scripts) {
+                    for (var si = 0; si < trimmed[idx].scripts.length; si++) {
+                        var sc = trimmed[idx].scripts[si];
+                        if (sc.code && sc.code.length > 200000) { sc.code = ''; sc.codeStripped = true; freed = true; }
+                    }
+                }
+                try {
+                    localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(trimmed));
+                    if (freed || idx === trimmed.length - 1) {
+                        showNotification('Storage Note', 'Local storage was full - old scripts\' obfuscated code was trimmed locally (loadstrings keep working; re-obfuscate from Settings if you need the local copy).', 'warning', 8000);
+                        return;
+                    }
+                } catch (e2) { idx++; }
+            }
+        } catch (e3) { /* give up silently - in-memory state still works */ }
+    }
 }
 
 // ============ SHOW TABS ============
@@ -3498,7 +3591,12 @@ function confirmCreateScript(projectId) {
                     showNotification('Loadstring Ready', (isKeyless ? 'Keyless loadstring generated for "' + name + '" - anyone can execute it, NO key needed.' : 'Loader link generated for "' + name + '" - see the script Settings modal.'), 'success', 6000);
                 } catch (e) {}
             } else {
-                showNotification('Loadstring Warning', 'Hidden host upload failed: ' + (d.error || 'unknown') + ' (deploy the worker + KV first)', 'warning', 7000);
+                var failMsg = d.error || 'unknown';
+                // translate worker size errors into the plan-limit UX
+                if (/too large|413/i.test(failMsg)) {
+                    failMsg = 'Script too large for the cloud host (max ~50MB obfuscated - Cloudflare KV/request caps). Remove some code or split the script into parts.';
+                }
+                showNotification('Loadstring Warning', 'Hidden host upload failed: ' + failMsg + ' (deploy the worker + KV first)', 'warning', 9000);
             }
         });
         renderProjects();

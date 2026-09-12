@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Storage Keeper Status</title>
+<style>
+    * { box-sizing: border-box; }
+    body { background:#0a0a0f; color:#fff; font-family:'Segoe UI',Tahoma,sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; }
+    .box { background:rgba(20,20,35,0.85); border:1px solid rgba(108,59,255,0.35); border-radius:16px; padding:36px; max-width:560px; width:92%; }
+    h1 { font-size:22px; margin:0 0 4px; }
+    .sub { color:#8888aa; font-size:13px; margin:0 0 22px; }
+    label { display:block; font-size:13px; color:#ccd; margin:14px 0 6px; }
+    input { width:100%; background:#0a0a15; border:1px solid rgba(255,255,255,0.1); border-radius:10px; color:#fff; padding:12px; font-size:13px; font-family:monospace; }
+    .btn { display:inline-block; border:none; border-radius:10px; cursor:pointer; font-weight:600; font-size:14px; padding:12px 20px; color:#fff; background:linear-gradient(135deg,#6c3bff,#00bfff); margin-top:16px; }
+    .err { color:#ff6666; font-size:13px; margin-top:10px; }
+    table { width:100%; margin-top:18px; border-collapse:collapse; font-size:13px; }
+    td { padding:8px 6px; border-bottom:1px solid rgba(255,255,255,0.06); }
+    td:last-child { text-align:right; color:#66ff66; font-family:monospace; }
+    .ok-badge { display:inline-block; padding:4px 12px; border-radius:99px; font-size:12px; font-weight:700; }
+    .on  { background:rgba(0,204,68,0.15); color:#66ff66; border:1px solid rgba(0,204,68,0.4); }
+    .off { background:rgba(255,68,68,0.15); color:#ff6666; border:1px solid rgba(255,68,68,0.4); }
+    .hint { color:#555577; font-size:11px; margin-top:16px; }
+</style>
+</head>
+<body>
+<div class="box">
+    <h1>🗄️ Storage Keeper Status</h1>
+    <p class="sub">Big-script storage (up to ~10 GB each) backed by your private GitHub repo.</p>
+
+    <label>Worker URL</label>
+    <input id="workerUrl" placeholder="https://scripterhub-stats.dubovikstanislav51.workers.dev" spellcheck="false">
+    <label>Access code (raw-page code, e.g. ScripterHub)</label>
+    <input id="accessCode" placeholder="ScripterHub" spellcheck="false">
+    <button class="btn" id="checkBtn" onclick="doCheck()">🔍 Check Storage Keeper</button>
+    <div class="err" id="err"></div>
+
+    <div id="results" style="display:none;">
+        <table id="statTable"></table>
+        <p class="hint">Setup instructions: see the "Storage Keeper/README.md" in the website repo. The worker secrets SH_GH_TOKEN + SH_GH_REPO must be set and the storage repo needs at least one commit on main.</p>
+    </div>
+</div>
+<script>
+async function doCheck() {
+    var err = document.getElementById('err');
+    var btn = document.getElementById('checkBtn');
+    var results = document.getElementById('results');
+    err.textContent = '';
+    results.style.display = 'none';
+    var base = document.getElementById('workerUrl').value.trim().replace(/\/+$/, '');
+    var code = document.getElementById('accessCode').value;
+    if (!base) { err.textContent = 'Paste your worker URL first.'; return; }
+    btn.disabled = true; btn.textContent = 'Checking...';
+    try {
+        // 1) login with the access code -> session token
+        var lr = await fetch(base + '/sh/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ code: code }) });
+        var ld = await lr.json();
+        if (!ld.ok) throw new Error('Login failed: ' + (ld.error || 'wrong code'));
+        // 2) status
+        var sr = await fetch(base + '/sh/gh-status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: ld.token }) });
+        var d = await sr.json();
+        if (!d.ok) throw new Error(d.error || 'status failed');
+        var mb = function(b) { return (b / (1024*1024)).toFixed(1) + ' MB'; };
+        var rows = [
+            ['Storage Keeper', d.configured
+                ? '<span class="ok-badge on">CONFIGURED</span>'
+                : '<span class="ok-badge off">NOT CONFIGURED</span>'],
+            ['Repo', (d.repo || '—')],
+            ['Scripts stored', (d.scripts || 0)],
+            ['Total stored', mb(d.totalBytes || 0)],
+            ['Largest script', mb(d.largestBytes || 0)],
+            ['Max part size', mb(d.partMaxBytes || 0)],
+            ['Per-script ceiling', '256 parts ≈ 10 GB']
+        ];
+        var t = document.getElementById('statTable');
+        t.innerHTML = '';
+        for (var i = 0; i < rows.length; i++) {
+            var tr = document.createElement('tr');
+            var a = document.createElement('td'); a.textContent = rows[i][0];
+            var b = document.createElement('td'); b.innerHTML = rows[i][1];
+            tr.appendChild(a); tr.appendChild(b); t.appendChild(tr);
+        }
+        results.style.display = 'block';
+        if (!d.configured) err.textContent = 'Worker secrets missing: add SH_GH_TOKEN (GitHub PAT) + SH_GH_REPO (Scripter-Coder/Storage-Keeper-1) in worker Settings.';
+    } catch (e) {
+        err.textContent = e && e.message ? e.message : 'network error';
+    }
+    btn.disabled = false; btn.textContent = '🔍 Check Storage Keeper';
+}
+</script>
+</body>
+</html>
