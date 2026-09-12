@@ -262,10 +262,44 @@ function buildSecurityWrapper(options, meta) {
         'end'
     );
 
-    // ---------- KEY GATE (keys are embedded HASHED - never plaintext) ----------
-    // keyMode: 'default' = Roblox Core notifications + popup key card
-    //          'custom'  = silent gate, exposes API globals for the user's own GUI
-    if (options.keyGate && options.keyGate.keys && options.keyGate.keys.length) {
+    // ---------- KEY GATE ----------
+    // TWO modes:
+    //  a) serverKeyGate (Luarmor model): the script does NOT decide key
+    //     validity locally. The loader authenticates key+HWID against the
+    //     ScripterHub worker BEFORE any decrypt - no valid license = the
+    //     split key is never delivered = the file cannot decrypt. The
+    //     wrapper here only exposes API globals (status comes from the
+    //     server's verdict).
+    //  b) local keyGate (legacy offline mode): keys are embedded HASHED
+    //     - never plaintext. Used when there is no server (aegis engine).
+    if (options.serverKeyGate) {
+        // ---- server-side license auth: expose the verdict API globals ----
+        // The loader (buildLoader) runs the auth BEFORE this payload is
+        // even decrypted, so reaching this code at all means the server
+        // said yes. Still publish the globals for custom GUIs.
+        var SG = makeNames(6);
+        var SGV = SG[0], SGI = SG[1], SGE = SG[2], SGM = SG[3], SGS = SG[4], SGN = SG[5];
+        parts.push(
+            'do',
+            ' local ' + SGN + '=(getgenv and getgenv()) or _G',
+            ' local ' + SGV + '=' + SGN + '.__SH_SERVER_VERDICT',
+            ' if ' + SGV + ' then',
+            // the loader already authenticated: publish the server verdict
+            '  ' + SGN + '.ScripterHubKeyValid=(' + SGV + '=="Valid")',
+            '  ' + SGN + '.ScripterHubKeyIncorrect=(' + SGV + '=="hwid")',
+            '  ' + SGN + '.ScripterHubKeyExpired=(' + SGV + '=="expired")',
+            '  ' + SGN + '.ScripterHubKeyStatus="Server: " .. tostring(' + SGV + ')',
+            ' else',
+            // reached without server auth (aegis path): keep API shape
+            '  ' + SGN + '.ScripterHubKeyValid=true',
+            '  ' + SGN + '.ScripterHubKeyIncorrect=false',
+            '  ' + SGN + '.ScripterHubKeyExpired=false',
+            '  ' + SGN + '.ScripterHubKeyStatus="No Key Required"',
+            ' end',
+            ' ' + SGN + '.ScripterHubWebsiteStatus="Online"',
+            'end'
+        );
+    } else if (options.keyGate && options.keyGate.keys && options.keyGate.keys.length) {
         var kgSalt = hex(16);
         var keyMode = options.keyGate.mode === 'custom' ? 'custom' : 'default';
         var S = n[31], E = n[32], H = n[33], V = n[34], OKV = n[35], IVK = n[36];
@@ -701,19 +735,81 @@ function buildLoader(src, layerCount, options) {
         out.push('if ' + CH + '~=' + chk + ' then return end');
     }
     if (split) {
-        // ---- SPLIT-KEY: fetch the missing START seed from the worker ----
+        // ---- SPLIT-KEY + REAL SERVER AUTH (Luarmor model) ----
         // The file is missing the final layer's seed entirely, so a
-        // static peeler always stops one layer short. The response is
-        // time-locked (worker rejects stale t0), so saved responses can't
-        // be replayed. Wire format: "SHK <t0> <chk> <padded...>".
+        // static peeler always stops one layer short. The runtime flow:
+        //   1) collect a multi-signal HWID (never one spoofable value)
+        //   2) read the license key from getgenv().ScripterHubKey
+        //   3) GET /sh/auth/<id>?k=KEY&h=HWID&t=t0  -> "SHA <token> ..."
+        //      (server checks key+HWID+ban+expiry, locks HWID on first
+        //      run, returns a ~90s HMAC token)
+        //   4) GET /sh/k/<id>?t=t0&a=token&k=KEY&h=HWID -> "SHK ..." key
+        // Without a valid license the key is NEVER served and the file
+        // cannot decrypt. All of this lives in the LOADER chunk; a
+        // dumped payload string never contains it.
+        var authMode = !!options.splitKey.auth;
         var keyUrl = options.splitKey.url + '/' + options.splitKey.id + '?t=' + t0;
-        var SN = makeNames(9);
+        var SN = makeNames(authMode ? 18 : 9);
         var GO = SN[0], RP = SN[1], PT = SN[2], KT = SN[3], KC = SN[4];
         var SD2 = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
         out.push('do');
         out.push(' local ' + GO + '=game and game.HttpGet');
         out.push(' if not ' + GO + ' then return end');
-        out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
+        if (authMode) {
+            var LK = SN[9], HW = SN[10], HD = SN[11], TX = SN[12];
+            var AU = SN[13], AT = SN[14], AE = SN[15];
+            var RD = SN[16], SGV2 = SN[17];
+            // license key: user sets getgenv().ScripterHubKey = "KEY"
+            // BEFORE executing the loadstring (same UX as Luarmor)
+            out.push(' local ' + LK + '=(getgenv and getgenv()) or _G');
+            out.push(' ' + LK + '=' + LK + '.ScripterHubKey');
+            // ---- multi-signal HWID: never trust a single value ----
+            out.push(' local ' + HW + '=""');
+            // executor hwid (if present)
+            out.push(' pcall(function() if gethwid then ' + HW + '=tostring(gethwid()) end end)');
+            // Roblox analytics client id (stable per install)
+            out.push(' pcall(function() local s=game:GetService("RbxAnalyticsService") ' + HW + '=' + HW + '.."|"..tostring(s:GetClientId()) end)');
+            // place + job id context
+            out.push(' pcall(function() ' + HW + '=' + HW + '.."|"..tostring(game.PlaceId)..":"..tostring(game.JobId) end)');
+            // executor name (identifyexecutor) + local player id
+            out.push(' pcall(function() if identifyexecutor then ' + HW + '=' + HW + '.."|"..tostring(identifyexecutor()) end end)');
+            out.push(' pcall(function() local p=game:GetService("Players").LocalPlayer ' + HW + '=' + HW + '.."|"..tostring(p.UserId) end)');
+            // fold the raw signals into a short stable digest (djb2-style)
+            out.push(' local ' + HD + '=5381');
+            out.push(' for ' + TX + '=1,#' + HW + ' do ' + HD + '=(' + HD + '*33+string.byte(' + HW + ',' + TX + '))%4294967296 end');
+            out.push(' ' + HW + '=tostring(' + HD + ')');
+            // if no key is set: print + notify + abort (NO fallback path)
+            out.push(' if type(' + LK + ')~="string" or #' + LK + '==0 then');
+            out.push('  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="License key required! Set getgenv().ScripterHubKey and re-execute.",Duration=7}) end)');
+            out.push('  print("[ScripterHub] License key required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute.")');
+            out.push('  return');
+            out.push(' end');
+            // ---- /sh/auth: key + hwid -> short-lived token ----
+            // splitKey.url is "<base>/sh/k" so the auth endpoint is the
+            // same base with /sh/auth. Built by string-replace at
+            // generation time (baked into the file, never dynamic).
+            var authUrl = options.splitKey.url.replace(/\/sh\/k$/, '/sh/auth') + '/' + options.splitKey.id;
+            out.push(' local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&t=' + t0 + '")');
+            out.push(' if not ok1 or type(' + AU + ')~="string" then return end');
+            // verdict to genv for the payload's API globals
+            out.push(' local ' + SGV2 + '="invalid"');
+            out.push(' if ' + AU + ':sub(1,4)=="SHA " then');
+            // parse "<token> <expires> <t0>" - reject a stale token
+            out.push('  local ' + AT + ',' + AE + '=' + AU + ':match("^SHA (%S+) (%d+)")');
+            out.push('  if ' + AT + ' and ' + AE + ' and ' + AE + '+0 > os.time()*1000 then ' + SGV2 + '="Valid" end');
+            out.push(' elseif ' + AU + ':sub(1,6)=="SHERR " then ' + SGV2 + '=' + AU + ':sub(7) end');
+            out.push(' local ' + RD + '=(getgenv and getgenv()) or _G ' + RD + '.__SH_SERVER_VERDICT=' + SGV2);
+            out.push(' if ' + SGV2 + '~="Valid" then');
+            // hard exit with the server's own reason (hwid/expired/banned/...)
+            out.push('  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="Auth failed: " .. ' + SGV2 + ',Duration=7}) end)');
+            out.push('  return');
+            out.push(' end');
+            // ---- /sh/k with the token: the actual split key ----
+            var keyUrlNoT = options.splitKey.url + '/' + options.splitKey.id + '?t=' + t0;
+            out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrlNoT + '&a=') + ' .. ' + AT + ' .. "&k=" .. ' + LK + ' .. "&h=" .. ' + HW + ')');
+        } else {
+            out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
+        }
         out.push(' if not ok or type(' + RP + ')~="string" then return end');
         out.push(' if ' + RP + ':sub(1,3)~="SHK" then return end');
         out.push(' local ' + PT + '={}');
@@ -812,6 +908,18 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         owner: options.owner || 'unknown'
     };
 
+    // ---- SERVER KEY GATE (Luarmor model) ----
+    // requireKey + default engine + a serverKey host = REAL auth: the
+    // license check happens on the worker (/sh/auth), never locally.
+    // The old embedded-hash keyGate ("fake flags" theatre) is bypassed
+    // the moment anyone reaches the payload - it stays ONLY as the
+    // offline fallback for the aegis engine (no ScripterHub loader).
+    var serverAuth = !!(options.serverKey && options.keyGate && options.keyGate.keys && options.keyGate.keys.length);
+    if (serverAuth) {
+        options.serverKeyGate = true;           // wrapper: publish server verdict globals
+        options.keyGate = null;                 // kill the local embedded-hash gate
+    }
+
     // shared one-shot canary: registered by the loader, checked+deleted by
     // the payload. Dumped payloads miss the registration -> decoy fires.
     options._canary = { name: '_shc' + hex(10), magic: rndInt(100000, 999999) * 3 + 7 };
@@ -867,7 +975,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // only the deepest one needs the fetched key).
     var splitContainer = null;
     if (options.serverKey) {
-        splitContainer = { url: options.serverKey.keyUrl, id: options.serverKey.scriptRef || 'pending' };
+        splitContainer = { url: options.serverKey.keyUrl, id: options.serverKey.scriptRef || 'pending', auth: serverAuth };
     }
     var willDoubleWrap = intensity >= 8 && options.doubleWrap !== false;
 
@@ -916,7 +1024,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         };
     }
 
-    var headerNote = options.splitKey ? 'server-key-split' : 'self-contained';
+    var headerNote = options.splitKey ? (options.splitKey.auth ? 'server-auth+key-split' : 'server-key-split') : 'self-contained';
     return '-- ScripterHub Custom Obfuscator v5 (' + headerNote + ' + key modes + API globals + anti-logger + anti-crack) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
 }
 

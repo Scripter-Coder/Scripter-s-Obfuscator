@@ -124,7 +124,7 @@ async function shLoginRaw() {
 // key (the worker serves the executor blob directly), but browsers must
 // supply the key to view the code. That makes free scripts much harder to
 // rip from the website while keeping them free to execute in-game.
-async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless) {
+async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth) {
     try {
         const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
         const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
@@ -150,6 +150,9 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             payload = { token: token, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
         } else {
             payload = { token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+            // requireAuth (Luarmor model): the split key is only served
+            // after a valid license key + HWID auth against /sh/auth
+            if (requireAuth) payload.authRequired = true;
         }
         if (splitKey) {
             // server-key-split: worker holds the missing final-layer key
@@ -305,6 +308,40 @@ async function shClearCloudUsers(keepEmails) {
         return await shApi('sh/users-clear', { ownerProof: shOwnerProof(), keep: (keepEmails || []).join(',') });
     } catch (e) { return { ok: false }; }
 }
+
+// ============ LICENSE SYNC (server-side auth, Luarmor model) ============
+// Mirrors the local Users Keys into the worker's sh_licenses KV map, so
+// /sh/auth validates license keys + HWID SERVER-SIDE. Records keep the
+// key string as the map index (the worker needs the raw key to compute
+// the HMAC token - never stored in any script file).
+async function shSyncLicenses() {
+    try {
+        const keyData = loadKeys();
+        const licenses = {};
+        for (const k of (keyData.keys || [])) {
+            licenses[k.key] = {
+                hwid: k.hwid || '',
+                expiresAt: k.expires || 0,
+                banned: !!k.banned,
+                banReason: k.banReason || '',
+                discordId: k.discordId || '',
+                note: k.note || '',
+                hwidResets: k.hwidResets || 0,
+                executions: k.executions || 0
+            };
+        }
+        return await shApi('sh/licenses', { ownerProof: shOwnerProof(), licenses: licenses });
+    } catch (e) { return { ok: false, error: 'network' }; }
+}
+window.shSyncLicenses = shSyncLicenses;
+
+// owner-only: flip the global kill-switch (every auth fails instantly)
+async function shSetKillswitch(on) {
+    try {
+        return await shApi('sh/killswitch', { ownerProof: shOwnerProof(), on: !!on });
+    } catch (e) { return { ok: false, error: 'network' }; }
+}
+window.shSetKillswitch = shSetKillswitch;
 
 // ============ PLAN LIMIT ENFORCEMENT ============
 function checkPlanLimit(kind, extraCount, extraBytes) {
@@ -621,6 +658,14 @@ function saveKeys(keyData) {
     try {
         localStorage.setItem('keys_' + (currentUser ? currentUser.id : ''), JSON.stringify(keyData));
     } catch (e) { console.error('Error saving keys:', e); }
+    // mirror to the worker's license DB (server-side auth). Fire-and-
+    // forget; /sh/auth only works once this sync has landed. The owner
+    // (Scripter) owns the licenses - everyone else stays local-only.
+    try {
+        if (currentUser && (currentUser.username === 'Scripter' || currentUser.isAdmin)) {
+            shSyncLicenses();
+        }
+    } catch (e) {}
 }
 
 function createKey(scriptId, keyType, expiresDays) {
@@ -978,11 +1023,41 @@ function openUserKeysSettingsUI() {
                     <button onclick="resetAllHwids()" class="btn btn-danger" style="flex:1;">🔄 Reset All HWIDS</button>
                 </div>
             </div>
+            <div class="settings-block">
+                <h3>🛡️ Server Auth Controls (Luarmor model)</h3>
+                <div class="field-hint">License keys + HWID are checked SERVER-SIDE on every execution (your worker must be deployed). The kill-switch instantly fails every auth for every script - use it if a loader leaks.</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                    <button onclick="shLicenseSyncNow(this)" class="btn btn-close-dropdown" style="flex:1;">☁️ Sync Licenses Now</button>
+                    <button onclick="toggleKillswitch(this)" class="btn btn-danger" style="flex:1;">🛑 Kill-Switch: OFF</button>
+                </div>
+            </div>
             <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
         </div>
     `;
     document.body.appendChild(overlay);
 }
+
+function shLicenseSyncNow(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing...'; }
+    shSyncLicenses().then(function(d) {
+        if (btn) { btn.disabled = false; btn.textContent = '☁️ Sync Licenses Now'; }
+        showNotification(d && d.ok ? 'Licenses Synced' : 'Sync Failed', d && d.ok ? ((d.count || 0) + ' license(s) now enforced server-side.') : ((d && d.error) || 'Deploy the worker + log in as the owner first.'), d && d.ok ? 'success' : 'warning', 6000);
+    });
+}
+window.shLicenseSyncNow = shLicenseSyncNow;
+
+function toggleKillswitch(btn) {
+    var on = !/ON/.test(btn.textContent);
+    shSetKillswitch(on).then(function(d) {
+        if (d && d.ok) {
+            btn.textContent = on ? '🛑 Kill-Switch: ON (every auth fails - click to disable)' : '🛑 Kill-Switch: OFF';
+            showNotification('Kill-Switch ' + (on ? 'ARMED' : 'Disarmed'), on ? 'Every license auth now fails instantly. All protected loaders are dead.' : 'License auth works again.', on ? 'warning' : 'success', 7000);
+        } else {
+            showNotification('Failed', (d && d.error) || 'Owner-only control (log in as Scripter, worker deployed).', 'error', 6000);
+        }
+    });
+}
+window.toggleKillswitch = toggleKillswitch;
 
 function massGenerateKeys() {
     var amount = parseInt(document.getElementById('massGenAmount').value, 10);
@@ -1215,33 +1290,49 @@ function saveKeySettings(keyId) {
 function resetOneHwid(keyId) {
     var found = findKeyById(keyId);
     if (!found) return;
-    found.key.hwid = '';
-    found.key.hwidResets = (found.key.hwidResets || 0) + 1;
-    saveKeys(found.data);
-    var inp = document.getElementById('keyHwid');
-    if (inp) inp.value = '';
-    renderKeys();
-    showNotification('HWID Reset', 'HWID cleared. Resets: ' + found.key.hwidResets, 'success');
+    var doLocal = function() {
+        found.key.hwid = '';
+        found.key.hwidResets = (found.key.hwidResets || 0) + 1;
+        saveKeys(found.data);
+        var inp = document.getElementById('keyHwid');
+        if (inp) inp.value = '';
+        renderKeys();
+        showNotification('HWID Reset', 'HWID cleared. Resets: ' + found.key.hwidResets, 'success');
+    };
+    // server-side reset first (enforces the 24h cooldown on /sh/auth),
+    // then mirror locally. Offline/local-only keys fall back to local.
+    shApi('sh/license-reset', { ownerProof: shOwnerProof(), key: found.key.key }).then(function(d) {
+        if (d && d.ok) doLocal();
+        else showNotification('HWID Reset Blocked', (d && d.error) || 'Server rejected the reset (is this a cloud-synced key?). Reset locally?', 'warning', 6000);
+    }).catch(function() { doLocal(); });
 }
 
 function blacklistKey(keyId) {
     var found = findKeyById(keyId);
     if (!found) return;
     var reason = document.getElementById('keyBanReason') ? document.getElementById('keyBanReason').value.trim() : '';
-    if (found.key.banned) {
-        found.key.banned = false;
-        found.key.banReason = '';
-        showNotification('Unbanned', 'User unbanned.', 'success');
-    } else {
-        found.key.banned = true;
-        found.key.banReason = reason || 'No reason provided';
-        showNotification('Blacklisted', 'User blacklisted: ' + found.key.banReason, 'warning');
-    }
-    saveKeys(found.data);
-    renderKeys();
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    openKeySettingsUI(keyId);
+    var ban = !found.key.banned;
+    var doLocal = function() {
+        if (ban) {
+            found.key.banned = true;
+            found.key.banReason = reason || 'No reason provided';
+            showNotification('Blacklisted', 'User blacklisted: ' + found.key.banReason, 'warning');
+        } else {
+            found.key.banned = false;
+            found.key.banReason = '';
+            showNotification('Unbanned', 'User unbanned.', 'success');
+        }
+        saveKeys(found.data);
+        renderKeys();
+        var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+        if (modal) modal.remove();
+        openKeySettingsUI(keyId);
+    };
+    // server ban first so /sh/auth rejects the key on the next run
+    shApi('sh/license-ban', { ownerProof: shOwnerProof(), key: found.key.key, banned: ban, reason: reason }).then(function(d) {
+        if (d && d.ok) doLocal();
+        else doLocal(); // local ban still applies (sync mirrors it later)
+    }).catch(function() { doLocal(); });
 }
 
 // ============ UI UPDATE ============
@@ -3351,6 +3442,7 @@ function confirmCreateScript(projectId) {
             webhookUrl: webhookUrl,
             requireKey: requireKey,
             keyMode: requireKey ? keyMode : null,
+            serverAuth: !!(requireKey && obfuscatorEngine !== 'aegis' && obfOptions.keyGate),
             obfuscatorEngine: obfuscatorEngine,
             freeForEveryone: freeForEveryone,
             silentMode: silentMode,
@@ -3387,7 +3479,7 @@ function confirmCreateScript(projectId) {
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless, requireKey).then(function(d) {
             if (d.ok) {
                 try {
                     var projects = loadProjects();
@@ -3838,6 +3930,7 @@ function confirmEditScript(projectId, scriptId) {
                             projects[i].scripts[j].webhookUrl = webhookUrl;
                             projects[i].scripts[j].requireKey = requireKey;
                             projects[i].scripts[j].keyMode = requireKey ? keyMode : null;
+                            projects[i].scripts[j].serverAuth = !!(requireKey && obfuscatorEngine !== 'aegis' && obfOptions.keyGate);
                             projects[i].scripts[j].obfuscatorEngine = obfuscatorEngine;
                             projects[i].scripts[j].freeForEveryone = freeForEveryone;
                             projects[i].scripts[j].silentMode = silentMode;
@@ -3875,7 +3968,7 @@ function confirmEditScript(projectId, scriptId) {
         // (or upload keyless), kill the old loader link (replaces) so old
         // ids stop working
         var oldLoaderId = prevScript && prevScript.loaderId ? prevScript.loaderId : '';
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless, requireKey).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
@@ -4016,7 +4109,10 @@ function openScriptSettings(projectId, scriptId) {
     );
     var keyInfoHtml = script.requireKey ? (
         '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script also requires a Users Key!</p>'
+        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script requires a License Key (server-side auth):</p>'
+        + (script.serverAuth
+            ? '<p style="color:#66ff66; font-size:12px; margin:0 0 6px 0;">🛡️ Luarmor-model auth: the script is ONLY delivered after your user\'s key + HWID pass a live check against your worker. Keys sync automatically from the Users Keys tab (bans, expiry, HWID lock all enforced server-side).</p>'
+            : '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">⚠️ Local gate only (aegis engine or no key sync). Re-save with the Default engine for server-side auth.</p>')
         + '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">Users must add this line <strong style="color:#66ccff;">before</strong> their loadstring:</p>'
         + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_USERS_KEY_HERE"</code>'
         + '</div>'

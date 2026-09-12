@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test:obfuscator": "node obfuscator.test.mjs",
     "test:worker": "node worker.test.mjs",
-    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs"
+    "test:auth": "node authtest.test.mjs",
+    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"
