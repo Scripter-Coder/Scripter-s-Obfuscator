@@ -29,6 +29,27 @@
 import { applyVmPass } from './vm-pass.js';
 import { applyBytecodeVm, vmBCSetLuaparse } from './vm-bytecode.js';
 
+// Hard pre-validation: NEVER encrypt a script that does not parse.
+// A broken source would compile to a loadstring that silently no-ops
+// at runtime ("if F then F() end" swallows the nil) - the user gets a
+// protected file that does nothing, with no error anywhere. Reject
+// the upload with the actual parser error instead.
+function validateLuaSource(code) {
+    var parser = null;
+    if (typeof window !== 'undefined' && window.luaparse) parser = window.luaparse;
+    else if (typeof globalThis !== 'undefined' && globalThis.luaparse) parser = globalThis.luaparse;
+    else if (typeof require === 'function') {
+        try { parser = require('luaparse'); } catch (e) { parser = null; }
+    }
+    if (!parser) return; // parser unavailable (tests inject later) - skip
+    try {
+        parser.parse(code, { luaVersion: '5.1' });
+    } catch (e) {
+        var msg = String((e && e.message) || e);
+        throw new Error('Your script has a syntax error and cannot be obfuscated: ' + msg);
+    }
+}
+
 // ---------- helpers ----------
 function rnd(n) { return Math.floor(Math.random() * n); }
 function rndInt(min, max) { return min + rnd(max - min + 1); }
@@ -886,7 +907,9 @@ function buildLoader(src, layerCount, options) {
     }
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
-    out.push('if ' + F + ' then ' + F + '() end');
+    // never swallow a failed compile: if the payload does not parse the
+    // user must SEE it (old code silently did nothing on nil)
+    out.push('if ' + F + ' then ' + F + '() else error("[ScripterHub] payload failed to load - the obfuscated script source was invalid", 0) end');
 
     var result = out.join('\n');
 
@@ -907,6 +930,9 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         name: options.scriptName || 'script',
         owner: options.owner || 'unknown'
     };
+
+    // reject broken scripts BEFORE encrypting (silent no-op protection)
+    validateLuaSource(code);
 
     // ---- SERVER KEY GATE (Luarmor model) ----
     // requireKey + default engine + a serverKey host = REAL auth: the
