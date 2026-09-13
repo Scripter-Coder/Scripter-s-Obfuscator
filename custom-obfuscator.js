@@ -94,9 +94,9 @@ function keyHash(s) {
     return (a * 65537 + b) % 4294967296;
 }
 function luaEscape(s) {
-    var b = strToBytes(s), out = '';
-    for (var i = 0; i < b.length; i++) out += '\\' + b[i];
-    return out;
+    var b = strToBytes(s), parts = [];
+    for (var i = 0; i < b.length; i++) parts.push('\\' + b[i]);
+    return parts.join('');
 }
 function makeNames(count) {
     var used = {}, names = [];
@@ -666,17 +666,20 @@ function buildLoader(src, layerCount, options) {
     // noise stride: junk byte after every S real bytes
     var stride = options.stride || Math.max(3, 25 - layerCount * 2);
 
-    // build escaped payload string with noise
-    var payloadStr = '';
+    // build escaped payload string with noise (array-join: O(n) instead of
+    // the old string += that was O(n^2) and froze the tab on 100k-line
+    // scripts for minutes)
+    var escParts = [];
     var sinceJunk = 0;
     for (var i = 0; i < bytes.length; i++) {
-        payloadStr += '\\' + bytes[i];
+        escParts.push('\\' + bytes[i]);
         sinceJunk++;
         if (sinceJunk === stride) {
-            payloadStr += '\\' + rndInt(0, 255);
+            escParts.push('\\' + rndInt(0, 255));
             sinceJunk = 0;
         }
     }
+    var payloadStr = escParts.join('');
 
     var antiTamper = options.antiTamper !== false;
     var N = makeNames(31);

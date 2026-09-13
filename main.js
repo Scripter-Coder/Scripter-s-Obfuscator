@@ -128,7 +128,7 @@ async function shUploadGithub(o) {
             const res = await fetch(SH_STATS_ENDPOINT + 'sh/gh-put', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: o.token, id: id, part: i, content: part })
+                body: JSON.stringify({ token: o.token, userToken: o.userToken, id: id, part: i, content: part })
             });
             const d = await res.json();
             if (!d.ok) return { ok: false, error: 'Storage Keeper part ' + (i + 1) + '/' + n + ' failed: ' + (d.error || 'unknown') };
@@ -140,12 +140,12 @@ async function shUploadGithub(o) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                token: o.token, id: id, n: n, len: o.obfCode.length,
+                token: o.token, userToken: o.userToken, id: id, n: n, len: o.obfCode.length,
                 name: o.name, user: o.user,
                 keyless: !!o.keyless, webKey: !!o.cipher, keyHash: o.keyHash || '',
                 authRequired: !!o.requireAuth,
                 replaces: o.replaces || '',
-                normalCode: (o.normalCode && o.normalCode.length < 45 * 1024 * 1024) ? o.normalCode : ''
+                normalCode: (o.normalCode && o.normalCode.length < 7 * 1024 * 1024) ? o.normalCode : ''
             })
         });
         const fd = await fres.json();
@@ -154,6 +154,32 @@ async function shUploadGithub(o) {
     } catch (e) {
         return { ok: false, error: 'Storage Keeper upload failed: ' + (e && e.message ? e.message : 'network') };
     }
+}
+
+// ============ USER SESSION TOKEN (worker /sh/user-login) ============
+// Lets ANY registered account claim loadstrings without the owner access
+// code. Cached in sessionStorage for 12h. Falls back to the owner flow
+// (sh/login raw code) only if the user login is unavailable.
+function shGetUserToken() {
+    try { return sessionStorage.getItem('sh_user_token'); } catch (e) { return null; }
+}
+async function shEnsureUserToken() {
+    var existing = shGetUserToken();
+    if (existing) return existing;
+    if (!currentUser) return null;
+    // we need the raw password for the worker login - stored on the
+    // local record when this browser signed up / logged in
+    var u = users[currentUser.email];
+    if (!u || !u.password) return null;
+    try {
+        var pw = u.password; // b64
+        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: pw });
+        if (d.ok && d.token) {
+            try { sessionStorage.setItem('sh_user_token', d.token); } catch (e) {}
+            return d.token;
+        }
+    } catch (e) {}
+    return null;
 }
 
 // Upload a script to the hidden host; resolves with { ok, loadstring, id }.
@@ -176,14 +202,23 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
         const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
         const wantId = (obfResult && typeof obfResult === 'object' && obfResult.wantId) ? obfResult.wantId : '';
+        // auth: prefer the USER session token (no owner code prompt for
+        // normal users). Only fall back to the owner access-code flow.
         let token = shGetRawToken();
+        let userToken = null;
         if (!token) {
-            const ok = await shLoginRaw();
-            if (!ok) return { ok: false, error: 'login failed (wrong code or canceled)' };
-            token = shGetRawToken();
+            userToken = await shEnsureUserToken();
+            if (!userToken) {
+                const ok = await shLoginRaw();
+                if (!ok) return { ok: false, error: 'login failed (could not sign in with your account - re-login on the website and try again)' };
+                token = shGetRawToken();
+            }
         }
         // keyless scripts ALSO require the Special Key now (website gate)
         if (!specialKey) return { ok: false, error: 'Special Key is required' };
+        // normalCode is ONLY used for the Discord attachment (7MB cap).
+        // Never ship a giant raw source inside the JSON body.
+        if (normalCode && normalCode.length > 7 * 1024 * 1024) normalCode = '';
         // 1) encrypt locally — the key never leaves this browser
         const cipher = shEncryptPayload(obfCode, specialKey);
         const keyHash = await (async () => {
@@ -194,9 +229,9 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         if (keyless) {
             // free script: executor blob (plainCode, no key needed in-game)
             // + browser view (cipher, Special Key required on the website)
-            payload = { token: token, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+            payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
         } else {
-            payload = { token: token, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+            payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
             // requireAuth (Luarmor model): the split key is only served
             // after a valid license key + HWID auth against /sh/auth
             if (requireAuth) payload.authRequired = true;
@@ -220,10 +255,10 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         const GH_SWITCH = 45 * 1024 * 1024;
         const obfLen = obfCode.length;
         if (!keyless && obfLen > GH_SWITCH) {
-            return await shUploadGithub({ token, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadGithub({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
         }
         if (keyless && obfLen > GH_SWITCH) {
-            return await shUploadGithub({ token, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadGithub({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
         }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',
@@ -234,8 +269,11 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         if (!d.ok && /author/i.test(d.error || '')) {
             // token expired -> re-login once, retry
             sessionStorage.removeItem('sh_raw_token');
+            sessionStorage.removeItem('sh_user_token');
             const ok2 = await shLoginRaw();
             if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless);
+            const userToken2 = await shEnsureUserToken();
+            if (userToken2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless);
         }
         return d;
     } catch (e) {
@@ -3455,6 +3493,21 @@ function confirmCreateScript(projectId) {
     var isKeyless = freeForEveryone;
     if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
+    // ---- BIG-SCRIPT GUARD: validate + size feedback BEFORE the heavy work
+    // (100k+ line scripts used to freeze the tab with zero feedback)
+    var codeLines = code.split('\n').length;
+    var estObf = code.length * 40; // worst case: 10 layers + double-wrap + vault
+    if (window.luaparse) {
+        try {
+            window.luaparse.parse(code, { luaVersion: '5.1' });
+        } catch (e) {
+            showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
+            return;
+        }
+    }
+    if (estObf > 45 * 1024 * 1024 && !confirm('This script is very large (' + codeLines + ' lines, ~' + Math.round(estObf / 1024 / 1024) + 'MB obfuscated). Upload may take a while. Continue?')) {
+        return;
+    }
     var projects = loadProjects();
     var projectIndex = -1;
     for (var i = 0; i < projects.length; i++) { if (projects[i].id === projectId) { projectIndex = i; break; } }
@@ -3511,9 +3564,19 @@ function confirmCreateScript(projectId) {
         scriptId: 'script_' + Date.now(),
         owner: currentUser ? currentUser.username : 'unknown'
     };
-    // async: Aegis needs an API roundtrip
+    // async: obfuscation of huge scripts takes a while - show progress on
+    // the button for BOTH engines (the tab used to look frozen on 100k+
+    // line scripts)
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
-    if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = obfuscatorEngine === 'aegis' ? '⚔️ Obfuscating with Aegis...' : '💎 Obfuscating ' + codeLines + ' lines...';
+        // let the browser paint the button state before the heavy sync work
+        setTimeout(function() { proceedCreate(); }, 30);
+    } else {
+        proceedCreate();
+    }
+    function proceedCreate() {
     obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(result) {
         // result: plain string (legacy/aegis) or { code, splitKey, wantId }
         var obfuscatedCode = (result && typeof result === 'object') ? result.code : result;
@@ -3602,8 +3665,9 @@ function confirmCreateScript(projectId) {
         renderProjects();
     }).catch(function(e) {
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
-        showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
+        showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });
+    }
 }
 
 // ============ OBFUSCATE (Default engine or Aegis API) ============
@@ -3671,7 +3735,38 @@ function generateLoadstring(projectId, scriptId) {
         }
     }
     if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
-    if (!script.code) { showNotification('Error', 'This script has no code.', 'error'); return; }
+    // code may have been trimmed by the localStorage-quota fallback. The
+    // loadstring only needs the CLOUD copy: if we still have the original
+    // (unobfuscated) code, re-obfuscate on the fly; if we have neither,
+    // tell the user instead of a vague "no code" error.
+    if (!script.code && !script.originalCode) {
+        showNotification('Error', 'This script\'s code was trimmed from local storage (it was too big). Re-create the script or edit it and re-paste the code to generate a loadstring.', 'error', 9000);
+        return;
+    }
+    if (!script.code && script.originalCode) {
+        showNotification('Re-Obfuscating', 'The local obfuscated copy was trimmed (storage limits). Re-obfuscating from the saved source...', 'info', 6000);
+        obfuscateScriptCode(script.originalCode, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
+            intensity: script.obfuscationIntensity || 10,
+            antiTamper: script.antiTamper !== false,
+            antiSkid: script.antiSkid !== false,
+            envLogging: !!script.envLogging,
+            webhookUrl: script.webhookUrl || '',
+            keyGate: null,
+            statsEndpoint: SH_STATS_ENDPOINT || null,
+            scriptName: script.name,
+            scriptId: script.id,
+            owner: currentUser ? currentUser.username : 'unknown'
+        }).then(function(result) {
+            script.code = (result && typeof result === 'object') ? result.code : result;
+            if (result && typeof result === 'object' && result.splitKey) script.splitKeyData = result.splitKey;
+            proceedWithGenerate(projectId, script);
+        }).catch(function(e) {
+            showNotification('Error', 'Re-obfuscation failed: ' + e.message, 'error', 7000);
+        });
+        return;
+    }
+    proceedWithGenerate(projectId, script);
+    function proceedWithGenerate(projectId, script) {
     var isKeyless = !!script.keyless || !!script.freeForEveryone;
     if (!script.specialKey) {
         showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one - it encrypts the script (paid) or gates the website page (free).', 'warning', 7000);
@@ -3706,6 +3801,7 @@ function generateLoadstring(projectId, scriptId) {
         if (modal) modal.remove();
         openScriptSettings(projectId, scriptId);
     });
+    }
 }
 
 // ============ VIEW SCRIPT (removed - the View button was deleted; the loadstring + Special Key now live in the Script Settings modal) ============
@@ -3951,6 +4047,15 @@ function confirmEditScript(projectId, scriptId) {
     var isKeyless = freeForEveryone;
     if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
+    // syntax-check BEFORE the heavy re-obfuscation work
+    if (window.luaparse) {
+        try {
+            window.luaparse.parse(code, { luaVersion: '5.1' });
+        } catch (e) {
+            showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
+            return;
+        }
+    }
     var projects = loadProjects();
     // duplicate name check (within project, excluding this script)
     for (var pi = 0; pi < projects.length; pi++) {
@@ -4000,7 +4105,10 @@ function confirmEditScript(projectId, scriptId) {
         owner: currentUser ? currentUser.username : 'unknown'
     };
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
-    if (btnEl && obfuscatorEngine === 'aegis') { btnEl.disabled = true; btnEl.textContent = '⚔️ Obfuscating with Aegis...'; }
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = obfuscatorEngine === 'aegis' ? '⚔️ Obfuscating with Aegis...' : '💎 Obfuscating...';
+    }
     obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(result) {
         // result: plain string (legacy/aegis) or { code, splitKey, wantId }
         var obfuscatedCode = (result && typeof result === 'object') ? result.code : result;
@@ -4087,7 +4195,7 @@ function confirmEditScript(projectId, scriptId) {
         renderProjects();
     }).catch(function(e) {
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
-        showNotification('Obfuscation Warning', 'Using original code. Error: ' + e.message, 'warning');
+        showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });
 }
 
