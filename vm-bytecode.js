@@ -488,9 +488,10 @@ function compile(src) {
                 mark(ctx, startL);
                 ex(ctx, s.condition);
                 jref(ctx, OPCODES.JIF, endL);
+                var bodyDepth = lex.length; // BEFORE pushBlock: break must pop the body scope too
                 pushBlock();
                 emit0(ctx, OPCODES.PUSHSC);
-                ctx.loops.push({ endLabel: endL, depth: lex.length });
+                ctx.loops.push({ endLabel: endL, depth: bodyDepth, isGenericFor: false });
                 body(ctx, s.body);
                 ctx.loops.pop();
                 emit0(ctx, OPCODES.POPSC);
@@ -503,9 +504,10 @@ function compile(src) {
                 var startL2 = label(ctx);
                 var endL2 = label(ctx);
                 mark(ctx, startL2);
+                var bodyDepth2 = lex.length; // BEFORE pushBlock
                 pushBlock();
                 emit0(ctx, OPCODES.PUSHSC);
-                ctx.loops.push({ endLabel: endL2, depth: lex.length });
+                ctx.loops.push({ endLabel: endL2, depth: bodyDepth2, isGenericFor: false });
                 body(ctx, s.body);
                 ex(ctx, s.condition);
                 ctx.loops.pop();
@@ -524,6 +526,11 @@ function compile(src) {
             case 'BreakStatement': {
                 if (!ctx.loops.length) throw new Error('break outside loop');
                 var loop = ctx.loops[ctx.loops.length - 1];
+                // pop every scope pushed after the loop recorded its depth.
+                // The generic-for's packed residue is cleaned by the POP
+                // AT endLabel itself (the label is marked BEFORE that POP),
+                // so break must NOT pre-pop it - that would eat one slot
+                // belonging to an ENCLOSING loop's packed table.
                 var pops = lex.length - loop.depth;
                 for (var p = 0; p < pops; p++) emit0(ctx, OPCODES.POPSC);
                 jref(ctx, OPCODES.JMP, loop.endLabel);
@@ -606,18 +613,19 @@ function compile(src) {
         var expand = isCallNode(lastE) || isVarargNode(lastE);
         var tmpIds = [];
         var fixedCount = expand ? inits.length - 1 : inits.length;
+        var packedLocalId = null;
         for (var i = 0; i < inits.length; i++) {
             if (i === lastI && expand) {
-                if (isCallNode(lastE)) ex(ctx, lastE, { multi: 'multi' });
+                if (isCallNode(lastE)) ex(ctx, lastE, { multi: 'multi' }); // packed on top
                 else emit0(ctx, OPCODES.VARGP);
-                // unpack needed count: vars.length - fixedCount (>=1)
-                var need = vars.length - fixedCount;
-                if (need < 1) need = 1;
-                // values unpacked in order: DUP+UNPK k for k=need..1
-                for (var k = need; k >= 1; k--) {
-                    emit0(ctx, OPCODES.DUP);
-                    emit1(ctx, OPCODES.UNPK, k);
-                }
+                // spill the packed table to a hidden local. The old code
+                // peeked it with DUP+UNPK chains, which (a) leaked the
+                // packed on the stack and (b) indexed the PREVIOUS peeked
+                // value instead of the packed for need >= 2 ("attempt to
+                // index a number/boolean value"). Peeking via LLOAD+UNPK
+                // is balanced per-peek and always indexes the real table.
+                packedLocalId = bindId('\x00t' + (hiddenCounter++));
+                emit1(ctx, OPCODES.LNEW, packedLocalId);
             } else {
                 ex(ctx, inits[i], { trunc: true });
                 var tid = bindId('\x00t' + (hiddenCounter++));
@@ -625,7 +633,21 @@ function compile(src) {
                 tmpIds.push(tid);
             }
         }
-        // store in order: fixed temps first, then unpacked stack values
+        var needX = vars.length - fixedCount;
+        if (!expand && needX > 0) {
+            // more vars than values: pad nils for the tail vars (they
+            // sit UNDER the fixed stores' pushed temps, consumed in order)
+            for (var pad2 = 0; pad2 < needX; pad2++) emit0(ctx, OPCODES.NIL);
+        } else {
+            // peek p[need]..p[1]; each LLOAD+UNPK pair is stack-balanced
+            // and leaves [p[need],...,p[1]] with p[1] on TOP so the store
+            // loop consumes them in the right order
+            for (var k = needX; k >= 1; k--) {
+                emit1(ctx, OPCODES.LLOAD, packedLocalId);
+                emit1(ctx, OPCODES.UNPK, k);
+            }
+        }
+        // store in order: fixed temps first, then peeked tail values
         for (var v = 0; v < vars.length; v++) {
             if (v < fixedCount && tmpIds[v] !== undefined) {
                 emit1(ctx, OPCODES.LLOAD, tmpIds[v]);
@@ -698,11 +720,12 @@ function compile(src) {
         emit0(ctx, OPCODES.LE);
         mark(ctx, chkL);
         jref(ctx, OPCODES.JIF, endL);
+        var bodyDepth3 = lex.length; // BEFORE pushBlock: break pops the body scope too
         pushBlock();
         emit0(ctx, OPCODES.PUSHSC);
         emit1(ctx, OPCODES.LLOAD, vs);
         emit1(ctx, OPCODES.LNEW, bindId(s.variable.name));
-        ctx.loops.push({ endLabel: endL, depth: lex.length });
+        ctx.loops.push({ endLabel: endL, depth: bodyDepth3, isGenericFor: false });
         body(ctx, s.body);
         ctx.loops.pop();
         emit0(ctx, OPCODES.POPSC);
@@ -746,6 +769,8 @@ function compile(src) {
         emit0(ctx, OPCODES.UNPK1F);
         jref(ctx, OPCODES.JNIL, endL);
         // bind loop vars from packed (each DUP+UNPK peeks, packed intact)
+        var bodyDepth4 = lex.length; // BEFORE pushBlock: break must pop
+                                    // the body scope + the packed residue
         pushBlock();
         emit0(ctx, OPCODES.PUSHSC);
         for (var v = 0; v < s.variables.length; v++) {
@@ -753,7 +778,7 @@ function compile(src) {
             emit1(ctx, OPCODES.UNPK, v + 1);
             emit1(ctx, OPCODES.LNEW, bindId(s.variables[v].name));
         }
-        ctx.loops.push({ endLabel: endL, depth: lex.length });
+        ctx.loops.push({ endLabel: endL, depth: bodyDepth4, isGenericFor: true });
         body(ctx, s.body);
         ctx.loops.pop();
         emit0(ctx, OPCODES.POPSC);
@@ -1054,13 +1079,16 @@ function emitVM(build) {
                 L.push('   ' + SC + '[#' + SC + '][id]={v}');
                 break;
             case 'ULOAD':
+                // scan upvalue links INNERMOST-first (links[1] is the
+                // nearest enclosing scope; shadowing must resolve to it)
                 L.push('   local id=' + CODE + '.c[' + PC + '] local b=nil ' + PC + '=' + PC + '+1');
-                L.push('   for i=1,#' + LK + ' do b=' + LK + '[i][id] if b then break end end');
+                L.push('   for i=#' + LK + ',1,-1 do b=' + LK + '[i][id] if b then break end end');
                 L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=b and b[1]');
                 break;
             case 'USET':
+                // scan upvalue links INNERMOST-first (see ULOAD)
                 L.push('   local id=' + CODE + '.c[' + PC + '] local v=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 ' + PC + '=' + PC + '+1');
-                L.push('   local b=nil for i=1,#' + LK + ' do b=' + LK + '[i][id] if b then break end end');
+                L.push('   local b=nil for i=#' + LK + ',1,-1 do b=' + LK + '[i][id] if b then break end end');
                 L.push('   if b then b[1]=v end');
                 break;
             case 'PUSHSC': L.push('   ' + SC + '[#' + SC + '+1]={}'); break;
@@ -1073,7 +1101,9 @@ function emitVM(build) {
                 break;
             case 'NEWTAB': L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']={}'); break;
             case 'APD':
-                L.push('   local p=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 local t=' + S + '[' + SP + ']');
+                // pop packed, append to the table under it, drop the dup'd
+                // table ref (net -1: DUP pushed +1, this pops 2 pushes 0)
+                L.push('   local p=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1');
                 L.push('   for i=1,p.n do t[#t+1]=p[i] end');
                 break;
             case 'DUP': L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + S + '[' + SP + '-1]'); break;
@@ -1085,8 +1115,10 @@ function emitVM(build) {
                 break;
             case 'UNPKR': {
                 // POP the packed table on top, PUSH p[1]..p[n] (nil-filled)
+                // net stack: -1 (packed) + n (values); never leaves the
+                // packed table behind (it used to leak a slot per call)
                 L.push('   local n=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
-                L.push('   local pt=' + S + '[' + SP + ']');
+                L.push('   local pt=' + S + '[' + SP + '] ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1');
                 L.push('   for j=1,n do ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=pt[j] end');
                 break;
             }
@@ -1167,21 +1199,25 @@ function emitVM(build) {
                 L.push('   ' + PC + '=' + CODE + '.c[' + PC + ']');
                 break;
             case 'JIF':
-                L.push('   if not ' + S + '[' + SP + '] then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 end');
+                // pop the tested condition on BOTH paths (jump + fall-through)
+                L.push('   local _v=' + S + '[' + SP + '] ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 if not _v then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 end');
                 break;
             case 'JIT':
-                L.push('   if ' + S + '[' + SP + '] then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 end');
+                // pop the tested condition on BOTH paths (jump + fall-through)
+                L.push('   local _v=' + S + '[' + SP + '] ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 if _v then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 end');
                 break;
             case 'JNIL':
-                // peek test: pop the copy; if nil -> jump (packed stays
-                // under it on the stack for the loop-exit cleanup)
-                L.push('   if ' + S + '[' + SP + ']==nil then ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 ' + PC + '=' + CODE + '.c[' + PC + '] else ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 ' + PC + '=' + PC + '+1 end');
+                // peek test: pop the copy on BOTH paths; the packed table
+                // stays under it - the loop-exit POP at the endLabel (also
+                // reached by break) cleans it on both exits
+                L.push('   local _n=(' + S + '[' + SP + ']==nil) ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 if _n then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 end');
                 break;
             case 'ANDK':
-                // falsy: keep+jump; truthy: pop+continue
+                // falsy: keep value+jump; truthy: pop+continue (stack neutral)
                 L.push('   if not ' + S + '[' + SP + '] then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 end');
                 break;
             case 'ORK':
+                // truthy: keep value+jump; falsy: pop+continue (stack neutral)
                 L.push('   if ' + S + '[' + SP + '] then ' + PC + '=' + CODE + '.c[' + PC + '] else ' + PC + '=' + PC + '+1 ' + S + '[' + SP + ']=nil ' + SP + '=' + SP + '-1 end');
                 break;
             default:
