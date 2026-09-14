@@ -209,8 +209,15 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         if (!token) {
             userToken = await shEnsureUserToken();
             if (!userToken) {
+                // logged-in user but the worker rejected the login
+                // (offline / password changed on another device) - show a
+                // REAL error instead of silently asking for the OWNER
+                // access code (users do not have it)
+                if (currentUser) {
+                    return { ok: false, error: 'Could not sign in to the loadstring service with your account. Check your internet connection and re-login on the website, then try again.' };
+                }
                 const ok = await shLoginRaw();
-                if (!ok) return { ok: false, error: 'login failed (could not sign in with your account - re-login on the website and try again)' };
+                if (!ok) return { ok: false, error: 'login failed (could not sign in - re-login on the website and try again)' };
                 token = shGetRawToken();
             }
         }
@@ -267,13 +274,14 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         });
         const d = await res.json();
         if (!d.ok && /author/i.test(d.error || '')) {
-            // token expired -> re-login once, retry
+            // token expired -> re-login once, retry (SAME id + flags so
+            // the baked-in key URL + auth requirements stay valid)
             sessionStorage.removeItem('sh_raw_token');
             sessionStorage.removeItem('sh_user_token');
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless);
+            if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth);
             const userToken2 = await shEnsureUserToken();
-            if (userToken2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless);
+            if (userToken2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth);
         }
         return d;
     } catch (e) {
@@ -1769,7 +1777,7 @@ function startLiveChartPolling() {
         if (liveChart.paused || !liveChart.canvas) return;
         if (SH_STATS_ENDPOINT) {
             // REAL data from your Cloudflare Worker (see For Cloudflare/worker.js)
-            fetch(SH_STATS_ENDPOINT + '/v3/realtime_stats')
+            fetch((SH_STATS_ENDPOINT.endsWith('/') ? SH_STATS_ENDPOINT.slice(0, -1) : SH_STATS_ENDPOINT) + '/v3/realtime_stats')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (!data) return;
@@ -3137,7 +3145,7 @@ function applyLuaObfuscator(code) {
     result.push('local _s = {');
     for (var str in stringMap) {
         var encoded = '';
-        for (var k = 0; k < str.length; k++) { encoded += string.charCodeAt(str, k) + ','; }
+        for (var k = 0; k < str.length; k++) { encoded += str.charCodeAt(k) + ','; }
         encoded = encoded.slice(0, -1);
         result.push('  ["' + str + '"] = {' + encoded + '},');
     }
@@ -3773,10 +3781,58 @@ function generateLoadstring(projectId, scriptId) {
         return;
     }
     showNotification('Uploading...', 'Generating a loadstring for "' + script.name + '"...', 'info', 4000);
-    // server-key-split scripts: pass the stored split-key data so the worker
-    // gets the padded final-layer key (the file itself doesn't contain it)
-    var uploadArg = script.splitKeyData ? { code: script.code, splitKey: script.splitKeyData, wantId: 'ScripterHub' + String(Date.now()).slice(-10) } : script.code;
-    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless).then(function(d) {
+    // server-key-split scripts: pass the stored split-key data. The ID
+    // must be the one the OBFUSCATED FILE references - the baked-in
+    // key-fetch URL points at the id the ORIGINAL obfuscation used.
+    // Re-uploading under a fresh id would serve a key the file never
+    // asks for -> undecryptable script (the old bug: "loadstring
+    // generated but script never runs").
+    var uploadArg;
+    if (script.splitKeyData) {
+        var bakedId = script.loaderId && /^ScripterHub\d{10}$/.test(script.loaderId) ? script.loaderId : '';
+        if (!bakedId) {
+            // legacy record without the matching loader id: the split-key
+            // URL in the file is unknown -> the worker key can never be
+            // matched. Re-obfuscate from source instead of shipping a
+            // guaranteed-dead loadstring.
+            showNotification('Re-Obfuscating', 'This script was created before a loadstring fix. Re-obfuscating from the saved source to generate a working loadstring...', 'info', 8000);
+            obfuscateScriptCode(script.originalCode || script.code, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
+                intensity: script.obfuscationIntensity || 10,
+                antiTamper: script.antiTamper !== false,
+                antiSkid: script.antiSkid !== false,
+                envLogging: !!script.envLogging,
+                webhookUrl: script.webhookUrl || '',
+                keyGate: null,
+                statsEndpoint: SH_STATS_ENDPOINT || null,
+                scriptName: script.name,
+                scriptId: script.id,
+                owner: currentUser ? currentUser.username : 'unknown'
+            }).then(function(fresh) {
+                var freshCode = (fresh && typeof fresh === 'object') ? fresh.code : fresh;
+                var projectsX = loadProjects();
+                outerX: for (var px = 0; px < projectsX.length; px++) {
+                    if (projectsX[px].id === projectId && projectsX[px].scripts) {
+                        for (var sx = 0; sx < projectsX[px].scripts.length; sx++) {
+                            if (projectsX[px].scripts[sx].id === scriptId) {
+                                projectsX[px].scripts[sx].code = freshCode;
+                                projectsX[px].scripts[sx].splitKeyData = (fresh && typeof fresh === 'object' && fresh.splitKey) ? fresh.splitKey : null;
+                                break outerX;
+                            }
+                        }
+                    }
+                }
+                saveProjects(projectsX);
+                proceedWithGenerate(projectId, { code: freshCode, splitKey: (fresh && typeof fresh === 'object') ? fresh.splitKey : null, wantId: (fresh && typeof fresh === 'object') ? fresh.wantId : '' });
+            }).catch(function(e) {
+                showNotification('Error', 'Re-obfuscation failed: ' + e.message, 'error', 7000);
+            });
+            return;
+        }
+        uploadArg = { code: script.code, splitKey: script.splitKeyData, wantId: bakedId };
+    } else {
+        uploadArg = script.code;
+    }
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless, !!script.requireKey).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
             return;

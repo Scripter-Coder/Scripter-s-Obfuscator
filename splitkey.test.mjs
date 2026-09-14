@@ -8,6 +8,10 @@ import assert from 'assert';
 import luaparse from 'luaparse';
 import fengari from 'fengari';
 import { applyCustomObfuscator } from './custom-obfuscator.js';
+import { vmSetLuaparse } from './vm-pass.js';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+vmSetLuaparse(luaparse);
+vmBCSetLuaparse(luaparse);
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
 
 const GENV = 'getgenv=function() return _G end\n';
@@ -143,9 +147,10 @@ assert(!smartLeak, 'even hardcoded strides + the zeroed key table must yield gar
 console.log('    OK: static peel stops short (peels:', peeled.length + ', no payload; smart brute: garbage only)');
 
 console.log('[S4] GENUINE run with a working key server: real code executes...');
-// simulate the worker: serve the padded key for the right t0
+// simulate the worker: serve the padded key (incl. the VM-seed
+// carriers) for the right t0 - EXACTLY what the deployed worker sends
 const keyServer = (t0) => {
-    // response format: "SHK <t0> <chk> <padded bytes...>"
+    // response format: "SHK <t0> <chk> <padded bytes... (key + carriers)>"
     return 'SHK ' + dbg.splitKey.t0 + ' ' + dbg.splitKey.chk + ' ' + dbg.splitKey.paddedKey.join(' ');
 };
 // verify the response the worker WILL send matches what Lua expects:
@@ -187,5 +192,22 @@ console.log('[S7] no plaintext leaks in the split-key file...');
 assert(!obf.includes('this string is secret'), 'source string must not leak');
 assert(!obf.includes('SPLIT_RAN_OK'), 'marker must not leak');
 console.log('    OK: zero plaintext leakage');
+
+console.log('[S8] VM seed carrier: seed never embedded, carrier derives it...');
+{
+    // rebuild the seed from dbg.splitKey exactly like the Lua loader
+    const padded2 = dbg.splitKey.paddedKey;
+    const keyLen2 = dbg.splitKey.keyLen;
+    const carriers = padded2.slice(keyLen2);
+    assert.ok(carriers.length >= 3, 'carrier bytes must ride the split-key response');
+    let chain = 29;
+    for (const c of carriers) chain = (chain * 33 + c) % 4294967296;
+    const derived = 29 + (chain % 223);
+    assert.ok(derived >= 29 && derived <= 251, 'derived seed in range');
+    // the old literal genv write must be gone (a dump could read it)
+    const seedWrite = obf.match(/g\.[_a-zA-Z0-9]+=\d{2,3}\s*end/g);
+    assert.ok(!seedWrite, 'no literal VM-seed genv write in the file');
+    console.log('    OK: seed =', derived, 'delivered only via the carrier (never in the file)');
+}
 
 console.log('\nALL SPLIT-KEY TESTS PASSED - static peeling is dead, runtime works.');

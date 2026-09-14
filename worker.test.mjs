@@ -182,4 +182,46 @@ console.log('[W12] non-owner user-sync cannot change own plan...');
     console.log('    OK: plan stays owner-controlled');
 }
 
+console.log('[W13] SPLIT-KEY: upload stores the padded key, /sh/k serves it (executor only)...');
+{
+    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const t0 = Date.now();
+    const padded = [12, 34, 56, 78, 90, 123, 45, 67];
+    let up;
+    try {
+        up = await j('POST', '/sh/upload', {
+            token: login.token,
+            name: 'SplitTest', user: 'tester',
+            keyless: true, plainCode: '-- obf blob',
+            cipher: 'U0hPS0Zha2U=', keyHash: 'cafe',
+            wantId: 'ScripterHub0000000042',
+            splitKey: { paddedKey: padded, t0: t0, chk: 777 }
+        });
+    } catch (e) { throw e; }
+    assert.strictEqual(up.ok, true, JSON.stringify(up));
+    assert.strictEqual(up.id, 'ScripterHub0000000042', 'worker must honor the pre-generated wantId');
+    // executor gets the key with the right t0
+    const r = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, EXECUTOR_UA);
+    const text = await r.text();
+    assert.strictEqual(r.status, 200);
+    assert.ok(text.startsWith('SHK ' + t0 + ' 777 '), 'key response format');
+    assert.ok(text.includes(padded.join(' ')), 'padded bytes present');
+    // browser gets NOTHING
+    const rb = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, BROWSER_UA);
+    assert.strictEqual(rb.status, 405, 'browsers must not fetch split keys');
+    // wrong t0 gets NOTHING (replay protection)
+    const rw = await call('GET', '/sh/k/ScripterHub0000000042?t=' + (t0 + 1), null, EXECUTOR_UA);
+    assert.strictEqual(rw.status, 405, 'wrong t0 must be rejected');
+    console.log('    OK: split key served to executors only, exact-t0 enforced');
+}
+
+console.log('[W14] SPLIT-KEY: loader route + key route work together (free script)...');
+{
+    // executor fetches the script blob then the key
+    const r = await call('GET', '/sh/ScripterHub0000000042', null, EXECUTOR_UA);
+    const text = await r.text();
+    assert.strictEqual(text, '-- obf blob');
+    console.log('    OK: free script blob still served to executors');
+}
+
 console.log('\nALL WORKER TESTS PASSED');

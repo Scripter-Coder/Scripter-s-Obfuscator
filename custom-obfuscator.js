@@ -657,6 +657,43 @@ function buildLoader(src, layerCount, options) {
             h = (h * 33 + c1 + (idx % 256) * 7) % 4294967296;
             return b ^ (h % 256);
         });
+        // ---- VM SEED CARRIER (server-bound vault seed): the bytecode
+        // VM's vault seed is split into carrier numbers appended AFTER
+        // the key bytes. The worker response is "SHK t0 chk key... car...";
+        // the Lua side rebuilds the seed via a djb2 chain and writes it
+        // to genv. The seed literal is NEVER in the file. The chain math:
+        //   sd = 29; for each car c: sd = (sd*33 + c) % 2^32; sd = 29 + sd%223
+        // 2^32 laundering keeps JS doubles and Lua 5.1/5.3 identical.
+        if (options._vmSeedValue !== undefined && options._vmSeedValue !== null) {
+            options._vmSeedCarrier = [];
+            // 3-7 random numbers 0..255 followed by the derivation tail:
+            // the FINAL value must derive exactly _vmSeedValue, so we
+            // append 2 numbers that force the chain to land on the seed:
+            // work the chain forward, then append numbers so the last
+            // step is sd = 29 + ((...)*33 + c2) % 223 where the dots are
+            // already known - solve c2 by construction below.
+            var nCar = rndInt(3, 7);
+            var chain = 29;
+            for (var cIdx = 0; cIdx < nCar; cIdx++) {
+                var cv = rndInt(0, 255);
+                options._vmSeedCarrier.push(cv);
+                chain = (chain * 33 + cv) % 4294967296;
+            }
+            // choose the LAST carrier cLast so that
+            //   29 + ((chain*33 + cLast) % 4294967296) % 223 == seed
+            // => (chain*33 + cLast) % 4294967296 % 223 == seed - 29
+            // cLast range 0..255: try all and pick the first hit (always
+            // exists: 256 candidates cover 223 residues)
+            var want = ((options._vmSeedValue - 29) % 223 + 223) % 223;
+            var cLast = -1;
+            for (var cand = 0; cand < 256; cand++) {
+                if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
+            }
+            if (cLast < 0) { cLast = 0; /* unreachable: 256 > 223 */ }
+            options._vmSeedCarrier.push(cLast);
+            // append the carriers to the padded key the worker will serve
+            padded = padded.concat(options._vmSeedCarrier);
+        }
         options.splitKey.paddedKey = padded;
         options.splitKey.t0 = t0;
         options.splitKey.chk = chk;
@@ -736,10 +773,11 @@ function buildLoader(src, layerCount, options) {
     }
 
     var out = [];
+    // NOTE: the header used to leak "layers=N noise=M" - free intel for
+    // the peeler. Gone. The banner is constant noise.
     out.push('--[[' + hex(60));
-    out.push(' :: ScripterHub Custom Obfuscator v2 :: ' + new Date().toISOString());
-    out.push(' :: layers=' + layerCount + ' noise=' + stride + ' ::');
-    out.push(' :: Source is fully encrypted. Any modification breaks this script. ::');
+    out.push(' :: ScripterHub :: ' + hex(24) + ' ::');
+    out.push(' :: This file is protected. Any modification breaks it. ::');
     out.push(' ' + hex(60) + ']]');
     out.push('local ' + FN + '=loadstring or load');
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
@@ -841,18 +879,37 @@ function buildLoader(src, layerCount, options) {
         out.push(' if #' + PT + '<3 then return end');
         out.push(' local ' + KT + '=' + PT + '[1] local ' + KC + '=' + PT + '[2]');
         out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then return end');
+        // the key length comes from the (zeroed) START slot seed
+        out.push(' local ' + KK2 + '=' + K + '[' + START + '][1]');
+        out.push(' local KL=#' + KK2);
+        out.push(' if #' + PT + '<2+KL then return end');
         out.push(' local ' + SD2 + '="' + String(t0) + '"');
         out.push(' local ' + PB + '={}');
         out.push(' local ' + HN + '=5381');
-        out.push(' for j=3,#' + PT + ' do');
+        out.push(' for j=3,2+KL do');
         out.push('  local c=string.byte(' + SD2 + ',((j-3)%#' + SD2 + ')+1)-48');
         out.push('  ' + HN + '=(' + HN + '*33+c+((j-3)%256)*7)%4294967296');
         out.push('  ' + PB + '[#' + PB + '+1]=' + X + '(' + PT + '[j],(' + HN + '%256))');
         out.push(' end');
-        // write the fetched seed into the START slot (stored/masked form)
-        out.push(' local ' + KK2 + '=' + K + '[' + START + '][1]');
         out.push(' for j=1,#' + PB + ' do ' + KK2 + '[j]=' + PB + '[j] end');
-        out.push(' if #' + PB + ' ~= #' + KK2 + ' then return end');
+        // ---- VM SEED CARRIER: numbers AFTER the key bytes are NOT key
+        // material - they derive the bytecode VM's vault seed, which is
+        // published to genv right before the payload compiles. Neither
+        // the seed NOR the carrier ever ships inside the file, so a
+        // peeled/dumped stub can never unlock the constant vault.
+        if (options._vmSeedGenv && options._vmSeedCarrier) {
+            out.push(' do');
+            out.push('  local car={}');
+            out.push('  for j=3+KL,#' + PT + ' do car[#car+1]=' + PT + '[j] end');
+            out.push('  if #car>0 then');
+            out.push('   local sd=29');
+            out.push('   for j=1,#car do sd=(sd*33+car[j])%4294967296 end');
+            out.push('   sd=29+(sd%223)');
+            out.push('   local g=(getgenv and getgenv()) or _G');
+            out.push('   g[' + JSON.stringify(options._vmSeedGenv) + ']=sd');
+            out.push('  end');
+            out.push(' end');
+        }
         out.push('end');
     }
     // ---- unmask the START seed (stored XOR chk%256) ----
@@ -901,13 +958,10 @@ function buildLoader(src, layerCount, options) {
     if (options._canary) {
         out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
-    // SERVER-BOUND VM SEED: deliver the bytecode VM's vault seed into
-    // genv right before the payload compiles - the payload reads it at
-    // boot. A peeled/dumped stub never sees this write, so its vault
-    // stays locked. (Only present in split-key builds.)
-    if (options._vmSeedGenv && options._vmSeedValue !== undefined) {
-        out.push('do local g=(getgenv and getgenv()) or _G g.' + options._vmSeedGenv + '=' + options._vmSeedValue + ' end');
-    }
+    // SERVER-BOUND VM SEED: the vault seed is now DELIVERED BY THE
+    // SPLIT-KEY RESPONSE (see the carrier block above) - it is never
+    // embedded as a literal in the file. A loadstring-hook dump sees
+    // the payload WITHOUT this write, so its vault stays locked.
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
     // never swallow a failed compile: if the payload does not parse the
@@ -917,6 +971,9 @@ function buildLoader(src, layerCount, options) {
     var result = out.join('\n');
 
     if (options._debug) {
+        // ONLY emitted when the caller explicitly asks (test harness /
+        // owner debugging) - NEVER in production output (it leaked the
+        // noise stride + layer count to crackers)
         result = '--[shdebug:' + JSON.stringify({ stride: stride, chk: chk, layerCount: layerCount, keyLens: layers.map(function (l) { return l.seed.length; }), slots: M, start: START }) + ']\n' + result;
     }
     return result;
@@ -1053,8 +1110,9 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         };
     }
 
-    var headerNote = options.splitKey ? (options.splitKey.auth ? 'server-auth+key-split' : 'server-key-split') : 'self-contained';
-    return '-- ScripterHub Custom Obfuscator v5 (' + headerNote + ' + key modes + API globals + anti-logger + anti-crack) | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + loader;
+    // constant banner - never reveals the build mode (split vs
+    // self-contained) or layer layout to a static analyst
+    return '-- ' + hex(16) + ' | DO NOT EDIT\n' + loader;
 }
 
 // Build the security wrapper + source payload without encrypting it.

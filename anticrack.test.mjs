@@ -2,6 +2,10 @@
 import luaparse from 'luaparse';
 import fengari from 'fengari';
 import { applyCustomObfuscator } from './custom-obfuscator.js';
+import { vmSetLuaparse } from './vm-pass.js';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+vmSetLuaparse(luaparse);
+vmBCSetLuaparse(luaparse);
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
 
 const GENV = 'getgenv=function() return _G end\n';

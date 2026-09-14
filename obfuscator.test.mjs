@@ -7,6 +7,10 @@
 import assert from 'assert';
 import luaparse from 'luaparse';
 import { applyCustomObfuscator } from './custom-obfuscator.js';
+import { vmSetLuaparse } from './vm-pass.js';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+vmSetLuaparse(luaparse);
+vmBCSetLuaparse(luaparse);
 
 globalThis.window = globalThis;
 
@@ -99,13 +103,12 @@ function decodeLoader(text) {
 }
 
 // ============ RUN ============
-// vault markers: every VM pass emits a memo cache table + refs table
-function applyVmPassMarker() {
-    // stable shape: `local c???????={}` (cache) + `local r???????={{`
-    return /local c[0-9a-f]{7}=\{\}\nlocal r[0-9a-f]{7}=\{\{/;
+// VM tier markers: bytecode VM (vault + chunk table + runner) or lite
+function vmMarkerRegex() {
+    return /local c[0-9a-f]{6,7}=\{\}|local K[0-9a-f]{6,7}=\{[\s\S]*?\{c=\{/m;
 }
-assert(applyVmPassMarker().test('local c1234567={}\nlocal r7654321={{1,2}}'), 'marker regex sanity');
-assert(applyVmPassMarker().test('local cabcdef0={}\nlocal r1234567={{'), 'hex sanity');
+assert(vmMarkerRegex().test('local c1234567={}'), 'lite marker sanity');
+assert(vmMarkerRegex().test('local K123456={\n {c={1,2},p={}}'), 'bytecode marker sanity');
 
 console.log('[1] Generating single-wrap output (intensity 5)...');
 const out5 = applyCustomObfuscator(sample, opts);
@@ -127,7 +130,7 @@ assert(decoded1.includes('ScripterHub Log :: '), 'env logging block present');
 // (vaulted). Verifying execution equivalence happens in the fengari
 // runtime tests below ([7] etc).
 assert(!decoded1.includes('Hello, secret string!'), 'source string must be vaulted away');
-assert(applyVmPassMarker().test(decoded1), 'vm vault present (sanity)');
+assert(vmMarkerRegex().test(decoded1), 'vm vault present (sanity)');
 console.log('    OK: decoded payload = wrapper + VM-ified original (strings vaulted)');
 
 console.log('[3] Generating double-wrap output (intensity 10)...');
@@ -143,7 +146,7 @@ const payload = decodeLoader(inner);
 luaparse.parse(payload);
 // VM pass: peeled result is VM-ified, not the raw sample
 assert(!payload.includes('Hello, secret string!'), 'double-wrapped: source must be vaulted away');
-assert(applyVmPassMarker().test(payload), 'double-wrapped decode yields VM-ified original');
+assert(vmMarkerRegex().test(payload), 'double-wrapped decode yields VM-ified original');
 console.log('    OK: fully decoded through 2 shells (strings vaulted)');
 
 console.log('[5] Minimal options (all protections off, intensity 1)...');

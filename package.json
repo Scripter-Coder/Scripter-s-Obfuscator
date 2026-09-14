@@ -13,7 +13,11 @@
     "test:chunked": "node chunked.test.mjs",
     "test:ghstorage": "node ghstorage.test.mjs",
     "test:bigscript": "node bigscript.test.mjs",
-    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs && node chunked.test.mjs && node ghstorage.test.mjs && node bigscript.test.mjs"
+    "test:vmstack": "node vm-stack.test.mjs",
+    "test:usertoken": "node usertoken.test.mjs",
+    "test:hardening": "node hardening.test.mjs",
+    "test:resilience": "node worker-resilience.test.mjs",
+    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs && node chunked.test.mjs && node ghstorage.test.mjs && node bigscript.test.mjs && node vm-stack.test.mjs && node usertoken.test.mjs && node hardening.test.mjs && node worker-resilience.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

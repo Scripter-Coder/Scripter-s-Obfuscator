@@ -887,6 +887,12 @@ export { compile as _vmBcCompile, OP_NAMES as _vmBcOpNames, rawToStr as _vmBcRaw
 // single constant without the runtime-only seed (same guarantee class
 // as the split-key outer layer).
 //
+// PER-BUILD CIPHERS: the vault + blob cipher formulas are RANDOMIZED
+// per build (coefficients, multipliers, direction, position mixing).
+// Cracking one build teaches nothing about the next - there is no
+// static signature to write a peeler against (the friend's tool died
+// because its formulas were constants).
+//
 // CHUNK BLOB: bytecode is NOT shipped as plaintext number tables; it
 // is packed (length-prefixed records) and stream-encrypted, then
 // decoded at boot into the chunk table.
@@ -895,11 +901,6 @@ function emitVM(build) {
     var OPCODES = build.OPCODES;
     var seedGenvName = build.seedFromGenv || null;
     var seedInFile = !seedGenvName;
-    // encrypt vault (same stream cipher as vm-pass)
-    var vault = build.vaultPlain.slice();
-    for (var pos = 0; pos < vault.length; pos++) {
-        vault[pos] = (vault[pos] ^ ((seed * (pos + 1) * 31 + pos) % 251 + 5)) % 256;
-    }
 
     function nm(p) { return p + hex(6); }
     var V = nm('v'), C = nm('c'), R = nm('r'), D = nm('d'), NC = nm('m');
@@ -908,21 +909,64 @@ function emitVM(build) {
     var OP = nm('o'), LK = nm('L'), VA = nm('a');
     var X = nm('x'), Y = nm('z');
 
+    // ---- per-build VAULT cipher params ----
+    // vault byte at 0-based pos: v ^ K(pos), p = pos+1 (1-based):
+    //   K(p) = ((a*p + b + SEED*((p*p)%m)) % 251) + c
+    // VP coefficients are RANDOM PER BUILD. In server-bound mode the
+    // SEED comes from genv at RUNTIME (not in the file), so a peeled
+    // stub cannot decrypt the vault even knowing the coefficients;
+    // in self-contained mode the seed literal is baked (same math).
+    var VP = {
+        a: rndInt(29, 251),   // linear position multiplier
+        b: rndInt(29, 251),   // additive offset
+        c: rndInt(5, 251),    // final additive (range guard)
+        m: rndInt(3, 31)      // quadratic modulus
+    };
+    // SEED expression: literal (in-file) or genv lookup (server-bound)
+    var seedExpr = seedInFile ? String(seed) : (E + '[' + JSON.stringify(seedGenvName) + ']');
+
+    // encrypt vault with the per-build formula (JS side)
+    var vault = build.vaultPlain.slice();
+    for (var pos = 0; pos < vault.length; pos++) {
+        var p = pos + 1;
+        var key = ((VP.a * p + VP.b + seed * ((p * p) % VP.m)) % 251) + VP.c;
+        vault[pos] = (vault[pos] ^ (key % 256)) % 256;
+    }
+    // ---- DECOY VAULT: append random runs encrypted with the SAME
+    // formula. Indistinguishable from real vault bytes (same cipher,
+    // same shape); only real refs ever read the real region. Decoy
+    // refs below point into this space so a static analyst cannot
+    // tell which constants are genuine.
+    var realVaultLen = vault.length;
+    var decoyRuns = rndInt(3, 8);
+    var decoyRefSpans = []; // {start,len} into the FULL vault (1-based refs semantics: refs use start as 0-based offset; D reads V[p] with p=st+j, i.e. st is 0-based)
+    for (var dr = 0; dr < decoyRuns; dr++) {
+        var dlen = rndInt(4, 24);
+        var dstart = vault.length;
+        for (var dj = 0; dj < dlen; dj++) {
+            var dpos = vault.length; // 0-based
+            var dp = dpos + 1;
+            var dkey = ((VP.a * dp + VP.b + seed * ((dp * dp) % VP.m)) % 251) + VP.c;
+            vault.push((rndInt(0, 255) ^ (dkey % 256)) % 256);
+        }
+        decoyRefSpans.push({ start: dstart, len: dlen });
+    }
+
     var L = [];
     L.push('local ' + E + '=(getgenv and getgenv()) or _G');
-    // seed: embedded (self-contained) or fetched at runtime from genv
-    // (server-bound; the loader writes it after the worker key fetch)
-    var SEED;
-    if (seedInFile) {
-        SEED = String(seed);
-    } else {
-        SEED = E + '[' + JSON.stringify(seedGenvName) + ']';
-    }
     L.push('local ' + V + '={' + vault.join(',') + '}');
     L.push('local ' + C + '={}');
-    L.push('local ' + R + '={' + build.refs.map(function (r) { return '{' + r.start + ',' + r.len + '}'; }).join(',') + '}');
+    // ---- refs: REAL refs first (their indices are baked into the
+    // bytecode), then DECOY refs pointing into the decoy region. Same
+    // shape {start,len}; only real ids are ever dereferenced.
+    var refParts = build.refs.map(function (r) { return '{' + r.start + ',' + r.len + '}'; });
+    for (var drr = 0; drr < decoyRefSpans.length; drr++) {
+        refParts.push('{' + decoyRefSpans[drr].start + ',' + decoyRefSpans[drr].len + '}');
+    }
+    L.push('local ' + R + '={' + refParts.join(',') + '}');
     L.push('local ' + NC + '={}');
-    // decryptor + memo (arithmetic xor - 5.1 safe)
+    // decryptor + memo (arithmetic xor - 5.1 safe).
+    // The vault key formula is PER-BUILD (VP literals + the seed term).
     L.push('local ' + D + '=function(i)');
     L.push(' local c=' + C + '[i] if c then return c end');
     L.push(' local rr=' + R + '[i] if not rr then return nil end');
@@ -930,7 +974,8 @@ function emitVM(build) {
     L.push(' local o={}');
     L.push(' for j=1,ln do');
     L.push('  local p=st+j');
-    L.push('  local a=' + V + '[p] local b=(' + SEED + '*p*31+p-1)%251+5');
+    // per-build key: ((a*p + b + SEED*((p*p)%m)) % 251) + c   (p 1-based)
+    L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+' + seedExpr + '*((p*p)%' + VP.m + '))%251+' + VP.c);
     L.push('  local r,pw=0,1');
     L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
     L.push('  o[j]=string.char(r)');
@@ -962,9 +1007,12 @@ function emitVM(build) {
     // chunks with >255 code words (a 1-byte length was mangled by the
     // XOR %256 step and the decoder ran off the blob end -> "attempt
     // to perform arithmetic on a nil value" / "(mul) on nil and number").
-    // Cipher: k(i) = (i*i*7 + i*3 + 90) % 251 + 4 over the flat blob.
+    // PER-BUILD cipher: k(i) = (i*i*qA + i*qB + qC) % 251 + 4 where
+    // qA/qB/qC are RANDOM per build - no static signature to peeler.
+    var BP = { a: rndInt(3, 97), b: rndInt(3, 97), c: rndInt(30, 300) };
     var blob = [];
-    for (var ci = 0; ci < build.chunks.length; ci++) {
+    var realChunkCount = build.chunks.length;
+    for (var ci = 0; ci < realChunkCount; ci++) {
         var ch = build.chunks[ci];
         blob.push(ch.params.length % 256, Math.floor(ch.params.length / 256) % 256);
         for (var pi = 0; pi < ch.params.length; pi++) {
@@ -978,15 +1026,34 @@ function emitVM(build) {
             blob.push(w % 256, Math.floor(w / 256) % 256, Math.floor(w / 65536) % 256, Math.floor(w / 16777216) % 256);
         }
     }
+    // ---- DECOY CHUNKS: appended AFTER the real ones (real chunk ids
+    // and the top-level boot index stay valid). Plausible-looking
+    // opcode streams - a disassembler cannot tell which chunks are
+    // real. They are NEVER executed (NEWF/boot only reference the
+    // real ids).
+    var decoyVals = Object.keys(OPCODES).map(function (k) { return OPCODES[k]; });
+    var nDecoyChunks = rndInt(2, 5);
+    for (var dc = 0; dc < nDecoyChunks; dc++) {
+        var dnp = rndInt(0, 3);
+        blob.push(dnp % 256, Math.floor(dnp / 256) % 256);
+        for (var dpi = 0; dpi < dnp; dpi++) blob.push(rndInt(1, 80) % 256, 0);
+        blob.push(Math.random() < 0.5 ? 1 : 0);
+        var dnc = rndInt(6, 40);
+        blob.push(dnc % 256, Math.floor(dnc / 256) % 256, Math.floor(dnc / 65536) % 256, Math.floor(dnc / 16777216) % 256);
+        for (var dwi = 0; dwi < dnc; dwi++) {
+            var dw = decoyVals[rnd(decoyVals.length)];
+            blob.push(dw % 256, Math.floor(dw / 256) % 256, Math.floor(dw / 65536) % 256, Math.floor(dw / 16777216) % 256);
+        }
+    }
     // 1-BASED positions to match the Lua-side decrypt loop (i = 1..#src).
     // The cipher arithmetic MUST be laundered with %4294967296 before the
     // %251: on 32-bit-integer runtimes (and our fengari test harness)
-    // i*i*7 wraps past 2^31 for blobs > ~17.5KB and the wrapped value mod
+    // i*i*qA wraps past 2^31 for big blobs and the wrapped value mod
     // 251 differs from the double-precise value. Laundering first makes
     // JS, Lua 5.1/5.3 and Luau all compute the IDENTICAL stream.
     for (var bi = 0; bi < blob.length; bi++) {
         var p1 = bi + 1;
-        var k = (((p1 * p1 * 7 + p1 * 3 + 90) % 4294967296) % 251) + 4;
+        var k = (((p1 * p1 * BP.a + p1 * BP.b + BP.c) % 4294967296) % 251) + 4;
         blob[bi] = (blob[bi] ^ k) % 256;
     }
     var BL = nm('b');
@@ -996,8 +1063,8 @@ function emitVM(build) {
     L.push('do');
     L.push(' local src={' + blob.join(',') + '}');
     L.push(' for i=1,#src do');
-    // laundered cipher: identical on doubles AND 32-bit-int runtimes
-    L.push('  local a=src[i] local b=((i*i*7+i*3+90)%4294967296)%251+4');
+    // laundered PER-BUILD cipher: identical on doubles AND 32-bit runtimes
+    L.push('  local a=src[i] local b=((i*i*' + BP.a + '+i*' + BP.b + '+' + BP.c + ')%4294967296)%251+4');
     L.push('  local r,pw=0,1');
     L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
     L.push('  ' + BL + '[i]=r');
@@ -1222,6 +1289,26 @@ function emitVM(build) {
                 break;
             default:
                 throw new Error('emit ' + name);
+        }
+        L.push('  end');
+    }
+    // ---- DEAD HANDLER BLOCKS: never-firing opcode guards with
+    // realistic bodies. They add noise to the handler chain so an
+    // analyst cannot map "if o==X" -> real opcode count.
+    var nDead = rndInt(3, 8);
+    for (var dh = 0; dh < nDead; dh++) {
+        var deadVal = rndInt(60001, 65000); // outside the real opcode range
+        // body: plausible stack ops touching the same names
+        var bodyKind = rnd(4);
+        L.push('  if ' + OP + '==' + deadVal + ' then');
+        if (bodyKind === 0) {
+            L.push('   local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t');
+        } else if (bodyKind === 1) {
+            L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + D + '(' + CODE + '.c[' + PC + ']) ' + PC + '=' + PC + '+1');
+        } else if (bodyKind === 2) {
+            L.push('   local k=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t[k]');
+        } else {
+            L.push('   ' + PC + '=' + CODE + '.c[' + PC + ']');
         }
         L.push('  end');
     }

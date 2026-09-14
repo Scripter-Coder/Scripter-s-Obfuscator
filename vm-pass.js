@@ -129,10 +129,8 @@ export function applyVmPass(src, opts) {
         return raw;
     }
 
-    // per-position stream cipher over the flat vault.
-    // position p is 1-BASED everywhere (Lua table indexing) - the JS
-    // encryptor below uses pos+1 for the same reason.
-    function encPos(pos0) { return ((seed * (pos0 + 1) * 31 + pos0) % 251) + 5; }
+    // per-position stream cipher over the flat vault is applied AFTER
+    // the walk (see vaultKey below) - the shape is randomized per build.
 
     // scope tracking for local renaming -----------------------------
     var scopes = [Object.create(null)]; // stack; bottom = chunk globals
@@ -421,9 +419,12 @@ export function applyVmPass(src, opts) {
     popScope();
 
     // encrypt the vault NOW (after all constants were added during the walk).
-    // byte i of the vault lives at Lua index i+1; encPos(i) matches the
-    // Lua formula with p=i+1: (seed*p*31+(p-1))%251+5
-    for (var pos = 0; pos < vault.length; pos++) vault[pos] = (vault[pos] ^ ((seed * (pos + 1) * 31 + pos) % 251 + 5)) % 256;
+    // PER-BUILD cipher shape: k(p) = (seed*p*ma + p*mb + mc) % 251 + 5
+    // where ma/mb/mc are random per build (the old fixed *31+p-1 was a
+    // static signature). p is the 1-based Lua index.
+    var MA = rndInt(11, 97), MB = rndInt(1, 89), MC = rndInt(0, 251);
+    function vaultKey(p1) { return ((seed * p1 * MA + p1 * MB + MC) % 251) + 5; }
+    for (var pos = 0; pos < vault.length; pos++) vault[pos] = (vault[pos] ^ (vaultKey(pos + 1) % 256)) % 256;
 
     // ---- prelude: vault, cache, refs table, decryptor, proxy ----
     var RT = 'r' + hex(7);
@@ -442,7 +443,7 @@ export function applyVmPass(src, opts) {
     DR += '  local p=st+j';
     // arithmetic XOR: Lua 5.1-safe (executors have bit32 but 5.1
     // compat means no bitwise operators in output)
-    DR += '  local a=' + V + '[p] local b=(' + seed + '*p*31+p-1)%251+5';
+    DR += '  local a=' + V + '[p] local b=(' + seed + '*p*' + MA + '+p*' + MB + '+' + MC + ')%251+5';
     DR += '  local r,pw=0,1';
     DR += '  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end';
     DR += '  o[j]=string.char(r)';
