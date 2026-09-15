@@ -15,8 +15,8 @@
                 img.setAttribute('data-step', String(step));
                 var candidates = [];
                 if (who.indexOf('Scripter') === 0) {
-                    candidates = ['images/scripter.png', 'public/images/Scripter.png', 'public/images/scripter.png',
-                        'https://www.roblox.com/headshot-thumbnail/image?userId=7292254678&width=420&height=420&format=png'];
+                     candidates = ['public/images/Scripter.png', 'public/images/Kurosaki_Koyuki.png', 'public/images/kurosaki_koyuki.png',
+                         'https://www.roblox.com/headshot-thumbnail/image?userId=7292254678&width=420&height=420&format=png'];
                 } else {
                     candidates = ['images/Kurusaki_Koyuki.png', 'images/Kurosaki_Koyuki.png', 'images/Kurosaki_koyuki.png',
                         'public/images/kurosaki_koyuki.png', 'public/images/Kurusaki_Koyuki.png', 'public/images/Kurosaki_Koyuki.png'];
@@ -510,7 +510,7 @@
             <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
                 <button class="btn btn-primary" onclick="changeOwnPlan()">📊 Change My Plan</button>
                 <button class="btn btn-primary" onclick="exportUsers()">📤 Export Users</button>
-                <button class="btn btn-primary" onclick="refreshUsersList()">🔄 Refresh Users</button>
+                 <button class="btn btn-primary" data-loading="false" id="refreshUsersBtn" onclick="refreshUsersList()">🔄 Refresh Users</button>
                 <button class="btn btn-danger" onclick="deleteAllBotUsers()">🤖 Delete All Bot Users</button>
                 <button class="btn btn-danger" onclick="deleteAllUsers()">🗑️ Delete All Users</button>
             </div>
@@ -527,7 +527,7 @@
          browser. The site serves source files as bare ES modules (no
          bundler), so load luaparse as a global BEFORE main.js.
          Lives in public/vendor/ so vite copies it into dist/ too. -->
-    <script src="./vendor/luaparse.js"></script>
+    <script src="./vendor/luaparse.js" onerror="this.src='/public/vendor/luaparse.js'" />
     <script type="module" src="./main.js"></script>
 </body>
 </html>
