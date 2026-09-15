@@ -313,24 +313,33 @@ function shOwnerProof() {
 }
 
 // push one local user record to the cloud (public fields only).
-// Proves identity with the account's b64 password from the local db.
-function shPushUser(user) {
-    if (!user || !user.email) return Promise.resolve({ ok: false });
-    var u = users[user.email];
-    var proof = (u && u.password) ? u.password : ''; // b64 password
-    return shApi('sh/user-sync', {
-        email: user.email,
-        password: proof,
-        user: {
-            id: user.id, email: user.email, username: user.username,
-            plan: user.plan, description: user.description || '',
-            createdAt: user.createdAt, profileImage: user.profileImage || '',
-            bannerImage: user.bannerImage || '', theme: user.theme || 'default',
-            stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
-            disabled: !!user.disabled
-        }
-    });
-}
+ // Proves identity with the account's b64 password from the local db.
+ function shPushUser(user) {
+     if (!user || !user.email) return Promise.resolve({ ok: false });
+     var u = users[user.email];
+     var proof = (u && u.password) ? u.password : ''; // b64 password
+     // trim oversized images so the KV value doesn't exceed Cloudflare's 25MB cap
+     // (images in base64 can easily exceed this; the worker caps at ~2MB base64)
+     const SH_IMAGE_CAP = 2000000;
+     if (typeof user.profileImage === 'string' && user.profileImage.length > SH_IMAGE_CAP) {
+         user.profileImage = user.profileImage.slice(0, SH_IMAGE_CAP);
+     }
+     if (typeof user.bannerImage === 'string' && user.bannerImage.length > SH_IMAGE_CAP) {
+         user.bannerImage = user.bannerImage.slice(0, SH_IMAGE_CAP);
+     }
+     return shApi('sh/user-sync', {
+         email: user.email,
+         password: proof,
+         user: {
+             id: user.id, email: user.email, username: user.username,
+             plan: user.plan, description: user.description || '',
+             createdAt: user.createdAt, profileImage: user.profileImage || '',
+             bannerImage: user.bannerImage || '', theme: user.theme || 'default',
+             stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
+             disabled: !!user.disabled
+         }
+     });
+ }
 
 // full login sync: push the local record, then pull the cloud map
 // (only the owner 'Scripter' account gets admin flags preserved)
@@ -369,38 +378,65 @@ async function shSyncUsersOnLogin(user, rawPassword) {
 }
 
 // owner pull of all cloud users -> { email: user } (no passwords).
-// Auth: raw-page token OR ownerProof (b64 owner password) - the proof
-// keeps the panels working without the raw-page access-code prompt.
-async function shPullCloudUsers() {
-    try {
-        let token = shGetRawToken();
-        if (!token) {
-            const ok = await shLoginRaw();
-            if (!ok) token = ''; // no raw-page code in this session - fall back to ownerProof
-            token = shGetRawToken() || '';
-        }
-        const proof = shOwnerProof();
-        let res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
-        let d = await res.json();
-        if (!d.ok && /author/i.test(d.error || '')) {
-            sessionStorage.removeItem('sh_raw_token');
-            const ok2 = await shLoginRaw();
-            if (ok2) {
-                res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(shGetRawToken()) + '&ownerProof=' + encodeURIComponent(proof));
-                d = await res.json();
-            }
-        }
-        if (d.ok && d.users) {
-            // re-attach local passwords where we have them (panels need them
-            // for delete/edit flows; cloud never stores them in responses)
-            for (var k in d.users) {
-                if (users[k] && users[k].password) d.users[k].password = users[k].password;
-            }
-            return d.users;
-        }
-        return null;
-    } catch (e) { return null; }
-}
+ // Auth: raw-page token OR ownerProof (b64 owner password) - the proof
+ // keeps the panels working without the raw-page access-code prompt.
+ async function shPullCloudUsers() {
+     try {
+         let token = shGetRawToken();
+         if (!token) {
+             const ok = await shLoginRaw();
+             if (!ok) token = ''; // no raw-page code in this session - fall back to ownerProof
+             token = shGetRawToken() || '';
+         }
+         const proof = shOwnerProof();
+         let res;
+         let url = SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof);
+         try {
+             res = await fetch(url);
+         } catch (e) {
+             // network error - try login once and retry
+             sessionStorage.removeItem('sh_raw_token');
+             const ok2 = await shLoginRaw();
+             if (ok2) {
+                 token = shGetRawToken() || '';
+                 res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
+             } else {
+                 return null;
+             }
+         }
+         let d;
+         try {
+             d = await res.json();
+         } catch (e) {
+             return null;
+         }
+         if (!d.ok && /author/i.test(d.error || '')) {
+             sessionStorage.removeItem('sh_raw_token');
+             const ok2 = await shLoginRaw();
+             if (ok2) {
+                 token = shGetRawToken() || '';
+                 let res2;
+                 try {
+                     res2 = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
+                 } catch (e) { return null; }
+                 try {
+                     d = await res2.json();
+                 } catch (e) { return null; }
+             } else {
+                 return null;
+             }
+         }
+         if (d.ok && d.users) {
+             // re-attach local passwords where we have them (panels need them
+             // for delete/edit flows; cloud never stores them in responses)
+             for (var k in d.users) {
+                 if (users[k] && users[k].password) d.users[k].password = users[k].password;
+             }
+             return d.users;
+         }
+         return null;
+     } catch (e) { return null; }
+ }
 
 // owner upsert/delete of cloud user records (plan changes, deletes)
 async function shPushCloudUserUpdate(email, userRecord) {
