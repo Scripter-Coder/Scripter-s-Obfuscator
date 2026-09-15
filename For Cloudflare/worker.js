@@ -344,6 +344,20 @@ function signupFloodBlocked(ip) {
     return false;
 }
 
+// global per-isolate hourly cap: bots rotate IPs/proxies, so the per-IP
+// limit alone still let hundreds of junk accounts through. This caps the
+// TOTAL signups per isolate per hour no matter where they come from.
+const SIGNUP_GLOBAL_LIMIT = 120;      // max signups per hour per isolate
+const SIGNUP_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
+let signupGlobalHits = [];
+function signupGlobalBlocked() {
+    const now = Date.now();
+    while (signupGlobalHits.length && now - signupGlobalHits[0] > SIGNUP_GLOBAL_WINDOW_MS) signupGlobalHits.shift();
+    if (signupGlobalHits.length >= SIGNUP_GLOBAL_LIMIT) return true;
+    signupGlobalHits.push(now);
+    return false;
+}
+
 // what a signup/self-edit may control (plan is kept for existing records,
 // but a NEW record always starts as Basic; admin flags are never settable)
 function sanitizeUserRecord(u) {
@@ -885,6 +899,10 @@ async function handleRequest(request, env, ctx) {
                     profileImage: '', bannerImage: '', theme: 'default',
                     stats: { projects: { used: 0, max: 1 }, keys: { used: 0, max: 2 }, scripts: { used: 0, max: 3 }, fileSize: { used: 0, max: 5 } }
                 });
+                // global hourly cap (counts only signups about to hit KV):
+                // bots rotate IPs, so the per-IP limit alone still let
+                // hundreds of junk accounts through
+                if (signupGlobalBlocked()) return jsonResponse({ ok: false, error: 'Too many signups right now. Try again later.' }, 429);
                 map[email] = storageSafeUser(rec);
                 await saveUsersMap(env, map);
                 return jsonResponse({ ok: true, user: publicUser(rec) });

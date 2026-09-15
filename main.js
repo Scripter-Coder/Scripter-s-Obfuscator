@@ -508,50 +508,10 @@ function loadUsers() {
         if (data) {
             users = JSON.parse(data);
         } else {
-            users = {
-                'demo@example.com': {
-                    id: 'user_1',
-                    email: 'demo@example.com',
-                    username: 'DemoUser',
-                    password: btoa('demo123'),
-                    plan: 'Advanced',
-                    description: 'Demo account',
-                    createdAt: new Date().toISOString(),
-                    profileImage: '',
-                    bannerImage: '',
-                    theme: 'default',
-                    stats: { projects: { used: 3, max: 10 }, keys: { used: 12, max: 50 }, scripts: { used: 8, max: 20 }, fileSize: { used: 25, max: 50 } }
-                },
-                'admin@example.com': {
-                    id: 'user_admin',
-                    email: 'admin@example.com',
-                    username: 'Admin',
-                    password: btoa('admin123'),
-                    plan: 'God',
-                    description: 'Administrator account',
-                    createdAt: new Date().toISOString(),
-                    isAdmin: true,
-                    profileImage: '',
-                    bannerImage: '',
-                    theme: 'default',
-                    stats: { projects: { used: 0, max: Infinity }, keys: { used: 0, max: Infinity }, scripts: { used: 0, max: Infinity }, fileSize: { used: 0, max: Infinity } }
-                },
-                'dubovikstanislav51@gmail.com': {
-                    id: 'user_scripter',
-                    email: 'dubovikstanislav51@gmail.com',
-                    username: 'Scripter',
-                    password: btoa('stas2009as'),
-                    plan: 'Custom',
-                    description: 'Owner',
-                    createdAt: new Date().toISOString(),
-                    isScripter: true,
-                    isAdmin: true,
-                    profileImage: '',
-                    bannerImage: '',
-                    theme: 'default',
-                    stats: { projects: { used: 5, max: Infinity }, keys: { used: 50, max: Infinity }, scripts: { used: 20, max: Infinity }, fileSize: { used: 100, max: Infinity } }
-                }
-            };
+            // start with NO seeded accounts (the demo Admin/DemoUser
+            // examples used to come back on every storage clear - the
+            // owner logs in via the cloud and real users sign up)
+            users = {};
             saveUsers();
         }
     } catch (error) {
@@ -2428,8 +2388,16 @@ function deleteUser(email) {
     if (confirm('Are you sure you want to delete ' + email + '? This cannot be undone!')) {
         delete users[email];
         saveUsers();
-        // remove from the cloud too so it disappears from every device
-        shDeleteCloudUser(email);
+        // remove from the cloud too so it disappears from every device -
+        // report the REAL result (a silent 401 used to fake success here)
+        shDeleteCloudUser(email).then(function(d) {
+            if (d && d.ok) {
+                showNotification('Deleted', 'User deleted on every device.', 'success');
+            } else {
+                showNotification('Deleted Locally Only', 'Cloud delete failed: ' + ((d && d.error) || 'not authorized') + '. Log out and log back in as the owner, then delete again so it disappears on other devices.', 'warning', 8000);
+            }
+            renderAdminUserListFull();
+        });
         showNotification('Deleted', 'User deleted successfully!', 'success');
         renderAdminUserListFull();
     }
