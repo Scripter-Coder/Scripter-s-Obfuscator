@@ -1902,6 +1902,19 @@ function drawLiveChart() {
         }
         ctx.stroke();
     });
+    // no-data hint: every series flat zero = no executions polled recently
+    var chartAllZero = true;
+    seriesList.forEach(function(e) {
+        var h = liveChart.history[e] || [];
+        for (var i = 0; i < h.length; i++) { if (h[i] > 0) { chartAllZero = false; break; } }
+    });
+    if (chartAllZero) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.font = '12px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText('No executions in the last 5 minutes — the chart fills live as users run your scripts', padL + cw / 2, padT + ch / 2);
+        ctx.textAlign = 'left';
+    }
     // hover inspect
     if (liveChart.hover) {
         var hx = liveChart.hover.x;
@@ -2637,8 +2650,25 @@ function confirmOwnPlanChange() {
 }
 
 // ============ IMAGE UPLOAD FUNCTIONS ============
+// The dashboard is cloned into the tab view, so two inputs share the same
+// id. getElementById returns the FIRST (hidden) one - the file the user
+// picked lives in the VISIBLE clone. Search all matches and use the one
+// that actually has a file (or is visible).
+function findImageInput(id) {
+    var inputs = document.querySelectorAll('input[type="file"]#' + id);
+    var fallback = null;
+    for (var i = 0; i < inputs.length; i++) {
+        var el = inputs[i];
+        if (el.files && el.files.length > 0) return el;
+        var visible = !!(el.offsetParent || el.getClientRects().length);
+        if (visible && !fallback) fallback = el;
+        if (!fallback) fallback = el;
+    }
+    return fallback;
+}
+
 function uploadProfileImage() {
-    var input = document.getElementById('profileImageInput');
+    var input = findImageInput('profileImageInput');
     if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
     if (file.size > 2 * 1024 * 1024) { showNotification('Error', 'Profile image size must be less than 2MB.', 'error'); return; }
@@ -2668,7 +2698,7 @@ function uploadProfileImage() {
 }
 
 function uploadBannerImage() {
-    var input = document.getElementById('bannerImageInput');
+    var input = findImageInput('bannerImageInput');
     if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
     if (file.size > 5 * 1024 * 1024) { showNotification('Error', 'Banner image size must be less than 5MB.', 'error'); return; }
@@ -4477,6 +4507,10 @@ async function shRefreshOwnCloudRecord(localRecord) {
         } else {
             for (var k in cloud) {
                 if (k === 'password') continue;
+                // never let an EMPTY cloud image wipe a local one (the
+                // record in KV may predate the image, or the worker may
+                // have trimmed it - the local copy is what the UI shows)
+                if ((k === 'profileImage' || k === 'bannerImage') && !cloud[k] && lu[k]) continue;
                 if (JSON.stringify(lu[k]) !== JSON.stringify(cloud[k])) { lu[k] = cloud[k]; changed = true; }
             }
         }

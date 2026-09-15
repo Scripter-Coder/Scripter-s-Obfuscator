@@ -125,6 +125,43 @@ const S = globalThis.__shStats || (globalThis.__shStats = {
     startedAt: Date.now()
 });
 
+// ---- stats persistence (counters survive worker deploys/restarts) ----
+// In-memory counters used to reset on every deploy, so the dashboard
+// chart read 0 forever. Counters are now loaded from KV once per isolate
+// and saved back (throttled) after each execution.
+let shStatsLoaded = false;
+async function loadStatsOnce(env) {
+    if (shStatsLoaded || !env.LOADERS_KV) return;
+    shStatsLoaded = true;
+    try {
+        const raw = await env.LOADERS_KV.get('sh_stats_counters');
+        if (raw) {
+            const c = JSON.parse(raw);
+            if (typeof c.totalExecutions === 'number' && c.totalExecutions > S.totalExecutions) S.totalExecutions = c.totalExecutions;
+            if (typeof c.threatsBlocked === 'number' && c.threatsBlocked > S.threatsBlocked) S.threatsBlocked = c.threatsBlocked;
+            if (typeof c.totalVisitors === 'number' && c.totalVisitors > S.totalVisitors) S.totalVisitors = c.totalVisitors;
+            if (typeof c.perScript === 'object' && c.perScript) {
+                for (const k in c.perScript) {
+                    S.perScript[k] = Math.max(S.perScript[k] || 0, c.perScript[k]);
+                }
+            }
+        }
+    } catch (e) { /* counters stay in-memory */ }
+}
+let shStatsSaveAt = 0;
+function saveStatsSoon(env) {
+    const now = Date.now();
+    if (!env.LOADERS_KV || now - shStatsSaveAt < 30000) return;
+    shStatsSaveAt = now;
+    env.LOADERS_KV.put('sh_stats_counters', JSON.stringify({
+        totalExecutions: S.totalExecutions,
+        threatsBlocked: S.threatsBlocked,
+        totalVisitors: S.totalVisitors,
+        perScript: S.perScript,
+        updatedAt: now
+    })).catch(function() {});
+}
+
 // ============ HIDDEN LOADER HOST CONFIG ============
 // The owner access code. The built-in default is "ScripterHub" — it works
 // out of the box with zero setup. Optionally you can set an EXTRA code
@@ -628,6 +665,9 @@ export default {
 
 async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
+
+        // load persisted stat counters once per isolate (fire-and-forget)
+        loadStatsOnce(env);
 
         // CORS preflight
         if (request.method === 'OPTIONS') {
@@ -1318,6 +1358,7 @@ async function handleRequest(request, env, ctx) {
                     S.totalExecutions++;
                     S.perScript[id] = (S.perScript[id] || 0) + 1;
                     prune(Date.now());
+                    saveStatsSoon(env);
                 }
                 return new Response(part, {
                     status: 200,
@@ -1513,6 +1554,7 @@ async function handleRequest(request, env, ctx) {
             S.totalExecutions++;
             S.perScript[id] = (S.perScript[id] || 0) + 1;
             prune(Date.now());
+            saveStatsSoon(env);
             if (isExecutor && meta.keyless === true) {
                 // FREE script: serve the obfuscated code as-is - no key gate
                 // in executors (the Special Key only gates the website page).
@@ -1594,6 +1636,7 @@ async function handleRequest(request, env, ctx) {
             S.totalExecutions++;
             if (scriptId) S.perScript[scriptId] = (S.perScript[scriptId] || 0) + 1;
             prune(now);
+            saveStatsSoon(env);
             return new Response(JSON.stringify({ ok: true }), { headers: CORS_HEADERS });
         }
 
@@ -1627,6 +1670,9 @@ async function handleRequest(request, env, ctx) {
                     lastMinute: perExecutor[name]
                 };
             }
+            // uptime sanity: a lost isolate used to report epoch-based
+            // uptime (56+ years) - clamp to "just started" instead
+            const startedAt = (typeof S.startedAt === 'number' && S.startedAt > 0 && S.startedAt <= now) ? S.startedAt : now;
             const out = {
                 ok: true,
                 endpoint: 'v3/realtime_stats',
@@ -1635,7 +1681,7 @@ async function handleRequest(request, env, ctx) {
                 totalVisitors: S.totalVisitors,
                 executors: executors,
                 topScripts: S.perScript,
-                uptimeSeconds: Math.floor((now - S.startedAt) / 1000),
+                uptimeSeconds: Math.floor((now - startedAt) / 1000),
                 updatedAt: now
             };
             return new Response(JSON.stringify(out), { headers: CORS_HEADERS });
