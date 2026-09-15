@@ -22,6 +22,11 @@ let editingScript = null;
 // ============ OWNER KEY ============
 const OWNER_KEY = 'my_super_secret_key_2024_scripter';
 
+// ============ BLOCKED WORDS ============
+// Usernames/emails containing any of these are rejected at signup
+// (bot-raid flood patterns). Keep lowercase; add more words here anytime.
+const SH_BLOCKED_WORDS = ['raid', 'fuck', 'nigg', 'n1gg', 'scripter 0.'];
+
 // Base path helper: works for root domains (username.github.io),
 // repo subfolders (username.github.io/repo/) and local hosting.
 function getBasePath() {
@@ -314,30 +319,29 @@ function shOwnerProof() {
 
 // push one local user record to the cloud (public fields only).
  // Proves identity with the account's b64 password from the local db.
+ // Oversized images are NOT sent (the field is omitted so the cloud keeps
+ // whatever it has) - slicing base64 would corrupt the data URL, and the
+ // worker drops whole oversized images anyway. The local copy keeps working.
  function shPushUser(user) {
      if (!user || !user.email) return Promise.resolve({ ok: false });
      var u = users[user.email];
      var proof = (u && u.password) ? u.password : ''; // b64 password
-     // trim oversized images so the KV value doesn't exceed Cloudflare's 25MB cap
-     // (images in base64 can easily exceed this; the worker caps at ~2MB base64)
-     const SH_IMAGE_CAP = 2000000;
-     if (typeof user.profileImage === 'string' && user.profileImage.length > SH_IMAGE_CAP) {
-         user.profileImage = user.profileImage.slice(0, SH_IMAGE_CAP);
-     }
-     if (typeof user.bannerImage === 'string' && user.bannerImage.length > SH_IMAGE_CAP) {
-         user.bannerImage = user.bannerImage.slice(0, SH_IMAGE_CAP);
-     }
+     var SH_IMAGE_CAP = 1900000; // stay under the worker's ~2MB base64 cap
+     var profileImage = (typeof user.profileImage === 'string' && user.profileImage.length <= SH_IMAGE_CAP) ? user.profileImage : undefined;
+     var bannerImage = (typeof user.bannerImage === 'string' && user.bannerImage.length <= SH_IMAGE_CAP) ? user.bannerImage : undefined;
+     var payload = {
+         id: user.id, email: user.email, username: user.username,
+         plan: user.plan, description: user.description || '',
+         createdAt: user.createdAt, theme: user.theme || 'default',
+         stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
+         disabled: !!user.disabled
+     };
+     if (profileImage !== undefined) payload.profileImage = profileImage;
+     if (bannerImage !== undefined) payload.bannerImage = bannerImage;
      return shApi('sh/user-sync', {
          email: user.email,
          password: proof,
-         user: {
-             id: user.id, email: user.email, username: user.username,
-             plan: user.plan, description: user.description || '',
-             createdAt: user.createdAt, profileImage: user.profileImage || '',
-             bannerImage: user.bannerImage || '', theme: user.theme || 'default',
-             stats: user.stats, isAdmin: !!user.isAdmin, isScripter: !!user.isScripter,
-             disabled: !!user.disabled
-         }
+         user: payload
      });
  }
 
@@ -369,7 +373,14 @@ async function shSyncUsersOnLogin(user, rawPassword) {
                     var cu = cloud[k];
                     var lu = users[k];
                     if (!lu) { users[k] = cu; changed = true; }
-                    else if (JSON.stringify(lu) !== JSON.stringify(cu)) { users[k] = cu; changed = true; }
+                    else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
+                        // an empty cloud image must never wipe the local one
+                        // (KV may predate the image or the worker may have
+                        // trimmed it - the local copy is what the UI shows)
+                        if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
+                        if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
+                        users[k] = cu; changed = true;
+                    }
                 }
                 if (changed) saveUsers();
             }
@@ -2038,6 +2049,14 @@ function handleSignup(event) {
         showNotification('Error', 'Please enter a valid email address.', 'error');
         return;
     }
+    // blocked words (bot raid floods) - check username + email together
+    var shCombined = (username + ' ' + email).toLowerCase();
+    for (var bw = 0; bw < SH_BLOCKED_WORDS.length; bw++) {
+        if (shCombined.indexOf(SH_BLOCKED_WORDS[bw]) !== -1) {
+            showNotification('Error', 'This username or email is not allowed.', 'error');
+            return;
+        }
+    }
     if (password.length < 6) {
         showNotification('Error', 'Password must be at least 6 characters.', 'error');
         return;
@@ -2222,7 +2241,7 @@ function openUsersPanel() {
 // pull cloud users and re-render the open panels with the merged list
 async function shRefreshUsersListFromCloud() {
     var cloud = await shPullCloudUsers();
-    if (!cloud) return;
+    if (!cloud) return null;
     var changed = false;
     var selfChanged = null;
     for (var k in cloud) {
@@ -2231,8 +2250,12 @@ async function shRefreshUsersListFromCloud() {
         if (!lu) {
             users[k] = cu; changed = true;
         } else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
-            // keep the local password (cloud responses never include it)
+            // keep the local password (cloud responses never include it) and
+            // never let an EMPTY cloud image wipe the local one (KV may
+            // predate the image or the worker may have trimmed it)
             cu.password = lu.password;
+            if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
+            if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
             users[k] = cu; changed = true;
         }
         if (currentUser && cu.id === currentUser.id) selfChanged = users[k];
@@ -2248,6 +2271,35 @@ async function shRefreshUsersListFromCloud() {
     }
     renderUsersList();
     renderAdminUserListFull();
+    return cloud;
+}
+
+// manual refresh of the cloud users list (admin). Useful when the first
+// fetch hit the 503 throttle (burstable KV reads) - a second click usually
+// succeeds and re-renders every users panel.
+async function refreshUsersList() {
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can refresh the users list.', 'error'); return; }
+    showNotification('Refreshing', 'Fetching the latest users from the cloud...', 'info', 3000);
+    var cloud = await shPullCloudUsers();
+    if (cloud) {
+        var changed = false;
+        for (var k in cloud) {
+            var cu = cloud[k];
+            var lu = users[k];
+            if (!lu) { users[k] = cu; changed = true; }
+            else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
+                if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
+                if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
+                users[k] = cu; changed = true;
+            }
+        }
+        if (changed) saveUsers();
+        renderUsersList();
+        renderAdminUserListFull();
+        showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total).', 'success', 3000);
+    } else {
+        showNotification('Refresh Failed', 'The cloud did not respond (503). Try again in a minute - the users database may be too large. Use "Delete All Bot Users" to shrink it.', 'error', 9000);
+    }
 }
 
 function closeUsersPanel() {
@@ -2276,6 +2328,7 @@ function createUsersPanel() {
             <div class="panel-list" id="panelUserList"></div>
             <div class="panel-status" id="panelStatus"></div>
             <div class="panel-actions">
+                <button class="btn btn-primary" onclick="refreshUsersList()">🔄 Refresh from Cloud</button>
                 <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
                 <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
                 <button class="btn btn-close-dropdown" onclick="closeUsersPanel()">Close</button>
@@ -2454,6 +2507,114 @@ function deleteAllUsers() {
         renderAdminUserListFull();
     }
 }
+
+// ---- Delete All Bot Users (admin) ----
+// Flags every account that looks bot-generated (random usernames/emails,
+// junk dates, raid-flood patterns) and deletes them in ONE cloud call
+// (sh/users-clear, a single KV write) instead of thousands of per-user
+// deletes. The owner + any human account is always kept.
+var SH_BOT_EXEMPT = {}; // populated from local keep on first run
+function buildBotExempt() {
+    if (!SH_BOT_EXEMPT._done) {
+        SH_BOT_EXEMPT._done = true;
+        SH_BOT_EXEMPT['dubovikstanislav51@gmail.com'] = true;
+        try {
+            var localKeep = JSON.parse(localStorage.getItem('sh_keep_emails') || '[]');
+            for (var i = 0; i < localKeep.length; i++) SH_BOT_EXEMPT[localKeep[i]] = true;
+        } catch (e) {}
+    }
+}
+function looksBotUser(email, u) {
+    buildBotExempt();
+    if (SH_BOT_EXEMPT[email]) return false;
+    if (!u) return true;
+    if (u.isAdmin || u.isScripter) return false;
+    var un = String(u.username || '');
+    // numeric-only usernames 1..999 (bulk-created test/bot rows)
+    if (/^\d{1,3}$/.test(un)) return true;
+    // 'scripter 0.xxx' junk
+    if (/^scripter 0\.\d+/.test(un)) return true;
+    // keyboard-mash usernames (curly braces are never typed by humans)
+    if (/[{}]/.test(un) || /[{}]/.test(email)) return true;
+    // junk dates (bot floods used fake 1987 timestamps)
+    if (String(u.createdAt || '').startsWith('1987')) return true;
+    // blocked words (raid floods etc.)
+    var lower = (un + ' ' + email).toLowerCase();
+    for (var i = 0; i < SH_BLOCKED_WORDS.length; i++) {
+        if (lower.indexOf(SH_BLOCKED_WORDS[i]) !== -1) return true;
+    }
+    // random-char email local part: 8+ chars with mixed case + digits
+    // AND at least 3 digits (humans rarely write emails like kO8dx4d1U9)
+    var local = String(email).split('@')[0];
+    if (local.length >= 8 && /[A-Z]/.test(local) && /[a-z]/.test(local)) {
+        var dig = (local.match(/\d/g) || []).length;
+        if (dig >= 3) return true;
+    }
+    // super-short junk emails (no TLD, 'a', 'noob', ...)
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return true;
+    return false;
+}
+
+function deleteAllBotUsers() {
+    if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete bot users.', 'error'); return; }
+    buildBotExempt();
+    var keep = {}, bots = [];
+    for (var key in users) {
+        if (looksBotUser(key, users[key])) { bots.push({ email: key, username: (users[key] && users[key].username) || '' }); }
+        else { keep[key] = users[key]; SH_BOT_EXEMPT[key] = true; }
+    }
+    if (bots.length === 0) { showNotification('No Bots Found', 'Every account looks human - nothing to delete.', 'info', 5000); return; }
+    var listItems = bots.map(function(b) {
+        return '<div style="padding:4px 0; font-family:monospace; font-size:12px; color:#ff6b6b;">' +
+            escapeHtml(b.username || '(no name)') + ' &middot; ' + escapeHtml(b.email) + '</div>';
+    }).join('');
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '4000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 600px; max-height: 80vh; padding: 24px; display:flex; flex-direction:column;">
+            <h2 style="font-size:20px; margin:0 0 8px;">🤖 Delete All Bot Users?</h2>
+            <p style="color:#8888aa; font-size:13px; margin:0 0 14px;">Found <strong style="color:#ff6b6b;">${bots.length}</strong> account(s) that look bot-generated. Real accounts are kept. Scroll to review the list.</p>
+            <div style="flex:1; overflow-y:auto; background:rgba(20,20,35,0.6); border-radius:10px; padding:10px; margin-bottom:14px; border:1px solid rgba(255,255,255,0.06);">
+                ${listItems}
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button onclick="confirmDeleteAllBots()" class="btn btn-danger" style="flex:1; padding:10px;">🗑️ Delete ${bots.length} Bots</button>
+                <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:10px;">Cancel</button>
+            </div>
+        </div>
+    `;
+    // stash the computed lists for the confirm handler
+    overlay.__keep = keep;
+    overlay.__bots = bots;
+    document.body.appendChild(overlay);
+}
+
+function confirmDeleteAllBots() {
+    var overlay = document.querySelector('.modal-overlay[style*="z-index: 4000"]');
+    if (!overlay) return;
+    var keep = overlay.__keep || {};
+    var bots = overlay.__bots || [];
+    overlay.remove();
+    users = keep;
+    saveUsers();
+    selectedUserEmail = null;
+    renderUsersList();
+    renderAdminUserListFull();
+    var keepEmails = Object.keys(keep);
+    shClearCloudUsers(keepEmails).then(function(d) {
+        if (d && d.ok) {
+            showNotification('Bots Deleted', bots.length + ' bot account(s) removed on every device. Kept ' + keepEmails.length + ' real account(s).', 'success', 8000);
+        } else {
+            showNotification('Deleted Locally Only', 'Cloud cleanup failed: ' + ((d && d.error) || 'not authorized') + '. Re-login as the owner and try again so bots disappear on other devices.', 'warning', 10000);
+        }
+        renderUsersList();
+        renderAdminUserListFull();
+    });
+}
+
+function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
 
 function filterUsers() { renderUsersList(); }
 
@@ -2671,64 +2832,94 @@ function findImageInput(id) {
     return fallback;
 }
 
+// compress an image file in the browser (canvas resize + re-encode).
+// Keeps base64 data URLs small (~100-300KB) so cloud sync never drops
+// them and the users KV value stays far below Cloudflare's per-value cap
+// (banners/profiles used to ride at up to 5MB and got stripped server-side,
+// which is why the banner "never saved").
+function compressImageFile(file, maxDim, quality) {
+    return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var dataUrl = e.target.result;
+            // GIF/SVG keep the original if small (animation/vector is lost by canvas)
+            if ((file.type === 'image/gif' || file.type === 'image/svg+xml') && file.size <= 800 * 1024) {
+                resolve(dataUrl);
+                return;
+            }
+            var img = new Image();
+            img.onload = function() {
+                try {
+                    var w = img.width || 1, h = img.height || 1;
+                    var scale = Math.min(1, maxDim / Math.max(w, h));
+                    var cw = Math.max(1, Math.round(w * scale));
+                    var ch = Math.max(1, Math.round(h * scale));
+                    var canvas = document.createElement('canvas');
+                    canvas.width = cw; canvas.height = ch;
+                    var ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, cw, ch);
+                    var out = canvas.toDataURL('image/webp', quality || 0.82);
+                    // browsers without webp encode fall back to png automatically
+                    if (!/^data:image\/(webp|png)/.test(out)) out = canvas.toDataURL('image/jpeg', quality || 0.82);
+                    resolve(out);
+                } catch (err) { resolve(dataUrl); }
+            };
+            img.onerror = function() { resolve(dataUrl); };
+            img.src = dataUrl;
+        };
+        reader.onerror = function() { reject(new Error('Failed to read image file.')); };
+        reader.readAsDataURL(file);
+    });
+}
+
 function uploadProfileImage() {
     var input = findImageInput('profileImageInput');
     if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
-    if (file.size > 2 * 1024 * 1024) { showNotification('Error', 'Profile image size must be less than 2MB.', 'error'); return; }
+    if (file.size > 10 * 1024 * 1024) { showNotification('Error', 'Profile image is too large (max 10MB).', 'error'); return; }
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
     if (!validTypes.includes(file.type)) { showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error'); return; }
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            var imageData = e.target.result;
-            for (var key in users) {
-                if (users[key].id === currentUser.id) {
-                    users[key].profileImage = imageData;
-                    saveUsers();
-                    shPushUser(users[key]); // sync to cloud (all devices)
-                    var userData = { ...users[key] };
-                    delete userData.password;
-                    updateUIForUser(userData);
-                    showNotification('Success', 'Profile image updated successfully!', 'success');
-                    input.value = '';
-                    break;
-                }
+    showNotification('Saving', 'Processing image...', 'info', 1500);
+    compressImageFile(file, 800, 0.82).then(function(imageData) {
+        for (var key in users) {
+            if (users[key].id === currentUser.id) {
+                users[key].profileImage = imageData;
+                saveUsers();
+                shPushUser(users[key]); // sync to cloud (all devices)
+                var userData = { ...users[key] };
+                delete userData.password;
+                updateUIForUser(userData);
+                showNotification('Success', 'Profile image updated successfully!', 'success');
+                input.value = '';
+                break;
             }
-        } catch (error) { showNotification('Error', 'Failed to save image: ' + error.message, 'error'); }
-    };
-    reader.onerror = function() { showNotification('Error', 'Failed to read image file.', 'error'); };
-    reader.readAsDataURL(file);
+        }
+    }).catch(function(error) { showNotification('Error', 'Failed to save image: ' + error.message, 'error'); });
 }
 
 function uploadBannerImage() {
     var input = findImageInput('bannerImageInput');
     if (!input || !input.files || input.files.length === 0) { showNotification('Error', 'Please select an image file first.', 'error'); return; }
     var file = input.files[0];
-    if (file.size > 5 * 1024 * 1024) { showNotification('Error', 'Banner image size must be less than 5MB.', 'error'); return; }
+    if (file.size > 10 * 1024 * 1024) { showNotification('Error', 'Banner image is too large (max 10MB).', 'error'); return; }
     var validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
     if (!validTypes.includes(file.type)) { showNotification('Error', 'Please upload a valid image file (PNG, JPG, WEBP, GIF, SVG).', 'error'); return; }
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            var imageData = e.target.result;
-            for (var key in users) {
-                if (users[key].id === currentUser.id) {
-                    users[key].bannerImage = imageData;
-                    saveUsers();
-                    shPushUser(users[key]); // sync to cloud (all devices)
-                    var userData = { ...users[key] };
-                    delete userData.password;
-                    updateUIForUser(userData);
-                    showNotification('Success', 'Banner image updated successfully!', 'success');
-                    input.value = '';
-                    break;
-                }
+    showNotification('Saving', 'Processing image...', 'info', 1500);
+    compressImageFile(file, 1280, 0.82).then(function(imageData) {
+        for (var key in users) {
+            if (users[key].id === currentUser.id) {
+                users[key].bannerImage = imageData;
+                saveUsers();
+                shPushUser(users[key]); // sync to cloud (all devices)
+                var userData = { ...users[key] };
+                delete userData.password;
+                updateUIForUser(userData);
+                showNotification('Success', 'Banner image updated successfully!', 'success');
+                input.value = '';
+                break;
             }
-        } catch (error) { showNotification('Error', 'Failed to save banner: ' + error.message, 'error'); }
-    };
-    reader.onerror = function() { showNotification('Error', 'Failed to read image file.', 'error'); };
-    reader.readAsDataURL(file);
+        }
+    }).catch(function(error) { showNotification('Error', 'Failed to save banner: ' + error.message, 'error'); });
 }
 
 function changeTheme(themeName) {
@@ -4594,6 +4785,9 @@ window.panelChangePlan = panelChangePlan;
 window.renderAdminUserListFull = renderAdminUserListFull;
 window.deleteUser = deleteUser;
 window.deleteAllUsers = deleteAllUsers;
+window.deleteAllBotUsers = deleteAllBotUsers;
+window.confirmDeleteAllBots = confirmDeleteAllBots;
+window.refreshUsersList = refreshUsersList;
 window.filterUsers = filterUsers;
 window.uploadProfileImage = uploadProfileImage;
 window.uploadBannerImage = uploadBannerImage;
