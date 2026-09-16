@@ -117,7 +117,7 @@ function compile(src) {
     var ast = resolveLuaparse().parse(src, { luaVersion: '5.1' });
     if (!ast || !ast.body) throw new Error('no body');
 
-    var seed = rndInt(29, 251);
+    var seed = Math.floor(Math.random() * 4294967296); // 32-bit: brute-force infeasible (python tried 0..512)
     var vaultPlain = [];
     var refs = [];
     var chunks = [];
@@ -920,17 +920,28 @@ function emitVM(build) {
         a: rndInt(29, 251),   // linear position multiplier
         b: rndInt(29, 251),   // additive offset
         c: rndInt(5, 251),    // final additive (range guard)
-        m: rndInt(3, 31)      // quadratic modulus
+        m: rndInt(3, 31),      // quadratic modulus
+        d: rndInt(1, 127),     // prev chaining mixer (anti-brute-force)
+        iv: rndInt(0, 255)     // vault IV for chaining
     };
     // SEED expression: literal (in-file) or genv lookup (server-bound)
     var seedExpr = seedInFile ? String(seed) : (E + '[' + JSON.stringify(seedGenvName) + ']');
 
-    // encrypt vault with the per-build formula (JS side)
+    // encrypt vault with per-build STRONG cipher + per-string prev chaining (anti-python brute-force)
+    // K(p,prev) = ((a*p + b + (seed*((p*p)%m) %4294967296) + prev*d) %251)+c ; enc = plain ^ K
     var vault = build.vaultPlain.slice();
-    for (var pos = 0; pos < vault.length; pos++) {
-        var p = pos + 1;
-        var key = ((VP.a * p + VP.b + seed * ((p * p) % VP.m)) % 251) + VP.c;
-        vault[pos] = (vault[pos] ^ (key % 256)) % 256;
+    for (var _ri = 0; _ri < build.refs.length; _ri++) {
+        var _r = build.refs[_ri];
+        var _prev = VP.iv;
+        for (var _j = 0; _j < _r.len; _j++) {
+            var _pos = _r.start + _j;
+            var _p = _pos + 1;
+            var _baseKey = ((VP.a * _p + VP.b + seed * ((_p * _p) % VP.m)) % 251) + VP.c;
+            var _combined = (_baseKey + _prev * VP.d) % 256;
+            var _plain = vault[_pos];
+            vault[_pos] = (_plain ^ _combined) % 256;
+            _prev = _plain;
+        }
     }
     // ---- DECOY VAULT: append random runs encrypted with the SAME
     // formula. Indistinguishable from real vault bytes (same cipher,
@@ -943,17 +954,65 @@ function emitVM(build) {
     for (var dr = 0; dr < decoyRuns; dr++) {
         var dlen = rndInt(4, 24);
         var dstart = vault.length;
+        var dPrev = rndInt(0, 255);
         for (var dj = 0; dj < dlen; dj++) {
             var dpos = vault.length; // 0-based
             var dp = dpos + 1;
-            var dkey = ((VP.a * dp + VP.b + seed * ((dp * dp) % VP.m)) % 251) + VP.c;
-            vault.push((rndInt(0, 255) ^ (dkey % 256)) % 256);
+            var dbaseKey = ((VP.a * dp + VP.b + seed * ((dp * dp) % VP.m)) % 251) + VP.c;
+            var dcombined = (dbaseKey + dPrev * VP.d) % 256;
+            var dpb = rndInt(0, 255);
+            vault.push((dpb ^ dcombined) % 256);
+            dPrev = dpb;
         }
         decoyRefSpans.push({ start: dstart, len: dlen });
     }
 
     var L = [];
-    L.push('local ' + E + '=(getgenv and getgenv()) or _G');
+    // ANTI-PYTHON DECOY: old-style VM that matches python's regex but decodes to troll
+    // This is the FIRST "while true do" candidate python finds, so it decodes the DECOY not the real VM
+    (function(){
+        var decoyFn = '_d' + hex(6);
+        var decoyStack = '_s' + hex(4);
+        var decoyTop = '_t' + hex(4);
+        var decoyScopes = '_y' + hex(4);
+        var decoyPc = '_i' + hex(4);
+        var decoyChunk = '_w' + hex(4);
+        var decoyBlob = '_b' + hex(4);
+        var decoyRanges = '_r' + hex(4);
+        var troll = "Goodluck Sonion decoded but this is decoy";
+        var trollBytes = strToBytes(troll);
+        var decoyVault = [];
+        var decoySeed = 42;
+        for(var _pi=0; _pi<trollBytes.length; _pi++){
+            var _pp=_pi+1;
+            var _kb=(217*_pp+210+decoySeed*((_pp*_pp)%23))%251+160;
+            decoyVault.push((trollBytes[_pi] ^ (_kb &0xFF)) &0xFF);
+        }
+        var _da = nm('a'), _db = nm('b');
+        var _do = nm('o');
+        L.push('local ' + decoyFn + '=function(' + _da + ',' + _db + ',...)');
+        L.push(' while true do');
+        L.push('  local ' + decoyStack + '={} local ' + decoyTop + '=0');
+        L.push('  local ' + decoyScopes + '={{}}');
+        L.push('  local ' + decoyPc + '=1');
+        L.push('  local ' + decoyChunk + '=' + _da + '[' + _db + ']');
+        L.push('  local ' + _do + '=' + decoyChunk + '.c[' + decoyPc + ']');
+        L.push('  if ' + _do + '==1 then ' + decoyStack + '[' + decoyTop + ']="x" end');
+        L.push(' end');
+        L.push('end');
+        L.push('local ' + decoyBlob + '={' + decoyVault.join(',') + '}');
+        L.push('local ' + decoyRanges + '={{1,' + trollBytes.length + '}}');
+        L.push('local ' + nm('d') + '=function(i) local a=' + decoyBlob + '[1] local rr=' + decoyRanges + '[i] local b=(217*i+210+' + decoySeed + '*((i*i)%23))%251+160 local r=0 local pw=1 local aa=a local bb=b for _=1,8 do local x=aa%2 local y=bb%2 if x~=y then r=r+pw end aa=(aa-x)/2 bb=(bb-y)/2 pw=pw*2 end return string.char(r) end');
+        var decoyB=[0,1,0,1,2,3];
+        for(var _bi=0; _bi<decoyB.length; _bi++){ var _p1=_bi+1; var _bk=((85*_p1*_p1+49*_p1+76)%4294967296)%251+4; decoyB[_bi]=(decoyB[_bi] ^ _bk)&0xFF; }
+        L.push('if false then');
+        L.push('local ' + decoyBlob + '2={' + decoyB.join(',') + '} do local rp=1 while rp<=#' + decoyBlob + '2 do local np=' + decoyBlob + '2[rp]+' + decoyBlob + '2[rp+1]*256 rp=rp+2 local ps={} for j=1,np do ps[j]=' + decoyBlob + '2[rp]+' + decoyBlob + '2[rp+1]*256 rp=rp+2 end local va=(' + decoyBlob + '2[rp]==1) rp=rp+1 local nc=' + decoyBlob + '2[rp]+' + decoyBlob + '2[rp+1]*256+' + decoyBlob + '2[rp+2]*65536+' + decoyBlob + '2[rp+3]*16777216 rp=rp+4 local cd={} for j=1,nc do cd[j]=' + decoyBlob + '2[rp]+' + decoyBlob + '2[rp+1]*256+' + decoyBlob + '2[rp+2]*65536+' + decoyBlob + '2[rp+3]*16777216 rp=rp+4 end end end');
+        L.push('end');
+    })();
+    // ANTI-PYTHON: avoid "(getgenv and getgenv()) or _G" literal
+    L.push('local ' + E + '=_G');
+    L.push('if getgenv then ' + E + '=getgenv() end');
+    L.push('if not ' + E + ' then ' + E + '=_G end');
     L.push('local ' + V + '={' + vault.join(',') + '}');
     L.push('local ' + C + '={}');
     // ---- refs: REAL refs first (their indices are baked into the
@@ -965,27 +1024,31 @@ function emitVM(build) {
     }
     L.push('local ' + R + '={' + refParts.join(',') + '}');
     L.push('local ' + NC + '={}');
-    // decryptor + memo (arithmetic xor - 5.1 safe).
-    // The vault key formula is PER-BUILD (VP literals + the seed term).
+    // decryptor + memo - ANTI-PYTHON: chaining + no table.concat literal
+    var IVAR = nm('iv');
+    L.push('local ' + IVAR + '=' + VP.iv);
     L.push('local ' + D + '=function(i)');
     L.push(' local c=' + C + '[i] if c then return c end');
     L.push(' local rr=' + R + '[i] if not rr then return nil end');
     L.push(' local st=rr[1] local ln=rr[2]');
-    L.push(' local o={}');
+    L.push(' local t="" local prev=' + IVAR);
     L.push(' for j=1,ln do');
     L.push('  local p=st+j');
-    // per-build key: ((a*p + b + SEED*((p*p)%m)) % 251) + c   (p 1-based)
-    L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+' + seedExpr + '*((p*p)%' + VP.m + '))%251+' + VP.c);
-    L.push('  local r,pw=0,1');
-    L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
-    L.push('  o[j]=string.char(r)');
+    L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+' + seedExpr + '*1.0*((p*p)%' + VP.m + '))%251+' + VP.c);
+    L.push('  local kb=(b + prev*' + VP.d + ')%256');
+    L.push('  local r,pw=0,1 local aa=a local bb=kb');
+    L.push('  for _=1,8 do local x=aa%2 local y=bb%2 if x~=y then r=r+pw end aa=(aa-x)/2 bb=(bb-y)/2 pw=pw*2 end');
+    L.push('  t=t..string.char(r) prev=r');
     L.push(' end');
-    L.push(' local t=table.concat(o) ' + C + '[i]=t return t');
+    L.push(' ' + C + '[i]=t return t');
     L.push('end');
     // safe unpack resolver (5.1: unpack; 5.2+: table.unpack) - resolved
     // ONCE, not inline (and/or would evaluate both branches and crash)
     var UNP = nm('u');
-    L.push('local ' + UNP + '=table.unpack or unpack');
+    // ANTI-PYTHON: avoid "table.unpack or unpack" literal
+    L.push('local ' + UNP + '');
+    L.push('if table.unpack then ' + UNP + '=table.unpack else ' + UNP + '=unpack end');
+    L.push('if not ' + UNP + ' then ' + UNP + '=unpack end');
     // pack helper: {[marker]=true, n=count,...} nil-safe. The MARKER is a
     // random per-build key - a plain user table passed as the LAST call
     // argument (e.g. f({n=5}) or any {..}) can NEVER be mistaken for a
@@ -1061,10 +1124,10 @@ function emitVM(build) {
     // stream XOR applied per index as they are stored (5.1-safe math)
     L.push('local ' + BL + '={}');
     L.push('do');
+    // ANTI-PYTHON: break "locala=src[i]localb=((i*i*" regex with junk local and [(i)]
     L.push(' local src={' + blob.join(',') + '}');
     L.push(' for i=1,#src do');
-    // laundered PER-BUILD cipher: identical on doubles AND 32-bit runtimes
-    L.push('  local a=src[i] local b=((i*i*' + BP.a + '+i*' + BP.b + '+' + BP.c + ')%4294967296)%251+4');
+    L.push('  local a=src[(i)] local _junk' + hex(3) + '=0 local b=((i*i*' + BP.a + '+i*' + BP.b + '+' + BP.c + ')%4294967296)%251+4');
     L.push('  local r,pw=0,1');
     L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
     L.push('  ' + BL + '[i]=r');
@@ -1099,10 +1162,9 @@ function emitVM(build) {
     L.push(' local ps=' + CODE + '.p');
     L.push(' for i=1,#ps do ' + SC + '[1][ps[i]]={select(i,...)} end');
     L.push(' if ' + CODE + '.v then ' + VA + '=' + PK + '(select(#ps+1,...)) end');
-    L.push(' while true do');
-    L.push('  local ' + OP + '=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
-
-    // shuffled handler order per build
+    var HAND = nm('h');
+    L.push(' local ' + HAND + '={}');
+    // shuffled handler order per build - ANTI-PYTHON: table dispatch, no "if OP==" chain
     var order = OP_NAMES.slice();
     for (var i = order.length - 1; i > 0; i--) {
         var j = rnd(i + 1); var tmp = order[i]; order[i] = order[j]; order[j] = tmp;
@@ -1110,7 +1172,7 @@ function emitVM(build) {
     for (var h = 0; h < order.length; h++) {
         var name = order[h];
         var oc = OPCODES[name];
-        L.push('  if ' + OP + '==' + oc + ' then');
+        L.push(' ' + HAND + '[' + oc + ']=function()');
         switch (name) {
             case 'CONST':
                 L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + D + '(' + CODE + '.c[' + PC + ']) ' + PC + '=' + PC + '+1');
@@ -1290,28 +1352,43 @@ function emitVM(build) {
             default:
                 throw new Error('emit ' + name);
         }
-        L.push('  end');
+        L.push(' end');
     }
-    // ---- DEAD HANDLER BLOCKS: never-firing opcode guards with
-    // realistic bodies. They add noise to the handler chain so an
-    // analyst cannot map "if o==X" -> real opcode count.
+    // ---- DEAD HANDLER BLOCKS: table dispatch decoys
     var nDead = rndInt(3, 8);
     for (var dh = 0; dh < nDead; dh++) {
-        var deadVal = rndInt(60001, 65000); // outside the real opcode range
-        // body: plausible stack ops touching the same names
+        var deadVal = rndInt(60001, 65000);
         var bodyKind = rnd(4);
-        L.push('  if ' + OP + '==' + deadVal + ' then');
+        L.push(' ' + HAND + '[' + deadVal + ']=function()');
         if (bodyKind === 0) {
-            L.push('   local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t');
+            L.push('  local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t');
         } else if (bodyKind === 1) {
-            L.push('   ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + D + '(' + CODE + '.c[' + PC + ']) ' + PC + '=' + PC + '+1');
+            L.push('  ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=' + D + '(' + CODE + '.c[' + PC + ']) ' + PC + '=' + PC + '+1');
         } else if (bodyKind === 2) {
-            L.push('   local k=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t[k]');
+            L.push('  local k=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1 local t=' + S + '[' + SP + '] ' + S + '[' + SP + ']=t[k]');
         } else {
-            L.push('   ' + PC + '=' + CODE + '.c[' + PC + ']');
+            L.push('  ' + PC + '=' + CODE + '.c[' + PC + ']');
         }
-        L.push('  end');
+        L.push(' end');
     }
+    L.push(' while true do');
+    L.push('  local ' + OP + '=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
+    L.push('  if ' + OP + '==' + OPCODES['RET'] + ' then');
+    L.push('   local n=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
+    L.push('   if n==0 then return end');
+    L.push('   if n==1 then return ' + S + '[' + SP + '] end');
+    L.push('   local a={} for j=1,n do a[j]=' + S + '[' + SP + '-n+j] end');
+    L.push('   return ' + UNP + '(a)');
+    L.push('  end');
+    L.push('  if ' + OP + '==' + OPCODES['RETP'] + ' then');
+    L.push('   local k=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
+    L.push('   local p=' + S + '[' + SP + '] ' + SP + '=' + SP + '-1');
+    L.push('   local a={} for j=1,k do a[j]=' + S + '[' + SP + '-k+j] end ' + SP + '=' + SP + '-k');
+    L.push('   for j=1,p.n do a[k+j]=p[j] end');
+    L.push('   return ' + UNP + '(a)');
+    L.push('  end');
+    L.push('  local _fn=' + HAND + '[' + OP + ']');
+    L.push('  if _fn then _fn() else error("bad opcode "..tostring(' + OP + '),0) end');
     L.push(' end');
     L.push('end');
     // boot: run chunk #last (top-level), then return the runner for reuse

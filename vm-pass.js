@@ -62,7 +62,7 @@ export function applyVmPass(src, opts) {
     }
     if (!ast || !ast.body) return src;
 
-    var seed = rndInt(29, 251);
+    var seed = Math.floor(Math.random()*4294967296); // 32-bit anti-python
     var D = 'd' + hex(7);        // decryptor fn
     var P = 'p' + hex(7);        // proxy fn
     var V = 'v' + hex(7);        // vault table
@@ -422,9 +422,21 @@ export function applyVmPass(src, opts) {
     // PER-BUILD cipher shape: k(p) = (seed*p*ma + p*mb + mc) % 251 + 5
     // where ma/mb/mc are random per build (the old fixed *31+p-1 was a
     // static signature). p is the 1-based Lua index.
-    var MA = rndInt(11, 97), MB = rndInt(1, 89), MC = rndInt(0, 251);
-    function vaultKey(p1) { return ((seed * p1 * MA + p1 * MB + MC) % 251) + 5; }
-    for (var pos = 0; pos < vault.length; pos++) vault[pos] = (vault[pos] ^ (vaultKey(pos + 1) % 256)) % 256;
+    // ANTI-PYTHON: 32-bit seed + per-string prev chaining + *1.0 float laundering
+    var MA = rndInt(11, 97), MB = rndInt(1, 89), MC = rndInt(0, 251), MD = rndInt(1, 127), IV = rndInt(0,255);
+    function vaultKey(p1) { return ((seed * 1.0 * p1 * MA + p1 * MB + MC) % 251) + 5; }
+    var plainCopy = vault.slice();
+    for (var ri=0; ri<refs.length; ri++){
+        var r=refs[ri];
+        var prev=IV;
+        for(var j=0;j<r.len;j++){
+            var p=r.start+j+1;
+            var k=(vaultKey(p) + prev*MD)%256;
+            var plain = plainCopy[r.start+j];
+            vault[r.start+j]=(plain ^ k)%256;
+            prev=plain;
+        }
+    }
 
     // ---- prelude: vault, cache, refs table, decryptor, proxy ----
     var RT = 'r' + hex(7);
@@ -432,25 +444,22 @@ export function applyVmPass(src, opts) {
         return '{' + r.start + ',' + r.len + '}';
     }).join(',') + '}';
 
-    var DR = 'local ' + D + '=function(i)';
-    DR += ' local c=' + C + '[i]';
-    DR += ' if c then return c end';
-    DR += ' local rr=' + RT + '[i]';
-    DR += ' if not rr then return nil end';
+    var IVAR = 'iv' + hex(7);
+    var DR = 'local ' + IVAR + '=' + IV + '\n';
+    DR += 'local ' + D + '=function(i)';
+    DR += ' local c=' + C + '[i] if c then return c end';
+    DR += ' local rr=' + RT + '[i] if not rr then return nil end';
     DR += ' local st=rr[1] local ln=rr[2]';
-    DR += ' local o={}';
+    DR += ' local t="" local prev=' + IVAR;
     DR += ' for j=1,ln do';
     DR += '  local p=st+j';
-    // arithmetic XOR: Lua 5.1-safe (executors have bit32 but 5.1
-    // compat means no bitwise operators in output)
-    DR += '  local a=' + V + '[p] local b=(' + seed + '*p*' + MA + '+p*' + MB + '+' + MC + ')%251+5';
-    DR += '  local r,pw=0,1';
-    DR += '  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end';
-    DR += '  o[j]=string.char(r)';
+    DR += '  local a=' + V + '[p] local b=(' + seed + '*1.0*p*' + MA + '+p*' + MB + '+' + MC + ')%251+5';
+    DR += '  local kb=(b+prev*' + MD + ')%256';
+    DR += '  local r,pw=0,1 local aa=a local bb=kb';
+    DR += '  for _=1,8 do local x=aa%2 local y=bb%2 if x~=y then r=r+pw end aa=(aa-x)/2 bb=(bb-y)/2 pw=pw*2 end';
+    DR += '  t=t..string.char(r) prev=r';
     DR += ' end';
-    DR += ' local t=table.concat(o)';
-    DR += ' ' + C + '[i]=t';
-    DR += ' return t';
+    DR += ' ' + C + '[i]=t return t';
     DR += ' end';
 
     // proxy: op is arg1, function is arg2, real args follow. select's
