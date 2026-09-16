@@ -1042,7 +1042,7 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true });
         }
 
-        // ---------- POST /sh/2fa-send : generate 6-digit code, store, simulate email ----------
+        // ---------- POST /sh/2fa-send : generate 6-digit code, store, send via FormSubmit (Option A) ----------
         if (url.pathname === '/sh/2fa-send' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
@@ -1050,14 +1050,27 @@ async function handleRequest(request, env, ctx) {
             const map = await loadUsersMap(env);
             const existing = map[email];
             if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
-            // generate code server-side for cross-device consistency
             const code = String(Math.floor(100000 + Math.random()*900000));
             existing.twoStepCode = code;
             existing.twoStepExpires = Date.now() + 60*60*1000;
             map[email] = storageSafeUser(existing);
             await saveUsersMap(env, map);
-            // In production you would send email via env.EMAIL service here.
-            // For now return code so client can show demo (ScripterHub email simulation).
+            // Option A: send real Gmail via FormSubmit AJAX (no API key). First email to a new address requires one-time confirmation click in Gmail.
+            try {
+                await fetch('https://formsubmit.co/ajax/' + encodeURIComponent(email), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({
+                        _subject: 'ScripterHub 2-Step Code',
+                        _template: 'table',
+                        _captcha: 'false',
+                        from: 'ScripterHub <noreply@scripterhub.com>',
+                        to: email,
+                        code: code,
+                        message: 'From ScripterHub: Here is your 2-step code ' + code + ' — expires in 1 hour. If you did not request this, ignore. If you lost account, contact Scripter on Discord.'
+                    })
+                });
+            } catch(e) {}
             return jsonResponse({ ok: true, code: code });
         }
 
