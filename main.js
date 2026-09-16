@@ -2274,6 +2274,12 @@ async function shRefreshUsersListFromCloud() {
         }
     }
     if (changed) saveUsers();
+    // if current user was deleted on another device (e.g. Jsowjshow on phone), log out to signup/login
+    if (currentUser && !users[currentUser.email]) {
+        showNotification('Logged Out', 'Your account was deleted. Returning to home.', 'warning', 8000);
+        try { logout(); } catch(e) { clearSession(); location.reload(); }
+        return cloud;
+    }
     // if the owner changed OUR own record via another panel/device,
     // refresh the session + dashboard so the plan badge updates live
     if (selfChanged) {
@@ -2313,6 +2319,12 @@ async function refreshUsersList() {
             }
         }
         if (changed) saveUsers();
+        // if the current account was deleted elsewhere (e.g. phone as Jsowjshow), force logout
+        if (currentUser && !users[currentUser.email]) {
+            showNotification('Logged Out', 'Your account was deleted by admin.', 'warning', 8000);
+            try { logout(); } catch(e) { clearSession(); location.reload(); }
+            return;
+        }
         renderUsersList();
         renderAdminUserListFull();
         showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total).', 'success', 3000);
@@ -4524,14 +4536,25 @@ function deleteScript(projectId, scriptId) {
 
 // ============ SCRIPT SETTINGS ==========
 function toggleCreditMore(btn) {
-    // only toggle the clicked card's more panel, not all at once (use sibling, fallback to parent query)
+    // only clicked card expands; close others so 2 infos don't appear at same time
     var el = btn.nextElementSibling;
     if (!el || !el.classList.contains('credit-more')) {
         el = btn.parentElement.querySelector('.credit-more');
     }
     if (!el) return;
-    el.classList.toggle('open');
-    btn.textContent = el.classList.contains('open') ? '- Less' : '+ More';
+    var willOpen = !el.classList.contains('open');
+    // close any other open panels
+    var openPanels = document.querySelectorAll('.credit-more.open');
+    for (var i = 0; i < openPanels.length; i++) {
+        if (openPanels[i] !== el) {
+            openPanels[i].classList.remove('open');
+            var card = openPanels[i].closest ? openPanels[i].closest('.credit-card') : openPanels[i].parentElement;
+            var b = card ? card.querySelector('.btn-credit-more') : null;
+            if (b) b.textContent = '+ More';
+        }
+    }
+    el.classList.toggle('open', willOpen);
+    btn.textContent = willOpen ? '- Less' : '+ More';
 }
 
 // ============ TIME AGO HELPER ============
@@ -4708,12 +4731,30 @@ function checkAuth() {
 
 // pull the logged-in user's fresh cloud record (plan, profile, bans...).
 // Needs the stored b64 password as proof. On success the local users db,
-// the session, and the whole UI get updated.
+// the session, and the whole UI get updated. If cloud says Invalid/disabled
+// the account was deleted by admin on another device -> log out here.
 async function shRefreshOwnCloudRecord(localRecord) {
     try {
         if (!localRecord || !localRecord.email || !localRecord.password) return;
         const d = await shApi('sh/user-get', { email: localRecord.email, password: localRecord.password });
-        if (!d.ok || !d.user) return;
+        if (!d.ok || !d.user) {
+            // deleted on another device (sh/user-get returns 401 Invalid email or password when map[email] gone)
+            var err = (d && d.error) ? String(d.error) : '';
+            if (/invalid|disabled|not found/i.test(err) && users[localRecord.email]) {
+                delete users[localRecord.email];
+                try { saveUsers(); } catch(e) {}
+                if (currentUser && currentUser.email === localRecord.email) {
+                    showNotification('Account Deleted', 'Your account was deleted by admin. Returning to sign up.', 'warning', 8000);
+                    try { logout(); } catch(e) { clearSession(); location.reload(); }
+                    // also force home page after logout
+                    setTimeout(function(){ try { location.reload(); } catch(e){} }, 1200);
+                } else if (currentUser && currentUser.username === 'Scripter') {
+                    // owner sees the list update
+                    try { renderUsersList(); renderAdminUserListFull(); } catch(e){}
+                }
+            }
+            return;
+        }
         const cloud = d.user;
         const email = cloud.email || localRecord.email;
         // merge the cloud record into the local users db (keep local password)
