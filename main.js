@@ -366,8 +366,8 @@ async function shSyncUsersOnLogin(user, rawPassword) {
         if (currentUser && currentUser.username === 'Scripter') {
             var cloud = await shPullCloudUsers();
             if (cloud) {
-                // merge cloud users into local (cloud wins for records that
-                // exist in both, but keep any local-only users too)
+                // merge cloud into local: cloud is source of truth including deletes
+                // also fetch old users - cloud already returns ALL users, so prune locals missing in cloud
                 var changed = false;
                 for (var k in cloud) {
                     var cu = cloud[k];
@@ -380,6 +380,12 @@ async function shSyncUsersOnLogin(user, rawPassword) {
                         if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
                         if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
                         users[k] = cu; changed = true;
+                    }
+                }
+                // delete locally any user not in cloud (deleted on another device) - keep creator/admin as safety
+                for (var k in users) {
+                    if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
+                        delete users[k]; changed = true;
                     }
                 }
                 if (changed) saveUsers();
@@ -2239,6 +2245,7 @@ function openUsersPanel() {
 }
 
 // pull cloud users and re-render the open panels with the merged list
+// also fetches old users (cloud returns ALL) and prunes deleted ones so deletes sync across devices
 async function shRefreshUsersListFromCloud() {
     var cloud = await shPullCloudUsers();
     if (!cloud) return null;
@@ -2259,6 +2266,12 @@ async function shRefreshUsersListFromCloud() {
             users[k] = cu; changed = true;
         }
         if (currentUser && cu.id === currentUser.id) selfChanged = users[k];
+    }
+    // prune locally users deleted on another device (missing in cloud) - keeps creator/admin
+    for (var k in users) {
+        if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
+            delete users[k]; changed = true;
+        }
     }
     if (changed) saveUsers();
     // if the owner changed OUR own record via another panel/device,
@@ -2291,6 +2304,12 @@ async function refreshUsersList() {
                 if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
                 if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
                 users[k] = cu; changed = true;
+            }
+        }
+        // also fetch old users and prune deleted ones - ensures refresh shows same as cloud on phone/other device
+        for (var k in users) {
+            if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
+                delete users[k]; changed = true;
             }
         }
         if (changed) saveUsers();
@@ -4505,7 +4524,11 @@ function deleteScript(projectId, scriptId) {
 
 // ============ SCRIPT SETTINGS ==========
 function toggleCreditMore(btn) {
-    var el = btn.parentElement.querySelector('.credit-more');
+    // only toggle the clicked card's more panel, not all at once (use sibling, fallback to parent query)
+    var el = btn.nextElementSibling;
+    if (!el || !el.classList.contains('credit-more')) {
+        el = btn.parentElement.querySelector('.credit-more');
+    }
     if (!el) return;
     el.classList.toggle('open');
     btn.textContent = el.classList.contains('open') ? '- Less' : '+ More';

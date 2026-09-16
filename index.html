@@ -16,13 +16,21 @@
                 var candidates = [];
                 if (who.indexOf('Scripter') === 0) {
                      candidates = ['public/images/Scripter.png'];
+                } else if (who.indexOf('St1mlx') === 0) {
+                     candidates = ['public/images/St1mlx.png'];
                 } else {
+                    // Don quixote (formerly Kurosaki Koyuki) keeps Kurosaki_Koyuki.png file
                     candidates = ['public/images/Kurosaki_Koyuki.png'];
                 }
                 if (step <= candidates.length) { img.src = candidates[step - 1]; return; }
                 img.style.display = 'none';
                 var wrap = img.parentElement;
-                if (wrap) wrap.innerHTML = '<div class="credit-avatar-fallback">' + (who.indexOf('Kuro') === 0 ? 'KK' : 'S') + '</div>';
+                if (wrap) {
+                    var fb = 'S';
+                    if (who.indexOf('St1mlx') === 0) fb = 'ST';
+                    else if (who.indexOf('Don') === 0 || who.indexOf('Kuro') === 0) fb = 'DQ';
+                    wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
+                }
             } catch (e) {}
         }
     </script>
@@ -416,15 +424,16 @@
                         <div class="credit-row"><span class="credit-row-label">💬 Discord Server</span><a href="https://discord.gg/v5swRqZzBG" target="_blank" rel="noopener" class="credit-link">discord.gg/v5swRqZzBG</a></div>
                         <div class="credit-row"><span class="credit-row-label">🏷️ Server Name</span><span class="credit-val">Scripter Hub</span></div>
                         <div class="credit-row"><span class="credit-row-label">👥 Members</span><span class="credit-val">1032</span></div>
+                        <div class="credit-row"><span class="credit-row-label">🔍 Discord Server Discoverable</span><span class="credit-val">Yes</span></div>
                         <div class="credit-row"><span class="credit-row-label">🎮 Roblox Account</span><a href="https://roblox.com/users/7292254678/profile" target="_blank" rel="noopener" class="credit-link">roblox.com/users/7292254678</a></div>
                         <div class="credit-row"><span class="credit-row-label">🐙 Github Profile</span><a href="https://github.com/Scripter-Coder" target="_blank" rel="noopener" class="credit-link">github.com/Scripter-Coder</a></div>
                     </div>
                 </div>
                 <div class="credit-card">
                     <div class="credit-avatar-wrap">
-                        <img class="credit-avatar-img" src="public/images/Kurosaki_Koyuki.png" alt="Kurosaki Koyuki" onerror="shImgErr(this)">
+                        <img class="credit-avatar-img" src="public/images/Kurosaki_Koyuki.png" alt="Don quixote" onerror="shImgErr(this)">
                     </div>
-                    <div style="font-size:22px; font-weight:700; color:#8a6bff; margin-top:14px;">Kurosaki Koyuki</div>
+                    <div style="font-size:22px; font-weight:700; color:#8a6bff; margin-top:14px;">Don quixote</div>
                     <div style="color:#8888aa; margin-top:4px; font-size:14px;">Co Owner</div>
                     <div style="margin-top:10px;"><span class="credit-badge" style="background:rgba(108,59,255,0.15); color:#8a6bff;">🌙 Friend-Helper</span></div>
                     <button type="button" class="btn-credit-more" onclick="toggleCreditMore(this)">+ More</button>
@@ -432,6 +441,24 @@
                         <div class="credit-row"><span class="credit-row-label">💬 Discord Server</span><a href="https://discord.gg/dQsATVNXVK" target="_blank" rel="noopener" class="credit-link">discord.gg/dQsATVNXVK</a></div>
                         <div class="credit-row"><span class="credit-row-label">🏷️ Server Name</span><span class="credit-val">VietPoLua</span></div>
                         <div class="credit-row"><span class="credit-row-label">👥 Members</span><span class="credit-val">27</span></div>
+                        <div class="credit-row"><span class="credit-row-label">🔍 Discord Server Discoverable</span><span class="credit-val">No</span></div>
+                    </div>
+                </div>
+                <div class="credit-card">
+                    <div class="credit-avatar-wrap">
+                        <img class="credit-avatar-img" src="public/images/St1mlx.png" alt="St1mlx" onerror="shImgErr(this)">
+                    </div>
+                    <div style="font-size:22px; font-weight:700; color:#ff3b6b; margin-top:14px;">St1mlx</div>
+                    <div style="color:#8888aa; margin-top:4px; font-size:14px;">Supporter</div>
+                    <div style="margin-top:10px;"><span class="credit-badge" style="background:rgba(255,59,107,0.15); color:#ff3b6b;">🔓 Cracker-Fucker Gay Idk</span></div>
+                    <button type="button" class="btn-credit-more" onclick="toggleCreditMore(this)">+ More</button>
+                    <div class="credit-more">
+                        <div class="credit-row"><span class="credit-row-label">📺 YouTube Channel</span><a href="https://www.youtube.com/@St1mlx-scripter" target="_blank" rel="noopener" class="credit-link">youtube.com/@St1mlx-scripter</a></div>
+                        <div class="credit-row"><span class="credit-row-label">👥 Subscribers</span><span class="credit-val">89</span></div>
+                        <div class="credit-row"><span class="credit-row-label">💬 Discord Server</span><a href="https://discord.gg/uBpkU9jaDH" target="_blank" rel="noopener" class="credit-link">discord.gg/uBpkU9jaDH</a></div>
+                        <div class="credit-row"><span class="credit-row-label">🏷️ Server Name</span><span class="credit-val">St1mlx the Scripter</span></div>
+                        <div class="credit-row"><span class="credit-row-label">👥 Members</span><span class="credit-val">705</span></div>
+                        <div class="credit-row"><span class="credit-row-label">🔍 Discord Server Discoverable</span><span class="credit-val">No</span></div>
                     </div>
                 </div>
             </div>
