@@ -918,7 +918,8 @@ function useKey(key) {
 }
 
 function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (!text) { showNotification('Error', 'Nothing to copy.', 'error'); return; }
+    if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text).then(function() {
             showNotification('Copied!', 'Copied to clipboard!', 'success');
         }).catch(function() { fallbackCopy(text); });
@@ -926,17 +927,25 @@ function copyText(text) {
 }
 
 function fallbackCopy(text) {
-    var textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
     try {
-        document.execCommand('copy');
-        showNotification('Copied!', 'Copied to clipboard!', 'success');
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        textarea.setSelectionRange(0, 99999);
+        var ok = document.execCommand('copy');
+        textarea.remove();
+        if (ok) showNotification('Copied!', 'Copied to clipboard!', 'success');
+        else throw new Error('execCommand failed');
     } catch (e) {
-        showNotification('Error', 'Failed to copy. Please copy manually.', 'error');
+        // last resort: prompt
+        try { window.prompt('Copy this loadstring:', text); } catch(e2){}
+        showNotification('Copy', 'Press Ctrl+C to copy, then Enter.', 'info', 8000);
     }
-    textarea.remove();
 }
 
 // ============ RENDER KEYS ============
@@ -1769,8 +1778,16 @@ function renderExecutorDailyStats(a) {
 var liveChart = { paused: false, timer: null, history: {}, visible: {}, hover: null, canvas: null, ctx: null };
 
 function initLiveChart() {
-    var canvas = document.querySelector('#tab-dashboard #liveChartCanvas') || document.getElementById('liveChartCanvas');
-    if (!canvas || liveChart.canvas === canvas) return;
+    var canvas = document.getElementById('liveChartCanvas') || document.querySelector('#dashboard #liveChartCanvas') || document.querySelector('#tab-dashboard #liveChartCanvas');
+    if (!canvas) return;
+    // allow re-init after dashboard becomes visible (was hidden at first call)
+    var needsInit = !liveChart.canvas || liveChart.canvas !== canvas || !liveChart.ctx || !liveChart.history || Object.keys(liveChart.history).length === 0;
+    if (!needsInit) {
+        // canvas already initted but may have 0 width while hidden — force redraw
+        drawLiveChart();
+        if (!liveChart.timer) startLiveChartPolling();
+        return;
+    }
     liveChart.canvas = canvas;
     liveChart.ctx = canvas.getContext('2d');
     liveChart.history = {};
@@ -1778,9 +1795,13 @@ function initLiveChart() {
     var series = SH_EXECUTORS.concat(['Other']);
     series.forEach(function(e) { liveChart.visible[e] = true; liveChart.history[e] = []; for (var i = 0; i < 30; i++) liveChart.history[e].push(0); });
     renderLiveChartLegend();
+    // show endpoint for debugging (user says Request URL works)
+    var ep = document.getElementById('liveChartEndpoint');
+    if (ep) ep.textContent = (SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT.replace(/\/$/, '') + '/v3/realtime_stats' : 'local simulation');
     drawLiveChart();
     canvas.onmousemove = function(ev) { liveChart.hover = getChartHover(ev, canvas); drawLiveChart(); };
     canvas.onmouseleave = function() { liveChart.hover = null; drawLiveChart(); };
+    window.addEventListener('resize', drawLiveChart);
     startLiveChartPolling();
 }
 
@@ -1789,9 +1810,13 @@ function startLiveChartPolling() {
     var poll = function() {
         if (liveChart.paused || !liveChart.canvas) return;
         if (SH_STATS_ENDPOINT) {
-            // REAL data from your Cloudflare Worker (see For Cloudflare/worker.js)
-            fetch((SH_STATS_ENDPOINT.endsWith('/') ? SH_STATS_ENDPOINT.slice(0, -1) : SH_STATS_ENDPOINT) + '/v3/realtime_stats')
-                .then(function(r) { return r.json(); })
+            // REAL data from your Cloudflare Worker (see For Cloudflare/worker.js) — user says Request URL works, so keep fetch robust
+            var url = (SH_STATS_ENDPOINT.replace(/\/$/, '')) + '/v3/realtime_stats';
+            fetch(url, { method: 'GET', mode: 'cors', cache: 'no-cache' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
                 .then(function(data) {
                     if (!data) return;
                     var exec = data.executors || {};
@@ -1811,8 +1836,21 @@ function startLiveChartPolling() {
                     drawLiveChart();
                     if (typeof data.totalExecutions === 'number') setAnalyticsValue('totalExecutions', data.totalExecutions);
                     if (typeof data.threatsBlocked === 'number') setAnalyticsValue('totalThreats', data.threatsBlocked);
+                    // keep endpoint visible for debugging
+                    var ep = document.getElementById('liveChartEndpoint');
+                    if (ep) ep.textContent = url;
                 })
-                .catch(function() {});
+                .catch(function(err) {
+                    console.warn('[LiveChart] fetch failed:', err && err.message ? err.message : err);
+                    // still push 0 to keep chart moving and show no-data hint instead of frozen
+                    var series = SH_EXECUTORS.concat(['Other']);
+                    series.forEach(function(e) {
+                        if (!liveChart.history[e]) liveChart.history[e] = [];
+                        liveChart.history[e].push(0);
+                        if (liveChart.history[e].length > 60) liveChart.history[e].shift();
+                    });
+                    drawLiveChart();
+                });
         } else {
             // local simulation fallback (no worker configured yet)
             var a = loadAnalytics();
@@ -4642,9 +4680,9 @@ function openScriptSettings(projectId, scriptId) {
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
-        + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl + '</code>'
+        + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
-        + '<button onclick="copyText(\'' + loaderUrl.replace(/'/g, "\\'") + '\')" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
+        + '<button type="button" data-loadstring="' + loaderUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + '</div>'
         + (isKeyless
             ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 FREE script: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only needed to VIEW the code on the website (the key page). The code is obfuscated.</p>'
