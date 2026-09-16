@@ -1042,38 +1042,6 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true });
         }
 
-        // ---------- POST /sh/2fa-send : generate 6-digit code, store, send via FormSubmit (Option A) ----------
-        if (url.pathname === '/sh/2fa-send' && request.method === 'POST') {
-            let body = {};
-            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            const email = String(body.email || '').trim();
-            const map = await loadUsersMap(env);
-            const existing = map[email];
-            if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
-            const code = String(Math.floor(100000 + Math.random()*900000));
-            existing.twoStepCode = code;
-            existing.twoStepExpires = Date.now() + 60*60*1000;
-            map[email] = storageSafeUser(existing);
-            await saveUsersMap(env, map);
-            // Option A: send real Gmail via FormSubmit AJAX (no API key). First email to a new address requires one-time confirmation click in Gmail.
-            try {
-                await fetch('https://formsubmit.co/ajax/' + encodeURIComponent(email), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({
-                        _subject: 'ScripterHub 2-Step Code',
-                        _template: 'table',
-                        _captcha: 'false',
-                        from: 'ScripterHub <noreply@scripterhub.com>',
-                        to: email,
-                        code: code,
-                        message: 'From ScripterHub: Here is your 2-step code ' + code + ' — expires in 1 hour. If you did not request this, ignore. If you lost account, contact Scripter on Discord.'
-                    })
-                });
-            } catch(e) {}
-            return jsonResponse({ ok: true, code: code });
-        }
-
         // ---------- owner auth helper for the users endpoints ----------
         // Two ways to prove "I am the owner (Scripter)":
         //   1. token     - raw-page session token (sh/login)

@@ -1543,7 +1543,6 @@ function updateUIForUser(user) {
     refreshStatsUI();
     initLiveChart();
     initRewards();
-    try { updateTwoStepButton(); } catch(e){}
     console.log('✅ Dashboard shown for user:', user.username);
 }
 
@@ -2132,13 +2131,7 @@ function handleLogin(event) {
             if (d.ok && d.user) {
                 users[d.user.email] = d.user;
                 users[d.user.email].password = btoa(password);
-                if (d.user.twoStepEnabled) users[d.user.email].twoStepEnabled = true;
                 saveUsers();
-                if (users[d.user.email].twoStepEnabled) {
-                    showNotification('2FA Required', '2-Step is enabled for this account.', 'info');
-                    openLogin2FA(d.user.email, d.user, d.user.email);
-                    return;
-                }
                 closeModal('login');
                 showNotification('Welcome Back!', 'Logged in successfully!', 'success');
                 document.getElementById('loginForm').reset();
@@ -2151,10 +2144,6 @@ function handleLogin(event) {
                 showNotification('Error', 'Invalid email/username or password.', 'error');
             }
         });
-        return;
-    }
-    if (isTwoStepEnabled(foundKey)) {
-        openLogin2FA(foundKey, foundUser, foundKey);
         return;
     }
     closeModal('login');
@@ -2262,137 +2251,6 @@ function handleResetPassword(event) {
     try { document.getElementById('resetPasswordForm').reset(); } catch(e){}
     closeModal('resetPassword');
     showNotification('Password Updated', 'Your password has been changed successfully.', 'success', 6000);
-}
-
-// ============ 2-STEP VERIFICATION ============
-var _pending2FA = null;
-function isTwoStepEnabled(email) {
-    var u = users[email];
-    return !!(u && u.twoStepEnabled);
-}
-function generateTwoStepCode() {
-    return String(Math.floor(100000 + Math.random()*900000));
-}
-async function shSendTwoStepCode(email) {
-    var u = users[email];
-    if (!u) return null;
-    try {
-        var d = await shApi('sh/2fa-send', { email: email });
-        if (d && d.ok && d.code) {
-            var scode = String(d.code);
-            u.twoStepCode = scode;
-            u.twoStepExpires = Date.now() + 60*60*1000;
-            users[email] = u;
-            saveUsers();
-            console.log('[ScripterHub Email to ' + email + '] code ' + scode + ' expires in 1 hour');
-            return scode;
-        }
-    } catch(e) {}
-    var code = generateTwoStepCode();
-    u.twoStepCode = code;
-    u.twoStepExpires = Date.now() + 60*60*1000;
-    users[email] = u;
-    saveUsers();
-    try { shPushUser(u); } catch(e){}
-    console.log('[ScripterHub Email to ' + email + '] ' + code + ' expires in 1 hour');
-    return code;
-}
-function updateTwoStepButton() {
-    var btn = document.getElementById('twoStepBtn');
-    if (!btn || !currentUser) return;
-    var enabled = isTwoStepEnabled(currentUser.email);
-    btn.textContent = enabled ? '🔓 Disable 2-Step' : '🔒 Enable 2-Step';
-    btn.setAttribute('data-enabled', enabled ? '1' : '0');
-}
-async function toggleTwoStepUI() {
-    if (!currentUser) { showNotification('Error', 'Please log in first.', 'error'); return; }
-    var email = currentUser.email;
-    var enabled = isTwoStepEnabled(email);
-    if (enabled) {
-        var overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.style.display = 'flex';
-        overlay.style.zIndex = '2000';
-        overlay.innerHTML = '<div class="modal" style="max-width:440px; padding:32px; text-align:center;"><div style="font-size:48px;">⚠️</div><h2 style="font-size:19px; margin:12px 0 8px;">Disable 2-Step?</h2><p style="color:#8888aa; font-size:13px; line-height:1.6;">Are you sure you wanna do this? It increases chances to lose your account. If you disable, anyone with your password can log in.</p><div style="display:flex; gap:12px; margin-top:22px;"><button onclick="this.closest(\'.modal-overlay\').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px;">Cancel</button><button onclick="confirmDisableTwoStep(this)" class="btn btn-danger" style="flex:1; padding:12px;">Yes, Disable</button></div></div>';
-        document.body.appendChild(overlay);
-    } else {
-        var code = await shSendTwoStepCode(email);
-        if (!code) { showNotification('Error', 'Failed to send code.', 'error'); return; }
-        var hint = document.getElementById('twoStepEmailHint');
-        var sub = document.getElementById('twoStepSub');
-        if (hint) hint.textContent = 'Code has been sent to your gmail: ' + email;
-        if (sub) sub.textContent = 'Code has been sent to your gmail';
-        var inp = document.getElementById('twoStepCodeInput');
-        if (inp) inp.value = '';
-        var btn = document.getElementById('twoStepActionBtn');
-        if (btn) btn.textContent = 'Enable';
-        openModal('twoStep');
-        showNotification('Code Sent', 'From ScripterHub to ' + email + ' — code expires in 1 hour. Check your Gmail (and spam).', 'info', 10000);
-    }
-}
-function confirmTwoStepCode() {
-    if (!currentUser) return;
-    var email = currentUser.email;
-    var inp = document.getElementById('twoStepCodeInput');
-    var code = inp ? inp.value.trim() : '';
-    var u = users[email];
-    if (!u || !u.twoStepCode) { showNotification('Error', 'No code was sent. Click Enable 2-Step again.', 'error'); return; }
-    if (Date.now() > (u.twoStepExpires || 0)) { showNotification('Error', 'Code expired. Request a new one.', 'error'); return; }
-    if (code !== u.twoStepCode) { showNotification('Error', 'Invalid code.', 'error'); return; }
-    u.twoStepEnabled = true;
-    users[email] = u;
-    saveUsers();
-    try { shPushUser(u); } catch(e){}
-    closeModal('twoStep');
-    updateTwoStepButton();
-    showNotification('2-Step Enabled', '2-Step verification is now enabled on your account.', 'success', 6000);
-}
-function confirmDisableTwoStep(btn) {
-    var overlay = btn.closest('.modal-overlay');
-    if (overlay) overlay.remove();
-    if (!currentUser) return;
-    var email = currentUser.email;
-    var u = users[email];
-    if (!u) return;
-    u.twoStepEnabled = false;
-    delete u.twoStepCode;
-    delete u.twoStepExpires;
-    users[email] = u;
-    saveUsers();
-    try { shPushUser(u); } catch(e){}
-    updateTwoStepButton();
-    showNotification('2-Step Disabled', '2-Step verification has been disabled.', 'warning', 6000);
-}
-async function openLogin2FA(email, user, key) {
-    _pending2FA = { email: email, key: key, user: user };
-    var code = await shSendTwoStepCode(email);
-    if (!code) { showNotification('Error', 'Failed to send 2FA code.', 'error'); return; }
-    var hint = document.getElementById('login2FAEmailHint');
-    if (hint) hint.textContent = 'Code has been sent to your gmail: ' + email;
-    var inp = document.getElementById('login2FACodeInput');
-    if (inp) inp.value = '';
-    openModal('login2FA');
-    showNotification('2FA Required', 'Code sent from ScripterHub to ' + email + ' — expires in 1 hour. Check your Gmail.', 'info', 10000);
-}
-function confirmLogin2FA() {
-    var inp = document.getElementById('login2FACodeInput');
-    var code = inp ? inp.value.trim() : '';
-    if (!_pending2FA) { showNotification('Error', 'No pending login.', 'error'); return; }
-    var email = _pending2FA.email;
-    var u = users[email];
-    if (!u || !u.twoStepCode) { showNotification('Error', 'Code not found. Try logging in again.', 'error'); return; }
-    if (Date.now() > (u.twoStepExpires || 0)) { showNotification('Error', 'Code expired. Login again to get a new code.', 'error'); return; }
-    if (code !== u.twoStepCode) { showNotification('Error', 'Invalid code.', 'error'); return; }
-    var user = _pending2FA.user;
-    _pending2FA = null;
-    closeModal('login2FA');
-    closeModal('login');
-    showNotification('Welcome Back!', '2-Step verified. Logged in!', 'success');
-    try { document.getElementById('loginForm').reset(); } catch(e){}
-    var userData = { ...user };
-    delete userData.password;
-    updateUIForUser(userData);
-    shSyncUsersOnLogin(user, atob(user.password));
 }
 
 // ============ USERS PANEL ============
@@ -3230,7 +3088,6 @@ function switchTab(tabName) {
     if (tabName === 'scripts') { renderProjects(); }
     if (tabName === 'keys') { renderKeys(); }
     if (tabName === 'rewards') { renderRewardsTab(); }
-    if (tabName === 'settings') { try { updateTwoStepButton(); } catch(e){} }
 }
 
 // ============ CREATE PROJECT ==========
@@ -5096,10 +4953,6 @@ window.openDeleteAccountUI = openDeleteAccountUI;
 window.confirmDeleteAccount = confirmDeleteAccount;
 window.openResetPasswordUI = openResetPasswordUI;
 window.handleResetPassword = handleResetPassword;
-window.toggleTwoStepUI = toggleTwoStepUI;
-window.confirmTwoStepCode = confirmTwoStepCode;
-window.confirmDisableTwoStep = confirmDisableTwoStep;
-window.confirmLogin2FA = confirmLogin2FA;
 window.openScriptRaw = openScriptRaw;
 window.generateLoadstring = generateLoadstring;
 window.shUploadLoader = shUploadLoader;

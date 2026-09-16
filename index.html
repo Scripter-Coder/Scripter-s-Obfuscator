@@ -469,7 +469,6 @@
             <h2 style="color:#fff;">⚙️ Settings</h2>
             <div class="settings-danger-zone" style="display:flex; flex-wrap:wrap; gap:12px;">
                 <button class="btn-settings-danger" onclick="openResetPasswordUI()">🔑 Reset Password</button>
-                <button class="btn-settings-danger" id="twoStepBtn" onclick="toggleTwoStepUI()">🔒 Enable 2-Step</button>
                 <button class="btn-settings-danger" onclick="logout()">🚪 Log Out</button>
                 <button class="btn-settings-danger" onclick="disableAccount()">🚫 Disable Account</button>
                 <button class="btn-settings-danger" onclick="enableAccount()">✅ Enable Account</button>
@@ -574,46 +573,6 @@
                     <button type="submit" class="btn btn-primary" style="flex:1;">Save</button>
                 </div>
             </form>
-        </div>
-    </div>
-
-    <!-- 2-Step Enable Modal -->
-    <div class="modal-overlay" id="twoStepModal">
-        <div class="modal">
-            <button class="modal-close" onclick="closeModal('twoStep')">✕</button>
-            <h2>🔒 2-Step Verification</h2>
-            <p class="sub" id="twoStepSub">Code has been sent to your gmail</p>
-            <p style="color:#8888aa; font-size:13px; margin: 12px 0;" id="twoStepEmailHint"></p>
-            <p style="color:#6c3bff; font-size:12px; margin-bottom:14px;">From <strong>ScripterHub</strong> — code expires in 1 hour. Check your Gmail inbox (and spam).</p>
-            <div class="form-group">
-                <label>Enter 6-digit code <span class="required">*</span></label>
-                <input type="text" id="twoStepCodeInput" placeholder="123456" maxlength="6" style="letter-spacing:4px; text-align:center; font-size:18px;">
-            </div>
-            <p style="color:#555577; font-size:11px; margin-top:8px;">If you lost access, contact Scripter on Discord.</p>
-            <div style="display:flex; gap:12px; margin-top:18px;">
-                <button type="button" class="btn btn-close-dropdown" style="flex:1;" onclick="closeModal('twoStep')">Cancel</button>
-                <button type="button" class="btn btn-primary" style="flex:1;" id="twoStepActionBtn" onclick="confirmTwoStepCode()">Enable</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Login 2FA Modal -->
-    <div class="modal-overlay" id="login2FAModal">
-        <div class="modal">
-            <button class="modal-close" onclick="closeModal('login2FA')">✕</button>
-            <h2>🔒 2-Step Verification</h2>
-            <p class="sub">Code has been sent to your gmail</p>
-            <p style="color:#8888aa; font-size:13px; margin: 12px 0;" id="login2FAEmailHint"></p>
-            <p style="color:#6c3bff; font-size:12px; margin-bottom:14px;">From <strong>ScripterHub</strong> — code expires in 1 hour. Check your Gmail inbox (and spam).</p>
-            <div class="form-group">
-                <label>Enter 6-digit code <span class="required">*</span></label>
-                <input type="text" id="login2FACodeInput" placeholder="123456" maxlength="6" style="letter-spacing:4px; text-align:center; font-size:18px;">
-            </div>
-            <p style="color:#555577; font-size:11px; margin-top:8px;">If you lost access, contact Scripter on Discord — otherwise you lost it forever.</p>
-            <div style="display:flex; gap:12px; margin-top:18px;">
-                <button type="button" class="btn btn-close-dropdown" style="flex:1;" onclick="closeModal('login2FA')">Cancel</button>
-                <button type="button" class="btn btn-primary" style="flex:1;" onclick="confirmLogin2FA()">Verify & Login</button>
-            </div>
         </div>
     </div>
 
