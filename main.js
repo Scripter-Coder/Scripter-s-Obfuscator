@@ -2319,17 +2319,15 @@ async function toggleTwoStepUI() {
         var code = await shSendTwoStepCode(email);
         if (!code) { showNotification('Error', 'Failed to send code.', 'error'); return; }
         var hint = document.getElementById('twoStepEmailHint');
-        var demo = document.getElementById('twoStepDemoCode');
         var sub = document.getElementById('twoStepSub');
         if (hint) hint.textContent = 'Code has been sent to your gmail: ' + email;
-        if (demo) demo.textContent = code;
         if (sub) sub.textContent = 'Code has been sent to your gmail';
         var inp = document.getElementById('twoStepCodeInput');
         if (inp) inp.value = '';
         var btn = document.getElementById('twoStepActionBtn');
         if (btn) btn.textContent = 'Enable';
         openModal('twoStep');
-        showNotification('Code Sent', 'From ScripterHub to ' + email + ' — code expires in 1 hour. (Demo: ' + code + ')', 'info', 10000);
+        showNotification('Code Sent', 'From ScripterHub to ' + email + ' — code expires in 1 hour. Check your Gmail (and spam).', 'info', 10000);
     }
 }
 function confirmTwoStepCode() {
@@ -2370,13 +2368,11 @@ async function openLogin2FA(email, user, key) {
     var code = await shSendTwoStepCode(email);
     if (!code) { showNotification('Error', 'Failed to send 2FA code.', 'error'); return; }
     var hint = document.getElementById('login2FAEmailHint');
-    var demo = document.getElementById('login2FADemoCode');
     if (hint) hint.textContent = 'Code has been sent to your gmail: ' + email;
-    if (demo) demo.textContent = code;
     var inp = document.getElementById('login2FACodeInput');
     if (inp) inp.value = '';
     openModal('login2FA');
-    showNotification('2FA Required', 'Code sent from ScripterHub to ' + email + ' — expires in 1 hour. (Demo: ' + code + ')', 'info', 10000);
+    showNotification('2FA Required', 'Code sent from ScripterHub to ' + email + ' — expires in 1 hour. Check your Gmail.', 'info', 10000);
 }
 function confirmLogin2FA() {
     var inp = document.getElementById('login2FACodeInput');
