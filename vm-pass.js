@@ -62,7 +62,7 @@ export function applyVmPass(src, opts) {
     }
     if (!ast || !ast.body) return src;
 
-    var seed = Math.floor(Math.random()*4294967296); // 32-bit anti-python
+    var seed = rndInt(29, 251);
     var D = 'd' + hex(7);        // decryptor fn
     var P = 'p' + hex(7);        // proxy fn
     var V = 'v' + hex(7);        // vault table
