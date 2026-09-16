@@ -510,7 +510,7 @@
             <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
                 <button class="btn btn-primary" onclick="changeOwnPlan()">📊 Change My Plan</button>
                 <button class="btn btn-primary" onclick="exportUsers()">📤 Export Users</button>
-                 <button class="btn btn-primary" onclick="refreshUsersList()">🔄 Refresh Users</button>
+                 <button class="btn btn-primary" data-loading="false" id="refreshUsersBtn" onclick="refreshUsersList()">🔄 Refresh Users</button>
                 <button class="btn btn-danger" onclick="deleteAllBotUsers()">🤖 Delete All Bot Users</button>
                 <button class="btn btn-danger" onclick="deleteAllUsers()">🗑️ Delete All Users</button>
             </div>
