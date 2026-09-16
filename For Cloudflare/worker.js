@@ -361,7 +361,7 @@ function signupGlobalBlocked() {
 // what a signup/self-edit may control (plan is kept for existing records,
 // but a NEW record always starts as Basic; admin flags are never settable)
 function sanitizeUserRecord(u) {
-    const allowed = ['id', 'email', 'username', 'password', 'plan', 'description', 'createdAt', 'isAdmin', 'isScripter', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled'];
+    const allowed = ['id', 'email', 'username', 'password', 'plan', 'description', 'createdAt', 'isAdmin', 'isScripter', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires'];
     const out = {};
     for (const k of allowed) if (u[k] !== undefined) out[k] = u[k];
     out.isAdmin = false;
@@ -965,7 +965,7 @@ async function handleRequest(request, env, ctx) {
                 const inc = sanitizeUserRecord(body.user || {});
                 // merge only profile fields - keep server plan/flags/password
                 const rec = { ...existing };
-                for (const k of ['username', 'description', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'createdAt', 'id']) {
+                for (const k of ['username', 'description', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'createdAt', 'id', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires']) {
                     if (inc[k] !== undefined) rec[k] = inc[k];
                 }
                 map[email] = rec;
@@ -1021,6 +1021,44 @@ async function handleRequest(request, env, ctx) {
             delete map[email];
             await saveUsersMap(env, map);
             return jsonResponse({ ok: true });
+        }
+
+        // ---------- POST /sh/user-password : self password change ----------
+        if (url.pathname === '/sh/user-password' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            const email = String(body.email || '').trim();
+            const oldPw = String(body.oldPassword || '');
+            const newPw = String(body.newPassword || '');
+            if (!email || !oldPw || !newPw) return jsonResponse({ ok: false, error: 'email, oldPassword, newPassword required' }, 400);
+            if (newPw.length < 6) return jsonResponse({ ok: false, error: 'New password must be at least 6 chars.' }, 400);
+            const map = await loadUsersMap(env);
+            const existing = map[email];
+            if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
+            if (!passMatch(existing.password, oldPw)) return jsonResponse({ ok: false, error: 'Current password is incorrect.' }, 401);
+            existing.password = btoa(newPw);
+            map[email] = storageSafeUser(existing);
+            await saveUsersMap(env, map);
+            return jsonResponse({ ok: true });
+        }
+
+        // ---------- POST /sh/2fa-send : generate 6-digit code, store, simulate email ----------
+        if (url.pathname === '/sh/2fa-send' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            const email = String(body.email || '').trim();
+            const map = await loadUsersMap(env);
+            const existing = map[email];
+            if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
+            // generate code server-side for cross-device consistency
+            const code = String(Math.floor(100000 + Math.random()*900000));
+            existing.twoStepCode = code;
+            existing.twoStepExpires = Date.now() + 60*60*1000;
+            map[email] = storageSafeUser(existing);
+            await saveUsersMap(env, map);
+            // In production you would send email via env.EMAIL service here.
+            // For now return code so client can show demo (ScripterHub email simulation).
+            return jsonResponse({ ok: true, code: code });
         }
 
         // ---------- owner auth helper for the users endpoints ----------
