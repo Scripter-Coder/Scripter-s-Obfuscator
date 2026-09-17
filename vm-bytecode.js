@@ -38,7 +38,7 @@ function strToBytes(s) {
     return out;
 }
 
-// denylist: constructs whose semantics we cannot promise
+// denylist: constructs whose semantics we cannot promise (word-boundary checked)
 var DENY = ['getfenv', 'setfenv'];
 
 // opcode names (values assigned randomly per build)
@@ -1407,7 +1407,8 @@ function emitVM(build) {
 export function applyBytecodeVm(src, opts) {
     opts = opts || {};
     for (var d = 0; d < DENY.length; d++) {
-        if (src.indexOf(DENY[d]) !== -1) return null; // caller falls back
+        // word-boundary check so 'mygetfenv' doesn't trigger
+        if (new RegExp('\\b' + DENY[d] + '\\b').test(src)) return null; // caller falls back
     }
     var build;
     try {

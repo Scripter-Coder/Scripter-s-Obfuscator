@@ -42,6 +42,13 @@ function validateLuaSource(code) {
         try { parser = require('luaparse'); } catch (e) { parser = null; }
     }
     if (!parser) return; // parser unavailable (tests inject later) - skip
+    // Luau-specific syntax (continue, goto, //) is valid in Roblox but not in Lua 5.1.
+    // If the code contains those, skip strict validation and let the VM passes handle it
+    // (they will fallback to raw if unsupported) instead of rejecting the upload.
+    if (/\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || /\btype\b/.test(code) && /::/.test(code)) {
+        try { parser.parse(code, { luaVersion: '5.1' }); } catch (e) { return; }
+        return;
+    }
     try {
         parser.parse(code, { luaVersion: '5.1' });
     } catch (e) {
