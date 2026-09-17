@@ -39,8 +39,10 @@ function strToBytes(s) {
 }
 
 // denylist: constructs whose semantics we cannot promise (word-boundary checked)
-// ChestFarm fix: ensure task.spawn / task.wait and shared upvalues (ChestFarmEnabled) are not
-// incorrectly flagged; task.spawn/task.wait are globals that must be GLOB+TGET, never locals
+// ChestFarm + CFrame/Tween fix: ensure task.spawn/task.wait, CFrame/Vector3/TweenService/Enum
+// globals are correctly GLOB+TGET and that CFrame/Vector3 arithmetic (ADD/SUB/MUL) uses
+// metamethods via a+b / a-b / a*b (not CONCAT), and that shared upvalues (ChestFarmEnabled)
+// survive across task.spawn boundaries via SC links
 var DENY = ['getfenv', 'setfenv'];
 
 // opcode names (values assigned randomly per build)
