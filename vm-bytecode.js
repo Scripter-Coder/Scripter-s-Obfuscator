@@ -39,6 +39,8 @@ function strToBytes(s) {
 }
 
 // denylist: constructs whose semantics we cannot promise (word-boundary checked)
+// ChestFarm fix: ensure task.spawn / task.wait and shared upvalues (ChestFarmEnabled) are not
+// incorrectly flagged; task.spawn/task.wait are globals that must be GLOB+TGET, never locals
 var DENY = ['getfenv', 'setfenv'];
 
 // opcode names (values assigned randomly per build)
