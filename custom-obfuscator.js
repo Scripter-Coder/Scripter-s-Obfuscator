@@ -620,6 +620,40 @@ function buildSecurityWrapper(options, meta) {
         parts.push('do local _p=print print=function() end local _w=warn warn=function() end end');
     }
 
+    // ---------- HWID LOCK (Luarmor model) ----------
+    if (options.hwidLock) {
+        var HW1 = n[51], HW2 = n[52], HW3 = n[53], HWH = n[54], HWK = n[55];
+        var hwidList = (options.hwidWhitelist || []).map(function(h){ return '"' + luaEscape(String(h)) + '"'; }).join(',');
+        parts.push(
+            'do',
+            ' local ' + HW1 + '=""',
+            ' pcall(function() if gethwid then ' + HW1 + '=tostring(gethwid()) end end)',
+            ' pcall(function() local s=game:GetService("RbxAnalyticsService") ' + HW1 + '=' + HW1 + '.."|"..tostring(s:GetClientId()) end)',
+            ' pcall(function() ' + HW1 + '=' + HW1 + '.."|"..tostring(game.JobId) end)',
+            ' local ' + HW2 + '={' + hwidList + '}',
+            ' local ' + HW3 + '=false',
+            ' for _,v in ipairs(' + HW2 + ') do if v== ' + HW1 + ' then ' + HW3 + '=true break end end',
+            ' if #' + HW2 + '>0 and not ' + HW3 + ' then',
+            '  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="HWID not whitelisted",Duration=5}) end)',
+            '  print("[ScripterHub] HWID not whitelisted: "..' + HW1 + ')',
+            '  return',
+            ' end',
+            'end'
+        );
+    }
+
+    // ---------- RUNTIME VARS (Luarmor LRM_* model) ----------
+    // Expose LRM_IsUserPremium / LRM_UserNote / LRM_UserDiscordID as aliases to ScripterHub globals
+    parts.push(
+        'do local g=(getgenv and getgenv()) or _G',
+        ' g.LRM_IsUserPremium=g.ScripterHubKeyValid',
+        ' g.LRM_UserNote=g.ScripterHubKeyStatus',
+        ' g.LRM_UserDiscordID=g.ScripterHubKeyValid and "premium" or "free"',
+        ' g.LRM_ScriptName="' + luaEscape(meta.name) + '"',
+        ' g.LRM_ScriptId="' + luaEscape(meta.id) + '"',
+        'end'
+    );
+
     parts.push('-- ==== ORIGINAL SCRIPT ====');
     return parts.filter(Boolean).join('\n') + '\n';
 }
@@ -838,7 +872,7 @@ function buildLoader(src, layerCount, options) {
         var SD2 = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
         out.push('do');
         out.push(' local ' + GO + '=game and game.HttpGet');
-        out.push(' if not ' + GO + ' then return end');
+        out.push(' if not ' + GO + ' then pcall(function() warn("[ScripterHub] HttpGet not supported - executor required") print("[ScripterHub] HttpGet not supported") end) return end');
         if (authMode) {
             var LK = SN[9], HW = SN[10], HD = SN[11], TX = SN[12];
             var AU = SN[13], AT = SN[14], AE = SN[15];
@@ -874,7 +908,7 @@ function buildLoader(src, layerCount, options) {
             // generation time (baked into the file, never dynamic).
             var authUrl = options.splitKey.url.replace(/\/sh\/k$/, '/sh/auth') + '/' + options.splitKey.id;
             out.push(' local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&t=' + t0 + '")');
-            out.push(' if not ok1 or type(' + AU + ')~="string" then return end');
+            out.push(' if not ok1 or type(' + AU + ')~="string" then pcall(function() warn("[ScripterHub] Auth server not reachable") print("[ScripterHub] Auth failed - server not reachable") end) return end');
             // verdict to genv for the payload's API globals
             out.push(' local ' + SGV2 + '="invalid"');
             out.push(' if ' + AU + ':sub(1,4)=="SHA " then');
@@ -894,17 +928,17 @@ function buildLoader(src, layerCount, options) {
         } else {
             out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
         }
-        out.push(' if not ok or type(' + RP + ')~="string" then return end');
-        out.push(' if ' + RP + ':sub(1,3)~="SHK" then return end');
+        out.push(' if not ok or type(' + RP + ')~="string" then pcall(function() warn("[ScripterHub] Failed to fetch decryption key - check internet / executor") print("[ScripterHub] Failed to fetch key") end) return end');
+        out.push(' if ' + RP + ':sub(1,3)~="SHK" then pcall(function() warn("[ScripterHub] Invalid key response: "..tostring('+RP+':sub(1,20))) print("[ScripterHub] Invalid key response") end) return end');
         out.push(' local ' + PT + '={}');
         out.push(' for n in ' + RP + ':gmatch("%-?%d+") do ' + PT + '[#' + PT + '+1]=tonumber(n) end');
-        out.push(' if #' + PT + '<3 then return end');
+        out.push(' if #' + PT + '<3 then pcall(function() warn("[ScripterHub] Key response too short") end) return end');
         out.push(' local ' + KT + '=' + PT + '[1] local ' + KC + '=' + PT + '[2]');
-        out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then return end');
+        out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then pcall(function() warn("[ScripterHub] Key t0/chk mismatch - possible tamper or stale loadstring") print("[ScripterHub] Key mismatch") end) return end');
         // the key length comes from the (zeroed) START slot seed
         out.push(' local ' + KK2 + '=' + K + '[' + START + '][1]');
         out.push(' local KL=#' + KK2);
-        out.push(' if #' + PT + '<2+KL then return end');
+        out.push(' if #' + PT + '<2+KL then pcall(function() warn("[ScripterHub] Key length mismatch") end) return end');
         out.push(' local ' + SD2 + '="' + String(t0) + '"');
         out.push(' local ' + PB + '={}');
         out.push(' local ' + HN + '=5381');
@@ -1151,7 +1185,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     }
 
     if (debugInfo) debugInfo.payload = payload;
-    if (splitContainer && splitContainer.paddedKey) {
+    if (debugInfo && splitContainer && splitContainer.paddedKey) {
         debugInfo.splitKey = {
             paddedKey: splitContainer.paddedKey,
             t0: splitContainer.t0,
