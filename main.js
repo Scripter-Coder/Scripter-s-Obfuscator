@@ -3811,7 +3811,7 @@ function confirmCreateScript(projectId) {
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
-    var obfuscationIntensity = 10; // always max - Custom Obfuscator standard
+    var obfuscationIntensity = 22; // ULTRA max - 30 layers + triple wrap + PoW + 200KB junk
     var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
@@ -3884,6 +3884,7 @@ function confirmCreateScript(projectId) {
     }
     var obfOptions = {
         intensity: obfuscationIntensity,
+        ultra: true,
         antiTamper: antiTamper,
         antiSkid: antiSkid,
         envLogging: envLogging,
@@ -3941,7 +3942,8 @@ function confirmCreateScript(projectId) {
             code: obfuscatedCode,
             originalCode: code,
             obfuscationType: obfuscationType,
-            obfuscationIntensity: obfuscationIntensity,
+            obfuscationintensity: obfuscationIntensity,
+        ultra: true,
             specialKey: specialKey,
             keyless: isKeyless,
             // server-key-split: the file ships WITHOUT the final layer key
@@ -4415,7 +4417,7 @@ function confirmEditScript(projectId, scriptId) {
     var keyTime = document.getElementById('editScriptKeyTime').value;
     var keyUnit = document.getElementById('editScriptKeyUnit').value;
     var code = document.getElementById('editScriptCode').value.trim();
-    var obfuscationIntensity = 10; // always max - Custom Obfuscator standard
+    var obfuscationIntensity = 22; // ULTRA max - 30 layers + triple wrap + PoW + 200KB junk
     var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('editScriptHWIDReset').checked;
     var gameId = document.getElementById('editScriptGameId').value.trim();
@@ -4472,6 +4474,7 @@ function confirmEditScript(projectId, scriptId) {
     }
     var obfOptions = {
         intensity: obfuscationIntensity,
+        ultra: true,
         antiTamper: antiTamper,
         antiSkid: antiSkid,
         envLogging: envLogging,

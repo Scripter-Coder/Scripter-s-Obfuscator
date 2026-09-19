@@ -953,10 +953,10 @@ function emitVM(build) {
     // refs below point into this space so a static analyst cannot
     // tell which constants are genuine.
     var realVaultLen = vault.length;
-    var decoyRuns = rndInt(3, 8);
+    var decoyRuns = rndInt(12, 20); // ULTRA: 3x more decoy vault runs
     var decoyRefSpans = []; // {start,len} into the FULL vault (1-based refs semantics: refs use start as 0-based offset; D reads V[p] with p=st+j, i.e. st is 0-based)
     for (var dr = 0; dr < decoyRuns; dr++) {
-        var dlen = rndInt(4, 24);
+        var dlen = rndInt(20, 60); // ULTRA bloat
         var dstart = vault.length;
         var dPrev = rndInt(0, 255);
         for (var dj = 0; dj < dlen; dj++) {
@@ -1099,13 +1099,13 @@ function emitVM(build) {
     // real. They are NEVER executed (NEWF/boot only reference the
     // real ids).
     var decoyVals = Object.keys(OPCODES).map(function (k) { return OPCODES[k]; });
-    var nDecoyChunks = rndInt(2, 5);
+    var nDecoyChunks = rndInt(8, 15); // ULTRA: 3x more decoy chunks
     for (var dc = 0; dc < nDecoyChunks; dc++) {
         var dnp = rndInt(0, 3);
         blob.push(dnp % 256, Math.floor(dnp / 256) % 256);
         for (var dpi = 0; dpi < dnp; dpi++) blob.push(rndInt(1, 80) % 256, 0);
         blob.push(Math.random() < 0.5 ? 1 : 0);
-        var dnc = rndInt(6, 40);
+        var dnc = rndInt(30, 80); // ULTRA bloat
         blob.push(dnc % 256, Math.floor(dnc / 256) % 256, Math.floor(dnc / 65536) % 256, Math.floor(dnc / 16777216) % 256);
         for (var dwi = 0; dwi < dnc; dwi++) {
             var dw = decoyVals[rnd(decoyVals.length)];

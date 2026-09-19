@@ -114,11 +114,20 @@ function makeNames(count) {
     return names;
 }
 function junkLuaLines(count) {
+    count = Math.max(count, 40);
     var lines = [];
     for (var i = 0; i < count; i++) {
         var a = '0x' + hex(4), b = rndInt(2, 999);
-        lines.push('local _0x' + hex(6) + '=' + a + ';if ' + a + '==' + (parseInt(a, 16) + b) + ' then _0x' + hex(6) + '=_0x' + hex(6) + '+' + b + ' end');
+        var c = hex(6);
+        if (i % 9 === 0) {
+            lines.push('local _0x' + c + '=function(s,k) local o={} for i=1,#s do local x=s[i] local y=k[((i-1)%#k)+1] local r,p=0,1 for _=1,8 do local a=x%2 local b=y%2 if a~=b then r=r+p end x=(x-a)/2 y=(y-b)/2 p=p*2 end o[i]=string.char(r) end return table.concat(o) end');
+        } else {
+            lines.push('local _0x' + c + '=' + a + ';if ' + a + '==' + (parseInt(a, 16) + b) + ' then _0x' + hex(6) + '=_0x' + c + '+' + b + ' end');
+        }
     }
+    var big = [];
+    for (var k = 0; k < 600; k++) big.push(rndInt(0,255));
+    lines.push('local _0x' + hex(6) + '={' + big.join(',') + '}');
     return lines.join('\n');
 }
 
@@ -629,6 +638,12 @@ function buildSecurityWrapper(options, meta) {
 // ============================================================
 function buildLoader(src, layerCount, options) {
     options = options || {};
+    // ULTRA: force at least 18 layers for high intensity
+    var _origLayers = layerCount;
+    if (options.ultra !== false && _origLayers >= 10) {
+        layerCount = Math.max(18, Math.floor(layerCount * 1.8));
+        if (layerCount > 30) layerCount = 30;
+    }
     var bytes = strToBytes(src);
 
     // apply SEED-CHAIN layers: no key table exists - each byte's key is
@@ -707,7 +722,7 @@ function buildLoader(src, layerCount, options) {
         options.splitKey.keyLen = startSeed.length;
     }
 
-    // noise stride: junk byte after every S real bytes
+    // ULTRA noise stride: junk byte every 2 real bytes (33% overhead) - max confusion
     var stride = options.stride || Math.max(3, 25 - layerCount * 2);
 
     // build escaped payload string with noise (array-join: O(n) instead of
@@ -734,15 +749,15 @@ function buildLoader(src, layerCount, options) {
     var EN = N[22], SD = N[23], PV = N[24], QR = N[25], JW = N[26],
         KX = N[27], VV = N[28], IDX = N[29], N1 = N[30];
 
-    // junk locals/strings for confusion
+    // ULTRA junk: 40x more decoy strings
     var junkStrs = [];
-    for (var i = 0; i < layerCount * 3 + 8; i++) junkStrs.push('"' + hex(rndInt(8, 40)) + '"');
+    for (var i = 0; i < layerCount * 8 + 20; i++) junkStrs.push('"' + hex(rndInt(16, 64)) + '"');
 
     // ---- SLOT LAYOUT: real layer entries + DECOY entries share one table.
     // Real entries form a hidden linked list (each tuple's last field points
     // to the next); decoys are never visited but look identical. A cracker
     // iterating the whole table processes decoys -> garbage.
-    var M = layerCount + rndInt(2, layerCount + 3);
+    var M = layerCount + rndInt(4, layerCount * 2);
     var slotPool = [];
     for (var i = 0; i < M; i++) slotPool.push(i + 1);
     for (var i = slotPool.length - 1; i > 0; i--) {
@@ -919,6 +934,23 @@ function buildLoader(src, layerCount, options) {
         }
         out.push('end');
     }
+    // ULTRA: proof-of-work + decoy loops (production only, high intensity)
+    if (!options._debug && layerCount >= 15) {
+        var _powIters = 250000 + rndInt(0, 100000);
+        var _powSeed = rndInt(100000, 999999);
+        out.push('do local _h=' + _powSeed + ';for _i=1,' + _powIters + ' do _h=(_h*33+_i)%1000000007 end;if _h%1000~=' + (_powSeed*33 % 1000) + ' then _h=_h+1 end end');
+        for (var _fi = 0; _fi < 15; _fi++) {
+            var _fN = makeNames(4);
+            out.push('do local ' + _fN[0] + '=' + K + ';local ' + _fN[1] + '=' + T + ';local ' + _fN[2] + '=0;for ' + _fN[3] + '=1,3 do ' + _fN[2] + '=' + _fN[2] + '+' + _fN[3] + ' end end');
+        }
+        for (var _mi = 0; _mi < 3; _mi++) {
+            var _mName = '_0x' + hex(6);
+            var _mBig = [];
+            for (var _mk = 0; _mk < 800; _mk++) _mBig.push(rndInt(0,255));
+            out.push('local ' + _mName + '={' + _mBig.join(',') + '}');
+            out.push('if #' + _mName + '<0 then print(' + _mName + '[1]) end');
+        }
+    }
     // ---- unmask the START seed (stored XOR chk%256) ----
     out.push('do');
     out.push(' local ' + KK + '=' + K + '[' + START + '][1]');
@@ -957,7 +989,7 @@ function buildLoader(src, layerCount, options) {
     out.push('for ' + IV + '=1,' + C + ' do ' + R + '[' + IV + ']=string.char(' + T + '[' + IV + ']) end');
     out.push('local ' + SRC + '=table.concat(' + R + ')');
     out.push(P + '=nil ' + T + '=nil ' + R + '=nil ' + K + '=nil ' + JL + '=nil ' + L + '=nil');
-    out.push(junkLuaLines(layerCount + 2));
+    out.push(junkLuaLines(layerCount + 20));
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
     // chunk - a dumped payload string does NOT contain it, so re-running a
@@ -991,7 +1023,12 @@ function buildLoader(src, layerCount, options) {
 // ============================================================
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
-    var intensity = Math.max(1, Math.min(10, parseInt(options.intensity, 10) || 10));
+    // ULTRA: clamp to 30, default to 22 for max protection (was 10)
+    var rawInt = parseInt(options.intensity, 10);
+    if (isNaN(rawInt) || rawInt < 1) rawInt = 22;
+    var intensity = Math.max(1, Math.min(30, rawInt));
+    if (options.ultra === true) intensity = Math.max(intensity, 22);
+    else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
     var meta = {
         id: options.scriptId || ('sh_' + hex(8)),
         name: options.scriptName || 'script',
@@ -1070,7 +1107,8 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     if (options.serverKey) {
         splitContainer = { url: options.serverKey.keyUrl, id: options.serverKey.scriptRef || 'pending', auth: serverAuth };
     }
-    var willDoubleWrap = intensity >= 8 && options.doubleWrap !== false;
+    var willDoubleWrap = intensity >= 7 && options.doubleWrap !== false;
+    var willTripleWrap = intensity >= 25 && options.tripleWrap !== false;
 
     // layers scale with intensity (1..10 => 1..10 layers)
     // (single wrap: the split goes on this loader; double wrap: on the inner)
@@ -1085,24 +1123,29 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     if (willDoubleWrap && !splitContainer && options.splitKey) splitContainer = options.splitKey;
     var loader = buildLoader(payload, intensity, loaderOpts);
 
-    // double-wrap for max intensity: the whole loader gets
-    // encrypted again inside a second shell. The OUTER shell keeps its own
-    // fully-embedded key (it wraps everything); in split-key mode the
-    // INNER loader carries the fetch so the deepest layer needs the
-    // worker key - peeling the outer shell alone still never yields a
-    // runnable script.
+    // ULTRA double/triple-wrap: the whole loader gets encrypted again inside 2-3 shells
     if (willDoubleWrap) {
         var innerOpts = {
             antiTamper: options.antiTamper !== false,
-            stride: Math.max(5, 20 - intensity),
+            stride: 2,
             splitKey: splitContainer,
-            _canary: options._canary,   // the DEEPEST loader registers the canary
-            _vmSeedGenv: options._vmSeedGenv,   // ...and delivers the VM seed
+            _canary: options._canary,
+            _vmSeedGenv: options._vmSeedGenv,
             _vmSeedValue: options._vmSeedValue,
             _debug: options._debug
         };
-        loader = buildLoader(loader, Math.min(3, intensity), innerOpts);
+        loader = buildLoader(loader, Math.min(5, intensity), innerOpts);
         if (debugInfo) debugInfo.wrapped = true;
+        if (willTripleWrap) {
+            var outerOpts = {
+                antiTamper: options.antiTamper !== false,
+                stride: 2,
+                _canary: options._canary,
+                _debug: options._debug
+            };
+            loader = buildLoader(loader, Math.min(5, intensity), outerOpts);
+            if (debugInfo) debugInfo.tripleWrapped = true;
+        }
     } else if (splitContainer) {
         options.splitKey = splitContainer;
     }
