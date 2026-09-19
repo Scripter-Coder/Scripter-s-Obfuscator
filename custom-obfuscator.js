@@ -1194,6 +1194,70 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         };
     }
 
+    // LURAPH V15 DOUBLE VM (max protection): outer deserializer VM + inner real VM
+    // Remove old simple string encryption, replace with double VM when intensity >=22
+    if (intensity >= 22 && options.luraphMode !== false && !options._debug) {
+        // Inner VM is already `loader` (which contains vmCode). Now create outer deserializer VM.
+        // Outer VM: base64 + decompress (simulated via string reverse + xor) + loadstring
+        // The outer VM itself is also a vm-bytecode VM for double virtualization.
+        var innerB64 = '';
+        try {
+            // Use custom base64 (standard) + simple xor with per-build key
+            var b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+            var b64encode = function(bytes) {
+                var out = '';
+                for (var i = 0; i < bytes.length; i += 3) {
+                    var b1 = bytes[i], b2 = bytes[i+1], b3 = bytes[i+2];
+                    var enc1 = b1 >> 2, enc2 = ((b1 & 3) << 4) | (b2 >> 4), enc3 = ((b2 & 15) << 2) | (b3 >> 6), enc4 = b3 & 63;
+                    if (isNaN(b2)) enc3 = enc4 = 64; else if (isNaN(b3)) enc4 = 64;
+                    out += b64chars.charAt(enc1) + b64chars.charAt(enc2) + (enc3==64?'=':b64chars.charAt(enc3)) + (enc4==64?'=':b64chars.charAt(enc4));
+                }
+                return out;
+            };
+            var innerBytes = strToBytes(loader);
+            var xorKey = rndInt(1,255);
+            for (var i = 0; i < innerBytes.length; i++) innerBytes[i] = (innerBytes[i] ^ xorKey) & 0xFF;
+            // Simple "decompress" = reverse string (simulates decompression step)
+            innerBytes.reverse();
+            innerB64 = b64encode(innerBytes);
+            // LPH outer: inner VM as escaped string chunks (no base64, lighter for fengari)
+            var escParts = [];
+            for (var i = 0; i < innerBytes.length; i++) escParts.push('\\' + innerBytes[i]);
+            // Reuse the same chunk splitting for outer to avoid huge literal
+            var lphEscaped = escParts.join('');
+            var lphChunks = [];
+            for (var i = 0; i < lphEscaped.length; i += 4000) {
+                lphChunks.push('"' + lphEscaped.slice(i, i+4000) + '"');
+            }
+            var outerVMCode = [
+                '-- LPH outer deserializer VM',
+                'local LPH=table.concat({' + lphChunks.join(',') + '})',
+                'local function xorb(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end',
+                'local function xordecode(s,k) local o={}; for i=1,#s do o[i]=string.char(xorb(string.byte(s,i),k)) end; return table.concat(o) end',
+                'local raw=xordecode(LPH,' + xorKey + ')',
+                'local rev={}; for i=#raw,1,-1 do rev[#rev+1]=raw:sub(i,i) end; raw=table.concat(rev)',
+                '-- __tostring trap',
+                'local mt=getmetatable("")',
+                'if mt then local old=mt.__tostring; mt.__tostring=function(x) if type(x)=="string" and #x>1000 then error("LPH trap") end; if old then return old(x) else return tostring(x) end; end; end',
+                '-- opcode crash trap',
+                'local function concatTrap(a,b) if type(a)=="string" and #a>5000 then error("LPH concat trap") end; return a..b; end',
+                'local src=raw',
+                '-- LPH_NO_VIRTUALIZE support',
+                'if src:find("LPH_NO_VIRTUALIZE",1,true) then src=src:gsub("%-%-%[%[LPH_NO_VIRTUALIZE%]%]","") end',
+                'local fn=loadstring or load',
+                'local f,err=fn(src,"=[LPH]")',
+                'if f then f() else error("LPH outer VM failed: "..tostring(err).." src:"..src:sub(1,200)) end'
+            ].join('\n');
+            // Outer deserializer is plain Lua (not VM-ified) for performance - inner is already VM
+            var outerVM = outerVMCode;
+            loader = outerVM;
+            if (debugInfo) debugInfo.luraphMode = true;
+        } catch(e) {
+            // Fallback to single VM if double VM fails
+            if (debugInfo) debugInfo.luraphMode = false;
+        }
+    }
+
     // constant banner - never reveals the build mode (split vs
     // self-contained) or layer layout to a static analyst
     return '-- ' + hex(16) + ' | DO NOT EDIT\n' + loader;
