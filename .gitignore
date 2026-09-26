@@ -1,12 +1,53 @@
-opencode.json
-.opencode/
+# =============================================================================
+# GENERATED - never source
+# =============================================================================
+
+# Dependencies. The largest directory in the repo by an order of magnitude.
+# Its absence from an ignore list is how 2,559 files and 1.5M lines once landed
+# in a commit.
 node_modules/
+
+# Build output. NOTE: dist/ is ALREADY TRACKED from before this file existed.
+# It is deliberately not listed here. Untracking committed build output changes
+# what your deploy produces, so it is a decision to make on purpose - not
+# something to slip in with a cleanup commit.
+
+# =============================================================================
+# SCRATCH - generated during a task, not part of the project
+# =============================================================================
+
+# 1.7 MB of obfuscated output from a throwaway script. Regenerable in one command.
+_publish.json
+
+# The body of a curl, useful for exactly one debugging session.
+boot.txt
+
+# Editor and script backups.
+*.bak
+
+# Tooling state and logs. All of these are written by something else and are
+# never inputs to a build.
 .wrangler/
+.opencode/
+.playwright-mcp/
+preview.log
+
+# Ad-hoc dev scratch that accumulated at the repo root. None of it is imported
+# by anything, but naming it explicitly beats leaving the next `git add -A` to
+# make that judgement.
 generate-test.mjs
 obfuscate-file.mjs
 obfuscated-test.lua
+opencode.json
 server.cjs
-server.js
-*.log
-.DS_Store
-Thumbs.db
+
+# =============================================================================
+# DELIBERATELY NOT IGNORED
+# =============================================================================
+
+# diagnose_loader.lua looks like scratch and is not. It reports which stage of a
+# delivery failed, and it is the fastest way to diagnose "it just does nothing".
+#
+# _attrib.mjs, _fix*.mjs and friends do not exist any more. One-off scripts were
+# deleted as they were finished rather than ignored, because a file that is
+# ignored forever is a file nobody ever looks at again.
