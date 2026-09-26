@@ -1,0 +1,80 @@
+# =============================================================================
+# ScripterHub hosted platform — Cloudflare Worker configuration
+# =============================================================================
+# READ THIS BEFORE YOUR FIRST `wrangler deploy`.
+#
+# This file did not exist before Phase 0. Bindings were configured by hand in
+# the Cloudflare dashboard, which is how they drifted. Everything the worker
+# needs is now declared here so the deployment is reproducible and reviewable.
+#
+# The values marked "CHANGE ME" are placeholders. Two of them MUST be replaced
+# before a deploy will do the right thing:
+#
+#   account_id  -> your Cloudflare account id
+#   name        -> the name of the EXISTING deployed worker
+#
+# Get the worker name from the dashboard (Workers & Pages -> your worker), or
+# from the current loadstring base URL. Do NOT guess it: deploying under a new
+# name creates a SECOND worker rather than updating yours, and your existing
+# loadstrings would keep pointing at the old one.
+#
+# Secrets are NOT in this file and must never be. Set them with:
+#   wrangler secret put SH_SETUP_TOKEN
+#   wrangler secret put SH_SESSION_SECRET
+#   wrangler secret put SH_KDF_SALT          (see migrations/ note below)
+#   wrangler secret put SH_ARTIFACT_KEK      (Phase 4: at-rest encryption)
+#   wrangler secret put SH_DISCORD_WEBHOOK   (optional; telemetry only)
+#   wrangler secret put SH_GH_REPO / SH_GH_TOKEN  (Storage Keeper)
+# =============================================================================
+
+name = "scripterhub-loaders"          # CHANGE ME
+main = "For Cloudflare/worker.js"
+compatibility_date = "2024-11-01"
+account_id = "CHANGE_ME"              # CHANGE ME
+
+# -----------------------------------------------------------------------------
+# STATE
+# -----------------------------------------------------------------------------
+# KV keeps what it is genuinely good at: large immutable values addressed by
+# key. That is exactly the artifact store, and it stays.
+#
+# D1 is new in Phase 2 and it exists for ONE reason: KV has no atomic
+# compare-and-swap and is eventually consistent, so it CANNOT correctly
+# implement (a) one-time nonce consumption, (b) rate-limit increments, or
+# (c) validate-and-consume in a single step. Those three are the core of
+# session-gated delivery. Do not try to build them on KV.
+#
+# Until the D1 migration is applied the worker keeps reading its existing KV
+# namespaces, so applying this file changes nothing on its own.
+[[kv_namespaces]]
+binding = "LOADERS_KV"
+# id = "CHANGE ME - the existing namespace id"   # uncomment + set on first deploy
+# preview_id = "CHANGE ME"
+
+[[d1_databases]]
+binding = "SH_DB"
+database_name = "scripterhub"
+# database_id = "CHANGE ME - created by: wrangler d1 create scripterhub"
+# migrations_dir = "migrations"
+
+# -----------------------------------------------------------------------------
+# OBSERVABILITY
+# -----------------------------------------------------------------------------
+# Phase 5. Off until the audit-log writer lands, then flip to true.
+[observability]
+enabled = false
+
+# -----------------------------------------------------------------------------
+# HARDENING DEFAULTS
+# -----------------------------------------------------------------------------
+# The whole delivery model assumes the origin is not directly reachable.
+[placement]
+mode = "smart"
+
+# No public artifact route may ever be cached by an edge node. This is a
+# backstop against a future regression, not the primary control: the primary
+# control is that unauthenticated requests get no artifact at all.
+[vars]
+SH_DELIVERY_REQUIRE_AUTH = "1"        # Phase 3: refuse artifact without session
+SH_URL_TOKEN_TTL_SECONDS = "15"       # the weaker HttpGet fallback path
+SH_SESSION_TTL_SECONDS = "45"         # primary request() path

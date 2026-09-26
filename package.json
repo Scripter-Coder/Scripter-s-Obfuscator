@@ -17,6 +17,7 @@
     "test:usertoken": "node usertoken.test.mjs",
     "test:hardening": "node hardening.test.mjs",
     "test:inline-multiret": "node tools/inline_multiret_differential_test.mjs",
+    "test:gates": "node tools/security_gates_test.mjs",
     "test:resilience": "node worker-resilience.test.mjs",
     "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs && node chunked.test.mjs && node ghstorage.test.mjs && node bigscript.test.mjs && node vm-stack.test.mjs && node usertoken.test.mjs && node hardening.test.mjs && node tools/inline_multiret_differential_test.mjs && node worker-resilience.test.mjs"
   },
