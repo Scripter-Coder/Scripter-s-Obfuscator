@@ -386,16 +386,74 @@ function need(cond, why) { if (!cond) throw new Error('gate setup failed: ' + wh
 // RATE LIMITING
 // ===========================================================================
 
-gate('G14', 'License auth is rate limited', 'xfail', async () => {
-  const env = makeEnv();
-  seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({}));
-  let allowed = 0;
-  for (let i = 0; i < 40; i++) {
-    const r = await get(env, `/sh/auth/${ID}?k=guess${i}&h=HW&t=1`, SPOOFED_UA, { 'CF-Connecting-IP': '198.51.100.4' });
-    if (r.status !== 429) allowed++;
+gate('G14', 'Brute-forceable auth routes are rate limited', 'pass', async () => {
+  // The audit measured 40/40 unauthenticated license-key guesses served, and
+  // no limit at all on the access-code, password or key routes.
+  //
+  // A correct implementation must 429 the flood AND still serve a legitimate
+  // caller, so each route is checked in both directions.
+  const probe = async (label, path, headers, expectAfter) => {
+    const env = makeEnv();
+    seedScript(env, ID);
+    env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({}));
+    let served = 0, limited = 0;
+    for (let i = 0; i < expectAfter + 20; i++) {
+      const r = await get(env, path(i), SPOOFED_UA, headers);
+      if (r.status === 429) limited++; else served++;
+    }
+    if (limited === 0) throw new Error(`${label}: no request was rate limited (${served} served)`);
+    if (served > expectAfter + 2) throw new Error(`${label}: ${served} served, expected at most ${expectAfter + 2}`);
+    return env;
+  };
+
+  const IP = { 'CF-Connecting-IP': '198.51.100.4' };
+
+  // /sh/auth : license key guesses
+  await probe('/sh/auth', (i) => `/sh/auth/${ID}?k=guess${i}&h=HW&t=1`, IP, 30);
+
+  // /sh/k : split-key requests
+  await probe('/sh/k', (i) => `/sh/k/${ID}?t=1700000000&a=tok${i}`, IP, 30);
+
+  // /sh/login : owner access code guesses
+  {
+    const env = makeEnv();
+    let limited = 0;
+    for (let i = 0; i < 40; i++) {
+      const r = await call(env, 'POST', '/sh/login', { code: 'guess' + i }, BROWSER_UA, IP);
+      if (r.status === 429) limited++;
+    }
+    if (limited === 0) throw new Error('/sh/login: the access-code route is not rate limited');
   }
-  if (allowed > 20) throw new Error(`${allowed}/40 unauthenticated key guesses were served — no effective rate limit`);
+
+  // /sh/user-login : password guesses, including a per-account spray
+  {
+    const env = makeEnv();
+    await call(env, 'POST', '/sh/user-signup', { email: 'victim@t.com', username: 'Vic', password: 'victimpass1' }, BROWSER_UA, IP);
+    let limited = 0;
+    for (let i = 0; i < 40; i++) {
+      const r = await call(env, 'POST', '/sh/user-login', { emailOrUsername: 'victim@t.com', password: 'guess' + i }, BROWSER_UA, IP);
+      if (r.status === 429) limited++;
+    }
+    if (limited === 0) throw new Error('/sh/user-login: password guessing is not rate limited');
+  }
+
+  // A legitimate caller must still work: the limit must not be so tight that
+  // normal use is broken, and a DIFFERENT identity must have its own budget.
+  {
+    const env = makeEnv();
+    await call(env, 'POST', '/sh/user-signup', { email: 'good@t.com', username: 'Good', password: 'goodpass123' }, BROWSER_UA,
+      { 'CF-Connecting-IP': '203.0.113.50' });
+    // exhaust the flood IP's budget
+    for (let i = 0; i < 40; i++) {
+      await call(env, 'POST', '/sh/user-login', { emailOrUsername: 'x@t.com', password: 'p' + i }, BROWSER_UA, IP);
+    }
+    // a different IP must be unaffected
+    const ok = await call(env, 'POST', '/sh/user-login', { emailOrUsername: 'good@t.com', password: 'goodpass123' }, BROWSER_UA,
+      { 'CF-Connecting-IP': '203.0.113.51' });
+    if (!/\"ok\":true/.test(ok.body)) {
+      throw new Error('an unrelated caller was blocked by another IP\'s exhausted budget: ' + ok.body.slice(0, 90));
+    }
+  }
 });
 
 // ===========================================================================

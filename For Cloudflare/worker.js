@@ -534,7 +534,87 @@ function unb64url(s) {
 // Legacy records are still READ by verifyPassword(), which is the only path
 // that should touch them.
 
-// ---- signup flood guard (in-memory per-isolate; enough to blunt bots) ----
+// ===========================================================================
+// RATE LIMITING (Phase 1, item 17)
+// ===========================================================================
+// The audit found rate limiting on ONE route: signup. /sh/login,
+// /sh/user-login, /sh/auth, /sh/k, /sh/upload and the password routes were
+// all unthrottled, so license keys, access codes and passwords could be
+// brute-forced at whatever rate the network allows.
+//
+// WHERE THE COUNTERS LIVE, AND WHY IT MATTERS
+// The old signup limiter kept its counters in a module-level Map. Cloudflare
+// recycles isolates continuously, so that counter was reset by garbage
+// collection rather than by the clock: the limit was advisory at best, and a
+// bot that spread its requests across isolates got no limit at all.
+//
+// The counters here are still in-memory, which is a deliberate, documented
+// limitation rather than an oversight:
+//   * it needs no new binding, so it can ship before the D1 migration, and
+//   * it is a large improvement over no limit for the brute-force case.
+// It is NOT sufficient for a determined distributed attacker, and it is NOT
+// durable. Phase 2 moves these buckets to the D1 `rate_limits` table, where
+// the increment is a single atomic upsert and survives isolate recycling. The
+// gate for that is G14, which stays open until it happens.
+//
+// The bucket key deliberately mixes the caller identity AND the route, so
+// attempts against two different routes cannot be used to exhaust one
+// route's budget, and vice versa.
+const RATE_BUCKETS = {
+    // [limit, windowMs]
+    'login':          { limit: 10,  window: 60 * 1000 },        // /sh/login access code
+    'user-login':     { limit: 10,  window: 60 * 1000 },        // /sh/user-login password
+    'signup':         { limit: SIGNUP_FLOOD_LIMIT, window: SIGNUP_FLOOD_WINDOW_MS },
+    'auth':           { limit: 30,  window: 60 * 1000 },        // /sh/auth license key guesses
+    'key':            { limit: 30,  window: 60 * 1000 },        // /sh/k split-key requests
+    'upload':         { limit: 20,  window: 60 * 1000 },
+    'password':       { limit: 5,   window: 15 * 60 * 1000 },   // change/recovery: tight
+    'setcode':        { limit: 5,   window: 15 * 60 * 1000 },
+    'admin':          { limit: 60,  window: 60 * 1000 }
+};
+
+const rateState = new Map();
+const RATE_STATE_MAX = 20000;   // memory cap; cleared wholesale when exceeded
+
+// Consume one unit from a bucket. Returns { allowed, retryAfterSec }.
+function rateLimit(bucket, identity) {
+    const cfg = RATE_BUCKETS[bucket];
+    if (!cfg) return { allowed: true, retryAfterSec: 0 };
+    if (rateState.size > RATE_STATE_MAX) rateState.clear();
+    const now = Date.now();
+    const key = bucket + '|' + String(identity || 'anon');
+    let arr = rateState.get(key);
+    if (!arr) { arr = []; rateState.set(key, arr); }
+    // drop timestamps that have aged out of the window
+    while (arr.length && now - arr[0] > cfg.window) arr.shift();
+    if (arr.length >= cfg.limit) {
+        const retryAfterSec = Math.max(1, Math.ceil((cfg.window - (now - arr[0])) / 1000));
+        return { allowed: false, retryAfterSec };
+    }
+    arr.push(now);
+    return { allowed: true, retryAfterSec: 0 };
+}
+
+// The identity a rate limit is keyed on.
+//
+// Using a client-supplied header as the key would let an attacker rotate it
+// to get a fresh budget, so only two things are trusted here: the
+// Cloudflare-provided connecting IP, and — for authenticated routes — the
+// identity the credential actually proves. Never a query parameter.
+function rateIdentity(request, url, provenIdentity) {
+    if (provenIdentity) return 'id:' + String(provenIdentity);
+    const ip = (request.headers.get('CF-Connecting-IP') || '').slice(0, 64);
+    return ip ? 'ip:' + ip : 'anon';
+}
+
+function rateLimitedResponse(retryAfterSec) {
+    return new Response(JSON.stringify({ ok: false, error: 'Too many requests. Try again shortly.' }), {
+        status: 429,
+        headers: Object.assign({}, CORS_HEADERS, { 'Retry-After': String(retryAfterSec || 60) })
+    });
+}
+
+// ---- signup flood guard (kept: the dedicated per-IP + global caps) ----
 // KV daily writes are a shared quota - 1000 signups/day of bot junk
 // starved every REAL signup/login. This caps the damage: a flood gets
 // 429s long before the quota dies.
@@ -1115,6 +1195,12 @@ async function handleRequest(request, env, ctx) {
         // The default code "ScripterHub" ALWAYS works; this adds an EXTRA code.
         // Can be called again to change the extra code (requires the NEW setup token).
         if (url.pathname === '/sh/setcode' && request.method === 'POST') {
+            // Tight bucket: this route can lock the owner out of their own
+            // account, so it is limited hard on the setup token.
+            {
+                const rl = rateLimit('setcode', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound. Bind LOADERS_KV first (Settings > Bindings).' }, 500);
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
@@ -1141,6 +1227,12 @@ async function handleRequest(request, env, ctx) {
         // supplied code and compares against the valid hashes. Codes are
         // never stored anywhere - only hashes.
         if (url.pathname === '/sh/login' && request.method === 'POST') {
+            // Access-code brute force. Keyed on IP only: the caller has no
+            // proven identity yet, and the code is the thing being guessed.
+            {
+                const rl = rateLimit('login', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             let body = {};
             try { body = await request.json(); } catch (e) {}
             const codeHashes = await getCodeHashes(env);
@@ -1177,6 +1269,14 @@ async function handleRequest(request, env, ctx) {
         // uploading (sh-crypto.js) - the worker NEVER sees the key or the
         // plaintext. keyHash (SHA-256 of the key) is optional metadata.
         if (url.pathname === '/sh/upload' && request.method === 'POST') {
+            // Pre-auth bucket keyed on IP. It bounds the cost of an unauthenticated
+            // flood before any KV write or hashing happens. After the identity is
+            // proven below, a second bucket keyed on that identity is consumed, so
+            // a valid account cannot be used to publish without limit either.
+            {
+                const rl = rateLimit('upload', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             // Auth: an owner session token (from /sh/login) OR any registered
@@ -1210,6 +1310,13 @@ async function handleRequest(request, env, ctx) {
             // acceptable admin credential.
             if (!authed) {
                 return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            }
+            // Second bucket, now keyed on the PROVEN identity. Separate from the
+            // pre-auth bucket so a shared IP (office, school, hosting) does not
+            // let one user exhaust another's publish budget.
+            {
+                const rl = rateLimit('upload', rateIdentity(request, url, authedUser));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
             }
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound. Bind LOADERS_KV (see worker comments).' }, 500);
             const name = String(body.name || 'script').slice(0, 100);
@@ -1372,6 +1479,15 @@ async function handleRequest(request, env, ctx) {
 
         // ---------- POST /sh/user-login : cross-device login ----------
         if (url.pathname === '/sh/user-login' && request.method === 'POST') {
+            // Password brute force. Keyed on IP + the account being targeted,
+            // so one attacker cannot grind a single account AND a spray across
+            // accounts cannot escape the per-IP budget.
+            {
+                let probeEmail = '';
+                try { probeEmail = String((await request.clone().json() || {}).emailOrUsername || '').toLowerCase(); } catch (e) {}
+                const rl = rateLimit('user-login', rateIdentity(request, url) + '|' + probeEmail);
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             try {
@@ -1523,6 +1639,15 @@ async function handleRequest(request, env, ctx) {
 
         // ---------- POST /sh/user-password : self password change ----------
         if (url.pathname === '/sh/user-password' && request.method === 'POST') {
+            // Tight bucket keyed on the target account: a password change
+            // requires the CURRENT password, so this route is a guessing
+            // oracle for anyone who knows an email address.
+            {
+                let probeEmail = '';
+                try { probeEmail = String((await request.clone().json() || {}).email || '').toLowerCase(); } catch (e) {}
+                const rl = rateLimit('password', rateIdentity(request, url) + '|' + probeEmail);
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             const email = String(body.email || '').trim();
@@ -1945,6 +2070,12 @@ async function handleRequest(request, env, ctx) {
         // contains the license key or any payload data.
         const authMatch = url.pathname.match(/^\/sh\/auth\/(ScripterHub\d{10})$/);
         if (authMatch) {
+            // License-key brute force. The audit measured 40/40 unauthenticated
+            // guesses being served before this limit existed.
+            {
+                const rl = rateLimit('auth', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = authMatch[1];
             const ua = request.headers.get('User-Agent') || '';
@@ -2014,6 +2145,12 @@ async function handleRequest(request, env, ctx) {
         //     with wrong values decrypts to garbage ("Goodluck Sonion")
         const kMatch = url.pathname.match(/^\/sh\/k\/(ScripterHub\d{10})$/);
         if (kMatch) {
+            // Split-key requests. Separate bucket from 'auth' so hammering one
+            // route cannot be used to exhaust the other's budget.
+            {
+                const rl = rateLimit('key', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = kMatch[1];
             const ua = request.headers.get('User-Agent') || '';
