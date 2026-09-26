@@ -121,10 +121,43 @@ async function shLoginRaw() {
 // the parts through the worker proxy (/sh/g/*) - GitHub never exposed.
 // Hard ceiling: 256 parts x 40MB = ~10GB per script (repo-size guidance
 // keeps total usage under ~10GB too).
+// A SCRIPT ID IS 10 RANDOM DIGITS, NOT A TIMESTAMP.
+//
+// It used to be String(Date.now()).slice(-10) - a clock reading, strictly
+// increasing, and computable by anyone for any moment they choose. The
+// session gate is only as strong as the id space behind it, and a gate in
+// front of a guessable door is a gate in front of an open door: with
+// timestamp ids an attacker finds a new script within about one request of
+// it being published, and a poller that records every id which succeeds ends
+// up with a permanent timestamped index of every script ever published. The
+// rate limit caps the rate; it cannot un-record what was recorded.
+//
+// The SHAPE is unchanged - still ScripterHub plus exactly ten digits - so
+// every /^ScripterHub\d{10}$/ in the worker keeps matching and every id
+// already published keeps working. No migration.
+//
+// Entropy is 10^10, about 33 bits: roughly 5.8 years of guessing at the
+// session bucket's 30 per minute, for one script, with no rolling-window
+// shortcut. Not 256 bits - widening the shape touches seventeen regexes and
+// is a separate change, deliberately not bundled with this one.
+//
+// crypto.getRandomValues, not Math.random: this must not be predictable from
+// observation, and Math.random is not a CSPRNG.
+function shNewScriptId() {
+    const b = new Uint8Array(8);
+    (globalThis.crypto || window.crypto).getRandomValues(b);
+    // 8 bytes -> 10 decimal digits via BigInt, so all 10 digits are random
+    // rather than a timestamp with noise on the end.
+    let v = 0n;
+    for (let i = 0; i < b.length; i++) v = (v << 8n) | BigInt(b[i]);
+    const digits = (v % 10000000000n).toString().padStart(10, '0');
+    return 'ScripterHub' + digits;
+}
+
 const SH_GH_PART_SIZE = 40 * 1024 * 1024;
 async function shUploadGithub(o) {
     try {
-        const id = 'ScripterHub' + String(Date.now()).slice(-10);
+        const id = shNewScriptId();
         const n = Math.ceil(o.obfCode.length / SH_GH_PART_SIZE);
         if (n > 256) return { ok: false, error: 'script exceeds 10 GB (256 parts). Split it.' };
         // 1) upload parts sequentially (progress via console + optional callback)
@@ -4080,7 +4113,7 @@ function obfuscateScriptCode(code, engine, options) {
                 // (executor-only, time-locked). Loader id is generated HERE
                 // so the baked-in key URL matches the id /sh/upload will use.
                 var dbgInfo = {};
-                var wantId = 'ScripterHub' + String(Date.now()).slice(-10);
+                var wantId = shNewScriptId();
                 // A KEYLESS SCRIPT GETS NO SPLIT KEY.
                 //
                 // A split key is the protection for a PAID build: the last layer never
