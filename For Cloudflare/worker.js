@@ -537,7 +537,7 @@ async function hashPassword(env, password) {
     const salt = new Uint8Array(PBKDF2_SALT_BYTES);
     crypto.getRandomValues(salt);
     const pepper = await kdfPepper(env);
-    const dk = await pbkdf2(pepper ? pepper + ' ' + password : password, salt, PBKDF2_ITERATIONS);
+    const dk = await pbkdf2(pepper ? pepper + '\0' + password : password, salt, PBKDF2_ITERATIONS);
     return 'pbkdf2$' + PBKDF2_ITERATIONS + '$' + b64bytes(salt) + '$' + b64bytes(dk);
 }
 
@@ -573,7 +573,7 @@ async function verifyPassword(env, stored, supplied) {
         const want = parts[3];
         if (!Number.isFinite(iterations) || !parts[2] || !want) return { ok: false, needsRehash: false };
         const pepper = await kdfPepper(env);
-        const dk = b64bytes(await pbkdf2(pepper ? pepper + ' ' + s : s, salt, iterations));
+        const dk = b64bytes(await pbkdf2(pepper ? pepper + '\0' + s : s, salt, iterations));
         // Re-hash if the iteration count no longer matches the current policy.
         return { ok: timingSafeEqualStr(dk, want), needsRehash: iterations !== PBKDF2_ITERATIONS };
     }
