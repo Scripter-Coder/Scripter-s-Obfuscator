@@ -18,8 +18,41 @@
 # name creates a SECOND worker rather than updating yours, and your existing
 # loadstrings would keep pointing at the old one.
 #
-# Secrets are NOT in this file and must never be. Set them with:
-# =============================================================================
+# ============================== FIRST DEPLOY ===============================
+# Do these in order. Steps 1-4 change nothing about how the worker serves
+# traffic, so they are all safe to run before any code goes live.
+#
+# 1. install + authenticate (needs your Cloudflare account):
+#      npm i -g wrangler
+#      wrangler login
+#
+# 2. create the D1 database:
+#      wrangler d1 create scripterhub
+#    -> paste the returned database_id into [[d1_databases]] below
+#
+# 3. apply the schema:
+#      wrangler d1 execute scripterhub --file=migrations/0001_init.sql
+#
+# 4. set the three secrets (see the block below for what each one does):
+#      wrangler secret put SH_SETUP_TOKEN
+#      wrangler secret put SH_SESSION_SECRET
+#      wrangler secret put SH_KDF_PEPPER
+#
+# 5. fill in account_id, name, and the KV namespace id, then:
+#      wrangler deploy
+#
+# 6. ONCE, claim the generated owner access code:
+#      curl -X POST https://<your-worker-domain>/sh/owner-claim \
+#           -H 'Content-Type: application/json' \
+#           -d '{"setupToken":"<the SH_SETUP_TOKEN you set in step 4>"}'
+#
+#    The code comes back ONCE and is deliberately NOT written to the worker
+#    logs. Cloudflare retains logs and anyone with dashboard access can read
+#    them, so a credential printed to a log is a permanently exposed credential
+#    no matter how briefly it was shown. Save the response somewhere safe.
+#    Afterwards you can delete that route from worker.js; to rotate the code
+#    later, use /sh/setcode.
+# ============================================================================
 # REQUIRED SECRETS — the worker degrades in SECURITY, not in availability,
 # when these are missing, and logs a warning. Set all three before going live.
 #
@@ -45,10 +78,15 @@
 #
 # NOTE ON password migration: existing accounts hold legacy btoa() records.
 # They are accepted once and transparently re-hashed to PBKDF2 on the next
-# successful login. Until a user logs in, their old record is still
-# recoverable — there is no way to hash it without the plaintext. To force
-# everyone through the upgrade path, reset the affected accounts.
-# =============================================================================
+# successful login, and the rehash REPLACES the record rather than shadowing
+# it, so the btoa value is gone the moment it succeeds. Until a user logs in,
+# their old record is still recoverable — a hash cannot be computed without
+# the plaintext. For accounts that never log in, the clean fallback is a
+# forced password reset, which drops the record entirely.
+#
+# Generate strong values with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# ============================================================================
 
 name = "scripterhub-loaders"          # CHANGE ME
 main = "For Cloudflare/worker.js"

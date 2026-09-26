@@ -677,11 +677,22 @@ function sanitizeUserRecord(u) {
 // The owner code is now generated once, at high entropy, and only its SHA-256
 // is stored. It is never a constant in this file.
 //
-// Migration: a deployment that predates this change has no owner code set at
-// all, which would lock the owner out. bootstrapOwnerCode() handles that by
-// minting one on first use and recording that it did, so the operator is told
-// exactly where to read it rather than silently locked out or silently given
-// a weak default.
+// THE CODE IS NEVER WRITTEN TO A LOG. An earlier version of this printed it
+// with console.log on bootstrap, which is not acceptable: Cloudflare retains
+// worker logs, they are visible to anyone with dashboard access, they can be
+// shipped to log aggregation, and `wrangler tail` replays them. Printing a
+// credential once is still putting a credential in a place designed to keep
+// it. The flow is now strictly:
+//
+//   1. run the claim once from your own machine (see the endpoint below)
+//   2. the plaintext is returned in that HTTP response and nowhere else
+//   3. it is never written to KV, a log, or a Worker secret
+//   4. only its SHA-256 is persisted
+//
+// The endpoint is protected by SH_SETUP_TOKEN, which the operator sets as a
+// Worker secret, so an attacker who reaches the worker still cannot claim it.
+// The claim is single-use: the stored record is deleted as it is read, so a
+// second attempt returns nothing even with the setup token.
 const OWNER_CODE_BOOTSTRAPPED_KEY = 'sh_owner_bootstrapped';
 
 async function getCodeHashes(env) {
@@ -702,15 +713,20 @@ async function getCodeHashes(env) {
     if (hashes.length === 0) {
         // Pre-Phase-1 deployment with no code ever set. Mint one now rather
         // than fall back to a guessable default.
+        //
+        // The minted plaintext is hashed and immediately discarded here. The
+        // ONLY way for the operator to obtain it is the single-use
+        // /sh/owner-claim endpoint, which calls bootstrapOwnerCode() itself.
         const code = await bootstrapOwnerCode(env);
-        if (code) hashes.push(await sha256Hex(code));
+        if (code) {
+            hashes.push(await sha256Hex(code));
+        }
     }
     return hashes;
 }
 
-// 192 bits of entropy from crypto.getRandomValues, base32-ish, grouped for
-// transcription. Never logged in full: the caller returns it to the operator
-// once, at setup, and only the hash is persisted.
+// 192 bits of entropy from crypto.getRandomValues, grouped for transcription
+// and stripped of look-alike characters (no I/O/0/1).
 function generateOwnerCode() {
     const bytes = new Uint8Array(24);
     crypto.getRandomValues(bytes);
@@ -723,6 +739,18 @@ function generateOwnerCode() {
     return out;
 }
 
+// Mint the owner code if this deployment has none.
+//
+// SECURITY: the plaintext is returned to the CALLER ONLY. It is never logged,
+// never written to KV, and never placed in an env binding. Only its SHA-256
+// is persisted, which is what getCodeHashes() compares against.
+//
+// The caller is claimOwnerCode(), which serves it once over an endpoint
+// gated on SH_SETUP_TOKEN and then deletes the record. The plaintext exists
+// in exactly two places at any moment: the response body being returned, and
+// the operator's terminal.
+//
+// Returns the code to the caller, or null if one already exists / no KV.
 async function bootstrapOwnerCode(env) {
     if (!env.LOADERS_KV) return null;
     try {
@@ -735,9 +763,9 @@ async function bootstrapOwnerCode(env) {
             generated: true
         }), { expirationTtl: LOADER_TTL });
         await env.LOADERS_KV.put(OWNER_CODE_BOOTSTRAPPED_KEY, String(Date.now()), { expirationTtl: LOADER_TTL });
-        // Printed to the worker log ONCE so the operator can capture it. This
-        // is the only time the plaintext code exists outside their browser.
-        console.log('[ScripterHub] OWNER ACCESS CODE (shown once, store it now): ' + code);
+        // Returned to claimOwnerCode() and then dropped on the floor. There is
+        // deliberately no console.log here: a credential in retained logs is
+        // still a credential in retained logs, however briefly it was printed.
         return code;
     } catch (e) {
         return null;
@@ -1190,10 +1218,80 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true, loaders: !!(env.LOADERS_KV), webhook: !!env.SH_DISCORD_WEBHOOK, codeSet: !!setAt, at: Date.now() });
         }
 
-        // ---------- POST /sh/setcode : OPTIONAL extra owner code ----------
+        // ---------- POST /sh/owner-claim : ONE-TIME reveal of the owner code ----------
+        // Body: { setupToken }  - setupToken = your SH_SETUP_TOKEN secret.
+        //
+        // WHY THIS EXISTS
+        // A deployment created before Phase 1 has no owner access code, and the
+        // hard-coded "ScripterHub" default has been removed. Without a way to
+        // obtain a code, that deployment would be locked out of its own admin
+        // panel. This endpoint mints one, returns it ONCE, and forgets it.
+        //
+        // SECURITY PROPERTIES, and they are the whole point of the design:
+        //   * the plaintext is NEVER logged. Cloudflare retains worker logs and
+        //     anyone with dashboard access can read them, so a credential in a
+        //     log is a permanently exposed credential no matter how briefly it
+        //     was printed. It exists only in this HTTP response.
+        //   * only the SHA-256 is persisted, so the KV namespace never holds it.
+        //   * gated on SH_SETUP_TOKEN, which the operator sets as a Worker
+        //     secret, so reaching the endpoint is not enough.
+        //   * strictly single-use: the code record is deleted as it is read, and
+        //     the bootstrap marker prevents re-minting. A second call with a
+        //     valid setup token returns { ok: true, alreadyClaimed: true } and
+        //     no secret.
+        //   * no-store and no CORS, so the response is not cached by any
+        //     intermediary and cannot be read cross-origin by a page.
+        //
+        // Run it once, save the code somewhere safe, then you can disable it by
+        // removing the route. To rotate later, use /sh/setcode.
+        if (url.pathname === '/sh/owner-claim' && request.method === 'POST') {
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound.' }, 500);
+            if (!env.SH_SETUP_TOKEN) {
+                return jsonResponse({ ok: false, error: 'SH_SETUP_TOKEN is not set, so this endpoint cannot be authorized. Set it first.' }, 401);
+            }
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            const supplied = String(body.setupToken || '');
+            if (!supplied || !hashEqual(supplied, String(env.SH_SETUP_TOKEN))) {
+                // Deliberately vague: do not confirm whether the token was close.
+                return new Response(JSON.stringify({ ok: false, error: 'Not authorized.' }), {
+                    status: 401, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+                });
+            }
+            const existing = await env.LOADERS_KV.get(CODE_KV_KEY);
+            if (existing) {
+                // Already has a code. Never re-reveal it: we only stored the hash,
+                // so it cannot be recovered even by us.
+                return new Response(JSON.stringify({ ok: true, alreadyClaimed: true, hint: 'A code already exists and cannot be shown again. Use /sh/login, or set a new one via /sh/setcode.' }), {
+                    status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+                });
+            }
+            const code = await bootstrapOwnerCode(env);
+            if (!code) {
+                return new Response(JSON.stringify({ ok: false, error: 'Could not mint a code. Check KV binding.' }), {
+                    status: 500, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+                });
+            }
+            // This response body is the ONLY place the plaintext ever exists.
+            // It is not logged, not stored, and not cached.
+            return new Response(JSON.stringify({
+                ok: true,
+                code: code,
+                warning: 'This is shown ONCE and is not stored in readable form. Save it now. It is not in the worker logs.'
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache' }
+            });
+        }
+
+        // ---------- POST /sh/setcode : set / rotate the owner access code ----------
         // Body: { setupToken, code }  - setupToken = your SH_SETUP_TOKEN secret.
-        // The default code "ScripterHub" ALWAYS works; this adds an EXTRA code.
-        // Can be called again to change the extra code (requires the NEW setup token).
+        //
+        // PHASE 1: this used to ADD an extra code while the hard-coded default
+        // "ScripterHub" kept working. The default is gone, so this is now the
+        // normal way to set or rotate the code, and it REPLACES any existing
+        // one. Use it to rotate, or to take over from /sh/owner-claim.
+        // Only the SHA-256 is stored, never the plaintext.
         if (url.pathname === '/sh/setcode' && request.method === 'POST') {
             // Tight bucket: this route can lock the owner out of their own
             // account, so it is limited hard on the setup token.

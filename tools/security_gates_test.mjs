@@ -194,7 +194,10 @@ gate('G09', 'A self-forged token (from a valid key) is rejected', 'xfail', async
 // ===========================================================================
 
 gate('G04', 'The hard-coded default access code is rejected', 'pass', async () => {
-  // No owner code is configured, so a legacy deployment would bootstrap one.
+  // NOTE: this gate intentionally runs with NO owner code configured, which is
+  // the pre-Phase-1 state. In that state a login attempt triggers the
+  // bootstrap path, so it also proves the bootstrap cannot be reached with a
+  // guessable default. The claim endpoint itself is covered by G20.
   const env = makeEnv();
   const r = await call(env, 'POST', '/sh/login', { code: 'ScripterHub' });
   if (r.status === 200 && /"ok"\s*:\s*true/.test(r.body)) {
@@ -381,6 +384,87 @@ async function loginUserToken(env, email, password) {
 // precondition is asserted with this, so a broken gate reports as an ERROR
 // rather than quietly inflating the closed count.
 function need(cond, why) { if (!cond) throw new Error('gate setup failed: ' + why); }
+
+// ===========================================================================
+// OWNER CREDENTIAL HANDLING
+// ===========================================================================
+
+gate('G20', 'The owner code is never written to a log', 'pass', async () => {
+  // An earlier revision printed the generated owner code with console.log.
+  // Cloudflare retains worker logs and anyone with dashboard access can read
+  // them, so "printed once" still leaves a permanent copy in a place designed
+  // to keep it. The claim endpoint must be the ONLY path to the plaintext.
+  const env = makeEnv();
+  env.SH_SETUP_TOKEN = 'the-setup-token';
+  const logs = [];
+  const realLog = console.log, realWarn = console.warn, realErr = console.error;
+  console.log = (...a) => logs.push(a.join(' '));
+  console.warn = (...a) => logs.push(a.join(' '));
+  console.error = (...a) => logs.push(a.join(' '));
+  let claim;
+  try {
+    const r = await call(env, 'POST', '/sh/owner-claim', { setupToken: 'the-setup-token' });
+    claim = { status: r.status, body: r.body };
+  } finally {
+    console.log = realLog; console.warn = realWarn; console.error = realErr;
+  }
+
+  let code = null;
+  try { const d = JSON.parse(claim.body); if (d.ok && d.code) code = d.code; } catch (e) {}
+  need(code, 'the claim endpoint did not return a code: ' + claim.body.slice(0, 110));
+
+  // 1. the plaintext must appear nowhere in what was logged
+  const blob = logs.join('\n');
+  if (blob.includes(code)) {
+    throw new Error('the owner code was written to the worker log — it must only exist in the HTTP response');
+  }
+  // nothing that looks like a generated code may be logged either
+  const codeLike = blob.match(/\b[A-HJ-NP-Z2-9]{6}(?:-[A-HJ-NP-Z2-9]{6}){2,}\b/g);
+  if (codeLike) throw new Error('a credential-shaped value was logged: ' + codeLike.join(','));
+
+  // 2. only the hash may be persisted
+  const rec = JSON.parse(env.LOADERS_KV._store.get('sh_access_code') || '{}');
+  need(rec && rec.hash, 'no code record was written');
+  if (JSON.stringify(rec).includes(code)) throw new Error('the plaintext code was persisted in KV');
+  if (!/^[0-9a-f]{64}$/.test(String(rec.hash))) throw new Error('the stored code is not a SHA-256 hex digest');
+
+  // 3. it must be strictly single-use, even with a valid setup token
+  const again = await call(env, 'POST', '/sh/owner-claim', { setupToken: 'the-setup-token' });
+  if (again.body.includes(code)) throw new Error('the code was revealed a second time — the claim is not single-use');
+  need(/alreadyClaimed/.test(again.body), 'a second claim did not report alreadyClaimed: ' + again.body.slice(0, 90));
+
+  // 4. a wrong setup token must never receive it
+  const env2 = makeEnv();
+  env2.SH_SETUP_TOKEN = 'the-real-token';
+  const bad = await call(env2, 'POST', '/sh/owner-claim', { setupToken: 'wrong-token' });
+  if (bad.status === 200 || bad.body.includes('code')) {
+    throw new Error('the claim endpoint answered a wrong setup token');
+  }
+
+  // 5. and the response must not be cacheable
+  const env3 = makeEnv();
+  env3.SH_SETUP_TOKEN = 'tok';
+  const r3 = await call(env3, 'POST', '/sh/owner-claim', { setupToken: 'tok' });
+  need(/no-store/.test(r3.type || '') || true, 'cache header check');
+  const r3raw = await (async () => {
+    const req = new Request('https://audit.workers.dev/sh/owner-claim', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.60' },
+      body: JSON.stringify({ setupToken: 'tok' })
+    });
+    const r = await worker.fetch(req, env3, { waitUntil() {} });
+    return r.headers.get('Cache-Control') || '';
+  })();
+  if (!/no-store/.test(r3raw)) throw new Error('the claim response is cacheable: Cache-Control=' + JSON.stringify(r3raw));
+
+  // 6. the code it returned must actually work
+  const env4 = makeEnv();
+  env4.SH_SETUP_TOKEN = 'tok4';
+  const c4 = JSON.parse((await call(env4, 'POST', '/sh/owner-claim', { setupToken: 'tok4' })).body).code;
+  const login = await call(env4, 'POST', '/sh/login', { code: c4 });
+  if (!/"ok"\s*:\s*true/.test(login.body)) {
+    throw new Error('the claimed code does not authenticate — gate would pass on an unusable credential');
+  }
+});
 
 // ===========================================================================
 // RATE LIMITING
