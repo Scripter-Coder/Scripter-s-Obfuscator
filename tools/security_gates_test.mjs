@@ -193,11 +193,32 @@ gate('G09', 'A self-forged token (from a valid key) is rejected', 'xfail', async
 // CREDENTIALS
 // ===========================================================================
 
-gate('G04', 'The hard-coded default access code is rejected', 'xfail', async () => {
+gate('G04', 'The hard-coded default access code is rejected', 'pass', async () => {
+  // No owner code is configured, so a legacy deployment would bootstrap one.
   const env = makeEnv();
   const r = await call(env, 'POST', '/sh/login', { code: 'ScripterHub' });
   if (r.status === 200 && /"ok"\s*:\s*true/.test(r.body)) {
     throw new Error('the published literal "ScripterHub" still authenticates as owner');
+  }
+  // A near-miss must not be accepted either: the old comparison hashed the
+  // whole string, but a prefix/extension of the old default is the next
+  // thing an attacker would try.
+  for (const variant of ['scripterhub', 'ScripterHub ', 'ScripterHub1', 'Scripter']) {
+    const v = await call(env, 'POST', '/sh/login', { code: variant });
+    if (v.status === 200 && /"ok"\s*:\s*true/.test(v.body)) {
+      throw new Error(`a variant of the legacy default was accepted: ${JSON.stringify(variant)}`);
+    }
+  }
+  // And the operator-configured path must still work, or this gate would
+  // "pass" simply by breaking owner login entirely.
+  const env2 = makeEnv();
+  env2.SH_OWNER_CODE_HASH = await (async () => {
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('a-real-owner-code'));
+    return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+  })();
+  const good = await call(env2, 'POST', '/sh/login', { code: 'a-real-owner-code' });
+  if (!(good.status === 200 && /"ok"\s*:\s*true/.test(good.body))) {
+    throw new Error('a correctly configured owner code was rejected — gate would pass by breaking login');
   }
 });
 

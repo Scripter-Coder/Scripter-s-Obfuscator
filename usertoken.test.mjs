@@ -5,6 +5,7 @@
 //   - owner access-code flow still works in parallel
 //   - normalCode is capped server-side (7MB Discord attachment limit)
 import assert from 'assert';
+import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 
 function makeKV() {
     const store = new Map();
@@ -20,7 +21,7 @@ const workerSrc = await import('./For Cloudflare/worker.js');
 const worker = workerSrc.default;
 
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev' };
+const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
 
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
@@ -85,7 +86,7 @@ console.log('[U4] wrong-password login gets NO token...');
 
 console.log('[U5] owner access-code flow still works (parallel)...');
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     assert.ok(login.token, 'owner token still issued');
     const d = await j('POST', '/sh/upload', { token: login.token, name: 'OwnerScript', user: 'Scripter', cipher: 'QQ==' });
     assert.strictEqual(d.ok, true, 'owner upload still works');
@@ -94,7 +95,7 @@ console.log('[U5] owner access-code flow still works (parallel)...');
 
 console.log('[U6] normalCode capped at 7MB (Discord attachment limit)...');
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const huge = 'x'.repeat(10_000_000); // 10MB raw source
     const d = await j('POST', '/sh/upload', { token: login.token, name: 'Big', user: 'Scripter', cipher: 'QQ==', normalCode: huge });
     assert.strictEqual(d.ok, true, 'upload with giant normalCode still succeeds (capped server-side)');

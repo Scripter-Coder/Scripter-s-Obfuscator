@@ -2,6 +2,7 @@
 // mocked KV binding. Covers the keyless webKey flow (Issue 1), plan changes
 // via ownerProof (Issue 3), user sync, and the browser/executor UA split.
 import assert from 'assert';
+import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 
 // ---- mock KV ----
 function makeKV() {
@@ -20,7 +21,7 @@ const workerSrc = await import('./For Cloudflare/worker.js');
 const worker = workerSrc.default;
 
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev' };
+const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
 
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
@@ -54,7 +55,7 @@ console.log('[W1] health endpoint...');
 
 console.log('[W2] owner login (default code) issues a token...');
 {
-    const d = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const d = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     assert.strictEqual(d.ok, true);
     assert.ok(d.token && d.token.length > 10);
     console.log('    OK: token issued');
@@ -63,7 +64,7 @@ console.log('[W2] owner login (default code) issues a token...');
 console.log('[W3] KEYLESS upload with cipher+plainCode stores webKey meta...');
 let KEYLESS_ID = '';
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const d = await j('POST', '/sh/upload', {
         token: login.token,
         name: 'FreeScript',
@@ -108,7 +109,7 @@ console.log('[W5] keyless loader: BROWSER gets the KEY PAGE (webKey cipher)...')
 
 console.log('[W6] keyless legacy (plainCode only, no cipher): browser -> Method Not Allowed...');
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const d = await j('POST', '/sh/upload', { token: login.token, name: 'OldFree', user: 't', keyless: true, plainCode: '-- legacy blob' });
     const r = await call('GET', '/sh/' + d.id, null, BROWSER_UA);
     assert.strictEqual(r.status, 405);
@@ -184,7 +185,7 @@ console.log('[W12] non-owner user-sync cannot change own plan...');
 
 console.log('[W13] SPLIT-KEY: upload stores the padded key, /sh/k serves it (executor only)...');
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const t0 = Date.now();
     const padded = [12, 34, 56, 78, 90, 123, 45, 67];
     let up;

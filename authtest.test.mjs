@@ -11,6 +11,7 @@
 //     static peel still fails, and the runtime auth sequence in Lua
 //     produces a correct signed fetch chain
 import assert from 'assert';
+import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 import luaparse from 'luaparse';
 import fengari from 'fengari';
 import { applyCustomObfuscator } from './custom-obfuscator.js';
@@ -33,7 +34,7 @@ function makeKV() {
 const workerSrc = await import('./For Cloudflare/worker.js');
 const worker = workerSrc.default;
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev' };
+const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 
@@ -55,7 +56,7 @@ const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 
 // helper: owner login + upload an auth-required script (returns id + t0)
 async function uploadAuthScript(name) {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const t0 = Date.now();
     const padded = [11, 22, 33, 44, 55, 66, 77, 88];
     const up = await j('POST', '/sh/upload', {
@@ -186,7 +187,7 @@ console.log('[A7] HWID reset with 24h server-side cooldown...');
 
 console.log('[A8] keyless (non-auth) scripts keep the legacy split-key behavior...');
 {
-    const login = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const t0 = Date.now();
     const up = await j('POST', '/sh/upload', {
         token: login.token, name: 'Free', user: 't',

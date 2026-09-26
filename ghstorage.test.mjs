@@ -9,6 +9,7 @@
 //   - gh-delete removes parts
 //   - gh-status summarizes usage
 import assert from 'assert';
+import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 import fengari from 'fengari';
 
 const { lauxlib, lualib, lua, to_luastring, to_jsstring } = fengari;
@@ -67,7 +68,7 @@ function makeKV() {
     };
 }
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_GH_TOKEN: 'ghp_test', SH_GH_REPO: GH_REPO };
+const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH, SH_GH_TOKEN: 'ghp_test', SH_GH_REPO: GH_REPO };
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 
@@ -87,7 +88,7 @@ async function j(method, path, body, ua) {
 }
 const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 
-async function login() { return (await j('POST', '/sh/login', { code: 'ScripterHub' })).token; }
+async function login() { return (await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN })).token; }
 
 console.log('[G1] gh-put rejects non-owners and oversized parts...');
 {

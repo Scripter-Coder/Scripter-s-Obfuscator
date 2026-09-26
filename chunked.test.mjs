@@ -8,6 +8,7 @@
 //   - replacing a chunked loader cleans up all chunks
 //   - oversized (>50MB) scripts get the honest 413 error
 import assert from 'assert';
+import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 import fengari from 'fengari';
 
 const workerSrc = await import('./For Cloudflare/worker.js');
@@ -24,7 +25,7 @@ function makeKV() {
     };
 }
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev' };
+const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 
@@ -44,7 +45,7 @@ async function j(method, path, body, ua) {
 }
 
 async function login() {
-    const d = await j('POST', '/sh/login', { code: 'ScripterHub' });
+    const d = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     return d.token;
 }
 

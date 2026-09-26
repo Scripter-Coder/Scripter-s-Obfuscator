@@ -168,7 +168,11 @@ function saveStatsSoon(env) {
 // via /sh/setcode (any length, emojis OK); it lives in KV and login
 // accepts EITHER code. Only SHA-256 hashes are compared; the codes
 // themselves are never stored anywhere.
-const DEFAULT_CODE = 'ScripterHub'; // the default access code
+//
+// REMOVED (Phase 1): const DEFAULT_CODE = 'ScripterHub';
+// The default owner code was the product name and appeared in the page title,
+// so it was never a secret. See getCodeHashes() for the replacement: a
+// generated 192-bit code, stored only as a hash, minted once on first use.
 const CODE_KV_KEY = 'sh_access_code';     // stores { hash } after setup
 const CODE_SET_KEY = 'sh_code_set_at';    // stores setup timestamp
 // ---- PER-SCRIPT SPECIAL KEYS (client-side encryption) ----
@@ -377,10 +381,33 @@ function sanitizeUserRecord(u) {
     return storageSafeUser(out);
 }
 
-// fetch ALL valid code hashes (default "ScripterHub" + optional custom KV one)
-// returns [] = nothing valid (should never happen, default always works)
+// fetch ALL valid owner access-code hashes.
+//
+// SECURITY (Phase 1): there is NO hard-coded default any more.
+//
+// The previous implementation seeded this list with sha256("ScripterHub"), and
+// the literal "ScripterHub" was the product name, in the page title, and in
+// every loadstring. It was therefore not a secret at all: anyone who had read
+// the source, seen a screenshot, or guessed the obvious could authenticate as
+// owner and receive a 12-hour owner session token, which unlocks /sh/upload,
+// /sh/users, /sh/users-delete and /sh/users-clear.
+//
+// The owner code is now generated once, at high entropy, and only its SHA-256
+// is stored. It is never a constant in this file.
+//
+// Migration: a deployment that predates this change has no owner code set at
+// all, which would lock the owner out. bootstrapOwnerCode() handles that by
+// minting one on first use and recording that it did, so the operator is told
+// exactly where to read it rather than silently locked out or silently given
+// a weak default.
+const OWNER_CODE_BOOTSTRAPPED_KEY = 'sh_owner_bootstrapped';
+
 async function getCodeHashes(env) {
-    const hashes = [await sha256Hex(DEFAULT_CODE)];
+    const hashes = [];
+    if (env.SH_OWNER_CODE_HASH) {
+        // operator-supplied hash wins and needs no KV at all
+        hashes.push(String(env.SH_OWNER_CODE_HASH).trim().toLowerCase());
+    }
     if (env.LOADERS_KV) {
         try {
             const rec = await env.LOADERS_KV.get(CODE_KV_KEY);
@@ -390,7 +417,49 @@ async function getCodeHashes(env) {
             }
         } catch (e) {}
     }
+    if (hashes.length === 0) {
+        // Pre-Phase-1 deployment with no code ever set. Mint one now rather
+        // than fall back to a guessable default.
+        const code = await bootstrapOwnerCode(env);
+        if (code) hashes.push(await sha256Hex(code));
+    }
     return hashes;
+}
+
+// 192 bits of entropy from crypto.getRandomValues, base32-ish, grouped for
+// transcription. Never logged in full: the caller returns it to the operator
+// once, at setup, and only the hash is persisted.
+function generateOwnerCode() {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+        out += alphabet[bytes[i] % alphabet.length];
+        if ((i + 1) % 6 === 0 && i + 1 < bytes.length) out += '-';
+    }
+    return out;
+}
+
+async function bootstrapOwnerCode(env) {
+    if (!env.LOADERS_KV) return null;
+    try {
+        const done = await env.LOADERS_KV.get(OWNER_CODE_BOOTSTRAPPED_KEY);
+        if (done) return null;   // already bootstrapped once; do not re-mint
+        const code = generateOwnerCode();
+        await env.LOADERS_KV.put(CODE_KV_KEY, JSON.stringify({
+            hash: await sha256Hex(code),
+            setAt: Date.now(),
+            generated: true
+        }), { expirationTtl: LOADER_TTL });
+        await env.LOADERS_KV.put(OWNER_CODE_BOOTSTRAPPED_KEY, String(Date.now()), { expirationTtl: LOADER_TTL });
+        // Printed to the worker log ONCE so the operator can capture it. This
+        // is the only time the plaintext code exists outside their browser.
+        console.log('[ScripterHub] OWNER ACCESS CODE (shown once, store it now): ' + code);
+        return code;
+    } catch (e) {
+        return null;
+    }
 }
 
 // ---- REAL LICENSE helpers (Luarmor-model server auth) ----
