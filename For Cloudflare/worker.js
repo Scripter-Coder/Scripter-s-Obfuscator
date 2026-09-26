@@ -541,28 +541,119 @@ function classifyLicense(rec, hwid, now) {
     if (rec.hwid && rec.hwid !== hwid) return { code: 'hwid' }; // shared key
     return { code: 'ok', rec: rec };
 }
-// Discord webhook: log every successful AND failed auth attempt
+// ---------------------------------------------------------------------------
+// TELEMETRY — metadata only, by construction.
+//
+// SECURITY: this function is the ONLY outbound webhook path, and it accepts a
+// fixed set of metadata fields. It has no parameter that can carry source
+// code, a license key, a Special Key, or artifact bytes, so "never log the
+// secret" is a property of the signature rather than a rule at the call site.
+//
+// It replaced two functions that did leak:
+//   notifyDiscord()      appended the PLAINTEXT source as a .lua attachment
+//                        on every single upload
+//   notifyAuthDiscord()  posted every valid LICENSE KEY in cleartext
+// Both are treated as credentials-in-a-third-party-service, so neither is
+// acceptable regardless of who can read the Discord channel.
+//
+// Identifiers are hashed rather than sent raw. An operator can correlate
+// "the same key failed 40 times" without the log becoming a credential store
+// in its own right, and without a leaked webhook URL exposing working keys.
+// ---------------------------------------------------------------------------
+
+// Whitelist. Anything not named here cannot be emitted, no matter what a
+// caller passes. This is the enforcement point.
+const TELEMETRY_FIELDS = [
+    'event', 'outcome', 'scriptId', 'userRef', 'licenseRef', 'sessionId',
+    'executor', 'reason', 'transport', 'ip', 'ua', 'at', 'bytes', 'parts'
+];
+// Never emitted, and stripped if a caller tries: the actual secrets.
+const TELEMETRY_DENY = /^(code|source|plainCode|obfCode|normalCode|cipher|key|license|hwid|password|specialKey|paddedKey|token|secret)$/i;
+
+function scrubTelemetryValue(v) {
+    if (v == null) return '';
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '';
+    if (typeof v === 'boolean') return v ? 'true' : 'false';
+    const s = String(v);
+    // keep it short and log-safe; never let a caller smuggle a blob through
+    return s.replace(/[\r\n]+/g, ' ').slice(0, 120);
+}
+
+// A caller may legitimately pass something non-numeric in `at`; toISOString()
+// throws RangeError on that, and this runs inside a request path.
+function telemetryIso(ms) {
+    const n = Number(ms);
+    return new Date(Number.isFinite(n) && n > 0 ? n : Date.now()).toISOString();
+}
+
+function buildTelemetry(ev) {
+    const out = {};
+    for (const f of TELEMETRY_FIELDS) {
+        if (TELEMETRY_DENY.test(f)) continue;   // belt and braces
+        if (ev[f] !== undefined) out[f] = scrubTelemetryValue(ev[f]);
+    }
+    return out;
+}
+
+// Stable short reference for an identifier we must correlate on but not reveal.
+async function telemetryRef(kind, value) {
+    if (!value) return '';
+    return kind + ':' + (await sha256Hex('SHTELE::' + kind + '::' + String(value))).slice(0, 12);
+}
+
 async function notifyAuthDiscord(env, result) {
+    return notifyTelemetry(env, {
+        event: result.ok ? 'auth.ok' : 'auth.denied',
+        outcome: result.ok ? 'ok' : 'denied',
+        scriptId: result.scriptId,
+        // hashed, not the key itself
+        licenseRef: await telemetryRef('lic', result.key),
+        // HWID is a stable device fingerprint: hash it too
+        userRef: await telemetryRef('hw', result.hwid),
+        executor: result.executor,
+        reason: result.reason || (result.ok ? 'valid' : 'unknown'),
+        at: Date.now()
+    });
+}
+
+async function notifyScriptDiscord(env, ev) {
+    return notifyTelemetry(env, Object.assign({
+        event: 'script.published',
+        outcome: 'ok'
+    }, ev));
+}
+
+async function notifyTelemetry(env, ev) {
     const url = env.SH_DISCORD_WEBHOOK;
-    if (!url) return;
-    const safe = s => String(s == null ? '' : s).replace(/[^\w\-. :#@|\/]+/g, '_').slice(0, 80);
+    if (!url) return;                       // not configured: skip silently
+    const meta = buildTelemetry(ev);
+    const denyHit = Object.keys(ev).filter(k => TELEMETRY_DENY.test(k));
+    if (denyHit.length) {
+        // A caller tried to pass a secret. Refuse the whole event rather than
+        // silently dropping fields, so the bug is visible in the logs.
+        console.error('telemetry: refused event, denied fields: ' + denyHit.join(','));
+        return;
+    }
+    const fields = Object.keys(meta)
+        .filter(k => meta[k] !== '')
+        .map(k => ({ name: k, value: '`' + meta[k] + '`', inline: true }));
     const payload = {
-        username: 'ScripterHub Auth',
+        username: 'ScripterHub',
         embeds: [{
-            title: result.ok ? '✅ Auth Success' : '🚫 Auth FAILED',
-            color: result.ok ? 0x00cc44 : 0xff3333,
-            fields: [
-                { name: 'Key', value: '`' + safe(result.key) + '`', inline: true },
-                { name: 'HWID', value: '`' + safe(result.hwid) + '`', inline: true },
-                { name: 'Executor', value: '`' + safe(result.executor) + '`', inline: true },
-                { name: 'Script', value: '`' + safe(result.scriptId) + '`', inline: true },
-                { name: 'Reason', value: '`' + safe(result.reason || (result.ok ? 'valid' : 'unknown')) + '`', inline: true }
-            ],
-            footer: { text: 'ScripterHub License System' },
-            timestamp: new Date().toISOString()
+            title: (meta.event || 'event') + ' — ' + (meta.outcome || 'ok'),
+            color: meta.outcome === 'denied' ? 0xff3333 : (meta.outcome === 'error' ? 0xffaa33 : 0x00cc44),
+            fields,
+            footer: { text: 'ScripterHub telemetry (metadata only)' },
+            timestamp: telemetryIso(meta.at)
         }]
     };
-    try { await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); } catch (e) {}
+    try {
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    } catch (e) { /* telemetry must never break a request */ }
 }
 
 // verify the login-session token (issued by /sh/login)
@@ -619,46 +710,12 @@ function loaderId(wantId) {
     return 'ScripterHub' + d;
 }
 
-// ---- Discord notification for every created script ----
-async function notifyDiscord(env, username, scriptName, normalCode, obfCode) {
-    const url = env.SH_DISCORD_WEBHOOK;
-    if (!url) return; // webhook not configured — skip silently
-    const safeName = String(scriptName || 'script').replace(/[^\w\-. ]+/g, '_').slice(0, 60) || 'script';
-    const safeUser = String(username || 'unknown').replace(/[^\w\-. ]+/g, '_').slice(0, 60);
-    const payload = {
-        username: 'ScripterHub',
-        embeds: [{
-            title: 'User "' + safeUser + '" Successfully Created Script',
-            color: 0x6c3bff,
-            fields: [
-                { name: 'User', value: '`' + safeUser + '`', inline: true },
-                { name: 'Script Name', value: '`' + safeName + '`', inline: true }
-            ],
-            footer: { text: 'ScripterHub Loader System' },
-            timestamp: new Date().toISOString()
-        }]
-    };
-    // attachments: Normal Code Download + Obfuscated Code Download (.lua files)
-    // Discord caps attachments ~8MB; guard at 7MB each
-    const fd = new FormData();
-    let idx = 0;
-    if (normalCode && normalCode.length < 7_000_000) {
-        fd.append('files[' + idx + ']', new Blob([normalCode], { type: 'text/plain' }), safeName + '_normal.lua');
-        idx++;
-    }
-    if (obfCode && obfCode.length < 7_000_000) {
-        fd.append('files[' + idx + ']', new Blob([obfCode], { type: 'text/plain' }), safeName + '_obfuscated.lua');
-        idx++;
-    }
-    try {
-        if (idx > 0) {
-            fd.append('payload_json', JSON.stringify(payload));
-            await fetch(url, { method: 'POST', body: fd });
-        } else {
-            await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        }
-    } catch (e) {}
-}
+// REMOVED: notifyDiscord(env, username, scriptName, normalCode, obfCode)
+// This appended the PLAINTEXT source (<name>_normal.lua) and the obfuscated
+// code to the Discord webhook on every upload. That made Discord a third-party
+// store of the customer's source and gave anyone who obtained the webhook URL
+// a full dump of every script ever published. It is replaced by
+// notifyScriptDiscord() above, which takes metadata only.
 
 export default {
     async fetch(request, env, ctx) {
@@ -828,7 +885,11 @@ async function handleRequest(request, env, ctx) {
                     }
                 }
                 await maybeReplaceOld(env, body.replaces);
-                ctx.waitUntil(notifyDiscord(env, user, name, normalCode, ''));
+                ctx.waitUntil(notifyScriptDiscord(env, {
+                    event: 'script.published', outcome: 'ok',
+                    scriptId: id, userRef: await telemetryRef('user', user),
+                    at: Date.now(), bytes: plainCode.length
+                }));
                 const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
                 return jsonResponse({ ok: true, id, replaced: false, keyless: true, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
             }
@@ -849,7 +910,11 @@ async function handleRequest(request, env, ctx) {
             // optional: kill an OLD loader (key rotation / re-upload on edit)
             let replaced = await maybeReplaceOld(env, body.replaces);
             // Discord notification (attachments = download txt/lua files)
-            ctx.waitUntil(notifyDiscord(env, user, name, normalCode, ''));
+            ctx.waitUntil(notifyScriptDiscord(env, {
+                event: 'script.published', outcome: 'ok',
+                scriptId: id, userRef: await telemetryRef('user', user),
+                at: Date.now(), bytes: cipher.length
+            }));
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
             // NO key in the URL - the key is asked at runtime
             return jsonResponse({ ok: true, id, replaced, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
@@ -1320,7 +1385,11 @@ async function handleRequest(request, env, ctx) {
             // kill the OLD loader (re-upload on edit)
             await maybeReplaceOld(env, body.replaces);
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-            ctx.waitUntil(notifyDiscord(env, rec.user, rec.name + ' [Storage Keeper ' + n + ' parts]', String(body.normalCode || '').slice(0, 7_000_000), ''));
+            ctx.waitUntil(notifyScriptDiscord(env, {
+                event: 'script.published', outcome: 'ok',
+                scriptId: id, userRef: await telemetryRef('user', rec.user),
+                at: Date.now(), parts: n
+            }));
             return jsonResponse({ ok: true, id, parts: n, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
         }
 

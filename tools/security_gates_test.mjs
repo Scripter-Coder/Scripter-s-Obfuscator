@@ -287,7 +287,7 @@ gate('G14', 'License auth is rate limited', 'xfail', async () => {
 // TELEMETRY
 // ===========================================================================
 
-gate('G15', 'Webhook carries metadata only (no source, no license keys)', 'xfail', async () => {
+gate('G15', 'Webhook carries metadata only (no source, no license keys)', 'pass', async () => {
   const env = makeEnv();
   env.SH_DISCORD_WEBHOOK = 'https://discord.com/api/webhooks/audit/hook';
   const sent = [];
