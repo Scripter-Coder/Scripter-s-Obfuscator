@@ -80,10 +80,17 @@ console.log('[R2] the stored map is repaired (images dropped, records intact)...
 {
     const KV = makeCappedKV(120_000); // tiny cap
     const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev' };
-    const req = (p, b) => worker.fetch(new Request('https://t.workers.dev' + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }), env, { waitUntil: () => {} });
+    // This block exercises KV map repair, not the signup flood guard. The
+    // worker deliberately answers 429 after SIGNUP_FLOOD_LIMIT (10) signups
+    // per minute from one CF-Connecting-IP, and this loop fires 20 in a tight
+    // burst, so every signup after the tenth would be rejected before the
+    // repair logic ever ran. Give each signup its own source IP so the two
+    // features do not mask each other. The production limit is unchanged.
+    const reqFrom = (ip) => (p, b) => worker.fetch(new Request('https://t.workers.dev' + p, { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip }, body: JSON.stringify(b) }), env, { waitUntil: () => {} });
+    const req = reqFrom('203.0.113.7');
     // 20 users with ~100KB images each = ~2MB total (over the 120KB cap)
     for (let i = 0; i < 20; i++) {
-        const r = await req('/sh/user-signup', { email: 'u' + i + '@t.com', username: 'U' + i, password: 'pass1234' });
+        const r = await reqFrom('203.0.113.' + (100 + i))('/sh/user-signup', { email: 'u' + i + '@t.com', username: 'U' + i, password: 'pass1234' });
         assert.strictEqual(r.status, 200, 'signup ' + i + ' must not 500');
     }
     // login still works for every one of them (passwords intact)
@@ -111,7 +118,10 @@ console.log('[R3] uncaught worker errors return JSON + CORS (no blank 500)...');
     const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev' };
     const r = await worker.fetch(new Request('https://t.workers.dev/sh/user-signup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'x@t.com', username: 'X', password: 'pass1234' })
+        // The username must clear the worker's shape guard (length >= 2,
+        // MAX_USERNAME_LEN) or the request is rejected with 400 before the
+        // KV write, and the simulated outage below is never reached.
+        body: JSON.stringify({ email: 'x@t.com', username: 'Xavier', password: 'pass1234' })
     }), env, { waitUntil: () => {} });
     const text = await r.text();
     assert.strictEqual(r.status >= 500, true, 'error status propagated');

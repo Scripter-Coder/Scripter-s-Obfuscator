@@ -3,7 +3,7 @@
 // Runtime does NOT allocate normal table; represented via virtual registers/stack slots.
 
 export function isStackAllocCall(node) {
-  return node && node.type==='CallExpression' && node.base && node.base.name==='VM_STACKALLOC';
+  return node && node.type==='CallExpression' && node.base && (node.base.name==='VM_STACKALLOC' || node.base.name==='LPH_STACKALLOC');
 }
 
 export function analyzeStackAlloc(node, scope) {
@@ -11,8 +11,10 @@ export function analyzeStackAlloc(node, scope) {
   const sizeArg = node.arguments && node.arguments[0];
   if (!sizeArg || sizeArg.type!=='NumericLiteral') return { ok:false, error:'size must be constant' };
   const size = sizeArg.value;
-  if (size<=0 || size>256) return { ok:false, error:'size out of range' };
-  return { ok:true, size, zeroBased: node.arguments[1] && node.arguments[1].value===true };
+  if (!Number.isInteger(size) || size<=0 || size>256) return { ok:false, error:'size out of range' };
+  const mode = node.arguments[1];
+  if (mode && (mode.type !== 'NumericLiteral' || ![0, 1].includes(mode.value))) return { ok:false, error:'zeroOrOne must be 0 or 1' };
+  return { ok:true, size, zeroBased: !!(mode && mode.value === 0) };
 }
 
 export function lowerStackAlloc(funcIR, allocNode, tempReg) {
@@ -30,8 +32,7 @@ export function shouldStackAlloc(node, scopeInfo) {
   if (!info.ok) return false;
   // For now, allow only if not inside a function that captures it via upvalue (simple)
   // Escape analysis: check if variable is returned or passed to unknown call
-  // Simplified: allow if size <= 16 and not zeroBased weird
-  return info.size <= 16;
+  return true;
 }
 
 export function isStackAllocIndex(node, stackMap) {

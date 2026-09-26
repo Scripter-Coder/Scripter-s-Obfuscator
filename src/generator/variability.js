@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/generator/variability.js — Per-build generator variability (additional requirement #6 + old §11)
 // Must vary STRUCTURALLY, not just names/order. Categories:
 // VM state layout, instruction field layout, register encoding, handler decomposition,
@@ -5,7 +6,7 @@
 
 export function makeVariability(seed) {
   let s = seed >>> 0;
-  const rnd = (n) => { s = (s * 1664525 + 1013904223) >>> 0; return s % n; };
+  const { rnd } = makeRng(s);
   const rndInt = (a,b) => a + rnd(b - a + 1);
   return {
     seed,

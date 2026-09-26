@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/vm/handlers.js — Real Handler Decomposition (Phase 4, §7)
 // CALL → prepareCall/resolveCallable/setupFrame/dispatchFrame, per-variant.
 
@@ -18,7 +19,7 @@ export function pickHandlerVariant(op, seed, profileName) {
   const variants = HANDLER_VARIANTS[op];
   if(!variants) return { name:'direct', parts:[op] };
   let s = seed >>>0;
-  const rnd = n=>{s=(s*1664525+1013904223)>>>0; return s % n;};
+  const { rnd } = makeRng(s);
   if(profileName==='FAST') return variants[0];
   if(profileName==='SECURE') return variants[rnd(variants.length)];
   return variants[rnd(Math.min(2,variants.length))];

@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/vm/constants.js — Real Constant Virtualization (Phase 4, §2)
 // Distinct handling for strings, integers, floats, booleans, nil, prototype refs, special values.
 // Not one encrypted array: typed descriptors, build-specific representation, access strategy, typed decode, lazy+memoized.
@@ -38,7 +39,7 @@ export function makeDescriptor({ id, category, raw, start, len, salt, access }) 
 export function buildConstantPool({ vaultPlain, refs, seed, profileName }) {
   // This mirrors vm-bytecode.js VP salts but exposed as typed pool
   let s = seed >>> 0;
-  const rnd = n => { s = (s * 1664525 + 1013904223) >>> 0; return s % n; };
+  const { rnd } = makeRng(s);
   const rndInt = (a,b) => a + rnd(b-a+1);
   const VP = {
     a: rndInt(29,251),

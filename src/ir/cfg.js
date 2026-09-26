@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/ir/cfg.js — Control-Flow Graph builder + transforms (spec §9)
 // Builds CFG from IR blocks, supports: block split, reorder, dispatcher transitions,
 // opaque state vars, branch inversion, jump encoding, flattening (where safe).
@@ -123,9 +124,12 @@ export class CFG {
 
 // Light transform: reorder blocks deterministically by seed (structural diversity)
 export function reorderBlocks(cfg, seed) {
-  // Fisher-Yates with seed LCG — preserves entry at 0, shuffles rest
-  let s = seed >>> 0;
-  const next = () => (s = (s * 1664525 + 1013904223) >>> 0) / 0x100000000;
+  // Fisher-Yates with the shared per-build RNG — preserves entry at 0, shuffles
+  // the rest. Uses src/rng.js because the local LCG's low bits are degenerate
+  // (see the note there): taking the high bits is what makes consecutive seeds
+  // actually produce different orderings.
+  const { rndFloat } = makeRng(seed);
+  const next = rndFloat;
   const rest = cfg.blocks.slice(1);
   for (let i = rest.length - 1; i > 0; i--) {
     const j = Math.floor(next() * (i + 1));

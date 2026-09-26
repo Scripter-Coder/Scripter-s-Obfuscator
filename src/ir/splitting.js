@@ -1,17 +1,25 @@
+import { makeRng } from '../rng.js';
 // src/ir/splitting.js — True Instruction Splitting (Phase 4, §6)
 // Logical op lowers into multiple VM ops, profile-dependent.
 
+// Keys must be op names the compiler actually emits, and every part must have a
+// real emitter case (the emitter throws `emit <name>` otherwise).
+//
+// LOADK and GETTAB were never emitted; the real names are NUMK and TGET. NUMK
+// is deliberately absent: its only split would need a MOVE opcode, and no MOVE
+// exists in OP_NAMES. The old CALL rule was removed for the same reason -- its
+// parts (PREP_ARGS / RESOLVE_CALLABLE / ENTER_CALL) are not opcodes, so firing
+// it would abort the build. It happened to be unreachable because the caller
+// only ever passes TGET, which is exactly the kind of latent landmine that
+// should not be left in place.
 export const SPLIT_RULES = {
-  LOADK: [{ name:'DECODE_CONST+MOVE', parts: ['DECODE_CONST','MOVE'], cost: 2 }],
-  GETTAB: [{ name:'PREP_KEY+LOOKUP', parts: ['PREP_KEY','LOOKUP'], cost: 2 }],
-  CALL: [{ name:'PREP_ARGS+RESOLVE+ENTER', parts: ['PREP_ARGS','RESOLVE_CALLABLE','ENTER_CALL'], cost: 3 }],
-  TGET: [{ name:'PUSH_BASE+PUSH_KEY+GET', parts: ['PUSH_BASE','PUSH_KEY','TGET'], cost: 2 }],
+  TGET: [{ name:'PREP_TGET+LOOKUP_TGET', parts: ['PREP_TGET','LOOKUP_TGET'], cost: 2 }],
 };
 
 export function shouldSplit(op, seed, profileName, idx) {
   if(!SPLIT_RULES[op]) return false;
   let s = (seed ^ (idx*0x85ebca6b)) >>>0;
-  const rnd = n=>{s=(s*1664525+1013904223)>>>0; return s % n;};
+  const { rnd } = makeRng(s);
   if(profileName==='FAST') return false;
   if(profileName==='SECURE') return rnd(100)<25;
   return rnd(100)<10;

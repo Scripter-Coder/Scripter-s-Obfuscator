@@ -262,8 +262,17 @@ luaparse.parse(detObf);
 assert(dbgObj.payload && dbgObj.payload.includes('Shutdown'), 'payload must contain kill logic');
 // anti-crack: payload-only runs need the loader's canary preset. Extract
 // name+magic from the emitted loader (genuine runs register it).
+//
+// The environment lookup is `getgenv() or (getfenv and getfenv(0)) or _G`: the
+// getfenv(0) fallback is what lets the canary be found inside a sandboxed Lua
+// 5.1 environment, where getgenv is absent and _G is not the real globals table.
+// The assertion below is about the canary being REGISTERED, so the pattern
+// allows any environment-resolution chain between `getgenv()` and the globals
+// table. It stays strict on the part that actually matters: the `do local g=`
+// opening, the `_shc<hex>` name, a purely numeric magic, and a terminating
+// `end`. `.` does not match newlines, so this cannot run past the emitted line.
 function canaryPrelude(obfText) {
-    const m = obfText.match(/do local g=\(getgenv and getgenv\(\)\) or _G g\.(_shc[0-9a-f]+)=(\d+) end/);
+    const m = obfText.match(/do local g=\(getgenv and getgenv\(\)\)[^\n]*?g\.(_shc[0-9a-f]+)=(\d+) end/);
     assert(m, 'loader must register the anti-crack canary');
     return '_G.' + m[1] + '=' + m[2] + '\n';
 }

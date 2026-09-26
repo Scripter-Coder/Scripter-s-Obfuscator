@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/vm/frame.js — Genuine VM call-frame system (spec §6)
 // Implemented BEFORE hardening per additional requirement #2.
 // Each frame is a plain Lua table emitted into the generated VM (not JS object).
@@ -20,8 +21,10 @@ export function luaFrameTemplate(vars) {
 // JS helper: describe frame layout variability (spec requirement #6)
 // Layout is per-build randomized: field order, names, storage.
 export function randomizeFrameLayout(seed) {
-  let s = seed >>> 0;
-  const next = () => (s = (s * 1664525 + 1013904223) >>> 0);
+  // Shared per-build RNG: the local LCG's low bits are degenerate (see
+  // src/rng.js), which would lock whole seed ranges to one field order.
+  const { rnd } = makeRng(seed);
+  const next = rnd;
   const fields = ['chunk','pc','base','top','ret','nRet','vararg','upenv','pcall','caller'];
   // shuffle field order
   for (let i = fields.length - 1; i > 0; i--) {

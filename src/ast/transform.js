@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/ast/transform.js — AST transformation framework (Phase 4)
 // Separate from VM lowering. Passes: expression rewriting, branch rewriting,
 // boolean normalization, arithmetic rewriting, control-flow normalization.
@@ -5,7 +6,7 @@
 
 export function makeAstTransforms(seed, profileName) {
   let s = seed >>> 0;
-  const rnd = (n) => { s = (s * 1664525 + 1013904223) >>> 0; return s % n; };
+  const { rnd } = makeRng(s);
   const rndInt = (a,b) => a + rnd(b-a+1);
 
   // profile controls which passes run
@@ -27,14 +28,19 @@ export function applyAstTransforms(ast, { seed, profileName }) {
 
   function walkNode(node) {
     if (!node || typeof node !== 'object') return;
-    // arithmetic rewriting: a + b -> b + a (commutative), a * 2 -> a + a, etc.
+    const numericLiteral = (n) => !!n && n.type === 'NumericLiteral';
+    const literal = (n) => !!n && ['NumericLiteral', 'StringLiteral', 'BooleanLiteral', 'NilLiteral'].includes(n.type);
+    // Arithmetic operand order is observable through Lua metamethods. Only
+    // swap literals; swapping arbitrary expressions can change __add/__mul
+    // argument order and is not semantics-preserving.
     if (tx.enabled.arithmetic && node.type === 'BinaryExpression') {
-      if ((node.operator === '+' || node.operator === '*' || node.operator === '==') && tx.rnd(100) < 20) {
-        // swap operands (commutative)
+      const safeSwap = (node.operator === '+' || node.operator === '*')
+        ? numericLiteral(node.left) && numericLiteral(node.right)
+        : node.operator === '==' && literal(node.left) && literal(node.right);
+      if (safeSwap && tx.rnd(100) < 20) {
         const tmp = node.left; node.left = node.right; node.right = tmp;
         rewrites++;
-      } else if (node.operator === '*' && node.right && node.right.type === 'NumericLiteral' && String(node.right.value) === '2' && tx.rnd(100) < 30) {
-        // a * 2 -> a + a  (where a is left)
+      } else if (node.operator === '*' && numericLiteral(node.left) && node.right && numericLiteral(node.right) && String(node.right.value) === '2' && tx.rnd(100) < 30) {
         const left = node.left;
         node.operator = '+';
         node.left = JSON.parse(JSON.stringify(left));

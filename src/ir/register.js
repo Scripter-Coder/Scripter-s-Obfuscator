@@ -69,7 +69,7 @@ export function liveIntervals(blocks, liveInfo) {
   return intervals;
 }
 
-export function allocateRegisters(funcIR, profileName) {
+export function allocateRegisters(funcIR, profileName, options = {}) {
   // funcIR: {blocks: [{id, insts, succ}], nextReg, maxReg, captured?: Set}
   const blocks = funcIR.blocks || [];
   const live = liveness(blocks);
@@ -80,7 +80,11 @@ export function allocateRegisters(funcIR, profileName) {
   const allocated = new Map(); // virtual -> physical
   const physMap = new Map(); // physical -> interval
   const active=[];
+  const reservedCaptured = options.reservedCaptured || new Map();
   let nextPhys = 0;
+  for (const [virt, phys] of reservedCaptured) nextPhys = Math.max(nextPhys, phys + 1);
+  const reservedStart = nextPhys;
+  for (const [virt, phys] of reservedCaptured) { allocated.set(virt, phys); physMap.set(phys, {kind:'captured'}); }
   // Track frame storage, call preservation, varargs, multiple returns, coroutine suspension
   let maxPhys = 0;
   for(const [virt, intv] of sorted){
@@ -88,7 +92,7 @@ export function allocateRegisters(funcIR, profileName) {
     for(let i=active.length-1;i>=0;i--) if(active[i].end < intv.start) active.splice(i,1);
     // captured / coroutine suspension: never reuse (must be in frame storage / upvalue)
     if(intv.kind==='captured' || funcIR.captured?.has(virt)){
-      const phys = nextPhys++;
+      const phys = reservedCaptured.has(virt) ? reservedCaptured.get(virt) : nextPhys++;
       allocated.set(virt, phys);
       physMap.set(phys, intv);
       active.push({phys, end:intv.end, virt});
@@ -105,7 +109,7 @@ export function allocateRegisters(funcIR, profileName) {
         // find physical not currently active that is free
       }
       // Check pool of previously allocated but now expired phys
-      for(let p=0;p<nextPhys;p++){
+      for(let p=reservedStart;p<nextPhys;p++){
         const isActive = active.some(a=>a.phys===p);
         if(!isActive){
           // check intervals for that phys don't overlap (we track via active)

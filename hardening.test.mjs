@@ -29,13 +29,18 @@ console.log('[H1] VM cipher formulas are randomized per build...');
     for (let i = 0; i < 12; i++) {
         const vm = applyBytecodeVm(src);
         assert(vm, 'bytecode VM must succeed on this trivial script');
-        // blob cipher signature: "((i*i*A+i*B+C)%4294967296)%251+4"
-        const blobM = vm.match(/\(\(i\*i\*(\d+)\+i\*(\d+)\+(\d+)\)%4294967296\)%251\+4/);
+        // blob cipher: anchored on the stable head "((i*i*A" and the stable
+        // tail ")%4294967296)%251+4", capturing the coefficient terms in
+        // between. The emitter varies how many terms it emits (the current
+        // form is "A+i*B+C+(D)"), so pinning the exact term count would make
+        // this assertion describe one build shape instead of the property
+        // under test, which is that no static signature survives a rebuild.
+        const blobM = vm.match(/\(\(i\*i\*(\d+)(.+?)\)%4294967296\)%251\+4/);
         assert(blobM, 'blob cipher line present');
         // vault cipher signature: "(A*p+B+SEEDM*((p*p)%M))%251+C"
         const vaultM = vm.match(/\((\d+)\*p\+(\d+)\+\S*\*\(\(p\*p\)%(\d+)\)\)%251\+(\d+)/);
         assert(vaultM, 'vault cipher line present');
-        sigs.add(blobM[1] + '|' + blobM[2] + '|' + blobM[3] + '|' + (vaultM ? vaultM[1] + vaultM[3] : ''));
+        sigs.add(blobM[1] + blobM[2] + '|' + (vaultM ? vaultM[1] + vaultM[2] + vaultM[3] + vaultM[4] : ''));
     }
     assert.strictEqual(sigs.size >= 6, true, 'at least 6 distinct cipher shapes in 12 builds (got ' + sigs.size + ')');
     console.log('    OK:', sigs.size, 'distinct cipher shapes across 12 builds');

@@ -1,3 +1,4 @@
+import { makeRng } from '../rng.js';
 // src/bytecode/encoding.js — Real Instruction Encoding (Phase 4, §3)
 // Build-specific instruction formats, not universal parser.
 
@@ -10,7 +11,7 @@ export const FORMAT = {
 
 export function pickFormat(seed, profileName) {
   let s = seed >>> 0;
-  const rnd = n => { s = (s * 1664525 + 1013904223) >>> 0; return s % n; };
+  const { rnd } = makeRng(s);
   // profile bias: FAST prefers A, SECURE mixes B/C/D
   if (profileName==='FAST') return FORMAT.A;
   if (profileName==='SECURE') return ['A','B','C','D'][rnd(4)];
@@ -51,7 +52,7 @@ export const FAMILY = {
   JUMP: ['JMP','JIF','JIT','JNIL','ANDK','ORK'],
   CALL: ['CALL','CALLM','TAILCALL'],
   ARITH: ['ADD','SUB','MUL','DIV','MOD','POW','CONCAT','EQ','NEQ','LT','LE','GT','GE'],
-  MISC: ['NIL','TRUE','FALSE','TGET','TSET','NEWTAB','APD','DUP','POP','SWAP','UNPK','UNPKR','UNPK1F','UNPK2F','UNPK3F','RET','RETP','VARGP','NEWF','PUSHSC','POPSC','CLOSE','NOT','NEG','LEN'],
+  MISC: ['NIL','TRUE','FALSE','TGET','TSET','NEWTAB','APD','DUP','POP','SWAP','UNPK','UNPKR','UNPK1F','UNPK2F','UNPK3F','RET','RETP','VARGP','NEWF','PUSHSC','POPSC','CLOSE','NOT','NEG','LEN','STACKNEW','STACKGET','STACKSET','STACKLEN','STACKPACK','STACKUNPACK','STACKCLEAR','STACKADAPT','ENVLOAD','CRASH'],
 };
 
 export function familyOf(op) {

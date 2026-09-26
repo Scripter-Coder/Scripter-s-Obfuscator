@@ -13,6 +13,7 @@ export const IR_OPS = [
   'CALL','TAILCALL','RETURN','VARARG','CLOSURE','CLOSE', // frame
   'FOR_PREP','FOR_LOOP','TFOR_PREP','TFOR_LOOP', // loop lowering helpers (lowered to JMP+blocks)
   'PUSHSC','POPSC','DUP','POP','SWAP','UNPK','UNPKR', // stack helpers retained for compat, lowered to registers
+  'STACKNEW','STACKGET','STACKSET','STACKLEN','STACKPACK','STACKUNPACK','STACKCLEAR','STACKADAPT','ENVLOAD','CRASH',
 ];
 
 // IR instruction: { op: string, a,b,c: operands (register ids or constant idx), extra, loc, meta }
