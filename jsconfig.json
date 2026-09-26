@@ -1,29 +1,31 @@
 {
   "//": [
-    "Editor configuration ONLY. This has no effect on the deployed worker:",
-    "Cloudflare builds it with esbuild via wrangler, and Node runs the tests,",
-    "neither reads this file.",
+    "Editor configuration ONLY. It has no effect on the deployed worker:",
+    "Cloudflare builds it with esbuild via wrangler, and node runs the tests.",
+    "Neither reads this file.",
     "",
-    "It exists to clear three false errors on the first lines of the worker:",
+    "It exists so the editor resolves the project's own ESM the way the tools",
+    "that actually load it do. The repository's .mjs test files import each",
+    "other with full relative paths, and without a jsconfig the language",
+    "server defaults to moduleResolution 'node10', which does not resolve the",
+    "'.js' extension on a relative ESM import - so it reports modules that",
+    "exist, and that node loads on the very next line, as missing.",
     "",
-    "    Cannot find module '../server/d1_state.js'. Did you mean to set the",
-    "    'moduleResolution' option to 'nodenext'...",
+    "It also documents the one hard deployment constraint, which is easy to",
+    "violate by accident:",
     "",
-    "Those are language-server diagnostics, not runtime errors. Without a",
-    "jsconfig the editor falls back to moduleResolution 'node10', which does",
-    "not resolve the '.js' extension on a relative ESM import. Node and",
-    "esbuild both handle it, which is why the worker runs and the tests pass",
-    "while the editor insists the module is missing.",
+    "  For Cloudflare/worker.js is pasted into the Cloudflare dashboard, and",
+    "  the dashboard has no filesystem. The worker therefore MUST NOT import",
+    "  anything, from anywhere, ever. An import is invisible to node, to",
+    "  wrangler, and to all 23 security gates - it only fails as a paste, at",
+    "  deploy time, by hand.",
     "",
-    "'bundler' is the right setting rather than 'nodenext': it matches how the",
-    "worker is actually built (a bundler consumes these imports), and it does",
-    "not impose Node's stricter ESM rules on files that are not published as",
-    "packages.",
+    "  tools/single_file_worker_test.mjs enforces that, and its S1/S2 failure",
+    "  message says so.",
     "",
-    "NOTE this does NOT make dashboard paste work. The Cloudflare dashboard",
-    "editor has no filesystem and cannot resolve a relative import no matter",
-    "what this file says. For that, use dist/worker.single.min.js - see",
-    "For Cloudflare/README.md."
+    "'bundler' rather than 'nodenext': it matches how these files are actually",
+    "consumed (a bundler plus node's ESM loader), and it does not impose",
+    "Node's stricter ESM rules on files that are never published as packages."
   ],
 
   "compilerOptions": {
@@ -41,7 +43,6 @@
 
   "include": [
     "For Cloudflare/worker.js",
-    "server/**/*.js",
     "tools/**/*.mjs",
     "custom-obfuscator.js",
     "main.js"
@@ -51,7 +52,6 @@
     "node_modules",
     ".git",
     ".wrangler",
-    "dist",
     "new-obfuscator-copy",
     "new-obfuscator-current-copy"
   ]

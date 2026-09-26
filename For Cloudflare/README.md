@@ -170,94 +170,86 @@ traffic.
 
 ---
 
-## Deploying without the CLI — the single-file bundle
+## Deploying: one file, pasted
 
-`wrangler deploy` is the supported path and should be the one you use. This
-section exists for the case where you cannot or will not run the CLI, and you
-have to paste the worker into the Cloudflare dashboard instead.
+**`For Cloudflare/worker.js` is the whole worker. It is self-contained on
+purpose, and it must stay that way.**
 
-### Why the source cannot be pasted
+### The one rule
 
-`For Cloudflare/worker.js` imports three sibling modules:
+> **The Cloudflare dashboard editor has no filesystem.** It evaluates a single
+> pasted string. `worker.js` must not import anything, from anywhere, ever.
 
-```js
-import { createState, run as d1run } from '../server/d1_state.js';
-import { deliver, ... }                  from '../server/delivery.js';
-import { encryptAtRest, ... }            from '../server/artifact_crypto.js';
-```
+This is not a preference. It was violated once: the worker was split into four
+files (`worker.js` plus `server/d1_state.js`, `server/delivery.js`,
+`server/artifact_crypto.js`) on the reasoning that "wrangler bundles these, and
+node resolves them off disk, so there is no build step and no second copy."
 
-**The dashboard editor has no filesystem.** It evaluates one pasted string, so a
-relative import cannot resolve there — ever. The error is:
+That reasoning was sound and the conclusion was wrong, because it never asked
+how the worker actually ships. The split is reverted. The error the dashboard
+gave was:
 
 ```
 Uncaught TypeError: Invalid module specifier "../server/d1_state.js".
                     imported from "worker.js".
 ```
 
-That is not a setting you can change in the dashboard.
-
-> If your editor shows `Cannot find module '../server/d1_state.js'. Did you
-> mean to set the 'moduleResolution' option to 'nodenext'...` on those lines,
-> that is a **different and harmless** thing: a language-server diagnostic, not
-> a runtime error. The repo now has a `jsconfig.json` with
-> `moduleResolution: "bundler"`, which clears it. It does **not** make
-> dashboard paste work.
-
-### Build it
-
-```bash
-npm run build:worker
-```
-
-Produces two files:
-
-| File | Size | Use |
-|---|---|---|
-| `dist/worker.single.js` | ~265 KiB | same code, comments and section headers kept |
-| `dist/worker.single.min.js` | ~146 KiB | full-line comments removed — **paste this one** |
-
-The bundler inlines `server/d1_state.js`, `server/artifact_crypto.js`,
-`server/delivery.js` and then the worker, in dependency order, and collapses
-`import`/`export` into plain declarations. Top-level name collisions across
-those four files are a **hard error**, never a silent last-one-wins.
+Not fixable from inside the dashboard. Not worth a build step.
 
 ### Paste it
 
 1. Cloudflare dashboard → your worker → **Edit code** / **Code** tab.
 2. Select everything, delete it.
-3. Open `dist/worker.single.min.js`, copy **the whole file**, paste.
+3. Open `For Cloudflare/worker.js`, copy **the whole file** (about 4,950 lines /
+   265 KiB), paste.
 4. **Deploy**.
 
-### Do not skip the test
+There is no build step. There is no `dist/`. What the tests import is exactly
+what you paste — one file, not two.
+
+### If your editor shows red on an import line
+
+> `Cannot find module '...'. Did you mean to set the 'moduleResolution' option...`
+
+That is a **language-server diagnostic, not a runtime error.** The repo has a
+`jsconfig.json` with `moduleResolution: "bundler"` so it resolves modules the
+way node and esbuild do. It has no bearing on dashboard paste.
+
+### Keep it that way
 
 ```bash
 npm test
 ```
 
-The last suite is `tools/single_file_bundle_test.mjs` (13 checks). It is not
-ceremony — it exists because this bundler already shipped one real defect:
+The last suite is `tools/single_file_worker_test.mjs` (11 checks):
 
-> The first version recorded the import alias `run as d1run` as a **comment**
-> instead of a declaration. The output was 265 KiB of clean, plausible,
-> syntactically valid JavaScript that referenced a name nothing declared.
-> `node --check` passed, because it validates syntax and not unresolved
-> references. Every source-level test passed, because none of them read
-> `dist/`. It was caught only by importing the bundle and running the gate and
-> benchmark suites against it, which is what B7 does.
+| | |
+|---|---|
+| **S1** | no static imports |
+| **S2** | no relative specifier anywhere — including inside a string or a dynamic `import()` |
+| **S3** | the default export has `fetch` **and** `scheduled` |
+| **S4** | the file parses standalone |
+| **S5** | all 168 top-level names are declared exactly once |
+| **S6** | the 11 named test exports are still exported |
+| **S7** | gates, benchmark, atomic, at-rest and legacy all pass against this file |
 
-Two of its checks are the ones that will save you:
+**S1/S2 exist because an import fails *only* at paste time.** Node resolves it,
+wrangler bundles it, and all 23 security gates pass — the failure is a
+dashboard that refuses to evaluate the file, discovered mid-deploy, by hand.
 
-- **B1 — the bundle is not stale.** A bundle that works but is out of date is
-  worse than no bundle, because it looks authoritative. If you change the
-  worker and forget to rebuild, B1 fails. Run `npm run build:worker`.
-- **B2 — no raw control bytes.** This is the bug that made `worker.js`
-  itself uncopyable: a literal `0x00` sat inside a string literal where the
-  source should have read the escape `\0`. It was semantically identical to
-  JavaScript, so **every test passed** — but a raw control byte terminates a
-  clipboard selection, so copying the file stopped dead at line 540 and the
-  paste arrived truncated to ~500 lines. That looked exactly like an editor
-  size limit and sent us hunting for the wrong cause. The same check now runs
-  against the artifacts you paste.
+**S5 exists because four modules now share one scope.** A duplicate top-level
+`const` is legal JavaScript and the later one silently wins. When the shadowed
+name is `DENY` or `deliver`, the symptom is an authorization bug that looks
+like a logic error rather than a name collision.
+
+> A note on how that merge nearly shipped broken: the migration script recorded
+> the import alias `run as d1run` as a name to *collision-check* and printed it
+> in a summary line labelled "aliases emitted", but emitted no declaration. The
+> merged file parsed cleanly, `node --check` passed, and 9 security gates plus 2
+> attacker rows failed at runtime with `d1run is not defined`. The log agreed
+> with the bug because it described what it had *collected*, not what it had
+> *written*. Any build log that reports its inputs instead of its output is
+> worse than none.
 
 ### Verify the deployment, not just the paste
 

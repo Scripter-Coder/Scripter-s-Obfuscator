@@ -23,7 +23,7 @@ import assert from 'assert';
 import {
     encryptAtRest, decryptAtRest, tryDecryptAtRest,
     isEncrypted, kekConfigured, _resetKekCache
-} from '../server/artifact_crypto.js';
+} from '../For Cloudflare/worker.js';
 
 const KEK = 'a-test-kek-0123456789abcdef';
 const envKek = { SH_ARTIFACT_KEK: KEK };

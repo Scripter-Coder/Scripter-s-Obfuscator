@@ -225,7 +225,7 @@ mode = "smart"
 # NOTE ON THESE THREE
 #
 # They are documentation, not configuration. The session TTLs live in
-# server/delivery.js (SESSION_TTL_MS / URL_SESSION_TTL_MS) next to the code that
+# DELIVERY RULES in worker.js (SESSION_TTL_MS / URL_SESSION_TTL_MS), next to the code that
 # enforces them, and the 60s ceiling is ALSO a database trigger, so it cannot be
 # raised from here even if someone edits this file. They are repeated as vars so
 # the intended numbers are visible in one place.

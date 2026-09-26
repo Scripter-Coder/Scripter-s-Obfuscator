@@ -30,9 +30,7 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { loadWorker } from './worker_target.mjs';
-
-const worker = await loadWorker();
+const worker = (await import('../For Cloudflare/worker.js')).default;
 
 const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
 
@@ -58,7 +56,7 @@ function makeKV() {
 // sessions are single-use.
 //
 // That is exactly the failure mode this file was written to prevent, so the
-// harness supplies a real one. D1 *is* SQLite and server/d1_state.js already
+// harness supplies a real one. D1 *is* SQLite and the state layer in worker.js already
 // normalises the two calling conventions, so a DatabaseSync is a faithful
 // stand-in and the SQL under test is the SQL that will run in production.
 function makeD1() {

@@ -38,7 +38,7 @@
 //                              therefore caught on the very next attempt, with
 //                              no window. Small artifacts come back inline in
 //                              one response; large ones open a forward-only
-//                              chain (see server/delivery.js, D11).
+//                              chain (see DELIVERY RULES below, D11).
 //
 //   GET  /sh/c/<id>/<i>        KV chunk.   Chain-gated: a grant from the
 //   GET  /sh/g/<id>/<i>        GitHub part. gate AND a forward-only cursor.
@@ -130,28 +130,955 @@
 // ============================================================
 
 // ===========================================================================
-// IMPORTS (Phase 3)
+// INLINED MODULES - the atomic state layer, at-rest crypto, and the delivery
+// rules. These were three sibling files until now.
 //
-// `server/d1_state.js` is the atomic state layer and `server/delivery.js` is
-// the set of delivery rules. Both live outside this folder deliberately: the
-// worker's own comments record that they were previously inlined here and
-// then moved out, because the rules are worth reading without wading through
-// 2700 lines of routing.
+// They are inline because this worker is deployed by PASTING IT INTO THE
+// CLOUDFLARE DASHBOARD, which has no filesystem. A relative import cannot
+// resolve there, so a four-file worker was never deployable by the method
+// actually in use. Splitting it was correct for `wrangler deploy` and wrong
+// for how the worker is really shipped.
 //
-// wrangler bundles these (main = "For Cloudflare/worker.js"), and the node test
-// harness resolves them straight off disk, so there is no build step and no
-// second copy to keep in sync.
+// Consequences, all of them good:
+//
+//   * no build step, and no dist/ directory that can drift from this file
+//   * what the tests import IS what gets pasted - one artifact, not two
+//   * no bundler to maintain, and no generated copy to keep in sync
+//
+// Order below is dependency order: state layer, then crypto, then the rules
+// that call both, then the routing below that calls the rules.
 // ===========================================================================
-import { createState, run as d1run } from '../server/d1_state.js';
-import {
-    deliver, classifyAuthorization, DENY,
-    signGrant, verifyGrant,
-    openChain, advancePart, peekChain,
-    SESSION_TTL_MS, URL_SESSION_TTL_MS, CHAIN_GRANT_TTL_MS, INLINE_DELIVERY_LIMIT
-} from '../server/delivery.js';
-import {
-    encryptAtRest, decryptAtRest, tryDecryptAtRest, isEncrypted, kekConfigured
-} from '../server/artifact_crypto.js';
+
+
+// ==========================================================================
+// INLINED FROM server/d1_state.js
+// ==========================================================================
+// ===========================================================================
+// ScripterHub — server-side atomic state (Phase 2)
+//
+// WHAT THIS IS
+// The state layer that session-gated delivery needs and KV cannot provide.
+// Cloudflare KV is eventually consistent and has no atomic compare-and-swap,
+// so it structurally cannot implement one-time token consumption, rate-limit
+// increments, or a validate-and-consume in a single step. Those three are the
+// core of the target architecture, so they live in D1.
+//
+// THE CENTRAL RULE: VALIDATE AND CONSUME MUST BE ONE STATEMENT.
+//
+// The obvious implementation is a read followed by a write:
+//
+//     const s = await getSession(sid);            // check it is live
+//     if (s.ok) await markSpent(sid);             // spend it
+//
+// That is a TOCTOU hole sitting directly on the property this system exists to
+// provide. Two concurrent requests both read "live", both spend it, and both
+// receive the artifact. Throttling or serialising at the Worker layer does not
+// fix it: a request can be handled by any isolate, and a queued-but-not-yet-run
+// second request still sees a live session.
+//
+// So every consumption path here puts ALL of its preconditions in the WHERE
+// clause of a single mutating statement, and treats success as "changes()
+// returned exactly 1". If two requests race, the database serialises them and
+// exactly one sees changes()===1. There is no window between deciding and
+// spending, because there is no separate deciding step.
+//
+// WHY THE LICENSE CHECK LIVES INSIDE THE SAME STATEMENT
+// A session that was valid when it was minted says nothing about whether it is
+// valid NOW. The audit found exactly this: a license could be banned and a
+// previously issued token still received the split key, because /sh/k trusted
+// the token and never re-checked the license. So the delivery statement below
+// re-checks license and account state as part of the same atomic operation
+// that spends the session. Banning a license therefore takes effect on the
+// very next delivery attempt, with no window.
+//
+// This module is dependency-free and takes the D1 binding as an argument, so
+// it is testable against any SQLite (see atomic_state_test.mjs, which runs it
+// against real SQLite via node:sqlite rather than a hand-written mock — a mock
+// cannot demonstrate atomicity, only assert that it was called).
+// ===========================================================================
+
+// Ceiling enforced by a database trigger as well as here. Defence in depth: the
+// trigger makes an over-long session impossible to insert even if some future
+// caller bypasses this constant.
+const SESSION_TTL_CEILING_MS = 60000;
+const DEFAULT_SESSION_TTL_MS = 45000;      // request() path
+const URL_TOKEN_TTL_MS = 15000;           // weaker HttpGet fallback
+
+// Deterministic window bucket: floor(now / window) * window. One row per
+// (bucket, window_start), so a fixed window is a single atomic upsert.
+function windowStart(now, windowMs) {
+    return Math.floor(now / windowMs) * windowMs;
+}
+
+function randomId(prefix, bytes = 16) {
+    const b = new Uint8Array(bytes);
+    crypto.getRandomValues(b);
+    let hex = '';
+    for (let i = 0; i < b.length; i++) hex += b[i].toString(16).padStart(2, '0');
+    return prefix + '_' + hex;
+}
+
+// Values are bound as parameters everywhere. Nothing in this module
+// interpolates caller input into SQL, so a script id or session id cannot be
+// used to alter a statement.
+//
+// The two supported engines disagree about the calling convention:
+//   D1          stmt = db.prepare(sql).bind(...p)   -> .run() / .all() / .first()
+//   node:sqlite stmt = db.prepare(sql)              -> .run(...p) / .all(...p) / .get(...p)
+// node:sqlite is what the tests use, because a mock cannot demonstrate
+// atomicity. So the difference is normalised here, once, rather than being
+// papered over in every call site.
+function stmtFor(db, sql, params) {
+    const st = db.prepare(sql);
+    // D1: bind once, then the statement is reusable.
+    if (typeof st.bind === 'function') return st.bind(...params);
+    // node:sqlite: params are passed per call, so they must be captured here.
+    // (Getting this wrong silently binds nothing rather than throwing, which is
+    // why every test asserts on the values that were actually stored.)
+    return {
+        run: () => st.run(...params),
+        all: () => st.all(...params),
+        first: () => (st.get ? st.get(...params) : st.all(...params)[0])
+    };
+}
+function q(db, sql, ...params) {
+    const st = stmtFor(db, sql, params);
+    return st.run();
+}
+function qAll(db, sql, ...params) {
+    return stmtFor(db, sql, params).all();
+}
+function qOne(db, sql, ...params) {
+    const st = stmtFor(db, sql, params);
+    const r = typeof st.first === 'function' ? st.first() : st.all()[0];
+    return r === undefined ? null : r;
+}
+
+// The same three, exported so callers OUTSIDE this module can use them.
+//
+// WHY THEY ARE EXPORTED RATHER THAN PRIVATE
+// The WHERE-clause discipline that makes the whole layer work applies to every
+// query in the system, not only to the ones that happen to live here. An
+// earlier revision had the worker call `db.prepare(sql).bind(...)` directly for
+// its own INSERT/UPDATE statements, and that silently does not work on
+// node:sqlite: `.bind` does not exist there, so params are never bound and
+// every column is written as NULL. It threw only once the tests happened to
+// assert on stored values.
+//
+// Exporting the helper is the fix that cannot regress the same way, because
+// there is now no way to write a parameterised statement in this codebase
+// without going through the engine-normalising path.
+const run = q;
+const all = qAll;
+const one = qOne;
+
+function createState(db) {
+    if (!db) throw new Error('createState requires a D1 binding');
+
+    // -----------------------------------------------------------------------
+    // sessions
+    // -----------------------------------------------------------------------
+
+    // Mint a session. A session is a claim on ONE artifact for ONE identity,
+    // and it may be spent exactly once.
+    //
+    // `nonce` is stored in its own table as well as on the session so that
+    // "one use per session" and "one use per nonce" stay two independent
+    // constraints rather than one overloaded flag.
+    async function createSession(o) {
+        const now = o.now || Date.now();
+        const ttl = Math.min(o.ttlMs || DEFAULT_SESSION_TTL_MS, SESSION_TTL_CEILING_MS);
+        const sid = o.sid || randomId('sid', 24);
+        const nonce = o.nonce || randomId('n', 24);
+        // Order is forced by the foreign key: nonces.session_id references
+        // sessions.sid, so the session row must exist first.
+        //
+        // The failure direction that results is the safe one. If the nonce
+        // insert fails, a session exists with no claimable ticket: nobody can
+        // present a valid nonce for it, so it is unusable and expires on its
+        // own. The alternative ordering would leave an orphaned claimable
+        // nonce, which is the dangerous direction. Neither case is wrapped in
+        // a transaction deliberately — D1 transactions are per-request, and the
+        // consuming statements below do not depend on both rows existing to be
+        // correct, only on the preconditions in their own WHERE clauses.
+        await q(db, `INSERT INTO sessions
+            (sid, script_id, license_key, user_id, hwid, transport, nonce, created_at, expires_at, ip, ua)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            sid, o.scriptId, o.licenseKey || null, o.userId || null, o.hwid || null,
+            o.transport || 'header', nonce, now, now + ttl, o.ip || null, (o.ua || '').slice(0, 200) || null);
+        await q(db, `INSERT INTO nonces(nonce, session_id, script_id, created_at, expires_at)
+                     VALUES (?,?,?,?,?)`,
+            nonce, sid, o.scriptId, now, now + ttl);
+        return { sid, nonce, expiresAt: now + ttl, transport: o.transport || 'header' };
+    }
+
+    // THE DELIVERY GATE.
+    //
+    // One statement. It authorises AND spends. Every precondition lives in the
+    // WHERE clause, including the live license and account re-check, so there
+    // is no window between deciding and spending.
+    //
+    // Returns { ok: true } only when exactly one row was changed. A caller must
+    // treat any other result as a refusal, not as "probably fine".
+    async function consumeSession(sid, now) {
+        now = now || Date.now();
+        const res = await q(db, `UPDATE sessions SET consumed_at = ?
+            WHERE sid = ?
+              AND consumed_at IS NULL
+              AND revoked = 0
+              AND expires_at > ?
+              AND (license_key IS NULL OR EXISTS (
+                    SELECT 1 FROM licenses l
+                     WHERE l.key = sessions.license_key
+                       AND l.revoked_at IS NULL
+                       AND (l.expires_at IS NULL OR l.expires_at > ?)
+                       -- THE HWID RE-LOCK PREDICATE.
+                       --
+                       -- A license is locked to hardware on first successful
+                       -- auth. If it is re-locked to DIFFERENT hardware while a
+                       -- session minted against the OLD hardware is still live,
+                       -- that session must stop working. Without this, the lock
+                       -- is only advisory and a shared key stays shareable for
+                       -- as long as one old session happens to survive.
+                       --
+                       -- This was genuinely missing: the Phase 2 commit notes
+                       -- describe it as caught and fixed by test F7, but the
+                       -- predicate was not in the statement that shipped. It
+                       -- is now asserted by G22 in
+                       -- tools/security_gates_test.mjs.
+                       AND (l.hwid IS NULL OR l.hwid = sessions.hwid)))
+              AND (user_id IS NULL OR EXISTS (
+                    SELECT 1 FROM users u
+                     WHERE u.id = sessions.user_id
+                       AND u.disabled = 0))`,
+            now, sid, now, now);
+        return { ok: changesOf(res) === 1 };
+    }
+
+    // Consume the nonce, and report which session it belonged to.
+    //
+    // ONE conditional UPDATE, not a read-then-write and not a DELETE.
+    //
+    // Why UPDATE rather than DELETE: the schema carries `consumed_at` on this
+    // table and D4 records the nonces table as an AUDIT TRAIL. A DELETE is
+    // also atomic, and it was the original implementation, but it destroys the
+    // evidence — after a replay attempt there was nothing left to look at, so
+    // "was this nonce ever spent, and when?" became unanswerable. The
+    // conditional UPDATE keeps the atomicity property (success is
+    // changes()===1, so a concurrent second caller matches zero rows) AND
+    // leaves the row for forensics.
+    //
+    // Why there is NO expiry predicate here, which is a deliberate change:
+    //
+    //   The first version was `DELETE ... WHERE nonce = ? AND expires_at > ?`.
+    //   That means a session presented after its TTL does not burn the nonce,
+    //   it leaves a fully unconsumed nonce sitting in the table. Any later
+    //   attempt with a clock reading slightly earlier — a client with a skewed
+    //   clock, a retry through a different edge, a captured response replayed
+    //   later — finds the pair still good and the session still live. An
+    //   expired credential that can be revived is not expired.
+    //
+    //   Spending the nonce unconditionally makes the failure direction safe:
+    //   once a pair has been presented it is dead, whether or not the attempt
+    //   succeeded. The session's own `expires_at` still enforces the TTL in
+    //   consumeSession, so nothing is authorised by this change — the only
+    //   difference is that the pair cannot come back to life.
+    async function consumeNonce(nonce, now) {
+        const row = await qOne(db, `UPDATE nonces SET consumed_at = ?
+            WHERE nonce = ? AND consumed_at IS NULL
+       RETURNING session_id, script_id`,
+            now || Date.now(), nonce);
+        return row ? { ok: true, sessionId: row.session_id, scriptId: row.script_id } : { ok: false };
+    }
+
+    // Read-only inspection. NEVER use this to decide whether to deliver; use
+    // consumeSession(), which is atomic. This exists for diagnostics and for
+    // the loader to know whether to prompt for a license at all.
+    async function peekSession(sid, now) {
+        return qOne(db, `SELECT sid, script_id, license_key, user_id, hwid, transport,
+                                created_at, expires_at, consumed_at, revoked
+                           FROM sessions WHERE sid = ?`, sid) || null;
+    }
+
+    async function revokeSession(sid, now) {
+        now = now || Date.now();
+        await q(db, 'UPDATE sessions SET revoked = 1 WHERE sid = ?', sid);
+        await addRevocation('session', sid, 'revoked via API', 'operator', now);
+    }
+
+    // -----------------------------------------------------------------------
+    // rate limits (durable — survives isolate recycling, unlike the in-memory
+    // counters the worker used in Phase 1)
+    // -----------------------------------------------------------------------
+    async function hitRateLimit(bucket, identity, limit, windowMs, now) {
+        now = now || Date.now();
+        const ws = windowStart(now, windowMs);
+        const row = await qOne(db, `INSERT INTO rate_limits(bucket, window_start, count)
+                VALUES (?,?,1)
+            ON CONFLICT(bucket, window_start) DO UPDATE SET count = count + 1
+            RETURNING count`, bucket + '|' + identity, ws);
+        const count = row ? Number(row.count) : 1;
+        return { allowed: count <= limit, count, limit, windowStart: ws, retryAfterSec: Math.max(1, Math.ceil((ws + windowMs - now) / 1000)) };
+    }
+
+    // -----------------------------------------------------------------------
+    // revocation
+    // -----------------------------------------------------------------------
+    async function addRevocation(subject, subjectId, reason, actor, now) {
+        await q(db, 'INSERT INTO revocations(subject, subject_id, reason, actor, created_at) VALUES (?,?,?,?,?)',
+            subject, subjectId, reason || null, actor || null, now || Date.now());
+    }
+    async function isRevoked(subject, subjectId, now) {
+        const r = await qOne(db, 'SELECT 1 AS hit FROM revocations WHERE subject=? AND subject_id=? AND created_at <= ?',
+            subject, subjectId, now || Date.now());
+        return !!r;
+    }
+
+    // -----------------------------------------------------------------------
+    // housekeeping
+    // -----------------------------------------------------------------------
+    //
+    // Everything the state layer writes is append-or-update: sessions, nonces,
+    // rate-limit windows and the audit log all grow forever. None of it is
+    // read except by explicit id or by a current window, so old rows are
+    // pure cost — they inflate the database, slow the indices, and eventually
+    // make every write slower, which is a slow-motion outage nobody diagnoses.
+    //
+    // `sweepExpired` is the janitor. It is idempotent and bounded, and it
+    // refuses to delete an UNSPENT session even if it is old: expiry stops a
+    // session being usable, it does not make it un-recorded, and a live
+    // credential must leave an audit trail.
+    //
+    // A session is only deletable once it is BOTH past its TTL AND spent.
+    // A session that expired unspent is kept for a grace window, because a
+    // client that never got to the delivery step is exactly the shape of a
+    // replay attempt, and that is worth being able to look at.
+    async function sweepExpired(now, opts = {}) {
+        now = now || Date.now();
+        const graceMs = opts.sessionGraceMs === undefined ? 24 * 60 * 60 * 1000 : opts.sessionGraceMs;
+        const auditKeepMs = opts.auditKeepMs === undefined ? 30 * 24 * 60 * 60 * 1000 : opts.auditKeepMs;
+        const out = { sessions: 0, nonces: 0, rateLimits: 0, audit: 0, revocations: 0 };
+        // expired AND spent -> the only sessions removed outright
+        out.sessions = changesOf(await q(db,
+            'DELETE FROM sessions WHERE expires_at < ? AND consumed_at IS NOT NULL AND consumed_at < ?',
+            now, now - graceMs));
+        // expired and spent, well past the grace window, with no live session
+        out.nonces = changesOf(await q(db,
+            `DELETE FROM nonces WHERE expires_at < ? AND session_id NOT IN (
+                 SELECT sid FROM sessions WHERE consumed_at IS NULL AND expires_at > ?)`,
+            now - graceMs, now));
+        // rate-limit windows older than the sweep horizon are unread
+        out.rateLimits = changesOf(await q(db,
+            'DELETE FROM rate_limits WHERE window_start < ?', now - graceMs));
+        // the audit log is evidence, so it has a much longer retention and the
+        // default is generous. 30 days here, not "delete everything old".
+        out.audit = changesOf(await q(db,
+            'DELETE FROM audit_log WHERE at < ?', now - auditKeepMs));
+        out.revocations = changesOf(await q(db,
+            'DELETE FROM revocations WHERE created_at < ?', now - auditKeepMs));
+        return out;
+    }
+
+    // Counters for the health endpoint, so "the table has 4 million rows" is
+    // something an operator can see rather than something they discover.
+    async function stats() {
+        const one = async (sql) => {
+            const r = await qOne(db, sql);
+            return r ? Number(Object.values(r)[0]) : 0;
+        };
+        return {
+            sessions: await one('SELECT COUNT(*) AS n FROM sessions'),
+            sessionsLive: await one('SELECT COUNT(*) AS n FROM sessions WHERE consumed_at IS NULL AND expires_at > ' + Date.now()),
+            nonces: await one('SELECT COUNT(*) AS n FROM nonces'),
+            rateLimits: await one('SELECT COUNT(*) AS n FROM rate_limits'),
+            audit: await one('SELECT COUNT(*) AS n FROM audit_log'),
+            revocations: await one('SELECT COUNT(*) AS n FROM revocations'),
+            users: await one('SELECT COUNT(*) AS n FROM users'),
+            scripts: await one('SELECT COUNT(*) AS n FROM scripts'),
+            licenses: await one('SELECT COUNT(*) AS n FROM licenses'),
+            builds: await one('SELECT COUNT(*) AS n FROM build_versions')
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // build versions (Phase 4 — rotation)
+    // -----------------------------------------------------------------------
+    //
+    // `t0` is baked into every published file and is identical forever, so any
+    // credential derived from it is permanent. `generation` is what makes it
+    // rotatable: re-upload increments it, the new build gets a new t0, and the
+    // old t0 stops matching anything the worker holds.
+    //
+    // `retireBuild` is the manual half. `active = 0` on the previous build is
+    // what makes rotation observable rather than silent.
+    async function nextGeneration(scriptId) {
+        const r = await qOne(db,
+            'SELECT COALESCE(MAX(generation), 0) AS g FROM build_versions WHERE script_id = ?',
+            scriptId);
+        return (r ? Number(r.g) : 0) + 1;
+    }
+
+    async function recordBuild(o) {
+        await q(db,
+            `INSERT INTO build_versions(id,script_id,generation,artifact_id,active,created_at)
+             VALUES (?,?,?,?,1,?)
+             ON CONFLICT(script_id,generation) DO UPDATE SET
+                artifact_id = excluded.artifact_id, active = 1`,
+            o.id, o.scriptId, o.generation, o.artifactId || null, o.now || Date.now());
+        return { id: o.id, generation: o.generation };
+    }
+
+    // Retire every other generation for this script. Called on upload so the
+    // newest build is the only live one.
+    async function retireOlder(scriptId, keepGeneration, now) {
+        return changesOf(await q(db,
+            'UPDATE build_versions SET active = 0, retired_at = ? WHERE script_id = ? AND generation < ? AND active = 1',
+            now || Date.now(), scriptId, keepGeneration));
+    }
+
+    // Is this t0 the ACTIVE build's? The delivery gate asks before it releases
+    // a split key, which is what makes a rotation take effect immediately
+    // rather than whenever the last run happens to notice.
+    //
+    // Returns true when no build has ever been recorded: a script published
+    // before rotation existed must keep working, so "unknown" is permissive
+    // here. That is a real weakening and it is scoped to legacy scripts only
+    // — a script with any recorded build is always checked.
+    async function isActiveT0(scriptId, t0) {
+        const r = await qOne(db,
+            'SELECT COUNT(*) AS n FROM build_versions WHERE script_id = ?', scriptId);
+        const total = r ? Number(r.n) : 0;
+        if (total === 0) return true;
+        const hit = await qOne(db,
+            'SELECT id FROM build_versions WHERE script_id = ? AND generation = (SELECT MAX(generation) FROM build_versions WHERE script_id = ?) AND active = 1',
+            scriptId, scriptId);
+        if (!hit) return false;
+        const b = await qOne(db, 'SELECT id FROM build_versions WHERE script_id = ? AND active = 1', scriptId);
+        void t0;
+        return !!b;
+    }
+
+    async function activeBuild(scriptId) {
+        return qOne(db,
+            'SELECT id, generation, active, created_at, retired_at FROM build_versions WHERE script_id = ? AND active = 1 ORDER BY generation DESC LIMIT 1',
+            scriptId);
+    }
+
+    // -----------------------------------------------------------------------
+    // audit
+    // -----------------------------------------------------------------------
+    // Deliberately a fixed parameter list that maps 1:1 to columns. There is
+    // no free-form blob and no column for source, a license key, a Special Key
+    // or artifact bytes, so "never log the secret" is a property of the table
+    // shape and this signature rather than a rule at the call site.
+    async function audit(e) {
+        await q(db, `INSERT INTO audit_log
+            (at, event, outcome, script_id, license_ref, user_ref, session_id, nonce_ref, reason, transport, ip, ua)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            e.at || Date.now(), e.event, e.outcome, e.scriptId || null,
+            e.licenseRef || null, e.userRef || null, e.sessionId || null, e.nonceRef || null,
+            (e.reason || '').slice(0, 200) || null, e.transport || null,
+            e.ip || null, (e.ua || '').slice(0, 200) || null);
+    }
+
+    return {
+        createSession, consumeSession, consumeNonce, peekSession, revokeSession,
+        hitRateLimit, addRevocation, isRevoked, audit,
+        sweepExpired, stats,
+        nextGeneration, recordBuild, retireOlder, isActiveT0, activeBuild,
+        // exposed for tests and diagnostics
+        _db: db,
+        _randomId: randomId
+    };
+}
+
+// D1 returns metadata in different shapes across runtimes: `meta.changes`,
+// `meta.changes`, or `meta.rows_changed`. Normalise so the atomicity check
+// cannot silently read undefined and compare false.
+function changesOf(res) {
+    if (!res) return 0;
+    if (typeof res === 'number') return res;
+    const m = res.meta || res;
+    const v = m.changes ?? m.rows_changed ?? m.changesRead ?? 0;
+    return Number(v) || 0;
+}
+
+// ==========================================================================
+// INLINED FROM server/artifact_crypto.js
+// ==========================================================================
+// ===========================================================================
+// At-rest encryption for the artifact store (Phase 4)
+// ===========================================================================
+//
+// WHAT THIS IS FOR, PRECISELY
+//
+// The artifact in KV is already ciphertext: the owner's browser encrypted it
+// with the per-script Special Key before upload, and the worker never sees
+// that key. So this is NOT about protecting the artifact from the worker, and
+// claiming otherwise would be a category error.
+//
+// What it IS about is a narrower and real threat: the KV namespace is one flat
+// readable store that also holds sh_licenses, sh_users_db, sh_meta_ and the
+// split keys. Anyone who can read the namespace — a leaked credential, a
+// misconfigured binding, a backup, an insider — currently reads the artifact
+// bytes directly, with no second factor. `SH_ARTIFACT_KEK` adds one: a key
+// that lives only in the Worker's secret store, so the ciphertext sitting in
+// KV is inert on its own.
+//
+// It does NOT protect against the worker itself being compromised. The KEK is
+// in the same process. It narrows the blast radius of "the KV store leaked",
+// which is the realistic case, and it is honest about that rather than
+// overselling.
+//
+// ---------------------------------------------------------------------------
+// WHY IT IS OPT-IN AND MARKER-PREFIXED
+// ---------------------------------------------------------------------------
+//
+// Two reasons, and the second is the important one.
+//
+// 1. Cost. AES-GCM over a 30MB artifact per delivery is real CPU on a Worker.
+//     An operator who does not need it should not pay for it.
+//
+// 2. A rollout that cannot be reversed. If the KEK is set and the namespace is
+//     already full of plaintext artifacts, then un-setting the KEK makes every
+//     one of them permanently unreadable. That is data loss, not a security
+//     downgrade, and it would happen silently.
+//
+// So every value carries a marker:
+//
+//     SHKEK1:<base64 iv>:<base64 ciphertext+tag>
+//
+// A value WITHOUT the marker is plaintext and is served as-is; a value WITH it
+// needs the KEK. That makes the two states unambiguous, makes a partial
+// rollout safe in both directions, and means this can be switched on for new
+// uploads without touching existing ones.
+//
+// A missing KEK on a marked value is a REFUSAL, never a pass-through. Serving
+// the raw marked bytes would hand the caller a string starting "SHKEK1:" and
+// they would conclude the script is corrupt rather than that the operator
+// misconfigured something. Failing loudly is the only safe direction.
+// ===========================================================================
+
+const KEK_MARKER = 'SHKEK1:';
+
+// Cached per isolate: the deriveKey call is not free and a secret does not
+// change while an isolate is alive, so re-deriving on every request is waste.
+//
+// KEYED ON THE KEK, and that is load-bearing rather than tidiness.
+//
+// The first version cached a single derived key with nothing on the entry. It
+// looked correct — one Worker, one env, one secret — and it was, right up
+// until two different KEKs existed in one module instance. Then the cache
+// handed back the PREVIOUS key and the new one silently failed to decrypt.
+// tools/artifact_crypto_test.mjs caught it by encrypting with one KEK and
+// decrypting with another in the same process.
+//
+// Not purely theoretical: `wrangler dev` reloads the module with different
+// vars, a preview and a production env can share an isolate locally, and any
+// future multi-tenant shape would do it in anger. The failure mode is data
+// loss reported as a wrong-key error — an operator rotates a secret and every
+// script breaks, which is the worst possible moment to discover it.
+//
+// The cache key is a SHA-256 of the secret, not the secret, so the raw KEK is
+// never parked in a module-level variable for a heap dump or a stray log to
+// find. Bounded so a pathological number of distinct secrets cannot grow it
+// without limit; insertion order is the eviction order.
+let kekCache = new Map();   // sha256(secret) -> { raw: ArrayBuffer, at: number }
+const KEK_CACHE_MS = 60 * 1000;
+const KEK_CACHE_MAX = 8;
+
+function b64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+}
+function unb64(s) {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+
+function kekConfigured(env) {
+    return !!(env && env.SH_ARTIFACT_KEK && String(env.SH_ARTIFACT_KEK).length >= 16);
+}
+
+function isEncrypted(value) {
+    return typeof value === 'string' && value.startsWith(KEK_MARKER);
+}
+
+function hex(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += bytes[i].toString(16).padStart(2, '0');
+    return s;
+}
+
+async function getKek(env) {
+    if (!kekConfigured(env)) return null;
+    const secret = String(env.SH_ARTIFACT_KEK);
+    const tag = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))));
+    const now = Date.now();
+    const hit = kekCache.get(tag);
+    if (hit && now - hit.at < KEK_CACHE_MS) return hit.raw;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('SHKEK::' + secret));
+    if (kekCache.size >= KEK_CACHE_MAX) {
+        const oldest = kekCache.keys().next().value;
+        if (oldest !== undefined) kekCache.delete(oldest);
+    }
+    kekCache.set(tag, { raw: digest, at: now });
+    return digest;
+}
+
+// Test seam: the cache is module-level, so a test that flips the env var
+// between cases would otherwise read the previous case's key.
+function _resetKekCache() { kekCache = new Map(); }
+
+// ---------------------------------------------------------------------------
+// Encrypt / decrypt
+// ---------------------------------------------------------------------------
+
+async function encryptAtRest(env, text) {
+    const kek = await getKek(env);
+    if (!kek) return text;                       // opt-in: no KEK, no change
+    const key = await crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['encrypt']);
+    // 12 bytes is the GCM standard nonce length. Random per encryption, which
+    // is what stops two identical artifacts producing identical ciphertext.
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        new TextEncoder().encode(text)
+    );
+    return KEK_MARKER + b64(iv) + ':' + b64(new Uint8Array(ct));
+}
+
+// Returns the plaintext, or throws. Callers MUST NOT fall back to the raw
+// value on failure — see the module header on why that direction is unsafe.
+async function decryptAtRest(env, value) {
+    if (!isEncrypted(value)) return value;        // legacy plaintext
+    const kek = await getKek(env);
+    if (!kek) {
+        throw new Error('artifact is at-rest encrypted but SH_ARTIFACT_KEK is not set');
+    }
+    const rest = value.slice(KEK_MARKER.length);
+    const sep = rest.indexOf(':');
+    if (sep <= 0) throw new Error('corrupt at-rest envelope');
+    const iv = unb64(rest.slice(0, sep));
+    const ct = unb64(rest.slice(sep + 1));
+    const key = await crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    return new TextDecoder().decode(pt);
+}
+
+// Non-throwing probe for call sites that want to distinguish "not set up" from
+// "corrupt", e.g. to answer a health check.
+async function tryDecryptAtRest(env, value) {
+    try { return { ok: true, text: await decryptAtRest(env, value) }; }
+    catch (e) { return { ok: false, error: String(e && e.message ? e.message : e) }; }
+}
+
+// ==========================================================================
+// INLINED FROM server/delivery.js
+// ==========================================================================
+// ===========================================================================
+// ScripterHub — session-gated delivery (Phase 3)
+//
+// WHAT THIS IS
+// The layer between "the client proved it may run" and "here are the bytes".
+// It is deliberately separate from worker.js because everything here is
+// DECISIONS, not routing: the whole value of the module is that the rules are
+// in one place and each one is a single statement that either fires or does
+// not.
+//
+// THE THREE PROPERTIES, and where each one lives
+//
+//   1. No artifact without a session.
+//      Not enforced here — enforced by the fact that nothing in worker.js
+//      reads artifact bytes outside `deliver()`. See GATE 1 below.
+//
+//   2. One session, one delivery, ever.
+//      `authorize()` in d1_state.js. A single conditional UPDATE whose WHERE
+//      clause carries every precondition, success = changes()===1. The nonce
+//      is spent first (DELETE ... RETURNING), then the session.
+//
+//   3. Old sessions die.
+//      `expires_at > now` in the same WHERE clause. Server-enforced, so
+//      there is no advisory timestamp a client can ignore. The 60s ceiling is
+//      additionally a database trigger, so an over-long session is not
+//      insertable even by a future caller that bypasses the constant.
+//
+// WHY THE NONCE IS SPENT BEFORE THE SESSION
+// The failure direction decides the design. If the session is spent and the
+// nonce check then fails, the client must restart the flow and the artifact
+// was never delivered — safe. The other order could leave a session spent
+// against a nonce that was never claimed, which is also safe, but the first
+// order additionally guarantees that a session can never be spent twice for
+// the same claim attempt. When in doubt, burn the scarce resource (the
+// session) and let the client re-mint.
+//
+// WHY A SERVER-ISSUED OPAQUE VALUE INSTEAD OF A DERIVED TOKEN
+// The Phase 1 token was HMAC(key|hwid|t0) keyed by SHA-256("SHAUTH::"+key).
+// Every input to that expression is known to anyone who already holds the
+// license key, so it was not proof of anything — it was a checksum. A client
+// could compute a valid token offline and present it, which is gate G09.
+//
+// sid and nonce are now 192 bits from crypto.getRandomValues(), stored in D1,
+// and never derivable from anything the client knows. Possession of a valid
+// license gets you a session; it does not get you a token, because there is no
+// token to compute. The client is not trusted to have authenticated; the
+// server has a row saying so.
+// ===========================================================================
+
+// Every statement in this module goes through the engine-normalising helpers
+// in d1_state.js rather than calling db.prepare(sql).bind(...) directly. That
+// is not a style preference: D1 and node:sqlite have different calling
+// conventions, `.bind` exists on only one of them, and a direct call writes
+// NULL columns on the other WITHOUT THROWING. See the note beside stmtFor().
+
+
+// A session is short by design. 45s is long enough for an executor to
+// authenticate, fetch, decrypt and start, and short enough that a captured
+// pair is worthless almost immediately.
+const SESSION_TTL_MS = 45000;// The URL fallback (game:HttpGet cannot set headers) is strictly weaker: the
+// credential rides in a URL that can reach access logs. It gets a shorter life
+// and is counted separately, so its share of traffic stays visible instead of
+// being averaged into the strong path's numbers.
+const URL_SESSION_TTL_MS = 15000;
+
+// A multi-part chain is a long crawl by construction — an executor pulling
+// 10GB of parts needs minutes, not seconds. So the chain window is generous
+// compared to a single delivery, and the guarantee comes from the forward-only
+// cursor rather than from the clock. One-time-ness of each PART is what
+// matters; the window only bounds how long a partial crawl can be resumed.
+const CHAIN_GRANT_TTL_MS = 15 * 60 * 1000;
+
+// Artifacts at or below this are returned INLINE by the single delivery gate:
+// one atomic consume, one response, nothing left to fetch. That is the strong
+// case and it is the normal one.
+const INLINE_DELIVERY_LIMIT = 2 * 1024 * 1024;
+
+// Refusal reasons. Returned to the loader as `SHERR <reason>` so the in-game
+// UX can say something useful, and written to the audit log. Deliberately
+// coarse: a client that can tell "expired" from "wrong hardware" learns
+// something about the keyspace, and it gains nothing operationally either way.
+const DENY = {
+    NO_STATE:    'nostate',     // D1 not bound / not migrated
+    NO_SCRIPT:   'gone',        // no such script
+    KILLED:      'killed',      // killswitch or per-script kill
+    NEEDS_KEY:   'invalid',     // no/invalid license presented
+    BANNED:      'banned',
+    EXPIRED:     'expired',
+    HWID:        'hwid',        // locked to different hardware
+    HIDDEN:      'hidden',      // visibility forbids this caller
+    NO_SESSION:  'nosession',   // sid unknown, spent, or revoked
+    BAD_NONCE:   'nonce',       // nonce unknown, spent, or wrong session
+    EXPIRED_SESSION: 'stale',
+    TOO_LARGE:   'toolarge'
+};
+
+// ---------------------------------------------------------------------------
+// Grant tokens: a small capability that says "a chain was legitimately opened
+// for THIS script and THIS session" without being the session itself.
+//
+// Why this is not just the sid: the sid is a bearer that the gate already
+// spent. Handing the raw sid to the part route would let a part request
+// re-present it, and the route would have no way to tell an authorised
+// mid-chain fetch from a replay of the mint. A separate, short, HMAC-bound
+// value keeps the two concerns separate: `sid` is the session (server state),
+// `grant` is the capability to walk the cursor (stateless, expiring).
+//
+// The HMAC key is the worker's session secret, so a grant is unforgeable
+// without a server-only value — the same property that makes the owner and
+// user session tokens trustworthy.
+// ---------------------------------------------------------------------------
+
+function b64u(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64u(str) {
+    let s = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+
+async function hmacHex(secret, message) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+        'raw', enc.encode(String(secret || '')), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(String(message)));
+    return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// grant = base64url({sid, scriptId, exp}) + "." + hmac
+async function signGrant(secret, sid, scriptId, expiresAt) {
+    const body = { s: sid, i: scriptId, e: expiresAt };
+    const payload = b64u(new TextEncoder().encode(JSON.stringify(body)));
+    const sig = (await hmacHex(secret, payload)).slice(0, 32);
+    return payload + '.' + sig;
+}
+
+// Returns { ok, sid, scriptId, exp } or { ok: false, reason }.
+//
+// The signature covers the payload, so every field inside it is authenticated:
+// a caller cannot rewrite the sid, retarget the script, or extend the expiry,
+// because any change alters the bytes the HMAC was computed over.
+async function verifyGrant(secret, token, now) {
+    const t = String(token || '');
+    const dot = t.lastIndexOf('.');
+    if (dot <= 0) return { ok: false, reason: 'malformed' };
+    const payload = t.slice(0, dot);
+    const sig = t.slice(dot + 1);
+    const want = (await hmacHex(secret, payload)).slice(0, 32);
+    // length-independent compare; both are fixed 32-hex
+    if (sig.length !== want.length) return { ok: false, reason: 'bad-signature' };
+    let diff = 0;
+    for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ sig.charCodeAt(i);
+    if (diff !== 0) return { ok: false, reason: 'bad-signature' };
+    let body;
+    try { body = JSON.parse(new TextDecoder().decode(unb64u(payload))); } catch (e) {
+        return { ok: false, reason: 'malformed' };
+    }
+    if (!body || typeof body.s !== 'string' || typeof body.i !== 'string' || !Number(body.e)) {
+        return { ok: false, reason: 'malformed' };
+    }
+    if (!(Number(body.e) > (now || Date.now()))) return { ok: false, reason: 'expired' };
+    return { ok: true, sid: body.s, scriptId: body.i, exp: Number(body.e) };
+}
+
+// ---------------------------------------------------------------------------
+// classifyAuthorization
+//
+// The PRE-delivery decision: may this caller open a session at all?
+//
+// Split from `deliver()` on purpose, because these are two different questions
+// asked at two different times, and conflating them is how a ban ends up being
+// enforced at mint time but not at delivery time:
+//
+//   may I open a session?   -> classifyAuthorization, here
+//   may I have the bytes?   -> authorize(), which re-checks live state
+//
+// The re-check at delivery is not redundant. A session that was valid when it
+// was minted says nothing about whether it is valid 30 seconds later, and the
+// whole point of the audit's G06 finding was that the old code trusted the
+// token and never looked at the license again.
+// ---------------------------------------------------------------------------
+function classifyAuthorization(o) {
+    if (o.noState) return DENY.NO_STATE;
+    if (!o.scriptExists) return DENY.NO_SCRIPT;
+    if (o.killswitch || o.scriptKilled) return DENY.KILLED;
+
+    // Server-side visibility (migrations/0001_init.sql, scripts.visibility).
+    // This used to exist only as a localStorage flag in the browser, so
+    // "private" meant "hidden in the UI" while /sh/<id> still served anyone
+    // who asked. That is gate G10.
+    if (o.visibility === 'private' && !o.isOwner) return DENY.HIDDEN;
+    if (o.visibility === 'account' && !o.userId) return DENY.HIDDEN;
+
+    if (o.authRequired) {
+        if (!o.key) return DENY.NEEDS_KEY;
+        // re-uses the worker's classifyLicense contract: { code }
+        const v = o.classify(o.key, o.hwid, o.now);
+        if (v.code === 'banned') return DENY.BANNED;
+        if (v.code === 'expired') return DENY.EXPIRED;
+        if (v.code === 'hwid') return DENY.HWID;
+        if (v.code !== 'ok') return DENY.NEEDS_KEY;
+    }
+    return null;   // null == authorised
+}
+
+// ---------------------------------------------------------------------------
+// The delivery decision result, in one place.
+//
+// `deliver()` is the ONLY function in the codebase permitted to return
+// artifact bytes. Everything else refuses. That is what makes gate G01
+// ("no artifact without a credential") a structural property rather than a
+// promise: there is exactly one exit, and it is behind two atomic statements.
+// ---------------------------------------------------------------------------
+async function deliver(state, o) {
+    // A delivery MUST NOT be attempted without a live state layer. This is the
+    // one place that fails closed rather than degrading, and it is deliberate:
+    //
+    // The obvious alternative is "if D1 is missing, fall back to the KV check",
+    // which is what the Phase 2 notes called for so the code could ship before
+    // the database existed. Shipping is no longer a constraint — the database
+    // is created in step 2 of the wrangler.toml checklist — and a KV fallback
+    // here would silently restore every hole Phase 3 exists to close, with no
+    // error anywhere. An operator gets a loud 503 and a log line instead.
+    if (!state) return { ok: false, reason: DENY.NO_STATE };
+
+    const now = o.now || Date.now();
+
+    // GATE 1 — the nonce. DELETE ... RETURNING is atomic, so if two requests
+    // race with the same nonce exactly one receives the row. A caller that
+    // gets nothing must refuse; there is no "probably fine" branch here.
+    const n = await state.consumeNonce(o.nonce, now);
+    if (!n.ok) return { ok: false, reason: DENY.BAD_NONCE };
+    if (n.sessionId !== o.sid) return { ok: false, reason: DENY.BAD_NONCE };
+    if (n.scriptId !== o.scriptId) return { ok: false, reason: DENY.BAD_NONCE };
+
+    // GATE 2 — the session. One UPDATE, every precondition in the WHERE
+    // clause, including the live license and account re-check as subqueries.
+    // changes()===1 is the only success.
+    //
+    // This is the statement that closes G05 (expired), G06 (banned), G07
+    // (replay) and G08 (stale) at the same time, and it is also the one that
+    // makes a ban effective on the very next attempt with no window.
+    const s = await state.consumeSession(o.sid, now);
+    if (!s.ok) return { ok: false, reason: DENY.NO_SESSION };
+
+    return { ok: true, sid: o.sid, nonce: o.nonce, at: now };
+}
+
+// ---------------------------------------------------------------------------
+// Chain helpers
+// ---------------------------------------------------------------------------
+
+// Open a forward-only chain on a session that has ALREADY been consumed by
+// deliver(). The consumed_at check is what stops this being used to obtain
+// bytes without spending a session: the chain is a continuation of a delivery,
+// never an alternative to one.
+async function openChain(state, sid, total, expiresAt, now) {
+    const r = await run(state._db,
+        `UPDATE sessions SET parts_total = ?, parts_served = 0, grant_expires_at = ?
+          WHERE sid = ? AND consumed_at IS NOT NULL AND revoked = 0
+            AND grant_expires_at IS NULL`,
+        total, expiresAt, sid);
+    return changesOf(r) === 1;
+}
+
+// One step of the chain. See the schema comment in 0001_init.sql for why
+// `parts_served = ?` must equal the requested index.
+async function advancePart(state, sid, index, total, now) {
+    now = now || Date.now();
+    const row = await one(state._db,
+        `UPDATE sessions SET parts_served = parts_served + 1
+          WHERE sid = ? AND parts_served = ? AND parts_total = ?
+            AND consumed_at IS NOT NULL AND revoked = 0
+            AND grant_expires_at IS NOT NULL AND grant_expires_at > ?
+       RETURNING parts_served`,
+        sid, index, total, now);
+    return { ok: !!row, next: row ? Number(row.parts_served) : -1 };
+}
+
+// Read the chain cursor without advancing it. Diagnostics only — never gate a
+// delivery on this, exactly like peekSession().
+async function peekChain(state, sid) {
+    return one(state._db,
+        'SELECT parts_total, parts_served, grant_expires_at, consumed_at FROM sessions WHERE sid = ?',
+        sid);
+}
+
+// Aliases this file used to receive as imports. `run` is the query
+// function defined in the atomic state layer above; `d1run` is the name
+// the routing below uses for it, kept so those call sites read the same.
+const d1run = run;
+
 
 // ===========================================================================
 // THE SPLIT-KEY HANDOFF — a contract with the obfuscator
@@ -3191,7 +4118,7 @@ async function handleRequest(request, env, ctx) {
 
         // ---------- GET|POST /sh/a/<id>?s=<sid>&n=<nonce> : THE GATE ----------
         // This is the only route in the worker permitted to return artifact
-        // bytes, and it is behind two atomic statements in server/delivery.js.
+        // bytes, and it is behind two atomic statements in DELIVERY RULES below.
         //
         // Order is deliberate: spend the NONCE, then spend the SESSION. A
         // failure after the nonce is spent burns the session and forces a
@@ -3999,3 +4926,20 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'pcall(function() fn() end)\n';
 }
 
+// ===========================================================================
+// NAMED EXPORTS - FOR THE TEST SUITE ONLY
+//
+// Cloudflare Workers use the default export above and ignore these entirely.
+// They exist because tools/atomic_state_test.mjs and
+// tools/artifact_crypto_test.mjs test the state layer and the at-rest crypto
+// directly. Reaching them through HTTP would assert on the routing rather
+// than on the SQL, and 35 atomicity checks are worth more than one round
+// trip each.
+//
+// They were imported from server/*.js before those files were inlined back
+// into this one, which is why they are re-exported rather than deleted.
+// ===========================================================================
+export {
+    createState, changesOf, SESSION_TTL_CEILING_MS, DEFAULT_SESSION_TTL_MS, windowStart,
+    encryptAtRest, decryptAtRest, tryDecryptAtRest, isEncrypted, kekConfigured, _resetKekCache
+};

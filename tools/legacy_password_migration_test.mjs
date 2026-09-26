@@ -11,8 +11,7 @@
 
 import assert from 'assert';
 
-import { loadWorker } from './worker_target.mjs';
-const worker = await loadWorker();
+const worker = (await import('../For Cloudflare/worker.js')).default;
 
 function makeKV() {
     const store = new Map();

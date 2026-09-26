@@ -23,7 +23,7 @@
 import assert from 'assert';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { createState, changesOf, SESSION_TTL_CEILING_MS, windowStart } from '../server/d1_state.js';
+import { createState, changesOf, SESSION_TTL_CEILING_MS, windowStart } from '../For Cloudflare/worker.js';
 
 const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
 
@@ -329,7 +329,7 @@ console.log('[A11] the audit log cannot physically hold a secret...');
 
     // No column may be able to hold source, a plaintext key, or artifact bytes.
     // `license_ref`/`user_ref`/`nonce_ref` are allowed ONLY because they are
-    // hashed references by contract (see server/d1_state.js audit()), which is
+    // hashed references by contract (see the atomic state layer audit() in worker.js), which is
     // why they are asserted separately below rather than just allow-listed.
     const forbidden = ['code', 'source', 'plain', 'plaintext', 'obf', 'normal', 'cipher',
         'key', 'license', 'hwid', 'password', 'special', 'padded', 'token', 'secret', 'artifact', 'blob', 'bytes'];
