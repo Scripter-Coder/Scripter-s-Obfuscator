@@ -381,10 +381,15 @@ See D15.
 
 ## Two things that will surprise you
 
-1. **Free scripts need an account.** `anonymous → artifact` would make "no
-   public artifact endpoint" false for the free tier, so keyless scripts
-   require a free login. This is D1 in `docs/DECISIONS.md` and it is the
-   decision most likely to annoy you.
+1. **Free scripts need nothing.** No account, no email, no token: a user runs
+   one by pasting a single `loadstring` line. This is D23 in
+   `docs/DECISIONS.md`, and it reversed D1, which had required a free login.
+   The script is still not published and its bytes still only leave the worker
+   through a minted, single-use session - but be clear-eyed about what that
+   does and does not buy: it stops bulk harvesting via the rate limits, and it
+   does not stop one person who is determined. Anyone who can *run* code in an
+   executor can read it. That is a property of shipping code to a client, not a
+   flaw to be patched later.
 
 2. **Visibility is server-side now.** "Private" used to be a label in one
    browser's localStorage. It is enforced at the gate. If you change it, the

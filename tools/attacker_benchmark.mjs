@@ -192,14 +192,18 @@ const ROWS = [
     }
   },
   {
-    id: 'A9', group: 'UNAUTHORISED REQUEST', want: 'blocked',
-    name: 'Keyless script fetched anonymously',
-    detail: 'Decision D1: the free tier still needs an identity.',
+     id: 'A9', group: 'ACCEPTED (by design)', want: 'accepted',
+     name: 'Keyless script retrieved anonymously',
+     detail: 'D1 was reversed: no email, no token, no account. An anonymous '
+       + 'caller CAN retrieve a keyless artifact with two requests. Accepted ' +
+       + 'because the same is true of every client-delivered script - whoever ' +
+       + 'runs the code can read it - and because the account check was never a ' +
+       + 'barrier to a scrapper, only to a user. A19 covers what does hold.',
     run: async (env) => {
       env.LOADERS_KV._store.set('sh_loader_' + ID2, '-- free payload');
       env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'o', keyless: true }));
       const r = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOF);
-      return { ok: r.text.trim().startsWith('SHERR'), got: r.text.trim().slice(0, 40) };
+      return { ok: r.text.trim().startsWith('SHS '), got: r.text.trim().slice(0, 40) };
     }
   },
   {
@@ -326,6 +330,30 @@ const ROWS = [
   // These are measured, not asserted. They are the actual residual risk, and a
   // benchmark that hid them would be a marketing document.
   // -------------------------------------------------------------------------
+     {
+       // The claim that replaced D1 as the real gate: one deliberate fetch is
+       // accepted, BULK is not. The session bucket is 30/min per identity, so
+       // harvesting a catalogue runs the attacker out of budget long before it
+       // runs out of scripts.
+       //
+       // Asserted rather than assumed. Nothing in the suite covered the rate
+       // limiter before this, which is why "rate limits will stop it" was an
+       // article of faith with nothing behind it.
+       id: 'A19', group: 'UNAUTHORISED REQUEST', want: 'blocked',
+       name: 'Bulk keyless retrieval is rate limited',
+       detail: '30 mints/min on the session bucket; D1-backed with a memory fallback.',
+       run: async (env) => {
+         env.LOADERS_KV._store.set('sh_loader_' + ID2, '-- free payload');
+         env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'o', keyless: true }));
+         let allowed = 0, refused = 0;
+         for (let i = 0; i < 45; i++) {
+           const r = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOF);
+           if (r.status === 429) refused++;
+           else if (r.text.trim().startsWith('SHS ')) allowed++;
+         }
+         return { ok: refused > 0 && allowed > 0, got: allowed + ' allowed, ' + refused + ' refused (429)' };
+       }
+     },
   {
     id: 'X1', group: 'ACCEPTED (by design)', want: 'accepted',
     name: 'Capture an authorised run and read the plaintext',

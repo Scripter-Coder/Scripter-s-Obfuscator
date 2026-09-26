@@ -98,10 +98,14 @@
 //                              loaders. See D14.
 //
 // KEYLESS (FREE) SCRIPTS: /sh/upload accepts { keyless: true, plainCode,
-// cipher, keyHash }. Executors still receive the obfuscated code — but only
-// from the gate, and only once a session exists. A keyless script ALSO requires
-// an account (D1): anonymous -> artifact would make "no public artifact
-// endpoint" false for the free tier, so there is no free tier without an
+// KEYLESS (FREE) SCRIPTS: /sh/upload accepts { keyless: true, plainCode,
+// cipher, keyHash }. A free script needs NO account, NO email and NO token
+// (D23 reversed D1): a user runs it by pasting one loadstring line and
+// setting nothing. It is still never published - the obfuscated bytes only
+// leave the worker through a minted, single-use session, so pulling one costs
+// a live round trip per execution rather than a URL. Bulk harvesting is what
+// the rate limits stop; a single deliberate fetch is accepted, and is tracked
+// as benchmark row A9 rather than papered over.
 // identity.
 //
 // The source is NEVER in the website repo, NEVER in any visitor's
@@ -4059,25 +4063,32 @@ async function handleRequest(request, env, ctx) {
                 if (!script) return deny(DENY.NO_SCRIPT);
                 const killswitch = await isKillswitchOn(env);
 
-                // A keyless script still needs an IDENTITY. This was decision
-                // D1 and it is the least popular one in the file, so the
-                // reasoning is repeated: option A (anonymous -> artifact) makes
-                // "no public artifact endpoint" false for the free tier, and
-                // option C (anonymous + rate limits + watermark) is still an
-                // unauthenticated artifact fetch. Signup is self-service and
-                // already flood-guarded, so the cost is one free account.
-                let accountOk = false;
-                let userId = null;
-                if (userEmail) {
-                    const u = await verifyUserToken(body.ut || url.searchParams.get('ut') || '', env);
-                    if (u && d1UserId(u.email || '') === d1UserId(userEmail)) {
-                        accountOk = true;
-                        userId = d1UserId(u.email);
-                    }
-                }
-                if (!script.authRequired && !key && !accountOk) {
-                    return deny(DENY.HIDDEN, { reason: 'keyless requires an account (D1)' });
-                }
+                // D1 REVERSED. A keyless script needs no identity, no email and
+                // no token. Two reasons.
+                //
+                // First, it did not work. The gate also required a SIGNED user
+                // token that the loader had no way to carry, so a keyless script
+                // was not "gated behind an account" - it was undeliverable. Users
+                // were being asked to paste their email into an executor to reach
+                // a script that then still refused them.
+                //
+                // Second, it bought nothing against a scraper. Retrieving a
+                // keyless artifact is two requests - mint a session, spend it - and
+                // a scrapper simply leaves the identity blank. What stands in the
+                // way is the session itself: minted per request, single-use, and
+                // rate limited to 30/min on `session` and 60/min on `deliver`.
+                // That stops bulk. It does not stop one deliberate fetch, and
+                // nothing delivered to a client can - whoever runs the code can
+                // read it.
+                //
+                // Benchmarked as A9, reclassified from "blocked" to "accepted by
+                // design" so the tradeoff stays visible instead of being tested
+                // away.
+                // userId is still written into the session row and the audit log,
+                // so it is declared rather than deleted - a null here records that
+                // no identity was presented, which is now the normal case and is
+                // worth having in the trail.
+                const userId = null;
 
                 // Read fresh, never from a value captured earlier in the
                 // request: an isolate outlives many requests and a stale map
@@ -4841,11 +4852,16 @@ function scriptPageResponse(id, script) {
 function luaSessionBootstrap(id, base, keyless) {
     const KEYED = keyless ? 'false' : 'true';
     return '--[[ ScripterHub session loader | ' + id + ' | no script material in this file ]]\n'
-        + '-- 1. set your license ONCE before running this loadstring:\n'
+        // Nothing above the code tells a FREE user to set anything. D1 required
+        // an account for the keyless tier; making users paste their email into an
+        // executor costs privacy and friction, and the gate ALSO demanded a signed
+        // user token the loader had no way to carry - so it was not merely annoying,
+        // a keyless script was undeliverable. The license line stays because a paid
+        // script genuinely needs a key, and this whole header is a comment, so it
+        // costs a keyless user nothing.
+        + '-- 1. paid scripts only: set your license ONCE before running this:\n'
         + '--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"\n'
-        + '-- 2. free/keyless scripts need an ACCOUNT instead (D1), set once:\n'
-        + '--      getgenv().ScripterHubUser = "your@email.com"\n'
-        + '-- 3. run the loadstring. Nothing else to do.\n'
+        + '-- 2. run the loadstring. Free scripts need no key, no account, no email.\n'
         + 'local ID=' + JSON.stringify(id) + '\n'
         + 'local BASE=' + JSON.stringify(base) + '\n'
         + 'local KEYED=' + KEYED + '\n'
@@ -4855,17 +4871,19 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'local function DIE(t) NT(t,7) print("[ScripterHub] "..t) end\n'
         // A refusal the user can act on.
         //
-        // "SHERR hidden" is the server saying D1: a keyless script needs an
-        // account. Printing the raw code tells the user nothing, and the bug
-        // below made it worse - the check never fired, so refusals were reported
-        // as "Bad response from the license server", which blames the network
-        // for what is usually a missing account.
+        // "SHERR hidden" is a script the owner marked private, or a killswitch.
+        // It used to also mean "a keyless script needs an account" - that reading
+        // is gone with D1, and leaving it would have pointed users at an email that
+        // now does nothing. Printing the raw code also tells the user nothing, and
+        // the bug below made it worse: the check never fired, so refusals were
+        // reported as "Bad response from the license server", which blames the
+        // network for what is usually a refusal.
         + 'local function DENYMSG(r)\n'
         // Single quotes inside the Lua double-quoted string, deliberately: this
         // fragment lives inside a JS single-quoted string, where a backslash-
         // quote collapses to a bare quote and closes the Lua string early. The
         // first version shipped exactly that and every case failed to compile.
-        + ' if r=="hidden" then return "This script needs an account. Run once, then re-execute:  getgenv().ScripterHubUser = \'YOUR_EMAIL\'" end\n'
+        + ' if r=="hidden" then return "This script is private. Only the author can run it." end\n'
         + ' if r=="gone" then return "This script no longer exists, or was replaced by a newer build." end\n'
         + ' if r=="invalid" then return "That license key is not valid." end\n'
         + ' if r=="expired" then return "That license has expired." end\n'

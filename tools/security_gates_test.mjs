@@ -247,27 +247,71 @@ gate('G01', 'Loader URL with no credential returns no artifact bytes', 'pass', a
   if (!ok.body.includes(secretB64)) throw new Error('gate setup failed: the authorized delivery did not contain the artifact');
 });
 
-gate('G02', 'Keyless artifact is not served anonymously', 'pass', async () => {
+gate('G02', 'No artifact bytes escape without a minted, single-use session', 'pass', async () => {
   const env = makeEnv();
   const secret = '-- OBFUSCATED FREE PAYLOAD';
   env.LOADERS_KV._store.set('sh_loader_' + ID2, secret);
   env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'u', keyless: true }));
 
-  // 1. the public loader must not carry it
+  // 1. the public loader must not carry it. Nothing a browser or a scrapper
+  //    can fetch anonymously contains a single artifact byte.
   const boot = await get(env, '/sh/' + ID2, SPOOFED_UA);
   if (boot.body.includes(secret)) throw new Error('exact artifact bytes returned by the public loader');
 
-  // 2. and decision D1 must be enforced at the gate: keyless still needs an
-  //    identity. An anonymous mint must be refused, not served.
-  const anon = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOFED_UA,
-    { 'CF-Connecting-IP': '198.51.100.21' });
-  if (/^SHS /.test(anon.body)) {
-    throw new Error('an anonymous client minted a session for a keyless script (D1 violated)');
-  }
-  // 3. no unauthenticated delivery route exists that would hand it over
+  // 2. no unauthenticated delivery route exists that would hand it over. A
+  //    fabricated session id and nonce must not be enough, because the nonce
+  //    is 192 bits of crypto random and is spent with UPDATE ... RETURNING.
   const direct = await get(env, `/sh/a/${ID2}?s=made-up&n=made-up`, SPOOFED_UA);
   if (direct.status === 200 && direct.body.includes(secret)) {
     throw new Error('the delivery gate served a keyless artifact to a fabricated session');
+  }
+
+  // 3. D1 was reversed: an anonymous mint IS allowed now. Making users paste
+  //    an email into an executor costs privacy and friction, and the gate also
+  //    demanded a signed user token the loader could not carry - so the free
+  //    tier was not gated, it was undeliverable. What replaced it:
+  //
+  //      a. the minted session is SINGLE USE, so one execution costs one
+  //         round trip and cannot be replayed, and
+  //      b. anonymous minting is RATE LIMITED, so a catalogue cannot be
+  //         harvested in a loop.
+  //
+  //    Neither stops one deliberate fetch. Nothing delivered to a client can:
+  //    whoever runs the code can read it. That is a property of shipping code
+  //    to an executor, not a hole in this gate, and it is recorded as benchmark
+  //    row A9 (accepted by design) rather than asserted here as a falsehood.
+  const anon = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.21' });
+  if (!/^SHS /.test(anon.body)) {
+    throw new Error('a keyless script no longer mints an anonymous session at all. If that is a\n'
+      + 'deliberate change then re-state it here - otherwise the loader cannot run a free script. got: '
+      + anon.body.trim().slice(0, 80));
+  }
+
+  // 3a. single use: the same session + nonce must not deliver twice
+  const parts = anon.body.trim().split(/\s+/);
+  const sid = parts[1], nonce = parts[2];
+  need(sid && nonce, 'the mint did not return a session id and nonce');
+  const first = await get(env, `/sh/a/${ID2}?s=${sid}&n=${nonce}`, SPOOFED_UA);
+  if (first.status !== 200 || !first.body.includes(secret)) {
+    throw new Error('gate setup failed: a freshly minted session did not deliver the artifact');
+  }
+  const second = await get(env, `/sh/a/${ID2}?s=${sid}&n=${nonce}`, SPOOFED_UA);
+  if (second.status === 200 && second.body.includes(secret)) {
+    throw new Error('the delivery gate let one session be spent TWICE - replay, not single use');
+  }
+
+  // 3b. bulk: the session bucket is 30/min per identity, so a loop runs out of
+  //     budget long before it runs out of scripts
+  let refused = 0, allowed = 0;
+  for (let i = 0; i < 45; i++) {
+    const r = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOFED_UA,
+      { 'CF-Connecting-IP': '198.51.100.22' });
+    if (r.status === 429) refused++;
+    else if (/^SHS /.test(r.body)) allowed++;
+  }
+  if (!refused || !allowed) {
+    throw new Error('the rate limit is not doing its job: ' + allowed + ' allowed, ' + refused + ' refused');
   }
 });
 

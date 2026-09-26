@@ -301,7 +301,10 @@ function runBootstrap(lua, opts) {
   const notifications = [];
   const printed = [];
   const delivered = [];
-  const genv = { ScripterHubKey: opts.license || 'TEST-LICENSE-KEY' };
+  // `bare: true` yields an EMPTY getgenv - no license, no user, no token.
+  // That is the real state a free-script user is in, and until this existed
+  // no test had ever executed the no-credentials path at all.
+  const genv = opts.bare ? {} : { ScripterHubKey: opts.license || 'TEST-LICENSE-KEY' };
 
   const setGlobal = (name, fn) => {
     LUA.lua_pushcfunction(state, fn);
@@ -570,15 +573,15 @@ console.log('[B9] a SHERR refusal is reported as a refusal, not as a bad respons
 // Seven characters compared against a SIX-character literal, so it could never
 // be true. Every refusal fell through to the SHS match and was reported as
 // "Bad response from the license server" - which blames the network for what is
-// usually a missing account or a dead license. The user hit exactly this: the
-// server said "SHERR hidden" (D1: keyless needs an account) and the loader
+// usually a dead license. The user hit exactly this: the
+// server said "SHERR hidden" (a private script) and the loader said the
 // said the response was malformed.
 //
 // B4 did not catch it, because a wrong Special Key fails at DEC, not at the
 // envelope check - so the SHERR branch had no coverage at all.
 {
   const cases = [
-    ['hidden', /needs an account/i],
+    ['hidden', /private/i],
     ['gone', /no longer exists/i],
     ['expired', /expired/i],
     ['banned', /banned/i],
@@ -601,19 +604,46 @@ console.log('[B9] a SHERR refusal is reported as a refusal, not as a bad respons
 }
 
 // -----------------------------------------------------------------------------
-console.log('[B10] the session request carries the account identity D1 requires...');
+console.log('[B10] a FREE script runs with an EMPTY getgenv - no key, no email, no token...');
 // -----------------------------------------------------------------------------
-// D1: a keyless script needs an account. /sh/session reads the identity from
-// `u`. The bootstrap used to send only {id, k, h}, so a keyless script could
-// never satisfy the gate from the loader - there was no channel for it.
+// D1 required an account for the keyless tier, so this path could not exist:
+// the bootstrap was told to send `u=` and every user was told to set
+// getgenv().ScripterHubUser to their own email address. D1 is reversed, so the
+// requirement is now the opposite and is asserted here:
+//
+//   a free script runs when the user has set NOTHING.
+//
+// `bare: true` is the load-bearing part. Every other run in this file seeded
+// getgenv with a license key, so the no-credentials case was never executed -
+// the previous B10 checked that a parameter was present, which is a statement
+// about the request, not about whether a free user can actually run anything.
+//
+// Asserted on the real Lua, on the real generated bootstrap, and it must
+// complete rather than merely not crash: D1 was "impossible" rather than
+// "gated", and an impossible path still runs without error.
 {
   let seen = '';
-  runBootstrap(factory(ID, BASE, true), {
-    request: (url) => { if (url.includes('/sh/session')) seen = url; return 'SHERR x\n'; },
-    getgenv: true, identifyexecutor: true
+  let delivered = null;
+  const r = runBootstrap(factory(ID, BASE, true), {
+    bare: true,
+    identifyexecutor: true,
+    request: (url) => {
+      if (url.includes('/sh/session')) { seen = url; return 'SHS sid123 nonce456 1700000000'; }
+      if (url.includes('/sh/a/')) { delivered = url; return '-- FREE PAYLOAD\n'; }
+      return null;
+    }
   });
-  if (/[?&]u=/.test(seen)) ok('the session request includes u= (account identity)');
-  else no('the session request has no u= parameter, so keyless scripts can never pass D1.\n         url was: ' + seen);
+  const problems = [];
+  if (r.runtimeError) problems.push('crashed: ' + r.runtimeError);
+  if (!delivered) problems.push('never reached the delivery route, so a free script cannot run with no credentials');
+  if (/[?&]k=[^&]*[A-Za-z0-9]/.test(seen)) problems.push('it invented a license key that the user never set');
+  if (problems.length === 0) {
+    ok('keyless bootstrap completed with an empty getgenv - no key, no email, no token');
+  } else {
+    no(problems.length + ' problem(s) with the no-credentials path:');
+    for (const p of problems) console.log('         ' + p);
+    console.log('         session url was: ' + seen);
+  }
 }
 
 console.log('');

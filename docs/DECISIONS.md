@@ -9,7 +9,12 @@ remaining decisions live.
 
 ---
 
-## D1 — Keyless / free scripts require an account
+## D1 — Keyless / free scripts require an account  -  **REVERSED by D23**
+
+> **This decision no longer holds.** It was reversed in full; see
+> [D23](#d23--a-free-script-needs-no-account-no-key-no-email) for what replaced
+> it and what was given up. The text below is kept as written so the reasoning
+> that produced it is not lost.
 
 **Decision: option B.** A free script is fetched as:
 
@@ -615,3 +620,79 @@ and third layers of encoding.
 - **The KV namespace id is still commented out** in `wrangler.toml`.
   `wrangler deploy --dry-run` lists `env.LOADERS_KV` regardless, so a clean
   dry-run is not evidence that it is configured.
+
+## D23 - A free script needs no account, no key, no email
+
+**Decision.** The keyless tier is fetched as:
+
+```
+FREE SCRIPT
+   ↓
+short-lived session          (no identity of any kind)
+   ↓
+artifact
+```
+
+A user runs a free script by pasting one `loadstring` line. They set nothing in
+the executor: no license key, no email address, no token. This reverses
+[D1](#d1--keyless--free-scripts-require-an-account--reversed-by-d23).
+
+**Why.** Two reasons, and the first is a correction rather than a preference.
+
+**It did not work.** D1 required an account *and* the gate demanded a signed user
+token (`verifyUserToken`) that the loader had no way to carry. Those two together
+did not produce a gated free tier; they produced an undeliverable one. A user who
+followed the instructions exactly — set `getgenv().ScripterHubUser` to their own
+address — was still refused, because the token was the thing actually checked and
+nothing could supply it. The decision was made before anyone tried to run a script
+through it, and the failure only appeared on first contact with a real executor.
+
+**It bought nothing against a scrapper.** Retrieving a keyless artifact is two
+requests:
+
+```
+POST /sh/session?id=X&k=&h=anything   ->  SHS <sid> <nonce> <expires>
+GET  /sh/a/X?s=<sid>&n=<nonce>       ->  the artifact
+```
+
+A scrapper has no email and would simply leave the field blank. The account check
+was a wall in front of a door that opens with two curls, while being a genuine
+barrier to the person the product is for. It cost privacy — users do not want to
+hand their address to a script author — and it cost a step in the one flow that
+has to be frictionless.
+
+**What is given up, stated plainly.** An anonymous caller who knows a script id
+*can* retrieve that script. This is not mitigated; it is accepted, and it is
+recorded as benchmark row **A9, "accepted by design"** so it is measured on every
+run rather than argued about. Two things previously described as protecting
+against bulk do still hold, and are now the actual defence:
+
+- the session is minted per request and is **single use** (D4, D10 — the nonce is
+  spent with `UPDATE ... RETURNING`, so a replay returns nothing), and
+- minting is **rate limited** — 30/min on the `session` bucket, 60/min on
+  `deliver`, D1-backed with an in-memory fallback (D7). Asserted as G02.3b and
+  as benchmark row A19.
+
+**What this cannot do.** It does not stop one deliberate fetch, and nothing
+delivered to a client can: whoever runs the code can read it. So the honest
+statement of the free tier is *"the code is not published, and pulling it takes a
+live session per execution rather than a URL you can paste elsewhere"* — not
+*"the code cannot be obtained"*. Protection against bulk scraping is real;
+protection against a determined single request is not, and is not claimed.
+
+**Also changed with it.** The `hidden` refusal no longer means "a keyless script
+needs an account" — it means a private script or a killswitch, and the loader now
+says so. Leaving the old wording would have sent users to set an email that does
+nothing.
+
+**Verified, not assumed.** Gate G02 was rescoped rather than deleted, because two
+of its three assertions were unrelated to D1 and are load-bearing: the public
+loader still carries no artifact bytes, and a fabricated session still delivers
+nothing. Check B10 was inverted — it previously asserted that the request carried
+`u=`, and it now runs a keyless bootstrap against an **empty** `getgenv()` and
+requires the flow to complete. The harness grew a `bare: true` option for it,
+because every prior run pre-seeded a license key, so the no-credentials path had
+never once been executed.
+
+---
+

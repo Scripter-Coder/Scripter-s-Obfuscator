@@ -79,10 +79,10 @@ const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 // ============ TESTS ============
 // helper: the honest delivery path. Mint a session, then spend it.
 //
-// `lic` matters: decision D1 says a KEYLESS script still requires an account,
-// so an anonymous keyless mint is refused with `SHERR hidden` and this helper
-// would appear to fail for the right reason at the wrong moment. Licensed
-// delivery is the real product path anyway, so that is what is exercised.
+// `lic` is here because licensed delivery is the fuller path: it exercises the
+// key, the HWID lock and the decrypt, not just the session gate. D1 used to make
+// this mandatory - an anonymous keyless mint was refused with `SHERR hidden`,
+// so a keyless helper would have looked like it was failing for the wrong reason.
 async function authorizedFetch(id, ua, lic) {
     const m = await call('POST', '/sh/session', { id, k: lic || 'TESTLIC', h: 'HW' }, ua || EXECUTOR_UA);
     const text = await m.text();
