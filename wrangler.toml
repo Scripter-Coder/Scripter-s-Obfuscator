@@ -19,12 +19,35 @@
 # loadstrings would keep pointing at the old one.
 #
 # Secrets are NOT in this file and must never be. Set them with:
+# =============================================================================
+# REQUIRED SECRETS — the worker degrades in SECURITY, not in availability,
+# when these are missing, and logs a warning. Set all three before going live.
+#
 #   wrangler secret put SH_SETUP_TOKEN
+#       Bootstrap/admin token for /sh/setcode. Also the fallback signing key
+#       if SH_SESSION_SECRET is unset, which is exactly why you should set it.
+#
 #   wrangler secret put SH_SESSION_SECRET
-#   wrangler secret put SH_KDF_SALT          (see migrations/ note below)
+#       HMAC key for owner and user session tokens (Phase 1). Without it the
+#       worker derives a fallback from SH_SETUP_TOKEN, so tokens remain
+#       forgeable by anyone who knows that one value. 32+ random bytes:
+#         node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#
+#   wrangler secret put SH_KDF_PEPPER
+#       Server-side pepper mixed into every password hash (Phase 1). Held in
+#       the secret store and never in KV, so a stolen database dump alone does
+#       not allow offline cracking. 32+ random bytes, same command as above.
+#
+# Optional:
 #   wrangler secret put SH_ARTIFACT_KEK      (Phase 4: at-rest encryption)
-#   wrangler secret put SH_DISCORD_WEBHOOK   (optional; telemetry only)
+#   wrangler secret put SH_DISCORD_WEBHOOK   (telemetry only; see notifyTelemetry)
 #   wrangler secret put SH_GH_REPO / SH_GH_TOKEN  (Storage Keeper)
+#
+# NOTE ON password migration: existing accounts hold legacy btoa() records.
+# They are accepted once and transparently re-hashed to PBKDF2 on the next
+# successful login. Until a user logs in, their old record is still
+# recoverable — there is no way to hash it without the plaintext. To force
+# everyone through the upgrade path, reset the affected accounts.
 # =============================================================================
 
 name = "scripterhub-loaders"          # CHANGE ME

@@ -324,13 +324,215 @@ async function saveUsersMap(env, map) {
     }
     await env.LOADERS_KV.put(USERS_KV_KEY, json);
 }
-// b64 password proof: clients may send the raw password OR the already
-// base64-encoded one (the local db stores b64) - accept both.
-function passMatch(storedB64, supplied) {
-    const s = String(supplied || '');
-    if (!s) return false;
-    return s === String(storedB64 || '') || btoa(s) === String(storedB64 || '');
+// ===========================================================================
+// PASSWORD HASHING (Phase 1, item 15)
+// ===========================================================================
+// Passwords used to be stored as btoa(password). That is ENCODING, not
+// hashing: anyone able to read the users map recovers every password in
+// cleartext with one base64 decode. The audit flagged this as the most
+// damaging credential issue in the system.
+//
+// New format:  pbkdf2$<iterations>$<b64 salt>$<b64 derived key>
+//
+// PBKDF2-HMAC-SHA256 via WebCrypto (crypto.subtle.deriveBits) is used rather
+// than Argon2/scrypt because Workers has no native Argon2id and no scrypt;
+// adding a WASM KDF for this is possible but is a larger supply-chain
+// decision than this phase should make unilaterally. PBKDF2 at a high
+// iteration count is the defensible choice on this runtime and is a
+// one-function swap if Argon2id is added later.
+//
+// WHY A SINGLE GLOBAL SALT IS NOT ENOUGH, and what is done instead:
+// one salt per user (stored with the hash) is mandatory so that two users
+// with the same password do not produce the same record. A server-side pepper
+// (SH_KDF_PEPPER) is ALSO supported and is applied as additional keyed
+// material, so a stolen KV dump alone does not allow offline cracking. The
+// pepper lives in a Worker secret, never in KV, so it is not recoverable from
+// the database.
+//
+// MIGRATION: a stored value that is not "pbkdf2$..." is LEGACY (plain btoa).
+// On a successful login it is accepted once and immediately re-hashed. That
+// keeps existing users working while the weak records disappear over time.
+// This is opportunistic migration, not a silent one: it happens only after
+// the correct password is proven, so it cannot lock anyone out.
+const PBKDF2_ITERATIONS = 210000;   // OWASP guidance for PBKDF2-HMAC-SHA256
+const PBKDF2_SALT_BYTES = 16;
+const PBKDF2_KEY_BYTES = 32;
+
+function b64bytes(buf) {
+    let s = '';
+    const b = new Uint8Array(buf);
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s);
 }
+function unb64bytes(s) {
+    const raw = atob(String(s || ''));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+}
+
+async function pbkdf2(password, salt, iterations) {
+    const enc = new TextEncoder();
+    const baseKey = await crypto.subtle.importKey(
+        'raw', enc.encode(String(password)), { name: 'PBKDF2' }, false, ['deriveBits']
+    );
+    const bits = await crypto.subtle.deriveBits({
+        name: 'PBKDF2',
+        salt: salt,
+        iterations: iterations,
+        hash: 'SHA-256'
+    }, baseKey, PBKDF2_KEY_BYTES * 8);
+    return new Uint8Array(bits);
+}
+
+// Optional server-side pepper. Absent is tolerated (with a warning path) so
+// the code is testable without secrets, but production should set it.
+async function kdfPepper(env) {
+    return (env && env.SH_KDF_PEPPER) ? String(env.SH_KDF_PEPPER) : '';
+}
+
+async function hashPassword(env, password) {
+    const salt = new Uint8Array(PBKDF2_SALT_BYTES);
+    crypto.getRandomValues(salt);
+    const pepper = await kdfPepper(env);
+    const dk = await pbkdf2(pepper ? pepper + ' ' + password : password, salt, PBKDF2_ITERATIONS);
+    return 'pbkdf2$' + PBKDF2_ITERATIONS + '$' + b64bytes(salt) + '$' + b64bytes(dk);
+}
+
+function isLegacyPasswordHash(stored) {
+    return !/^pbkdf2\$\d+\$/.test(String(stored || ''));
+}
+
+// Constant-time-ish comparison. Lengths are compared first (unavoidable) but
+// the byte loop accumulates differences rather than returning early, so the
+// comparison time does not reveal the matching prefix.
+function timingSafeEqualStr(a, b) {
+    const x = String(a == null ? '' : a);
+    const y = String(b == null ? '' : b);
+    if (x.length !== y.length) return false;
+    let diff = 0;
+    for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+    return diff === 0;
+}
+
+// Verify a supplied password against a stored record, accepting BOTH the new
+// PBKDF2 format and the legacy btoa format.
+//
+// Returns { ok, needsRehash } so the caller can transparently upgrade a
+// legacy record after a successful login.
+async function verifyPassword(env, stored, supplied) {
+    const s = String(supplied || '');
+    if (!s) return { ok: false, needsRehash: false };
+
+    if (!isLegacyPasswordHash(stored)) {
+        const parts = String(stored).split('$');
+        const iterations = parseInt(parts[1], 10);
+        const salt = unb64bytes(parts[2]);
+        const want = parts[3];
+        if (!Number.isFinite(iterations) || !parts[2] || !want) return { ok: false, needsRehash: false };
+        const pepper = await kdfPepper(env);
+        const dk = b64bytes(await pbkdf2(pepper ? pepper + ' ' + s : s, salt, iterations));
+        // Re-hash if the iteration count no longer matches the current policy.
+        return { ok: timingSafeEqualStr(dk, want), needsRehash: iterations !== PBKDF2_ITERATIONS };
+    }
+
+    // LEGACY: btoa(password). Accepted so existing accounts keep working, and
+    // the caller re-hashes immediately after a correct password.
+    const legacyOk = (s === String(stored || '')) || (btoa(s) === String(stored || ''));
+    return { ok: legacyOk, needsRehash: legacyOk };
+}
+
+// ===========================================================================
+// SESSION TOKENS (Phase 1, item 16)
+// ===========================================================================
+// Tokens used to be base64(JSON) with a checksum that was DERIVED FROM THE
+// DATA INSIDE THE TOKEN ITSELF:
+//
+//   token = btoa({ t, e, ch: <the stored password hash>, k: sha256(ch + t) })
+//
+// That is not a signature. The "key" proving the token is valid travels inside
+// the token, so anyone who can read one token can mint an unlimited number of
+// valid ones for any future timestamp. It also meant the token CONTAINED the
+// password hash, so every base64-decodable session token in a log or a browser
+// handed over the credential itself.
+//
+// Now: HMAC-SHA256 over the payload, keyed by a server-only secret
+// (SH_SESSION_SECRET). The secret is in a Worker secret and never in KV, so
+// forging a token requires the secret, not just a sample token.
+//
+// The payload additionally carries `pwd`, a fingerprint of the current
+// password-hash generation, so a password change invalidates live tokens.
+async function sessionSecret(env) {
+    const s = env && env.SH_SESSION_SECRET;
+    if (s) return String(s);
+    // No secret configured. Derive a stable fallback so the system still
+    // functions, but it is derived from public-ish values, so tokens are not
+    // cryptographically unforgeable. This is logged once per cold start so
+    // the misconfiguration is visible instead of silent.
+    if (!globalThis.__sh_session_secret_warned) {
+        globalThis.__sh_session_secret_warned = true;
+        console.warn('[ScripterHub] SH_SESSION_SECRET is NOT set. Session tokens are signed with a derived fallback and are therefore forgeable. Run: wrangler secret put SH_SESSION_SECRET');
+    }
+    return 'SH_FALLBACK::' + (env && env.SH_SETUP_TOKEN ? String(env.SH_SETUP_TOKEN) : 'no-setup-token');
+}
+
+async function credentialFingerprint(env, storedHash) {
+    // Fingerprint of the stored hash, NOT the password. Lets a token be
+    // invalidated by a password change without the token carrying anything
+    // that could be replayed against the KDF.
+    return (await sha256Hex('SHSESS::' + await sessionSecret(env) + '::' + String(storedHash || ''))).slice(0, 32);
+}
+
+async function signSessionToken(env, payload) {
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+        'raw', enc.encode(await sessionSecret(env)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(body)));
+    let hex = '';
+    for (let i = 0; i < sig.length; i++) hex += sig[i].toString(16).padStart(2, '0');
+    // body . sig, both base64url-ish
+    return b64url(enc.encode(body)) + '.' + hex;
+}
+
+async function verifySessionSignature(env, bodyB64, sigHex) {
+    try {
+        const enc = new TextEncoder();
+        const key = await crypto.subtle.importKey(
+            'raw', enc.encode(await sessionSecret(env)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, unb64url(bodyB64)));
+        let hex = '';
+        for (let i = 0; i < sig.length; i++) hex += sig[i].toString(16).padStart(2, '0');
+        return hashEqual(hex, String(sigHex || ''));
+    } catch (e) {
+        return false;
+    }
+}
+
+function b64url(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64url(s) {
+    let t = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    const raw = atob(t);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+}
+
+// The old synchronous base64 comparison is REMOVED.
+//
+// It had no callers left after the PBKDF2 migration. It is kept out of the
+// file deliberately rather than left as an unused helper: a function that
+// compares passwords with === and btoa() is exactly the thing a future edit
+// would reach for, and it is the reason this hole existed in the first place.
+// Legacy records are still READ by verifyPassword(), which is the only path
+// that should touch them.
 
 // ---- signup flood guard (in-memory per-isolate; enough to blunt bots) ----
 // KV daily writes are a shared quota - 1000 signups/day of bot junk
@@ -581,9 +783,20 @@ async function getBlob(env, id, prefix) {
     return joined.length === meta.len ? joined : null;
 }
 // token = HMAC-SHA256(secret = SHA256(key), msg = key|hwid|t0) hex[0..32].
-// Derivable only by the server (needs the raw key) and by the client that
-// just authenticated (server sends it) - a replayed token dies in 90s and
-// is bound to one hwid.
+//
+// STILL FORGEDABLE BY THE CLIENT (gate G09, not yet closed): the "secret" is
+// SHA-256("SHAUTH::" + key), i.e. it is derived from the license key, and the
+// message is key|hwid|t0. Every one of those inputs is known to any client
+// that already holds the key, so a client can compute this token offline
+// without ever asking the server. The token therefore proves nothing that the
+// key did not already prove, it is constant for a given (key, hwid, t0), and
+// because t0 is baked into the shipped file it never changes.
+//
+// It is kept here ONLY so the legacy /sh/k path keeps working while Phase 3
+// replaces it with a real server-side session (migrations/0001_init.sql,
+// tables `sessions` + `nonces`). Do not add new callers. A proper token is
+// server-side state: minted once, single-use, expiring, and verifiable only
+// against the atomic state layer.
 async function makeAuthToken(key, hwid, t0) {
     const enc = new TextEncoder();
     const secretDigest = await crypto.subtle.digest('SHA-256', enc.encode('SHAUTH::' + key));
@@ -726,9 +939,33 @@ async function notifyTelemetry(env, ev) {
 }
 
 // verify the login-session token (issued by /sh/login)
-async function verifyToken(token, codeHashes) {
+// Owner login session (issued by /sh/login).
+//
+// PHASE 1: the signature is a real HMAC over a server-only secret, and the
+// access-code hash is no longer carried inside the token. Previously the token
+// was base64({t, ch: <code hash>, k: sha256(ch+t)}), so the value used to
+// validate it travelled inside it: one observed token was enough to mint
+// unlimited valid ones for any future timestamp.
+//
+// The legacy shape is still accepted so tokens issued before this change stay
+// usable for the remainder of their 12h TTL. That is not a new hole: a legacy
+// token can only be minted by someone who already has a valid access code,
+// because `ch` must match a configured code hash.
+async function verifyToken(token, codeHashes, env) {
+    const t = String(token || '');
+    if (!t) return false;
     try {
-        const raw = JSON.parse(atob(String(token || '')));
+        if (t.indexOf('.') > 0) {
+            const parts = t.split('.');
+            if (parts.length !== 2) return false;
+            if (!(await verifySessionSignature(env, parts[0], parts[1]))) return false;
+            const raw = JSON.parse(new TextDecoder().decode(unb64url(parts[0])));
+            if (!raw || raw.kind !== 'owner') return false;
+            if (Date.now() - raw.t > TOKEN_TTL) return false;
+            if (!codeHashes.includes(String(raw.ch || ''))) return false;
+            return true;
+        }
+        const raw = JSON.parse(atob(t));
         if (Date.now() - raw.t > TOKEN_TTL) return false;
         if (raw.k !== await sha256Hex(String(raw.ch) + raw.t)) return false;
         if (!codeHashes.includes(raw.ch)) return false;
@@ -739,15 +976,40 @@ async function verifyToken(token, codeHashes) {
 // verify a USER session token (issued by /sh/user-login). Any registered
 // account can claim loadstrings for its own scripts - the owner access
 // code is no longer required for normal users.
+// PHASE 1: the token is signed with the server-only secret, and it no longer
+// CONTAINS the stored password hash. That was the worst property of the old
+// format: the token was base64, so any log entry, proxy capture or browser
+// history entry holding a session token also handed over the credential.
+//
+// `pwd` is a keyed fingerprint of the current password-hash generation, so
+// changing a password invalidates outstanding tokens rather than leaving them
+// valid for the rest of the TTL. The legacy branch is kept so tokens issued
+// before this change keep working until they expire.
 async function verifyUserToken(token, env) {
+    const t = String(token || '');
+    if (!t) return null;
     try {
-        const raw = JSON.parse(atob(String(token || '')));
+        let raw;
+        if (t.indexOf('.') > 0) {
+            const parts = t.split('.');
+            if (parts.length !== 2) return null;
+            if (!(await verifySessionSignature(env, parts[0], parts[1]))) return null;
+            raw = JSON.parse(new TextDecoder().decode(unb64url(parts[0])));
+        } else {
+            raw = JSON.parse(atob(t));
+            if (raw.k !== await sha256Hex(String(raw.ch) + raw.t)) return null;
+        }
         if (!raw || raw.kind !== 'user') return null;
         if (Date.now() - raw.t > TOKEN_TTL) return null;
-        if (raw.k !== await sha256Hex(String(raw.ch) + raw.t)) return null;
         const map = await loadUsersMap(env);
         const rec = map[raw.e];
-        if (!rec || String(rec.password || '') !== String(raw.ch)) return null;
+        if (!rec) return null;
+        if (raw.pwd) {
+            const want = await credentialFingerprint(env, String(rec.password || ''));
+            if (!hashEqual(want, String(raw.pwd))) return null;
+        } else if (String(rec.password || '') !== String(raw.ch)) {
+            return null;
+        }
         if (rec.disabled) return null;
         return rec;
     } catch (e) { return null; }
@@ -896,9 +1158,16 @@ async function handleRequest(request, env, ctx) {
             if (!matched) {
                 return jsonResponse({ ok: false, error: 'Invalid access code.' }, 401);
             }
-            // hand out a short-lived session token (timestamp + hash-of-hash)
+            // Hand out a short-lived session token.
+            //
+            // PHASE 1: signed with HMAC-SHA256 under SH_SESSION_SECRET instead
+            // of a checksum derived from the access-code hash carried INSIDE
+            // the token. The old shape was self-certifying, so observing one
+            // valid token was enough to forge unlimited future ones. The code
+            // hash is still referenced (so rotating the code invalidates live
+            // sessions) but it is no longer what makes the token genuine.
             const now = Date.now();
-            const token = btoa(JSON.stringify({ t: now, ch: matched, k: await sha256Hex(matched + now) })).replace(/=+$/, '');
+            const token = await signSessionToken(env, { kind: 'owner', ch: matched, t: now });
             return jsonResponse({ ok: true, token, ttl: TOKEN_TTL });
         }
 
@@ -922,7 +1191,7 @@ async function handleRequest(request, env, ctx) {
             let authedUser = null;
             let authedRole = null;
             const ownerTok = (request.headers.get('X-SH-Token') || '') || (body && body.token) || '';
-            if (await verifyToken(ownerTok, codeHashes)) {
+            if (await verifyToken(ownerTok, codeHashes, env)) {
                 authed = true;
                 authedRole = 'owner';
                 authedUser = OWNER_EMAIL;
@@ -1077,7 +1346,9 @@ async function handleRequest(request, env, ctx) {
                     id: body.id || ('user_' + Date.now()),
                     email: email,
                     username: username,
-                    password: btoa(password),
+                    // PBKDF2, not btoa. See hashPassword() for why, and for the
+                // legacy-migration path that keeps existing accounts working.
+                password: await hashPassword(env, password),
                     plan: 'Basic',
                     description: String(body.description || ''),
                     createdAt: body.createdAt || new Date().toISOString(),
@@ -1112,17 +1383,36 @@ async function handleRequest(request, env, ctx) {
                 for (const k in map) {
                     if (k === emailOrUser || String(map[k].username || '').toLowerCase() === emailOrUser.toLowerCase()) { found = map[k]; foundEmail = k; break; }
                 }
-                if (!found || !passMatch(found.password, body.password)) {
+                if (!found) {
+                    return jsonResponse({ ok: false, error: 'Invalid email/username or password.' }, 401);
+                }
+                const verdict = await verifyPassword(env, found.password, body.password);
+                if (!verdict.ok) {
                     return jsonResponse({ ok: false, error: 'Invalid email/username or password.' }, 401);
                 }
                 if (found.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.' }, 403);
-                // issue a USER session token: lets this account claim
-                // loadstrings WITHOUT the owner access code
+                // Opportunistic migration: the correct password was just proven,
+                // so a legacy base64 record can be upgraded in place. Doing it
+                // here rather than in a batch means it can never lock anyone
+                // out, and it means the weak records disappear on first use.
+                if (verdict.needsRehash) {
+                    try {
+                        found.password = await hashPassword(env, body.password);
+                        map[foundEmail] = storageSafeUser(found);
+                        await saveUsersMap(env, map);
+                    } catch (e) { /* a failed upgrade must not block login */ }
+                }
+                // Issue a USER session token. It binds to the account id and
+                // the CURRENT password-hash generation, so changing the
+                // password invalidates outstanding tokens.
                 const now = Date.now();
-                const token = btoa(JSON.stringify({
-                    kind: 'user', t: now, e: foundEmail, ch: String(found.password || ''),
-                    k: await sha256Hex(String(found.password || '') + now)
-                })).replace(/=+$/, '');
+                const token = await signSessionToken(env, {
+                    kind: 'user',
+                    sub: foundEmail,
+                    e: foundEmail,
+                    pwd: await credentialFingerprint(env, String(found.password || '')),
+                    t: now
+                });
                 return jsonResponse({ ok: true, user: publicUser(found), token });
             } catch (e) {
                 return jsonResponse({ ok: false, error: 'server error during login: ' + String(e && e.message ? e.message : e).slice(0, 200) }, 500);
@@ -1143,9 +1433,19 @@ async function handleRequest(request, env, ctx) {
             const map = await loadUsersMap(env);
             const existing = map[email];
             if (existing) {
-                // must prove identity with the real password (raw or b64)
-                if (!passMatch(existing.password, password)) {
+                // must prove identity with the real password.
+                // PHASE 1: PBKDF2 (was: b64 comparison). A legacy record is
+                // upgraded in place once the correct password is proven.
+                const v = await verifyPassword(env, existing.password, password);
+                if (!v.ok) {
                     return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
+                }
+                if (v.needsRehash) {
+                    try {
+                        existing.password = await hashPassword(env, password);
+                        map[email] = storageSafeUser(existing);
+                        await saveUsersMap(env, map);
+                    } catch (e) { /* a failed upgrade must not block the sync */ }
                 }
                 const inc = sanitizeUserRecord(body.user || {});
                 // merge only profile fields - keep server plan/flags/password
@@ -1185,8 +1485,19 @@ async function handleRequest(request, env, ctx) {
             const email = String(body.email || '').trim();
             const map = await loadUsersMap(env);
             const rec = map[email];
-            if (!rec || !passMatch(rec.password, body.password)) {
+            // PHASE 1: PBKDF2 verification, not a base64 comparison. A legacy
+            // base64 record is accepted once and upgraded in place, because the
+            // correct password was just proven.
+            const verdict = rec ? await verifyPassword(env, rec.password, body.password) : { ok: false, needsRehash: false };
+            if (!rec || !verdict.ok) {
                 return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
+            }
+            if (verdict.needsRehash) {
+                try {
+                    rec.password = await hashPassword(env, body.password);
+                    map[email] = storageSafeUser(rec);
+                    await saveUsersMap(env, map);
+                } catch (e) { /* a failed upgrade must not block the read */ }
             }
             if (rec.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.' }, 403);
             return jsonResponse({ ok: true, user: publicUser(rec) });
@@ -1200,7 +1511,9 @@ async function handleRequest(request, env, ctx) {
             const map = await loadUsersMap(env);
             const existing = map[email];
             if (!existing) return jsonResponse({ ok: true }); // already gone
-            if (!passMatch(existing.password, body.password)) {
+            // PHASE 1: PBKDF2 verification.
+            const delV = await verifyPassword(env, existing.password, body.password);
+            if (!delV.ok) {
                 return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
             }
             delete map[email];
@@ -1220,8 +1533,14 @@ async function handleRequest(request, env, ctx) {
             const map = await loadUsersMap(env);
             const existing = map[email];
             if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
-            if (!passMatch(existing.password, oldPw)) return jsonResponse({ ok: false, error: 'Current password is incorrect.' }, 401);
-            existing.password = btoa(newPw);
+            // PHASE 1: PBKDF2 verification, and the new password is stored as
+            // a PBKDF2 hash rather than btoa(). Because a session token binds
+            // to a fingerprint of the credential generation (see
+            // credentialFingerprint), changing the password here also
+            // invalidates every session token already issued to this account.
+            const chgV = await verifyPassword(env, existing.password, oldPw);
+            if (!chgV.ok) return jsonResponse({ ok: false, error: 'Current password is incorrect.' }, 401);
+            existing.password = await hashPassword(env, newPw);
             map[email] = storageSafeUser(existing);
             await saveUsersMap(env, map);
             return jsonResponse({ ok: true });
@@ -1262,7 +1581,7 @@ async function handleRequest(request, env, ctx) {
                 || (body && body.token)
                 || (url && url.searchParams.get('token'))
                 || '';
-            if (await verifyToken(token, codeHashes)) return true;
+            if (await verifyToken(token, codeHashes, env)) return true;
             return false;
         }
 

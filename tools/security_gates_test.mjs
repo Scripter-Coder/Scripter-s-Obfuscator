@@ -222,7 +222,7 @@ gate('G04', 'The hard-coded default access code is rejected', 'pass', async () =
   }
 });
 
-gate('G13', 'Stored credentials are not recoverable from state', 'xfail', async () => {
+gate('G13', 'Stored credentials are not recoverable from state', 'pass', async () => {
   const env = makeEnv();
   const pw = 'Sup3rSecretPassw0rd';
   const su = await call(env, 'POST', '/sh/user-signup', { email: 'a@t.com', username: 'Alice', password: pw }, BROWSER_UA,
@@ -234,6 +234,71 @@ gate('G13', 'Stored credentials are not recoverable from state', 'xfail', async 
   if (raw.includes(Buffer.from(pw, 'utf8').toString('base64'))) {
     throw new Error('password is recoverable from state — it is base64-encoded, not hashed');
   }
+  if (raw.includes(pw)) throw new Error('the plaintext password appears in stored state');
+
+  // The stored value must be a real KDF record, not merely "not base64".
+  const rec = JSON.parse(raw)['a@t.com'];
+  need(rec && typeof rec.password === 'string', 'no password field on the record');
+  if (!/^pbkdf2\$\d+\$/.test(rec.password)) {
+    throw new Error(`stored credential is not a PBKDF2 record: ${rec.password.slice(0, 24)}...`);
+  }
+
+  // Salt must be per-user: two accounts with the SAME password must not
+  // produce the same stored record, or the DB leaks equality.
+  const env2 = makeEnv();
+  const shared = 'SamePassword123';
+  for (const email of ['x@t.com', 'y@t.com']) {
+    const s = await call(env2, 'POST', '/sh/user-signup', { email, username: 'U' + email[0], password: shared }, BROWSER_UA,
+      { 'CF-Connecting-IP': '198.51.100.7' });
+    need(s.status === 200, `second signup rejected (${s.status})`);
+  }
+  const map2 = JSON.parse(env2.LOADERS_KV._store.get('sh_users_db'));
+  const hx = map2['x@t.com'].password, hy = map2['y@t.com'].password;
+  if (hx === hy) throw new Error('two identical passwords produced identical records — the salt is not per-user');
+
+  // A correct password must still log in, and a wrong one must not. The gate
+  // must not pass by breaking authentication entirely.
+  const env3 = makeEnv();
+  await call(env3, 'POST', '/sh/user-signup', { email: 'z@t.com', username: 'Zed', password: 'CorrectHorse99' }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.8' });
+  const good = await call(env3, 'POST', '/sh/user-login', { emailOrUsername: 'z@t.com', password: 'CorrectHorse99' }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.8' });
+  if (!/\"ok\":true/.test(good.body)) throw new Error('the correct password was rejected — gate would pass by breaking login');
+  const bad = await call(env3, 'POST', '/sh/user-login', { emailOrUsername: 'z@t.com', password: 'WrongPassword99' }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.8' });
+  if (/\"ok\":true/.test(bad.body)) throw new Error('an incorrect password was accepted');
+});
+
+gate('G19', 'Session tokens are signed, not self-certifying', 'pass', async () => {
+  // The old token was base64({t, ch, k: sha256(ch+t)}): the value used to
+  // validate it travelled inside it, so one observed token allowed minting
+  // unlimited valid ones. It also CONTAINED the stored password hash.
+  const env = makeEnv();
+  env.SH_SESSION_SECRET = 'a-real-server-only-secret';
+  await call(env, 'POST', '/sh/user-signup', { email: 's@t.com', username: 'Sam', password: 'samsecret123' }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.11' });
+  const li = await call(env, 'POST', '/sh/user-login', { emailOrUsername: 's@t.com', password: 'samsecret123' }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.11' });
+  need(/\"ok\":true/.test(li.body), 'login failed: ' + li.body.slice(0, 80));
+  const token = JSON.parse(li.body).token;
+  need(typeof token === 'string' && token.length > 20, 'no token issued');
+
+  // 1. it must not embed the credential in any decodable form
+  const mapRaw = env.LOADERS_KV._store.get('sh_users_db') || '';
+  const storedHash = (JSON.parse(mapRaw)['s@t.com'] || {}).password || '';
+  need(storedHash.length > 0, 'could not read the stored hash to check for leakage');
+  const decoded = Buffer.from(token, 'base64').toString('utf8');
+  if (decoded.includes(storedHash)) throw new Error('the session token contains the stored password hash');
+  if (decoded.includes('samsecret123')) throw new Error('the session token contains the plaintext password');
+
+  // 2. tampering must invalidate it
+  const [body, sig] = token.split('.');
+  if (!sig) throw new Error('the token is not signed (no signature segment)');
+  const tamperedBody = Buffer.from(JSON.stringify({ kind: 'user', e: 's@t.com', t: Date.now(), pwd: 'x' })).toString('base64url');
+  const forged = tamperedBody + '.' + sig;
+  const r = await call(env, 'POST', '/sh/upload', { userToken: forged, name: 'x', plainCode: 'p', keyless: true }, BROWSER_UA,
+    { 'CF-Connecting-IP': '198.51.100.11' });
+  if (r.status === 200) throw new Error('a token with a swapped payload was accepted — the signature is not covering the body');
 });
 
 gate('G12', 'body.user must match the authenticated identity', 'pass', async () => {
