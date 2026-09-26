@@ -5007,8 +5007,39 @@ function luaSessionBootstrap(id, base, keyless) {
         // fails the comparison and the payload never unlocks. The global
         // changes where the bytes come from, not whether they are correct.
         + 'if type(SK)=="string" and SK~="" then G[' + JSON.stringify(SPLITKEY_GENV) + ']=SK end\n'
-        + 'local fn=LS and LS(src)\n'
-        + 'if not fn then DIE("Load failed - re-execute or contact the script owner.") return end\n'
+        // Surface WHY the compile failed, not just that it did.
+        //
+        // `loadstring` returns (function, error). The error was discarded, so
+        // every cause below reported the same useless line:
+        //
+        //   - the artifact was truncated in transit (src short or empty)
+        //   - the executor hit a parser limit on a large payload - the bytes
+        //     are VALID and the executor simply gave up, which looks exactly
+        //     like a syntax error unless the error text is shown
+        //   - the artifact is genuinely not Lua
+        //   - the executor has neither loadstring nor load
+        //
+        // Those need four different fixes and the old message separated none
+        // of them. Byte count and emptiness come first because they split the
+        // space in half before anyone reads the error.
+        //
+        // NO BACKTICKS in this comment. The test harness brace-matches
+        // luaSessionBootstrap out of this file and treats a backtick as a string
+        // delimiter, so one here would put the matcher into string mode
+        // permanently. A comment is not a safe place to be clever.
+        // Two statements, not one. `(LS and LS(src)) or nil` looks equivalent
+        // and is not: `or` truncates to a single value, so the compile error
+        // is discarded and the trailing `,nil` hard-assigns it away. That is
+        // the original bug re-introduced while fixing the original bug.
+        // `LS(src)` in tail position yields both returns on its own.
+        + 'local fn,ferr=nil,nil\n'
+        + 'if LS then fn,ferr=LS(src) end\n'
+        + 'if not fn then\n'
+        + ' local why=tostring(ferr or "loadstring returned no function and no error")\n'
+        + ' local size=(type(src)=="string") and #src or -1\n'
+        + ' DIE("Load failed: the delivered source is "..size.." bytes and did not compile. "..why)\n'
+        + ' return\n'
+        + 'end\n'
         // Surface payload errors instead of swallowing them.
         //
         // This used to be pcall(function() fn() end) with the result thrown

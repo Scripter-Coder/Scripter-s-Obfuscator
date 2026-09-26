@@ -133,7 +133,135 @@ if tag == "SHK\n" then
     end
 end
 
-say("VERDICT", "delivery OK - the gate is working")
+
+
+-- 5. THE STEP THAT WAS MISSING: actually compile what was delivered.
+
+-- Everything above proves the GATE works. This proves whether the PAYLOAD
+
+-- is compilable ON THIS EXECUTOR, which is the only thing that separates
+
+-- "the server sent bytes that are not Lua" from "the bytes are fine and
+
+-- your parser gave up".
+
+--
+
+-- For a keyed build the source is still encrypted here, so a DEC failure is
+
+-- expected and the compile error below is meaningless for SHK. That case is
+
+-- reported as SKIPPED rather than as a payload fault.
+
+local src = art
+
+local tag2 = art:sub(1, 4)
+
+if tag2 == "SHL\n" then
+
+    src = art:sub(5)
+
+elseif tag2 == "SHK\n" then
+
+    local nl = art:find("\n", 5)
+
+    src = nl and art:sub(nl + 1) or ""
+
+end
+
+
+
+say("source bytes", #src)
+
+say("source head", head(src:sub(1, 70)))
+
+say("source tail", head(src:sub(-50)))
+
+
+
+-- A payload that was cut off mid-transfer still parses as a prefix in many
+
+-- cases, and one that was cut mid-token does not. Both head and tail are
+
+-- printed so a truncation is visible rather than inferred.
+
+if src:sub(-1):match("%s*$") == nil then
+
+    say("ends cleanly", "NO - the last character is not whitespace, which is normal for Lua")
+
+else
+
+    say("ends cleanly", "yes")
+
+end
+
+
+
+local LS = loadstring or load
+
+if not LS then
+
+    say("VERDICT", "this executor has NEITHER loadstring NOR load")
+
+elseif tag2 == "SHK\n" then
+
+    say("VERDICT", "SKIPPED - this is a keyed build, so the source is still")
+
+    say("", "encrypted here and only compiles after the local decrypt.")
+
+    say("", "If a KEYED script fails to load, re-run with its license set and")
+
+    say("", "tell me whether the error is about the Special Key instead.")
+
+else
+
+    local fn, err = LS(src)
+
+    if fn then
+
+        say("VERDICT", "the delivered source COMPILES on this executor")
+
+        say("", "so the gate is fine AND the payload is fine. The failure is in")
+
+        say("", "RUNNING the script, not loading it - a different bug entirely.")
+
+    else
+
+        say("VERDICT", "the delivered source does NOT compile on this executor")
+
+        say("compile error", head(err))
+
+        say("size", #src .. " bytes")
+
+        if #src > 500000 then
+
+            say("size verdict", "OVER 500 KB. This is very likely an executor")
+
+            say("", "parser limit, not a syntax error. The fix is a LOWER")
+
+            say("", "obfuscation intensity, or an executor that compiles it.")
+
+        elseif #src < 100 then
+
+            say("size verdict", "under 100 bytes - the delivery was TRUNCATED.")
+
+            say("", "That is a transport problem, not a compile problem.")
+
+        else
+
+            say("size verdict", "a normal size, so this is a real syntax error")
+
+            say("", "in the artifact. The obfuscator produced invalid Lua.")
+
+        end
+
+    end
+
+end
+
+
+
 dump()
+
 print("if VERDICT is 'delivery OK' but the script still fails, the fault is in")
 print("decrypting or running the payload, not in the gate.")

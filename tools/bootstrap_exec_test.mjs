@@ -400,10 +400,29 @@ function runBootstrap(lua, opts) {
   // called lua_call(0), i.e. itself - and the payload never ran.
   setGlobal('loadstring', (s) => {
     const src = tbin(LUA.lua_tostring(s, 1));
-    if (src === null) { LUA.lua_pushnil(s); return 1; }
+    // Same arity, and the message a real executor gives. This exact error -
+    // "invalid argument #1 (string expected, got nil)" - is what the user's
+    // own executor threw from inside its internal_request earlier in this
+    // project. A mock that cannot produce it cannot test a fix for it.
+    if (src === null) {
+      LUA.lua_pushnil(s);
+      LUA.lua_pushstring(s, tls('bad argument #1 to \'loadstring\' (string expected, got nil)'));
+      return 2;
+    }
     delivered.push(src);
-    if (AUX.luaL_loadstring(s, tls(src)) !== 0) { LUA.lua_pop(s, 1); LUA.lua_pushnil(s); return 1; }
-    return 1;
+    // Real Lua 5.1 loadstring returns (nil, errmsg) on failure. This mock used
+    // to return nil alone, so the bootstrap's ferr was ALWAYS nil and the
+    // compile-failure message could never report a reason - which sent the
+    // investigation at the worker instead of here. luaL_loadstring leaves the
+    // message on the stack on failure, so it is popped, kept, and pushed back
+    // above the nil to restore the correct order and arity.
+    if (AUX.luaL_loadstring(s, tls(src)) !== 0) {
+      const err = tjs(LUA.lua_tostring(s, -1)) || 'compile error';
+      LUA.lua_pop(s, 1);
+      LUA.lua_pushnil(s);
+      LUA.lua_pushstring(s, tls(err));
+      return 2;
+    }
   });
 
   const finish = (extra) => {
@@ -647,6 +666,84 @@ console.log('[B10] a FREE script runs with an EMPTY getgenv - no key, no email, 
 }
 
 console.log('');
+console.log('[B11] a payload that will not compile says WHY, and how big...');
+
+// -----------------------------------------------------------------------------
+
+// The old message named neither the cause nor the size, so it was useless to
+
+// the user and useless for debugging. It is replaced with the byte count plus
+
+// loadstring's own error text.
+
+{
+
+  const bad = '--[==[ an unterminated long comment';   // valid prefix, never closed
+
+  const expectedSize = bad.length;
+
+  const r = runBootstrap(factory(ID, BASE, true), {
+
+    bare: true,
+
+    identifyexecutor: true,
+
+    request: (url) => url.includes('/sh/session')
+
+      ? 'SHS sid123 nonce456 1700000000'
+
+      : 'SHL\n' + bad
+
+  });
+
+  const said = (r.printed || []).concat(r.notifications || []).join(' | ');
+
+  const problems = [];
+
+  if (r.runtimeError) problems.push('crashed: ' + r.runtimeError);
+
+  if (/Load failed - re-execute/.test(said)) {
+
+    problems.push('still the old unactionable message');
+
+  } else if (!/Load failed/.test(said)) {
+
+    problems.push('did not report a load failure at all: ' + JSON.stringify(said));
+
+  }
+
+  if (said && said.indexOf(String(expectedSize)) < 0) {
+
+    problems.push('does not report the byte count (' + expectedSize + '): ' + JSON.stringify(said));
+
+  }
+
+  // The regression this whole check exists for: a swallowed compile error.
+
+  if (/loadstring returned no function and no error/.test(said)) {
+
+    problems.push('the compile error was DISCARDED - this is the ferr==nil path,\n'
+
+      + '         which is what `(LS and LS(src)) or nil` produces because `or` truncates to one value');
+
+  }
+
+  if (problems.length === 0) {
+
+    ok('reports the size and the real compile error: ' + JSON.stringify(said.slice(0, 90)));
+
+  } else {
+
+    no(problems.length + ' problem(s) with the compile-failure message:');
+
+    for (const p of problems) console.log('         ' + p);
+
+  }
+
+}
+
+
+
 console.log('='.repeat(72));
 console.log('BOOTSTRAP EXECUTION   ' + pass + ' passed, ' + fail + ' failed');
 console.log('='.repeat(72));
