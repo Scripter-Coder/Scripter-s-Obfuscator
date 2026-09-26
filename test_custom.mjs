@@ -1,0 +1,16 @@
+import { applyCustomObfuscator } from './custom-obfuscator.js';
+import luaparse from 'luaparse';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+import { vmSetLuaparse } from './vm-pass.js';
+vmBCSetLuaparse(luaparse);
+vmSetLuaparse(luaparse);
+const src = `local a=1; print(a)`;
+const out = applyCustomObfuscator(src, {intensity:5, _debug:true});
+console.log("out len", out.length);
+import fengari from 'fengari';
+const { lua,lauxlib,lualib,to_luastring,to_jsstring } = fengari;
+const L=lauxlib.luaL_newstate(); lualib.luaL_openlibs(L);
+lua.lua_pushcfunction(L,(LL)=>{ const n=lua.lua_gettop(LL); let parts=[]; for(let i=1;i<=n;i++){ const s=lua.lua_tostring(LL,i); parts.push(s?to_jsstring(s):""); } console.log("PRINT",parts.join(" ")); return 0; }); lua.lua_setglobal(L,to_luastring('print'));
+const st=lauxlib.luaL_dostring(L,to_luastring(out));
+console.log("st",st);
+if(st!==0) console.log(to_jsstring(lua.lua_tostring(L,-1)).slice(0,1000));

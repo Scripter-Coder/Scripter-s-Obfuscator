@@ -1,0 +1,20 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>gen_poll</title></head><body><pre id="out"></pre>
+<script src="https://cdn.jsdelivr.net/npm/luaparse@0.3.1/luaparse.min.js"></script>
+<script type="module">
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode.js';
+const luaparse = window.luaparse;
+vmBCSetLuaparse(luaparse);
+let src='RESULT="ok"';
+let vm=applyBytecodeVm(src,{profile:'BALANCED', seedOverride:0});
+let lines = vm.split("\n");
+let pollIdx = lines.findIndex(l=>l.includes("_pollState"));
+let frameIdx = lines.findIndex(l=>l.includes("FRAMES[FP]"));
+let out = "pollIdx "+pollIdx+"\n";
+out += lines.slice(pollIdx-5, pollIdx+15).join("\n") + "\n\n";
+out += "frame setup around \n";
+let runIdx = lines.findIndex(l=>l.includes("FP=1; FRAMES"));
+out += lines.slice(runIdx-10, runIdx+20).join("\n") + "\n\n";
+out += "full vm 8000-10000\n" + vm.slice(8000,12000);
+document.getElementById('out').textContent = out;
+console.log(out);
+</script></body></html>

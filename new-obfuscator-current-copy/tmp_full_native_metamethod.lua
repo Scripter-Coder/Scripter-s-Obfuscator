@@ -1,0 +1,1 @@
+local t=setmetatable({}, {__add=function(a,b) return a.v+b.v end}); t.v=10; local s=setmetatable({v=5}, getmetatable(t)); local r=t+s; print(r)

@@ -1,0 +1,10 @@
+import luaparse from 'luaparse';
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode-orig.js';
+vmBCSetLuaparse(luaparse);
+import fengari from 'fengari';
+const {lua,lauxlib,lualib,to_luastring,to_jsstring}=fengari;
+let src='local function f(a,b) return a+b end; RESULT=tostring(f(2,3))';
+let vm=applyBytecodeVm(src,{profile:'SECURE', seedOverride:123});
+const L=lauxlib.luaL_newstate(); lualib.luaL_openlibs(L);
+const st=lauxlib.luaL_dostring(L,to_luastring(vm));
+console.log(st===lua.LUA_OK?'orig ok':'orig fail '+to_jsstring(lua.lua_tostring(L,-1)).slice(0,500));

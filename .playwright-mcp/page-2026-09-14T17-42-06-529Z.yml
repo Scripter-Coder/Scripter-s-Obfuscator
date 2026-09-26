@@ -1,0 +1,38 @@
+- generic [active] [ref=f1e1]:
+  - navigation [ref=f1e2]:
+    - link "⚡ Streaming Obfuscation System" [ref=f1e3] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]: L
+      - generic [ref=f1e7]: LoadstringTester
+      - generic [ref=f1e8]: Basic
+      - button "Logout" [ref=f1e9] [cursor=pointer]
+  - generic [ref=f1e10]:
+    - generic [ref=f1e11]:
+      - generic [ref=f1e12]: Monday, September 14, 2026
+      - generic [ref=f1e13]: 19:42:06
+    - text: ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+    - generic [ref=f1e14]:
+      - button "📊 Dashboard" [ref=f1e15] [cursor=pointer]
+      - button "📜 Scripts" [ref=f1e16] [cursor=pointer]
+      - button "🔑 Users Keys" [ref=f1e17] [cursor=pointer]
+      - button "🎁 Rewards" [ref=f1e18] [cursor=pointer]
+      - button "💰 Credits" [ref=f1e19] [cursor=pointer]
+      - button "⚙️ Settings" [ref=f1e20] [cursor=pointer]
+    - generic [ref=f1e265]:
+      - generic [ref=f1e266]:
+        - heading "📜 Your Projects" [level=2] [ref=f1e267]
+        - button "➕ Create Project" [ref=f1e268] [cursor=pointer]
+      - generic [ref=f1e321]:
+        - generic [ref=f1e322]:
+          - generic [ref=f1e323]: E2E Test Project
+          - generic [ref=f1e324]: loadstring e2e
+          - generic [ref=f1e325]:
+            - generic [ref=f1e326]: 🌐 Anyone
+            - generic [ref=f1e327]: FREE
+            - generic [ref=f1e328]: 📜 0 scripts
+        - generic [ref=f1e329]:
+          - button "📜 View Scripts" [ref=f1e330] [cursor=pointer]
+          - button "➕ New Script" [ref=f1e331] [cursor=pointer]
+          - button "✏️ Edit" [ref=f1e332] [cursor=pointer]
+          - button "🗑️ Delete" [ref=f1e333] [cursor=pointer]

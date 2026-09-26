@@ -1,0 +1,14 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>same_vm2</title></head><body><pre id="out"></pre>
+<script src="https://cdn.jsdelivr.net/npm/luaparse@0.3.1/luaparse.min.js"></script>
+<script type="module">
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode.js';
+const luaparse = window.luaparse;
+vmBCSetLuaparse(luaparse);
+let src='RESULT="ok"';
+let vm=applyBytecodeVm(src,{profile:'BALANCED', seedOverride:0});
+let lines = vm.split("\n");
+let blDef = lines.filter(l=>l.includes("local b") && l.includes("={}")).map(l=>l.trim()).join("\n");
+let whiles = lines.filter(l=>l.includes("while rp<=")).map(l=>l.trim()).join("\n");
+document.getElementById('out').textContent = "blDefs:\n"+blDef+"\n\nwhiles:\n"+whiles;
+console.log(blDef, whiles);
+</script></body></html>

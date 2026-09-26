@@ -1,0 +1,79 @@
+- generic [ref=f1e1]:
+  - navigation [ref=f1e2]:
+    - link "⚡ Streaming Obfuscation System" [ref=f1e3] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]: L
+      - generic [ref=f1e7]: LoadstringTester
+      - generic [ref=f1e8]: Basic
+      - button "Logout" [ref=f1e9] [cursor=pointer]
+  - generic [ref=f1e10]:
+    - generic [ref=f1e11]:
+      - generic [ref=f1e12]: Monday, September 14, 2026
+      - generic [ref=f1e13]: 19:39:06
+    - text: ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+    - generic [ref=f1e14]:
+      - button "📊 Dashboard" [ref=f1e15] [cursor=pointer]
+      - button "📜 Scripts" [ref=f1e16] [cursor=pointer]
+      - button "🔑 Users Keys" [ref=f1e17] [cursor=pointer]
+      - button "🎁 Rewards" [ref=f1e18] [cursor=pointer]
+      - button "💰 Credits" [ref=f1e19] [cursor=pointer]
+      - button "⚙️ Settings" [ref=f1e20] [cursor=pointer]
+    - generic [ref=f1e265]:
+      - generic [ref=f1e266]:
+        - heading "📜 Your Projects" [level=2] [ref=f1e267]
+        - button "➕ Create Project" [active] [ref=f1e268] [cursor=pointer]
+      - paragraph [ref=f1e270]: No projects yet. Create your first project!
+  - generic [ref=f1e272]:
+    - button "✕" [ref=f1e273] [cursor=pointer]
+    - heading "📁 Create Project" [level=2] [ref=f1e274]
+    - paragraph [ref=f1e275]: Fill in the details to create a new project
+    - generic [ref=f1e276]:
+      - generic [ref=f1e277]: Project Name *
+      - textbox "Enter project name" [ref=f1e278]
+    - generic [ref=f1e279]:
+      - generic [ref=f1e280]: Project Description (optional)
+      - textbox "Describe your project..." [ref=f1e281]
+    - generic [ref=f1e282]:
+      - generic [ref=f1e283]: Logs Webhook (optional)
+      - textbox "https://discord.com/api/webhooks/..." [ref=f1e284]
+      - generic [ref=f1e285]: Successful executions will be sent to this webhook
+    - generic [ref=f1e286]:
+      - generic [ref=f1e287]: Alert Webhook (optional)
+      - textbox "https://discord.com/api/webhooks/..." [ref=f1e288]
+      - generic [ref=f1e289]: Crack attempts and bans will be reported to this webhook
+    - generic [ref=f1e290]:
+      - generic [ref=f1e291]: HWID Cooldown Reset (optional)
+      - spinbutton "Days" [ref=f1e292]
+      - generic [ref=f1e293]: Number of days user will need to wait before resetting HWID
+    - generic [ref=f1e294]:
+      - generic [ref=f1e295]: Visibility
+      - combobox [ref=f1e296] [cursor=pointer]:
+        - option "Anyone" [selected]
+        - option "Friends (Soon...)"
+        - option "Private"
+    - generic [ref=f1e297]:
+      - generic [ref=f1e298] [cursor=pointer]:
+        - checkbox "Block Incognito Mode" [ref=f1e299]
+        - text: Block Incognito Mode
+      - generic [ref=f1e300] [cursor=pointer]:
+        - checkbox "Block VPN" [ref=f1e301]
+        - text: Block VPN
+    - generic [ref=f1e302]:
+      - generic [ref=f1e303]: Type Of Project
+      - combobox [ref=f1e304] [cursor=pointer]:
+        - option "Free" [selected]
+        - option "Key Required"
+        - option "Paid"
+    - generic [ref=f1e305]:
+      - generic [ref=f1e306] [cursor=pointer]:
+        - checkbox "Allow HWID Reset" [ref=f1e307]
+        - text: Allow HWID Reset
+      - generic [ref=f1e308] [cursor=pointer]:
+        - checkbox "Auto Delete Expired Users" [ref=f1e309]
+        - text: Auto Delete Expired Users
+      - generic [ref=f1e310] [cursor=pointer]:
+        - checkbox "Allow HWID Cloned Key Sharing" [ref=f1e311]
+        - text: Allow HWID Cloned Key Sharing
+    - generic [ref=f1e312]: Cloned Key Sharing = one key on different computers with same HWID (useful for server hopping scripts with multi instance on VPSes). Auto Delete runs every 15 minutes.
+    - button "✅ Create Project" [ref=f1e313] [cursor=pointer]

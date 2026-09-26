@@ -1,0 +1,5 @@
+print(table.isfrozen(_G))
+print(pcall(function() table.freeze(_G, false) end))
+print(table.isfrozen(_G))
+print(pcall(function() _G.x=1 end))
+print(_G.x)

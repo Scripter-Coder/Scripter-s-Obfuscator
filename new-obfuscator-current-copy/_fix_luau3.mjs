@@ -1,0 +1,10 @@
+import fs from 'fs';
+let p='C:/Users/Ryzen 9 5900x/Desktop/Special Website/ScripterHub Website/Obfuscator-s Website/new-obfuscator-current-copy/src/targets/luau.js';
+let s=fs.readFileSync(p,'utf8');
+console.log('orig len',s.length);
+let start=s.indexOf('function lowerContinue');
+let end=s.indexOf('export function prepareSource');
+console.log('start',start,'end',end);
+console.log(s.slice(start, start+300));
+console.log('---');
+console.log(s.slice(end-200, end+300));

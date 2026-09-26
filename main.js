@@ -3063,6 +3063,11 @@ function loadProjects() {
 
 function saveProjects(projects) {
     try {
+        // LURAPH FIX: avoid double-notification cascade. If we already warned
+        // about storage in the last 4s, don't warn again (prevents 3-at-once spam
+        // when Re-Obfuscating + Storage Note + Special Key fire together).
+        var _lastNote = window._shLastStorageNote || 0;
+        var _now = Date.now();
         localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(projects));
     } catch (e) {
         // localStorage quota (~5-10MB) exceeded - usually a HUGE obfuscated
@@ -3085,7 +3090,11 @@ function saveProjects(projects) {
                 try {
                     localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(trimmed));
                     if (freed || idx === trimmed.length - 1) {
-                        showNotification('Storage Note', 'Local storage was full - old scripts\' obfuscated code was trimmed locally (loadstrings keep working; re-obfuscate from Settings if you need the local copy).', 'warning', 8000);
+                        // debounce: don't spam Storage Note if we just showed it
+                        if (Date.now() - (window._shLastStorageNote || 0) > 4000) {
+                            window._shLastStorageNote = Date.now();
+                            showNotification('Storage Note', 'Local storage was full - old scripts\' obfuscated code was trimmed locally (loadstrings keep working; re-obfuscate from Settings if you need the local copy).', 'warning', 8000);
+                        }
                         return;
                     }
                 } catch (e2) { idx++; }
@@ -3811,7 +3820,15 @@ function confirmCreateScript(projectId) {
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
-    var obfuscationIntensity = 22; // ULTRA max - 30 layers + triple wrap + PoW + 200KB junk
+    // LURAPH V15 BALANCED: 6 VM layers + bytecode mutation - adaptive to keep storage sane.
+    // Small scripts (<5k) get max protection (12 layers + LPH double VM); large scripts (>50k)
+    // are capped at 6 layers with bigger stride to stay under plan limits (friend's 40 MB fix).
+    var _codeLen = code.length;
+    var obfuscationIntensity;
+    if (_codeLen < 5000) obfuscationIntensity = 6;
+    else if (_codeLen < 20000) obfuscationIntensity = 6;
+    else if (_codeLen < 50000) obfuscationIntensity = 5;
+    else obfuscationIntensity = 5;
     var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('scriptHWIDReset').checked;
     var gameId = document.getElementById('scriptGameId').value.trim();
@@ -3827,7 +3844,9 @@ function confirmCreateScript(projectId) {
     // ---- BIG-SCRIPT GUARD: validate + size feedback BEFORE the heavy work
     // (100k+ line scripts used to freeze the tab with zero feedback)
     var codeLines = code.split('\n').length;
-    var estObf = code.length * 40; // worst case: 10 layers + double-wrap + vault
+    // LURAPH V15: accurate estimate - 8x for 12 layers, 6x for 6 layers (was 40x ultra bloat)
+    var _estFactor = (obfuscationIntensity >= 12) ? 10 : (obfuscationIntensity >= 8 ? 7 : 6);
+    var estObf = code.length * _estFactor; // balanced: no more x2 storage shock
     if (window.luaparse) {
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
@@ -3836,8 +3855,18 @@ function confirmCreateScript(projectId) {
             return;
         }
     }
-    if (estObf > 45 * 1024 * 1024 && !confirm('This script is very large (' + codeLines + ' lines, ~' + Math.round(estObf / 1024 / 1024) + 'MB obfuscated). Upload may take a while. Continue?')) {
-        return;
+    // FRIEND FIX (40 MB limit): warn early, plan-aware, with storage + time context.
+    // Threshold is the LOWER of 8 MB or 70% of the plan's fileSize - so a 40 MB friend gets
+    // warned at ~28 MB, not at 45 MB after the tab already froze. Confirm shows real MB.
+    var _planLim = (currentUser && PLAN_CONFIGS[currentUser.plan]) ? PLAN_CONFIGS[currentUser.plan].fileSize : 10;
+    var _warnAt = Math.min(8 * 1024 * 1024, (_planLim * 1024 * 1024 * 0.7));
+    if (_planLim === Infinity) _warnAt = 8 * 1024 * 1024;
+    if (estObf > _warnAt) {
+        var _estMB = (estObf / 1024 / 1024).toFixed(1);
+        var _msg = 'This script is large (' + codeLines + ' lines, ~' + _estMB + ' MB obfuscated, ~' + _estFactor + 'x).\n'
+            + 'Obfuscation may take 10-30 seconds and will use ~' + _estMB + ' MB of your ' + formatSizeMB(_planLim) + ' storage.\n'
+            + 'If it is too big, try splitting the script.\n\nContinue?';
+        if (!confirm(_msg)) return;
     }
     var projects = loadProjects();
     var projectIndex = -1;
@@ -3854,8 +3883,8 @@ function confirmCreateScript(projectId) {
     if (envLogging && !webhookUrl) {
         showNotification('Warning', 'Environment Logging enabled without webhook URL - logs will only be saved locally on the executor.', 'warning');
     }
-    // plan limit pre-checks (scripts count + storage estimate, code ~6x after obfuscation)
-    var limitErr = checkPlanLimit('scripts') || checkPlanLimit('storage', 0, code.length * 6);
+    // plan limit pre-checks (accurate factor, no more x2 shock)
+    var limitErr = checkPlanLimit('scripts') || checkPlanLimit('storage', 0, code.length * _estFactor);
     if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     // collect active keys for the key gate
     var keyGateKeys = [];
@@ -4149,7 +4178,22 @@ function generateLoadstring(projectId, scriptId) {
                     }
                 }
                 saveProjects(projectsX);
-                proceedWithGenerate(projectId, { code: freshCode, splitKey: (fresh && typeof fresh === 'object') ? fresh.splitKey : null, wantId: (fresh && typeof fresh === 'object') ? fresh.wantId : '' });
+                // LURAPH FIX: carry over specialKey + identity fields so the synthetic
+                // re-obfuscation does NOT trigger a spurious "Special Key Needed" even
+                // though the original script HAS a key (the old bug made loadstring stall).
+                var _orig = script;
+                var _synth = {
+                    id: _orig.id, name: _orig.name, code: freshCode,
+                    originalCode: _orig.originalCode || _orig.code,
+                    specialKey: _orig.specialKey, keyless: !!_orig.keyless || !!_orig.freeForEveryone,
+                    requireKey: !!_orig.requireKey, splitKeyData: (fresh && typeof fresh === 'object' && fresh.splitKey) ? fresh.splitKey : null,
+                    loaderId: (fresh && typeof fresh === 'object' && fresh.wantId) ? fresh.wantId : _orig.loaderId,
+                    obfuscatorEngine: _orig.obfuscatorEngine, obfuscationIntensity: _orig.obfuscationIntensity,
+                    antiTamper: _orig.antiTamper, antiSkid: _orig.antiSkid, envLogging: !!_orig.envLogging, webhookUrl: _orig.webhookUrl || ''
+                };
+                // also handle the object-form that shUploadLoader expects: {code, splitKey, wantId}
+                _synth.splitKey = _synth.splitKeyData; _synth.wantId = _synth.loaderId;
+                proceedWithGenerate(projectId, _synth);
             }).catch(function(e) {
                 showNotification('Error', 'Re-obfuscation failed: ' + e.message, 'error', 7000);
             });
@@ -4419,7 +4463,13 @@ function confirmEditScript(projectId, scriptId) {
     var keyTime = document.getElementById('editScriptKeyTime').value;
     var keyUnit = document.getElementById('editScriptKeyUnit').value;
     var code = document.getElementById('editScriptCode').value.trim();
-    var obfuscationIntensity = 22; // ULTRA max - 30 layers + triple wrap + PoW + 200KB junk
+    // LURAPH V15 BALANCED: same adaptive as create (was fixed 22 -> x2 bloat)
+    var _eLen = code.length;
+    var obfuscationIntensity;
+    if (_eLen < 5000) obfuscationIntensity = 6;
+    else if (_eLen < 20000) obfuscationIntensity = 6;
+    else if (_eLen < 50000) obfuscationIntensity = 5;
+    else obfuscationIntensity = 5;
     var obfuscationType = obfuscatorEngine === 'aegis' ? 'aegis' : 'custom';
     var hwidReset = document.getElementById('editScriptHWIDReset').checked;
     var gameId = document.getElementById('editScriptGameId').value.trim();

@@ -1,0 +1,1 @@
+local co=coroutine.create(function() coroutine.yield(1); coroutine.yield(2); return 3 end); local ok,v=coroutine.resume(co); print(v); ok,v=coroutine.resume(co); print(v); ok,v=coroutine.resume(co); print(v)

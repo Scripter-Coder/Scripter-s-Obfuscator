@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>compile debug</title></head><body><pre id="out"></pre>
+<script src="https://cdn.jsdelivr.net/npm/luaparse@0.3.1/luaparse.min.js"></script>
+<script type="module">
+import { vmBCSetLuaparse, _vmBcCompile, applyBytecodeVm } from './vm-bytecode.js';
+const luaparse = window.luaparse;
+vmBCSetLuaparse(luaparse);
+let src='RESULT="ok"';
+let build=_vmBcCompile(src,{profile:'BALANCED', seedOverride:0});
+document.getElementById('out').textContent = "chunks="+build.chunks.length+"\n"+JSON.stringify(build.chunks[0].code.slice(0,20))+"\nOPCODES keys "+Object.keys(build.OPCODES).length+"\nseed "+build.seed;
+console.log(build);
+</script></body></html>

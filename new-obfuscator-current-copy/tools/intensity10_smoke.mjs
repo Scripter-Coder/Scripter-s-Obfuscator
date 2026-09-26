@@ -1,0 +1,4 @@
+import luaparse from 'luaparse'; import fengari from 'fengari'; import { vmBCSetLuaparse } from '../vm-bytecode.js'; import { applyCustomObfuscator } from '../custom-obfuscator.js';
+vmBCSetLuaparse(luaparse); const {lua,lauxlib,lualib,to_luastring,to_jsstring}=fengari;
+const src=`local function f(n) if n<=1 then return 1 end return n*f(n-1) end if f(9)~=362880 then error("INT10_BAD") end`;
+const dbg={}; const t=Date.now(); const out=applyCustomObfuscator(src,{intensity:10,seed:424242,ultra:true},dbg); console.log('generated',out.length,'ms',Date.now()-t); const L=lauxlib.luaL_newstate(); lualib.luaL_openlibs(L); const st=lauxlib.luaL_dostring(L,to_luastring(out)); if(st!==lua.LUA_OK){console.log('FAIL status',st,'type',lua.lua_type(L,-1)); const v=lua.lua_tostring(L,-1); console.log(v?to_jsstring(v):'non-string error'); process.exit(1)} console.log('RESULT verified 362880');

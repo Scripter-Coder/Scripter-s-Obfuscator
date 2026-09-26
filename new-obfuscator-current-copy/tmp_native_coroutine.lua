@@ -1,0 +1,5 @@
+local co=coroutine.create(function() coroutine.yield(1) return 2 end)
+local ok,v=coroutine.resume(co)
+print(ok, v)
+local ok2,v2=coroutine.resume(co)
+print(ok2, v2)

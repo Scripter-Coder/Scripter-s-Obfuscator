@@ -1,0 +1,1 @@
+local mt={__index=function(_,k) return k.."!" end}; local t=setmetatable({}, mt); print(t.foo)

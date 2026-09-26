@@ -1,0 +1,54 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>audit esm</title></head><body><pre id="out">loading</pre>
+<script type="module">
+import luaparse from 'https://esm.sh/luaparse@0.3.1';
+import * as fengari from 'https://esm.sh/fengari@0.1.4';
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode.js';
+vmBCSetLuaparse(luaparse);
+const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+function runLua(src){
+  const L=lauxlib.luaL_newstate(); lualib.luaL_openlibs(L);
+  lua.lua_pushcfunction(L,(LL)=>{
+    const n=lua.lua_gettop(LL);
+    let parts=[];
+    for(let i=1;i<=n;i++){ const s=lua.lua_tostring(LL,i); parts.push(s?to_jsstring(s):lua.lua_typename(LL,lua.lua_type(LL,i))); }
+    return 0;
+  }); lua.lua_setglobal(L,to_luastring('print'));
+  const st=lauxlib.luaL_dostring(L,to_luastring(src));
+  if(st!==lua.LUA_OK){
+    const err=to_jsstring(lua.lua_tostring(L,-1));
+    return {ok:false, err};
+  }
+  lua.lua_getglobal(L,to_luastring('RESULT'));
+  const v=lua.lua_tostring(L,-1);
+  return {ok:true, res: v?to_jsstring(v):null};
+}
+const cases = [
+  { name:'01_basic', src:'RESULT="ok"' },
+  { name:'07_functions', src:'local function add(a,b) return a+b end; RESULT=tostring(add(2,3))' },
+  { name:'11_recursive', src:'local function fact(n) if n<=1 then return 1 else return n*fact(n-1) end end; RESULT=tostring(fact(5))' },
+  { name:'A_B_C', src:`local function c(x) return x*3 end
+local function b(x) return c(x)+1 end
+local function a(x) return b(x)+2 end
+RESULT=tostring(a(5))
+` },
+  { name:'pcall_simple', src:'local function f(x) return x*2 end; local ok,r=pcall(f,5); RESULT=tostring(ok)..","..tostring(r)' },
+  { name:'pcall_error', src:'local function f(x) error("neg") end; local ok,err=pcall(f); RESULT=tostring(ok)..":"..tostring(err):sub(1,4)' },
+  { name:'coroutine', src:`local co=coroutine.create(function(a) coroutine.yield(a*2) return a*3 end)
+local ok,v=coroutine.resume(co,5)
+RESULT=tostring(v)
+` },
+  { name:'metamethod', src:'local t=setmetatable({}, {__call=function(_,x) return x*2 end}); RESULT=tostring(t(3))' },
+];
+let out=document.getElementById('out');
+let log="";
+for(const tc of cases){
+  const vmSrc = applyBytecodeVm(tc.src, {profile:'BALANCED', seedOverride:0});
+  const native = runLua(tc.src);
+  const prot = runLua(vmSrc);
+  const ok = native.ok===prot.ok && native.res===prot.res;
+  log += (ok?"[PASS]":"[FAIL]")+" "+tc.name+" native="+native.res+" prot="+prot.res+" "+(prot.err||"")+"\n";
+}
+out.textContent=log;
+console.log(log);
+window.__done=log;
+</script></body></html>

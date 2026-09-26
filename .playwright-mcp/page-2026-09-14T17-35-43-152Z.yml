@@ -1,0 +1,152 @@
+- generic [active] [ref=f1e1]:
+  - navigation [ref=f1e2]:
+    - link "⚡ Streaming Obfuscation System" [ref=f1e3] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]: L
+      - generic [ref=f1e7]: LoadstringTester
+      - generic [ref=f1e8]: Basic
+      - button "Logout" [ref=f1e9] [cursor=pointer]
+  - generic [ref=f1e10]:
+    - generic [ref=f1e11]:
+      - generic [ref=f1e12]: Monday, September 14, 2026
+      - generic [ref=f1e13]: 19:35:43
+    - text: ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+    - generic [ref=f1e14]:
+      - button "📊 Dashboard" [ref=f1e15] [cursor=pointer]
+      - button "📜 Scripts" [ref=f1e16] [cursor=pointer]
+      - button "🔑 Users Keys" [ref=f1e17] [cursor=pointer]
+      - button "🎁 Rewards" [ref=f1e18] [cursor=pointer]
+      - button "💰 Credits" [ref=f1e19] [cursor=pointer]
+      - button "⚙️ Settings" [ref=f1e20] [cursor=pointer]
+    - generic [ref=f1e22]:
+      - generic [ref=f1e23]:
+        - generic [ref=f1e24]: L
+        - generic [ref=f1e25]:
+          - heading "LoadstringTester" [level=2] [ref=f1e26]
+          - paragraph [ref=f1e27]:
+            - generic [ref=f1e28]: loadstringtest@example.com
+            - button "Hide" [ref=f1e29] [cursor=pointer]
+          - generic [ref=f1e30]: "📊 Current Plan: Basic"
+      - generic [ref=f1e31]:
+        - generic [ref=f1e32]:
+          - generic [ref=f1e33]:
+            - generic [ref=f1e34]: 📸
+            - generic [ref=f1e35]: Profile Image
+            - generic [ref=f1e36]: PNG, JPG, WEBP
+          - button "Choose File" [ref=f1e38] [cursor=pointer]
+          - button "⬆ Upload Profile" [ref=f1e39] [cursor=pointer]
+        - generic [ref=f1e40]:
+          - generic [ref=f1e41]:
+            - generic [ref=f1e42]: 🖼️
+            - generic [ref=f1e43]: Banner Image
+            - generic [ref=f1e44]: PNG, JPG, WEBP, GIF
+          - button "Choose File" [ref=f1e46] [cursor=pointer]
+          - button "⬆ Upload Banner" [ref=f1e47] [cursor=pointer]
+        - generic [ref=f1e48]:
+          - generic [ref=f1e49]:
+            - generic [ref=f1e50]: 🎨
+            - generic [ref=f1e51]: Theme
+            - generic [ref=f1e52]: Click to change
+          - combobox [ref=f1e53] [cursor=pointer]:
+            - option "Default (Purple)" [selected]
+            - option "🔥 Red"
+            - option "💙 Blue"
+            - option "💚 Green"
+            - option "💜 Purple"
+            - option "🧡 Orange"
+            - option "🤍 White"
+            - option "🖤 Dark"
+          - generic [ref=f1e54]:
+            - generic "Default" [ref=f1e55] [cursor=pointer]
+            - generic "Red" [ref=f1e56] [cursor=pointer]
+            - generic "Blue" [ref=f1e57] [cursor=pointer]
+            - generic "Green" [ref=f1e58] [cursor=pointer]
+            - generic "Purple" [ref=f1e59] [cursor=pointer]
+            - generic "Orange" [ref=f1e60] [cursor=pointer]
+            - generic "White" [ref=f1e61] [cursor=pointer]
+            - generic "Dark" [ref=f1e62] [cursor=pointer]
+      - generic [ref=f1e63]:
+        - generic [ref=f1e64]: 👋 Welcome back, LoadstringTester!
+        - generic [ref=f1e66]: "📊 Current Plan: Basic"
+      - generic [ref=f1e67]:
+        - generic [ref=f1e68]:
+          - generic [ref=f1e69]: 📁 Projects
+          - generic [ref=f1e70]:
+            - text: "0"
+            - generic [ref=f1e71]: / 10
+        - generic [ref=f1e73]:
+          - generic [ref=f1e74]: 🔑 Keys
+          - generic [ref=f1e75]:
+            - text: "0"
+            - generic [ref=f1e76]: / 1000
+        - generic [ref=f1e78]:
+          - generic [ref=f1e79]: 📜 Scripts
+          - generic [ref=f1e80]:
+            - text: "0"
+            - generic [ref=f1e81]: / 20
+        - generic [ref=f1e83]:
+          - generic [ref=f1e84]: 💾 Storage Used
+          - generic [ref=f1e85]:
+            - text: 0.01 MB
+            - generic [ref=f1e86]: / 10 MB
+      - generic [ref=f1e88]:
+        - generic [ref=f1e89]:
+          - generic [ref=f1e90]:
+            - generic [ref=f1e91]: ⚡ Total Executions
+            - generic [ref=f1e92]:
+              - button "Per Day" [ref=f1e93] [cursor=pointer]
+              - button "Per Week" [ref=f1e94] [cursor=pointer]
+              - button "Per Month" [ref=f1e95] [cursor=pointer]
+              - button "Per Year" [ref=f1e96] [cursor=pointer]
+              - button "All Time" [ref=f1e97] [cursor=pointer]
+          - generic [ref=f1e98]: "0"
+        - generic [ref=f1e99]:
+          - generic [ref=f1e100]:
+            - generic [ref=f1e101]: 💎 Obfuscations
+            - generic [ref=f1e102]:
+              - button "Per Day" [ref=f1e103] [cursor=pointer]
+              - button "Per Week" [ref=f1e104] [cursor=pointer]
+              - button "Per Month" [ref=f1e105] [cursor=pointer]
+              - button "Per Year" [ref=f1e106] [cursor=pointer]
+              - button "All Time" [ref=f1e107] [cursor=pointer]
+          - generic [ref=f1e108]: "0"
+        - generic [ref=f1e109]:
+          - generic [ref=f1e110]: 🛡️ Threats Blocked
+          - generic [ref=f1e112]: "0"
+          - generic [ref=f1e113]: Bypass attempts on key system & checkpoints
+      - generic [ref=f1e114]:
+        - generic [ref=f1e115]: 📈 Executor Statistics (daily, last 10 days)
+        - generic [ref=f1e116]:
+          - generic [ref=f1e117]:
+            - generic [ref=f1e118]: —
+            - generic [ref=f1e119]: "0"
+          - generic [ref=f1e141]:
+            - generic [ref=f1e142]: —
+            - generic [ref=f1e143]: "0"
+          - generic [ref=f1e165]:
+            - generic [ref=f1e166]: —
+            - generic [ref=f1e167]: "0"
+          - generic [ref=f1e189]:
+            - generic [ref=f1e190]: —
+            - generic [ref=f1e191]: "0"
+          - generic [ref=f1e213]:
+            - generic [ref=f1e214]: —
+            - generic [ref=f1e215]: "0"
+      - generic [ref=f1e237]:
+        - generic [ref=f1e238]:
+          - generic [ref=f1e239]:
+            - heading "📈 Live Executions Chart" [level=3] [ref=f1e240]
+            - generic [ref=f1e241]: "Endpoint:"
+          - button "⏸ Pause" [ref=f1e242] [cursor=pointer]
+        - generic [ref=f1e244]:
+          - button "Delta" [ref=f1e245] [cursor=pointer]
+          - button "Volt" [ref=f1e247] [cursor=pointer]
+          - button "Arceus X" [ref=f1e249] [cursor=pointer]
+          - button "Hydrogen" [ref=f1e251] [cursor=pointer]
+          - button "Wave" [ref=f1e253] [cursor=pointer]
+          - button "Synapse Z" [ref=f1e255] [cursor=pointer]
+          - button "Krnl" [ref=f1e257] [cursor=pointer]
+          - button "Fluxus" [ref=f1e259] [cursor=pointer]
+          - button "Other" [ref=f1e261] [cursor=pointer]
+        - generic [ref=f1e263]: 💡 Tip = Click legend items to toggle lines. Hover to inspect values. Pause = Stops polling but keeps the chart interactive.

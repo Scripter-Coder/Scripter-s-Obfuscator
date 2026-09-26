@@ -1,0 +1,11 @@
+opencode.json
+.opencode/
+node_modules/
+generate-test.mjs
+obfuscate-file.mjs
+obfuscated-test.lua
+server.cjs
+server.js
+*.log
+.DS_Store
+Thumbs.db

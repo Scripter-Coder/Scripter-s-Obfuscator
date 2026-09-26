@@ -1,0 +1,128 @@
+- generic [ref=f1e1]:
+  - navigation [ref=f1e2]:
+    - link "⚡ Streaming Obfuscation System" [ref=f1e3] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]: L
+      - generic [ref=f1e7]: LoadstringTester
+      - generic [ref=f1e8]: Basic
+      - button "Logout" [ref=f1e9] [cursor=pointer]
+  - generic [ref=f1e10]:
+    - generic [ref=f1e11]:
+      - generic [ref=f1e12]: Monday, September 14, 2026
+      - generic [ref=f1e13]: 19:45:22
+    - text: ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+    - generic [ref=f1e14]:
+      - button "📊 Dashboard" [ref=f1e15] [cursor=pointer]
+      - button "📜 Scripts" [ref=f1e16] [cursor=pointer]
+      - button "🔑 Users Keys" [ref=f1e17] [cursor=pointer]
+      - button "🎁 Rewards" [ref=f1e18] [cursor=pointer]
+      - button "💰 Credits" [ref=f1e19] [cursor=pointer]
+      - button "⚙️ Settings" [ref=f1e20] [cursor=pointer]
+    - generic [ref=f1e265]:
+      - generic [ref=f1e266]:
+        - heading "📜 Your Projects" [level=2] [ref=f1e267]
+        - button "➕ Create Project" [ref=f1e268] [cursor=pointer]
+      - generic [ref=f1e421]:
+        - generic [ref=f1e422]:
+          - generic [ref=f1e423]: E2E Test Project
+          - generic [ref=f1e424]: loadstring e2e
+          - generic [ref=f1e425]:
+            - generic [ref=f1e426]: 🌐 Anyone
+            - generic [ref=f1e427]: FREE
+            - generic [ref=f1e428]: 📜 1 scripts
+        - generic [ref=f1e429]:
+          - button "📜 View Scripts" [ref=f1e430] [cursor=pointer]
+          - button "➕ New Script" [ref=f1e431] [cursor=pointer]
+          - button "✏️ Edit" [ref=f1e432] [cursor=pointer]
+          - button "🗑️ Delete" [ref=f1e433] [cursor=pointer]
+  - generic [ref=f1e345]:
+    - button "✕" [ref=f1e346] [cursor=pointer]
+    - heading "➕ Create Script" [level=2] [ref=f1e347]
+    - paragraph [ref=f1e348]:
+      - text: Create a new script for "
+      - strong [ref=f1e349]: E2E Test Project
+      - text: "\""
+    - generic [ref=f1e350]:
+      - generic [ref=f1e351]: Script Name *
+      - textbox "Enter script name" [ref=f1e352]: E2E Loadstring Test
+    - generic [ref=f1e353]:
+      - generic [ref=f1e354]: Your Special Key
+      - textbox "Any length — required (protects the website page)" [ref=f1e355]: MyE2ESpecialKey123
+      - generic [ref=f1e356]:
+        - text: 🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it.
+        - strong [ref=f1e357]: "Free For Everyone:"
+        - text: anyone can execute it in-game with NO key - the key only gates the website key page (so people can't rip your code from the browser).
+        - strong [ref=f1e358]: "Paid:"
+        - text: users must set the key BEFORE executing via
+        - code [ref=f1e359]: getgenv().ScripterHubKey = "KEY"
+        - text: (no in-game popup). It is NEVER sent to the server; losing it = the script is gone forever.
+    - generic [ref=f1e360]:
+      - generic [ref=f1e361]: Script Description (optional)
+      - textbox "Describe your script..." [ref=f1e362]
+    - generic [ref=f1e363]:
+      - generic [ref=f1e364] [cursor=pointer]:
+        - checkbox "🛡️ Anti Tampering" [checked] [ref=f1e365]
+        - text: 🛡️ Anti Tampering
+      - generic [ref=f1e366] [cursor=pointer]:
+        - checkbox "🔒 Anti Skidding" [checked] [ref=f1e367]
+        - text: 🔒 Anti Skidding
+      - generic [ref=f1e368] [cursor=pointer]:
+        - checkbox "📡 Environment Logging" [ref=f1e369]
+        - text: 📡 Environment Logging
+    - generic [ref=f1e370]:
+      - generic [ref=f1e371]: Max Timer Of Keys
+      - generic [ref=f1e372]:
+        - spinbutton "Amount" [ref=f1e373]
+        - combobox [ref=f1e374] [cursor=pointer]:
+          - option "Seconds" [selected]
+          - option "Minutes"
+          - option "Hours"
+          - option "Days"
+          - option "Weeks"
+          - option "Months"
+          - option "Years"
+          - option "Unlimited"
+    - generic [ref=f1e375]:
+      - generic [ref=f1e376]: Upload .txt/.lua File (optional)
+      - button "Choose File" [ref=f1e377] [cursor=pointer]
+    - generic [ref=f1e378]:
+      - generic [ref=f1e379]: Paste .txt/.lua Code *
+      - textbox "-- Paste your Lua code here..." [ref=f1e380]: "-- e2e test script local msg = \"hello from e2e\" print(msg) local function add(a, b) return a + b end print(add(2, 3))"
+    - generic [ref=f1e381]:
+      - generic [ref=f1e382]: 💎 Choose Obfuscator
+      - combobox [ref=f1e383] [cursor=pointer]:
+        - option "Default Obfuscator (Recommended)" [selected]
+        - option "Aegis Obfuscator"
+      - generic [ref=f1e384]:
+        - text: 💎
+        - strong [ref=f1e385]: Default
+        - text: ": multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger (detects loggers, spies & hooks → game:Shutdown()). ⚔️"
+        - strong [ref=f1e386]: Aegis
+        - text: ": external Aegis engine (custom ISA + polymorphic VM) - your source is sent to the Aegis API to be obfuscated."
+    - generic [ref=f1e387]:
+      - generic [ref=f1e388] [cursor=pointer]:
+        - checkbox "🌐 Free For Everyone" [checked] [ref=f1e389]
+        - text: 🌐 Free For Everyone
+      - generic [ref=f1e390] [cursor=pointer]:
+        - checkbox "🔇 Silent Mode" [ref=f1e391]
+        - text: 🔇 Silent Mode
+      - generic [ref=f1e392] [cursor=pointer]:
+        - checkbox "💓 Heartbeat" [checked] [ref=f1e393]
+        - text: 💓 Heartbeat
+      - generic [ref=f1e394] [cursor=pointer]:
+        - checkbox "⚡ Lightning Mode" [ref=f1e395]
+        - text: ⚡ Lightning Mode
+      - generic [ref=f1e396] [cursor=pointer]:
+        - checkbox "🔄 Enable Security Updates" [checked] [ref=f1e397]
+        - text: 🔄 Enable Security Updates
+    - generic [ref=f1e398]: 🌐 Free For Everyone = anyone can execute (NO key in executors - the Special Key only gates the website page). 🔇 Silent = no console outputs (not recommended). 💓 Heartbeat = more secure (recommended). ⚡ Lightning = faster but removes some inline security checks. 🔄 Security Updates = stores your raw script encrypted for automated updates (recommended).
+    - generic [ref=f1e400] [cursor=pointer]:
+      - checkbox "🔄 HWID Reset (Allow device change)" [ref=f1e401]
+      - text: 🔄 HWID Reset (Allow device change)
+    - generic [ref=f1e402]:
+      - generic [ref=f1e403]: Game Link/ID (optional)
+      - textbox "e.g. 1234567890 or roblox.com/games/1234567890" [ref=f1e404]
+    - generic [ref=f1e405]:
+      - button "✅ Create Script" [active] [ref=f1e406] [cursor=pointer]
+      - button "Cancel" [ref=f1e407] [cursor=pointer]

@@ -1,0 +1,158 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e158]:
+    - generic [ref=e159]: ✅
+    - generic [ref=e160]:
+      - generic [ref=e161]: Success!
+      - generic [ref=e162]: Account created successfully! Welcome LoadstringTester
+    - button "✕" [ref=e163] [cursor=pointer]
+  - navigation [ref=e2]:
+    - link "⚡ Streaming Obfuscation System" [ref=e3] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=e164]:
+      - generic [ref=e165]: L
+      - generic [ref=e166]: LoadstringTester
+      - generic [ref=e167]: Basic
+      - button "Logout" [ref=e168] [cursor=pointer]
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]: Monday, September 14, 2026
+      - generic [ref=e10]: 19:14:32
+    - text: ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+    - generic [ref=e169]:
+      - button "📊 Dashboard" [ref=e170] [cursor=pointer]
+      - button "📜 Scripts" [ref=e171] [cursor=pointer]
+      - button "🔑 Users Keys" [ref=e172] [cursor=pointer]
+      - button "🎁 Rewards" [ref=e173] [cursor=pointer]
+      - button "💰 Credits" [ref=e174] [cursor=pointer]
+      - button "⚙️ Settings" [ref=e175] [cursor=pointer]
+    - generic [ref=e177]:
+      - generic [ref=e178]:
+        - generic [ref=e179]: L
+        - generic [ref=e180]:
+          - heading "LoadstringTester" [level=2] [ref=e181]
+          - paragraph [ref=e182]:
+            - generic [ref=e183]: loadstringtest@example.com
+            - button "Hide" [ref=e184] [cursor=pointer]
+          - generic [ref=e185]: "📊 Current Plan: Basic"
+      - generic [ref=e186]:
+        - generic [ref=e187]:
+          - generic [ref=e188]:
+            - generic [ref=e189]: 📸
+            - generic [ref=e190]: Profile Image
+            - generic [ref=e191]: PNG, JPG, WEBP
+          - button "Choose File" [ref=e193] [cursor=pointer]
+          - button "⬆ Upload Profile" [ref=e194] [cursor=pointer]
+        - generic [ref=e195]:
+          - generic [ref=e196]:
+            - generic [ref=e197]: 🖼️
+            - generic [ref=e198]: Banner Image
+            - generic [ref=e199]: PNG, JPG, WEBP, GIF
+          - button "Choose File" [ref=e201] [cursor=pointer]
+          - button "⬆ Upload Banner" [ref=e202] [cursor=pointer]
+        - generic [ref=e203]:
+          - generic [ref=e204]:
+            - generic [ref=e205]: 🎨
+            - generic [ref=e206]: Theme
+            - generic [ref=e207]: Click to change
+          - combobox [ref=e208] [cursor=pointer]:
+            - option "Default (Purple)" [selected]
+            - option "🔥 Red"
+            - option "💙 Blue"
+            - option "💚 Green"
+            - option "💜 Purple"
+            - option "🧡 Orange"
+            - option "🤍 White"
+            - option "🖤 Dark"
+          - generic [ref=e209]:
+            - generic "Default" [ref=e210] [cursor=pointer]
+            - generic "Red" [ref=e211] [cursor=pointer]
+            - generic "Blue" [ref=e212] [cursor=pointer]
+            - generic "Green" [ref=e213] [cursor=pointer]
+            - generic "Purple" [ref=e214] [cursor=pointer]
+            - generic "Orange" [ref=e215] [cursor=pointer]
+            - generic "White" [ref=e216] [cursor=pointer]
+            - generic "Dark" [ref=e217] [cursor=pointer]
+      - generic [ref=e218]:
+        - generic [ref=e219]: 👋 Welcome back, LoadstringTester!
+        - generic [ref=e221]: "📊 Current Plan: Basic"
+      - generic [ref=e222]:
+        - generic [ref=e223]:
+          - generic [ref=e224]: 📁 Projects
+          - generic [ref=e225]:
+            - text: "0"
+            - generic [ref=e226]: / 10
+        - generic [ref=e228]:
+          - generic [ref=e229]: 🔑 Keys
+          - generic [ref=e230]:
+            - text: "0"
+            - generic [ref=e231]: / 1000
+        - generic [ref=e233]:
+          - generic [ref=e234]: 📜 Scripts
+          - generic [ref=e235]:
+            - text: "0"
+            - generic [ref=e236]: / 20
+        - generic [ref=e238]:
+          - generic [ref=e239]: 💾 Storage Used
+          - generic [ref=e240]:
+            - text: 0.01 MB
+            - generic [ref=e241]: / 10 MB
+      - generic [ref=e243]:
+        - generic [ref=e244]:
+          - generic [ref=e245]:
+            - generic [ref=e246]: ⚡ Total Executions
+            - generic [ref=e247]:
+              - button "Per Day" [ref=e248] [cursor=pointer]
+              - button "Per Week" [ref=e249] [cursor=pointer]
+              - button "Per Month" [ref=e250] [cursor=pointer]
+              - button "Per Year" [ref=e251] [cursor=pointer]
+              - button "All Time" [ref=e252] [cursor=pointer]
+          - generic [ref=e253]: "0"
+        - generic [ref=e254]:
+          - generic [ref=e255]:
+            - generic [ref=e256]: 💎 Obfuscations
+            - generic [ref=e257]:
+              - button "Per Day" [ref=e258] [cursor=pointer]
+              - button "Per Week" [ref=e259] [cursor=pointer]
+              - button "Per Month" [ref=e260] [cursor=pointer]
+              - button "Per Year" [ref=e261] [cursor=pointer]
+              - button "All Time" [ref=e262] [cursor=pointer]
+          - generic [ref=e263]: "0"
+        - generic [ref=e264]:
+          - generic [ref=e265]: 🛡️ Threats Blocked
+          - generic [ref=e267]: "0"
+          - generic [ref=e268]: Bypass attempts on key system & checkpoints
+      - generic [ref=e269]:
+        - generic [ref=e270]: 📈 Executor Statistics (daily, last 10 days)
+        - generic [ref=e271]:
+          - generic [ref=e272]:
+            - generic [ref=e273]: —
+            - generic [ref=e274]: "0"
+          - generic [ref=e296]:
+            - generic [ref=e297]: —
+            - generic [ref=e298]: "0"
+          - generic [ref=e320]:
+            - generic [ref=e321]: —
+            - generic [ref=e322]: "0"
+          - generic [ref=e344]:
+            - generic [ref=e345]: —
+            - generic [ref=e346]: "0"
+          - generic [ref=e368]:
+            - generic [ref=e369]: —
+            - generic [ref=e370]: "0"
+      - generic [ref=e392]:
+        - generic [ref=e393]:
+          - generic [ref=e394]:
+            - heading "📈 Live Executions Chart" [level=3] [ref=e395]
+            - generic [ref=e396]: "Endpoint:"
+          - button "⏸ Pause" [ref=e397] [cursor=pointer]
+        - generic [ref=e399]:
+          - button "Delta" [ref=e400] [cursor=pointer]
+          - button "Volt" [ref=e402] [cursor=pointer]
+          - button "Arceus X" [ref=e404] [cursor=pointer]
+          - button "Hydrogen" [ref=e406] [cursor=pointer]
+          - button "Wave" [ref=e408] [cursor=pointer]
+          - button "Synapse Z" [ref=e410] [cursor=pointer]
+          - button "Krnl" [ref=e412] [cursor=pointer]
+          - button "Fluxus" [ref=e414] [cursor=pointer]
+          - button "Other" [ref=e416] [cursor=pointer]
+        - generic [ref=e418]: 💡 Tip = Click legend items to toggle lines. Hover to inspect values. Pause = Stops polling but keeps the chart interactive.

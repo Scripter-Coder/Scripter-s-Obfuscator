@@ -1,0 +1,14 @@
+LK + '=caller.lk; ' + FR + '=caller; if caller.nRet==1 then ' + SP + '=' + SP + '+1; ' + S + '[' + SP + ']=a[1] elseif caller.nRet==-1 then local r=' + PK + '(' + UNP + '(a)); ' + SP + '=' + SP + '+1; ' + S + '[' + SP + ']=r else for j=1,#a do ' + SP + '=' + SP + '+1; ' + S + '[' + SP + ']=a[j] end end else return ' + UNP + '(a) end');
+        L.push('  end');
+        L.push('  if ' + OP + '==' + OPCODES['TAILCALL'] + ' then');
+        L.push('   local n=' + CODE + '.c[' + PC + '] ' + PC + '=' + PC + '+1');
+        L.push('   local f=' + S + '[' + SP + '-n]');
+        L.push('   local a={} for j=1,n do a[j]=' + S + '[' + SP + '-n+j] end ' + SP + '=' + SP + '-n-1');
+        L.push('   local la=#a if la>0 and ' + UNPKM + '(a[la]) then local pt=a[la]; local flat={}; local fi=0; for j=1,la-1 do fi=fi+1 flat[fi]=a[j] end; for j=1,pt.n do fi=fi+1 flat[fi]=pt[j] end; a=flat; end');
+        L.push('   return f(' + UNP + '(a))');
+        L.push('  end');
+        // if-chain dispatch: linear scan over shuffled handler order (structural variant)
+        for (var _hi=0; _hi<order.length; _hi++) {
+            var _hn = order[_hi]; var _oc = OPCODES[_hn];
+            L.push('  ' + (_hi===0?'if':'elseif') + ' ' + OP + '==' + polyNum(_oc) + ' then ' + HAND + '[' + polyNum(_oc) + ']()');
+        

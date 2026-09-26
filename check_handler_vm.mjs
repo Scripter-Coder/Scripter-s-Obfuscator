@@ -1,0 +1,12 @@
+import luaparse from 'luaparse';
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode.js';
+vmBCSetLuaparse(luaparse);
+let src=`local a=5; local b=3; RESULT=tostring(a+b)`;
+let vmFast=applyBytecodeVm(src,{profile:'FAST', seedOverride:0});
+let vmSec=applyBytecodeVm(src,{profile:'SECURE', seedOverride:0});
+console.log("FAST has prepareCall:", vmFast.includes('prepareCall'));
+console.log("SECURE has prepareCall:", vmSec.includes('prepareCall'));
+console.log("SECURE snippet", vmSec.slice(vmSec.indexOf('prepareCall')-100, vmSec.indexOf('prepareCall')+200));
+console.log("---");
+console.log("SECURE has _st:", vmSec.includes('_st'));
+console.log("SECURE snippet state", vmSec.slice(vmSec.indexOf('_st')-100, vmSec.indexOf('_st')+200));

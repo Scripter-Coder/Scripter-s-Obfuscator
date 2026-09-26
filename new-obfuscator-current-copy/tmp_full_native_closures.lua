@@ -1,0 +1,1 @@
+local function make(n) return function(x) return x+n end end; local f=make(5); print(f(10))

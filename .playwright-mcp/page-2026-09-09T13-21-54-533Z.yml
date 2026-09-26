@@ -1,0 +1,3 @@
+- generic [ref=e2]:
+  - text: ⛔ Not Allowed
+  - generic [ref=e3]: This raw endpoint is protected. Unauthorized access is prohibited.

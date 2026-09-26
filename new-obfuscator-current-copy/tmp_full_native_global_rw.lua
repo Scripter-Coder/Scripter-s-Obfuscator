@@ -1,0 +1,1 @@
+x=10; print(x); x=20; print(x); y=x+5; print(y); _G and print(_G.print and "has _G.print" or "no")

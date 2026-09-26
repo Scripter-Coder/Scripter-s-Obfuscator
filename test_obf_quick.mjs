@@ -1,0 +1,34 @@
+import assert from 'assert';
+import luaparse from 'luaparse';
+import { applyCustomObfuscator } from './custom-obfuscator.js';
+import { vmSetLuaparse } from './vm-pass.js';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+vmSetLuaparse(luaparse);
+vmBCSetLuaparse(luaparse);
+globalThis.window = globalThis;
+const sample = `local x = 0; for i = 1, 10 do x = x + i end; assert(x == 55, "math broken")`;
+const runnable = 'GLOBAL_MARKER = "RAN_OK_7355608"\nlocal x = 0\nfor i = 1, 10 do x = x + i end\nassert(x == 55, "math broken")\n';
+console.log('[1] single-wrap intensity 1');
+let out = applyCustomObfuscator(sample, {intensity:1, antiTamper:false, antiSkid:false, _debug:true});
+assert(!out.includes('Hello'), 'no leak');
+luaparse.parse(out);
+console.log('ok len', out.length);
+console.log('[7] fengari run');
+const fengari = (await import('fengari')).default;
+const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+const PRELUDE = 'SHUTDOWN=false\ngame={Shutdown=function() SHUTDOWN=true end,GetService=function() return {} end}\nMARKER=nil';
+function runLua(code){
+  const L = lauxlib.luaL_newstate();
+  lualib.luaL_openlibs(L);
+  lauxlib.luaL_dostring(L, to_luastring(PRELUDE));
+  const status = lauxlib.luaL_dostring(L, to_luastring(code));
+  if(status !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L,-1)));
+  return L;
+}
+const outRun = applyCustomObfuscator(runnable, { intensity: 1, antiTamper: true, antiSkid: false });
+console.log('generated len', outRun.length);
+const L = runLua(outRun);
+lua.lua_getglobal(L, to_luastring('GLOBAL_MARKER'));
+const marker = to_jsstring(lua.lua_tostring(L,-1));
+assert.strictEqual(marker, 'RAN_OK_7355608');
+console.log('PASS marker',marker);

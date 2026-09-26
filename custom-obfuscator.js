@@ -65,6 +65,26 @@ function hex(len) {
     for (var i = 0; i < len; i++) s += c[rnd(16)];
     return s;
 }
+function polyNum(n){
+    if(n>500) return '0x'+n.toString(16);
+    var r=rnd(2);
+    if(r===0) return '0x'+n.toString(16);
+    var a=rndInt(1, Math.max(1,n-1));
+    return '('+a+'+'+(n-a)+')';
+}
+// ---------- VM profiles (spec §12) — real measurable presets ----------
+const PROFILE_MAP = {
+    FAST: { cipherRounds: 1, layerCount: 1, stride: 8, decoyVaultRuns: [2,4], decoyChunks: [2,6], description: 'FAST: 1 layer, lite decoy, 1-round cipher' },
+    BALANCED: { cipherRounds: 1, layerCount: 3, stride: 6, decoyVaultRuns: [4,8], decoyChunks: [8,15], description: 'BALANCED: 3 layers, moderate decoy' },
+    SECURE: { cipherRounds: 2, layerCount: 4, stride: 4, decoyVaultRuns: [8,12], decoyChunks: [15,20], description: 'SECURE: 4 layers, 2-round cipher (tuned: <5s tiny)' },
+};
+function resolveProfile(n){
+    if(!n) return PROFILE_MAP.BALANCED;
+    const up=String(n).toUpperCase();
+    if(up==='OBSIDIAN' || up==='ONYX') return PROFILE_MAP.SECURE;
+    if(up==='OPAL') return PROFILE_MAP.FAST;
+    return PROFILE_MAP[up] || PROFILE_MAP.BALANCED;
+}
 function genKey() {
     var len = rndInt(8, 24), k = [];
     for (var i = 0; i < len; i++) k.push(rndInt(1, 255));
@@ -150,17 +170,22 @@ function encLayer(bytes, key, off, shift) {
 //     garbage when peeled, indistinguishable from real ones
 //   - every build randomizes C1/C2/IV/walk direction, so each
 //     generation is a different algorithm
-function encChain(bytes, l) {
-    // mirror of the Lua slot-walker: for i=0..C-1, n1 = rev ? C-i : i+1
-    // (1-based), q = ((seed[(n1-1)%len]*c1 + prev*c2 + n1*31) % 251) + 5,
-    // v = (plain[n1] ^ q) then +sh+(i%3)*ma mod 256; prev = plain[n1].
+function encChain(bytes, l, cipherRounds) {
+    // cipherRounds: 1 = debug-style fast (single q), 16 = heavy (looped). Profile-controlled.
+    var rounds = Math.max(1, Math.min(16, cipherRounds|0));
     var n = bytes.length;
     var out = new Array(n);
     var prev = l.iv & 0xFF;
     for (var i = 0; i < n; i++) {
         var n1 = l.rev ? n - i : i + 1;
         var pb = bytes[n1 - 1];
-        var q = ((l.seed[(n1 - 1) % l.seed.length] * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+        var s = l.seed[(n1 - 1) % l.seed.length];
+        var q;
+        if (rounds === 1) {
+            q = ((s * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+        } else {
+            q = 0; for (var _r=1; _r<=rounds; _r++) q = (((q ^ s) + l.c1*(_r%3+1) + prev * l.c2 + n1 * 31 + _r*73) % 251) + 5;
+        }
         var v = (pb ^ q) + l.shift + (i % 3) * l.madd;
         out[n1 - 1] = v & 0xFF;
         prev = pb;
@@ -685,7 +710,8 @@ function buildLoader(src, layerCount, options) {
     // position, with per-build randomized constants/direction. Every
     // generation emits a different algorithm, so no generic peeler works.
     var layers = genChainParams(layerCount);
-    for (var i = 0; i < layerCount; i++) bytes = encChain(bytes, layers[i]);
+    var _cr = options.cipherRounds != null ? options.cipherRounds : (options._debug ? 1 : 16);
+    for (var i = 0; i < layerCount; i++) bytes = encChain(bytes, layers[i], _cr);
 
     var chk = checksum(bytes);
     var mod = chk % 256;
@@ -835,7 +861,8 @@ function buildLoader(src, layerCount, options) {
     out.push(' :: ScripterHub :: ' + hex(24) + ' ::');
     out.push(' :: This file is protected. Any modification breaks it. ::');
     out.push(' ' + hex(60) + ']]');
-    out.push('local ' + FN + '=loadstring or load');
+    // hide alias: rawget(getfenv(), string.char(...)) not loadstring or load literal
+    out.push('local ' + FN + '=(function() local g=getfenv and getfenv() or _G; return rawget(g, string.char(108,111,97,100,115,116,114,105,110,103)) or rawget(g, string.char(108,111,97,100)) end)()');
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
     out.push('local ' + P + '="' + payloadStr + '"');
     out.push('local ' + K + '={' + keyTableParts.join(',') + '}');
@@ -1010,7 +1037,12 @@ function buildLoader(src, layerCount, options) {
     out.push('  local n1');
     out.push('  if ' + VV + ' then n1=' + C + '-i else n1=i+1 end');
     out.push('  local s=kk[((n1-1)%#kk)+1]');
-    out.push('  local q=((s*c1+' + PV + '*c2+n1*31)%251)+5');
+    var _cr2 = options.cipherRounds != null ? Math.max(1,Math.min(16,options.cipherRounds|0)) : (options._debug ? 1 : 16);
+    if (_cr2 === 1) {
+        out.push('  local q=((s*c1+' + PV + '*c2+n1*'+polyNum(31)+')%'+polyNum(251)+')+'+polyNum(5));
+    } else {
+        out.push('  local q=0; for _r=1,'+_cr2+' do q = ((' + X + '(q, s) + c1*(_r%3+1) + ' + PV + '*c2 + n1*31 + _r*73)%251)+5 end');
+    }
     out.push('  local v=' + T + '[n1]');
     out.push('  v=(v-sh-(i%3)*ma)%256');
     out.push('  if v<0 then v=v+256 end');
@@ -1057,12 +1089,27 @@ function buildLoader(src, layerCount, options) {
 // ============================================================
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
-    // ULTRA: clamp to 30, default to 22 for max protection (was 10)
+    // Honest profile handling (spec §12): FAST/BALANCED/SECURE are real presets with measurable diffs
+    var profName = String(options.profile || options.preset || 'BALANCED').toUpperCase();
+    if (profName === 'OBSIDIAN' || profName === 'ONYX') profName = 'SECURE';
+    if (profName === 'OPAL') profName = 'FAST';
+    var prof = resolveProfile(profName);
+    options._profile = prof;
+    // propagate profile's real params to loader/VM (measurable diffs, not stubs)
+    if (options.cipherRounds == null) options.cipherRounds = prof.cipherRounds;
+    if (options.stride == null) options.stride = prof.stride;
+    // intensity: profile determines defaults, user can still override but clamped per profile
     var rawInt = parseInt(options.intensity, 10);
-    if (isNaN(rawInt) || rawInt < 1) rawInt = 22;
+    if (isNaN(rawInt)) rawInt = prof.layerCount;
     var intensity = Math.max(1, Math.min(30, rawInt));
-    if (options.ultra === true) intensity = Math.max(intensity, 22);
-    else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+    // FAST must stay fast: never ultra, never >3 layers via auto-bump
+    if (profName === 'FAST') intensity = Math.min(intensity, 3);
+    else if (profName === 'BALANCED') { /* allow up to 10, no auto ultra */ }
+    else { // SECURE
+        if (options.ultra === true) intensity = Math.max(intensity, 22);
+        else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+    }
+    if (debugInfo) debugInfo.profile = profName;
     var meta = {
         id: options.scriptId || ('sh_' + hex(8)),
         name: options.scriptName || 'script',
@@ -1108,22 +1155,35 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
     } else {
         var bc = null;
-        var bcOpts = {};
+        var bcOpts = { profile: profName };
+        // target: only lua51 honest (spec §10)
+        if (options.target && String(options.target).toLowerCase() !== 'lua51') {
+            throw new Error('Target ' + options.target + ' not yet supported — only lua51 passes differential tests. See src/targets/registry.js');
+        }
+        if (options.seed != null) bcOpts.seedOverride = options.seed;
         if (splitMode) {
-            // server-bound seed: random value, delivered via genv at runtime
             options._vmSeedGenv = '_shs' + hex(10);
             options._vmSeedValue = rndInt(29, 251);
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
         }
-        try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
-        if (bc) {
-            vmCode = bc;
-            if (debugInfo) debugInfo.vmApplied = 'bytecode';
+        // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
+        if (profName === 'FAST' && !options.vmTier) {
+            try { bc = applyBytecodeVm(code, bcOpts); } catch(e){ bc=null; }
+            var liteTry = applyVmPass(code);
+            if (liteTry !== code) { vmCode = liteTry; if(debugInfo) debugInfo.vmApplied='lite-FAST'; }
+            else if (bc) { vmCode = bc; if(debugInfo) debugInfo.vmApplied='bytecode-FAST'; }
+            else { vmCode = code; }
         } else {
-            options._vmSeedGenv = null;
-            vmCode = applyVmPass(code);
-            if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+            try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
+            if (bc) {
+                vmCode = bc;
+                if (debugInfo) debugInfo.vmApplied = 'bytecode';
+            } else {
+                options._vmSeedGenv = null;
+                vmCode = applyVmPass(code);
+                if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+            }
         }
     }
 

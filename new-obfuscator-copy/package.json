@@ -1,0 +1,41 @@
+{
+  "name": "streaming-obfuscation-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:vm": "node tools/differential_35.mjs",
+    "test:phase4": "node tools/phase4_differential35.mjs",
+    "test:fuzz30": "node tools/fuzz_test.mjs",
+    "test:fuzz100": "node tools/phase4_fuzz100.mjs",
+    "test:fuzz500": "node tools/final_matrix_test.mjs",
+    "test:makecounter": "node tools/makeCounter_test.mjs",
+    "test:constants": "node tools/constant_virt_test.mjs",
+    "test:seed": "node tools/seed_test.mjs",
+    "test:unroll": "node tools/unroll_test.mjs",
+    "test:optimizer": "node tools/optimizer_test.mjs",
+    "test:targets": "node tools/target_test.mjs",
+    "test:bench": "node tools/bench.js",
+    "test": "npm run test:vm && npm run test:phase4 && npm run test:scheduler && npm run test:fuzz30 && npm run test:fuzz100 && npm run test:makecounter && npm run test:constants && npm run test:seed && npm run test:unroll && npm run test:optimizer && npm run test:features && npm run test:pipeline && npm run test:targets",
+    "test:scheduler": "node tools/scheduler_edge_cases.mjs",
+    "test:features": "node tools/final_feature_runtime.mjs",
+    "test:pipeline": "node tools/pipeline_production_test.mjs",
+    "test:stackalloc": "node tools/stackalloc_test.mjs",
+    "test:cfg": "node tools/cfg_rewrite_test.mjs",
+    "test:hardglobals": "node tools/hard_globals_test.mjs",
+    "test:perfunc": "node tools/perfunc_test.mjs",
+    "test:antitamper": "node tools/antitamper_state_test.mjs",
+    "test:target-backend": "node tools/target_backend_test.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.5",
+    "luaparse": "^0.3.1",
+    "vite": "^5.4.0"
+  }
+}

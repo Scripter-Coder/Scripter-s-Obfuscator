@@ -1,0 +1,26 @@
+import pathlib
+content = '''import { applyCustomObfuscator } from './custom-obfuscator.js';
+import luaparse from 'luaparse';
+import { vmSetLuaparse } from './vm-pass.js';
+import { vmBCSetLuaparse } from './vm-bytecode.js';
+vmSetLuaparse(luaparse);
+vmBCSetLuaparse(luaparse);
+import fs from 'fs';
+import { spawnSync } from 'child_process';
+const luauExe = 'C:\\\\Users\\\\Ryzen 9 5900x\\\\Downloads\\\\Lua Files\\\\luau-windows\\\\luau.exe';
+const src='RESULT = 5';
+const obf = applyCustomObfuscator(src, {target:'luau', profile:'FAST', seedOverride:12345});
+fs.writeFileSync('C:\\\\Users\\\\Ryzen 9 5900x\\\\Downloads\\\\new-obfuscator-current\\\\new-obfuscator\\\\tmp_custom_debug.lua', obf + '\\nprint("outer RESULT", RESULT)\\nprint("outer getfenv", getfenv(0).RESULT)\\nprint("outer _G", _G.RESULT)\\n', 'utf8');
+let r = spawnSync(luauExe, ['C:\\\\Users\\\\Ryzen 9 5900x\\\\Downloads\\\\new-obfuscator-current\\\\new-obfuscator\\\\tmp_custom_debug.lua'], {encoding:'utf8'});
+console.log(JSON.stringify(r.stdout));
+console.log(JSON.stringify(r.stderr));
+// Also check the inner VM directly
+import { applyBytecodeVm } from './vm-bytecode.js';
+const vm = applyBytecodeVm(src, {target:'luau', profile:'FAST', seedOverride:12345, rethrow:true});
+fs.writeFileSync('C:\\\\Users\\\\Ryzen 9 5900x\\\\Downloads\\\\new-obfuscator-current\\\\new-obfuscator\\\\tmp_vm_debug.lua', vm + '\\nprint("vm RESULT", RESULT)\\nprint("vm getfenv", getfenv(0).RESULT)', 'utf8');
+let r2 = spawnSync(luauExe, ['C:\\\\Users\\\\Ryzen 9 5900x\\\\Downloads\\\\new-obfuscator-current\\\\new-obfuscator\\\\tmp_vm_debug.lua'], {encoding:'utf8'});
+console.log(JSON.stringify(r2.stdout));
+'''
+target = pathlib.Path(r'C:\Users\Ryzen 9 5900x\Downloads\new-obfuscator-current\new-obfuscator\test_debug2.mjs')
+target.write_text(content, encoding='utf-8')
+print('written')

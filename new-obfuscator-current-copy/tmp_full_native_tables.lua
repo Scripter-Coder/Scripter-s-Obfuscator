@@ -1,0 +1,1 @@
+local t={a=1,b=2}; print(t.a+t.b); t.c=3; print(t.c); local u={1,2,3}; print(#u); print(u[2])

@@ -1,0 +1,6 @@
+print(loadstring)
+print(load)
+print(_G.loadstring)
+print(_G.load)
+print(getfenv(0).loadstring)
+print(getfenv(0).load)

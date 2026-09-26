@@ -1,0 +1,33 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>gen2</title></head><body><pre id="out"></pre>
+<script src="https://cdn.jsdelivr.net/npm/luaparse@0.3.1/luaparse.min.js"></script>
+<script type="module">
+import { vmBCSetLuaparse, applyBytecodeVm } from './vm-bytecode.js';
+const luaparse = window.luaparse;
+vmBCSetLuaparse(luaparse);
+let src='RESULT="ok"';
+let vm=applyBytecodeVm(src,{profile:'BALANCED', seedOverride:0});
+let checks = {
+  hasREG: vm.includes('REG['),
+  hasFRAMES: vm.includes('FRAMES'),
+  hasBASE: vm.includes('BASE'),
+  hasTOP: vm.includes('TOP'),
+  hasFP: vm.includes('FP'),
+  hasMAKESTATE: vm.includes('MAKESTATE'),
+  hasDRIVE: vm.includes('DRIVE'),
+  hasVMM: vm.includes('VMM'),
+  hasPCALL: vm.includes('PCALL')||vm.includes('pcall'),
+  hasYIELD: vm.includes('YIELD'),
+  hasFused: vm.includes('FNUMK'),
+  hasSPLIT: vm.includes('SPLIT'),
+  hasPoll: vm.includes('_pollState')||vm.includes('FP tamper'),
+  hasDecompress: vm.includes('decompress'),
+  hasCompress: vm.includes('compress'),
+  hasCallSched: vm.includes('VM CALL'),
+  hasReturnSched: vm.includes('VM RETURN'),
+  hasTail: vm.includes('TAILCALL'),
+  fUnpackCount: (vm.match(/f\(\s*table\.unpack/g)||[]).length + (vm.match(/f\(UNP/g)||[]).length
+};
+document.getElementById('out').textContent = JSON.stringify(checks,null,2) + "\n\nVM snippet 5000-10000:\n" + vm.slice(5000,10000) + "\n\n...5500-7000:\n" + vm.slice(7000,12000);
+console.log(JSON.stringify(checks));
+console.log(vm.slice(5000,8000));
+</script></body></html>
