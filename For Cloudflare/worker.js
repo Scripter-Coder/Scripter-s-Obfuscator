@@ -1,109 +1,154 @@
 ﻿// ============================================================
-// ScripterHub Worker (Cloudflare) — Stats + HIDDEN Loader Host
+// ScripterHub Worker (Cloudflare) — stats + hidden loader host
+//                   + server-side license auth
+//                   + SESSION-GATED DELIVERY (Phase 3)
 // ============================================================
-// PART 1 (existing): powers the "Live Executions Chart":
-//   POST /track             <- obfuscated scripts ping on every execution
+//
+// READ THIS BEFORE THE ROUTES. The three comments below are a map; the
+// authoritative description of the delivery model is in
+// `For Cloudflare/README.md`, and the reasoning behind each choice is in
+// `docs/DECISIONS.md`.
+//
+// ---------------------------------------------------------------------------
+// PART 3 (the architecture that replaced Parts 1 and 2's delivery halves)
+// ---------------------------------------------------------------------------
+//
+//   GET  /sh/ScripterHubNNN    the PUBLIC LOADER. Contains NO script
+//                              material: no ciphertext, no key, no split key,
+//                              nothing derived from the artifact. Executors
+//                              get a fixed protocol bootstrap; browsers get a
+//                              metadata page. Identical for every script
+//                              except the id and base URL, so inspecting it
+//                              teaches an attacker nothing.
+//
+//   POST /sh/session           authenticate (license + HWID + killswitch +
+//                              server-side visibility) and mint a D1 session
+//                              + nonce. Returns "SHS <sid> <nonce> <exp>".
+//                              PROOF, NOT PAYLOAD: a caller who can mint has
+//                              proved a license and gets nothing else.
+//
+//   GET  /sh/a/<id>?s=&n=      THE GATE. The only route permitted to return
+//                              artifact bytes. Two atomic statements stand
+//                              between the request and the payload:
+//                                1. spend the nonce  (conditional UPDATE)
+//                                2. spend the session (conditional UPDATE
+//                                   whose WHERE clause re-checks the license,
+//                                   the HWID lock and the account LIVE)
+//                              A license banned 30 seconds after the mint is
+//                              therefore caught on the very next attempt, with
+//                              no window. Small artifacts come back inline in
+//                              one response; large ones open a forward-only
+//                              chain (see server/delivery.js, D11).
+//
+//   GET  /sh/c/<id>/<i>        KV chunk.   Chain-gated: a grant from the
+//   GET  /sh/g/<id>/<i>        GitHub part. gate AND a forward-only cursor.
+//                              Neither is reachable with a forged User-Agent,
+//                              which is what they used to be.
+//
+//   GET  /sh/k/<id>            LEGACY split-key route, kept so loadstrings
+//                              already in the wild keep working. It now
+//                              requires a live, unspent session in addition to
+//                              the baked t0, and spends it. It is NOT how new
+//                              loaders authenticate.
+//
+//   GET  /sh/health            reports `stateLayer` and `delivery`.
+//
+//   THE GATE FAILS CLOSED. With no D1 binding (or an unapplied migration) every
+//   delivery route refuses. There is deliberately no KV fallback: it would
+//   restore replay, expiry, ban-at-delivery and single-use with no error
+//   anywhere, while the operator believed the system was gated. See D9.
+//
+// ---------------------------------------------------------------------------
+// PART 1 (stats)
+// ---------------------------------------------------------------------------
+//   POST /track             <- clients ping on every execution
 //   POST /threat            <- checkpoint bypass attempts
 //   POST /visitor           <- reward page visitors
 //   GET  /v3/realtime_stats <- dashboard polls every 5 seconds
 //
-// PART 2 (NEW — "raw page" system, the invisible loader host):
-//   POST /sh/upload         <- your hidden raw.html page uploads the script
+// ---------------------------------------------------------------------------
+// PART 2 (the hidden loader host)
+// ---------------------------------------------------------------------------
+//   POST /sh/login          <- raw.html owner login (access-code check)
+//   POST /sh/upload         <- the hidden raw.html page uploads the script
 //                              ENCRYPTED under the owner's Special Key
 //                              (encryption happens in the OWNER's browser
-//                              BEFORE upload - the worker NEVER sees the
-//                              key or the plaintext). Stored in KV.
-//                              Every upload also notifies your Discord.
-//   POST /sh/login          <- raw.html owner login (access-code check)
-//   GET  /sh/ScripterHubNNN <- executor UA: a Lua bootstrap that reads the
-//                              Special Key from getgenv().ScripterHubKey
-//                              (NO in-game GUI anymore) and decrypts the
-//                              payload client-side. If the key is not set
-//                              it just notifies + prints instructions.
-//                              Browser/curl/AI: an HTML "Special Key
-//                              required" page that decrypts locally.
-//                              The wire only ever carries CIPHERTEXT -
-//                              the key is in nobody's URL.
-//   GET  /sh/health         <- quick check the loader system is live
+//                              BEFORE upload - the worker NEVER sees the key
+//                              or the plaintext). Stored in KV.
+//   GET  /sh/ScripterHubNNN <- the loader (see Part 3)
 //
-// PART 3 (cross-device USER SYNC - fixes "panels only show same-device
-// users"): all accounts live in KV under one key so the Users/Admin
-// panels show every user from any device, and users can log in from
-// any device:
-//   POST /sh/user-signup    <- public: create a user record (plan forced
-//                              to Basic, admin flags stripped)
-//   POST /sh/user-login     <- public: verify email/username + btoa pass,
-//                              returns the record (cross-device login)
-//   POST /sh/user-get       <- public: fetch YOUR OWN record (email +
-//                              b64 password proof) - used on page load so
-//                              plan changes made by the owner show up on
-//                              every device after a refresh
-//   POST /sh/user-sync      <- public: password-proved upsert of your OWN
-//                              profile fields (theme, images, etc.).
-//                              plan/admin flags are PROTECTED here - they
-//                              only change via the owner endpoints below
-//   POST /sh/user-delete    <- public: password-verified self-delete
-//   GET  /sh/users          <- owner: full users map (panels pull).
-//                              Auth: raw-page token OR ownerProof (the
-//                              b64 password of the owner account)
-//   POST /sh/users          <- owner: upsert one user (plan changes,
-//                              admin flags) - this is THE plan-change path
-//   POST /sh/users-delete   <- owner: delete one user
-//   POST /sh/users-clear    <- owner: delete all except creator/admin
+// ---------------------------------------------------------------------------
+// PART 2b (cross-device USER SYNC)
+// ---------------------------------------------------------------------------
+//   POST /sh/user-signup    public: create a user record (plan forced to
+//                              Basic, admin flags stripped)
+//   POST /sh/user-login     public: verify email/username, returns a SIGNED
+//                              session token (PBKDF2 passwords, not btoa)
+//   POST /sh/user-get       public: fetch YOUR OWN record (password-proved)
+//   POST /sh/user-sync      public: password-proved upsert of your profile.
+//                              plan/admin flags are PROTECTED here
+//   POST /sh/user-delete    public: password-verified self-delete
+//   GET  /sh/users          owner: full users map
+//   POST /sh/users          owner: upsert one user (THE plan-change path)
+//   POST /sh/users-delete   owner: delete one user
+//   POST /sh/users-clear    owner: delete all except creator/admin
+//   POST /sh/visibility     owner: set a script's SERVER-SIDE visibility.
+//                              It used to be a localStorage field only, so
+//                              "Private" and "Anyone" were byte-identical
+//                              loaders. See D14.
 //
-// KEYLESS (FREE) SCRIPTS: /sh/upload accepts { keyless: true, cipher, keyHash,
-// webKey: true } — free scripts are ENCRYPTED with the owner's Special Key
-// exactly like paid ones (so a browser can NEVER read them without the key),
-// BUT executors get the decrypted obfuscated code directly - no key needed
-// in-game. The Special Key only gates the WEBSITE key page, not execution.
-//   - executor UA  -> obfuscated code served AS-IS (free = runs for anyone)
-//   - browser/curl-> HTML key page (Special Key required to view the code)
-// This closes the "keyless = trivially crackable" hole: the code on the
-// wire is still ciphertext for everyone who can't supply the key.
+// KEYLESS (FREE) SCRIPTS: /sh/upload accepts { keyless: true, plainCode,
+// cipher, keyHash }. Executors still receive the obfuscated code — but only
+// from the gate, and only once a session exists. A keyless script ALSO requires
+// an account (D1): anonymous -> artifact would make "no public artifact
+// endpoint" false for the free tier, so there is no free tier without an
+// identity.
 //
-// The source is NEVER in the website repo, NEVER in localStorage of any
-// visitor, NEVER on the wire in plaintext, and the worker holds only an
-// encrypted blob it cannot read. Even you can't download it back; you
-// keep the original file yourself.
+// The source is NEVER in the website repo, NEVER in any visitor's
+// localStorage, NEVER on the wire in plaintext, and the browser key page that
+// used to decrypt it locally has been REMOVED (D15) because it required
+// embedding the ciphertext. The owner keeps their own original file.
 //
-// HOW TO DEPLOY:
-//   1. dash.cloudflare.com -> Storage & Databases -> KV -> Create namespace
-//      name it e.g. "scripterhub_loaders"
-//   2. Workers & Pages -> your worker (scripterhub-stats) -> Settings ->
-//      Bindings -> Add -> KV Namespace:
-//         Variable name: LOADERS_KV
-//         Namespace:     scripterhub_loaders
-//   3. Same page, Variables and Secrets -> Add:
-//         Type:   Secret
-//         Name:   SH_SETUP_TOKEN
-//         Value:  (any long random password - used ONCE to store your
-//                  giant access code, and to change it later)
-//      Also add plain Text variables:
-//         Name:   SH_DISCORD_WEBHOOK
-//         Value:  https://discord.com/api/webhooks/... (your log webhook)
-//         Name:   SH_BASE_URL
-//         Value:  https://scripterhub-stats.dubovikstanislav51.workers.dev
-//   4. Edit code -> paste THIS ENTIRE FILE -> Deploy.
-//   5. Open https://YOUR-WORKER/sh/health — must say "loaders": true.
-//   6. Open https://YOUR-SITE/raw.html?auth=1 — log in with the access
-//      code "ScripterHub" (the built-in default). NO setup needed.
-//      Optional: set your own extra code via /sh/setcode — both work.
-//      Only SHA-256 hashes are ever stored, never the codes themselves.
-//   7. SPECIAL KEYS — every script is encrypted IN THE BROWSER with the
-//      owner's "Your Special Key" (any length). The loadstring contains
-//      NO key. At runtime the script reads the key ONLY from
-//      getgenv().ScripterHubKey = "..." (set BEFORE executing the
-//      loadstring — there is NO in-game popup GUI anymore, so the
-//      bootstrap cannot be deobfuscated into a UI that reveals hints);
-//      in a browser the key page decrypts locally. Wrong key = garbage.
-//      Losing the key = the script is gone forever (keep it safe!).
+// ---------------------------------------------------------------------------
+// HOW TO DEPLOY
+// ---------------------------------------------------------------------------
+//   Full checklist, including the D1 database and the webhook, is in
+//   `For Cloudflare/README.md`. `wrangler.toml` is the source of truth and
+//   carries the same steps inline.
 //
-//   8. USER SYNC — signup/login now write to KV too, so the Users/Admin
-//      panels list every user from EVERY device. Re-deploy this worker
-//      after adding the /sh/user-* endpoints (existing local users get
-//      pushed to the cloud on their next login/signup).
+//   1. wrangler login
+//   2. wrangler d1 create scripterhub      -> paste database_id into wrangler.toml
+//   3. wrangler d1 execute scripterhub --file=migrations/0001_init.sql
+//   4. wrangler secret put SH_SETUP_TOKEN
+//      wrangler secret put SH_SESSION_SECRET
+//      wrangler secret put SH_KDF_PEPPER
+//      (optional) wrangler secret put SH_DISCORD_WEBHOOK
+//   5. fill in account_id / name / KV id in wrangler.toml, then wrangler deploy
+//   6. curl -X POST .../sh/owner-claim -d '{"setupToken":"..."}'  (ONCE)
+//   7. curl .../sh/health   -> want stateLayer:true, delivery:"session-gated"
 //
 // ============================================================
+
+// ===========================================================================
+// IMPORTS (Phase 3)
+//
+// `server/d1_state.js` is the atomic state layer and `server/delivery.js` is
+// the set of delivery rules. Both live outside this folder deliberately: the
+// worker's own comments record that they were previously inlined here and
+// then moved out, because the rules are worth reading without wading through
+// 2700 lines of routing.
+//
+// wrangler bundles these (main = "For Cloudflare/worker.js"), and the node test
+// harness resolves them straight off disk, so there is no build step and no
+// second copy to keep in sync.
+// ===========================================================================
+import { createState, run as d1run } from '../server/d1_state.js';
+import {
+    deliver, classifyAuthorization, DENY,
+    signGrant, verifyGrant,
+    openChain, advancePart, peekChain,
+    SESSION_TTL_MS, URL_SESSION_TTL_MS, CHAIN_GRANT_TTL_MS, INLINE_DELIVERY_LIMIT
+} from '../server/delivery.js';
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -568,6 +613,14 @@ const RATE_BUCKETS = {
     'auth':           { limit: 30,  window: 60 * 1000 },        // /sh/auth license key guesses
     'key':            { limit: 30,  window: 60 * 1000 },        // /sh/k split-key requests
     'upload':         { limit: 20,  window: 60 * 1000 },
+    // Phase 3. `session` is the mint route: a license-key guess costs one
+    // mint attempt, so it needs the same bound `/sh/auth` already had.
+    // `deliver` is the gate: a session is worth exactly one artifact, so a
+    // flood against it is either a replay attempt or an attempt to burn other
+    // people's sessions, and both must fail fast.
+    'session':        { limit: 30,  window: 60 * 1000 },
+    'deliver':        { limit: 60,  window: 60 * 1000 },
+    'part':           { limit: 240, window: 60 * 1000 },        // 4/s: a chain crawl
     'password':       { limit: 5,   window: 15 * 60 * 1000 },   // change/recovery: tight
     'setcode':        { limit: 5,   window: 15 * 60 * 1000 },
     'admin':          { limit: 60,  window: 60 * 1000 }
@@ -612,6 +665,42 @@ function rateLimitedResponse(retryAfterSec) {
         status: 429,
         headers: Object.assign({}, CORS_HEADERS, { 'Retry-After': String(retryAfterSec || 60) })
     });
+}
+
+// Phase 3: the same contract as rateLimit(), but backed by the D1
+// `rate_limits` table when it is available.
+//
+// WHY THIS MATTERS AND WHY THE OLD ONE WAS NOT ENOUGH
+// The in-memory Map above is honest about its limits: Cloudflare recycles
+// isolates continuously, so the counter is reset by garbage collection rather
+// than by the clock, and an attacker who spreads requests across isolates gets
+// a fresh budget each time. That is a real weakness, not a tuning choice, and
+// it is why the in-memory version was only ever a stopgap.
+//
+// D1 fixes it because the increment is a single atomic upsert on one row per
+// (bucket, window), so the counter is shared by every isolate serving the
+// route. See migrations/0001_init.sql, `rate_limits`.
+//
+// The in-memory path is kept as the fallback for a deployment without D1, and
+// it is deliberately the SLOWER-looking of the two only in durability, not in
+// behaviour: same buckets, same limits, same response. That keeps G14
+// meaningful either way.
+async function guardRate(env, bucket, identity) {
+    const state = stateFor(env);
+    const cfg = RATE_BUCKETS[bucket];
+    if (state && cfg) {
+        try {
+            const r = await state.hitRateLimit(bucket, identity, cfg.limit, cfg.window);
+            if (!r.allowed) return rateLimitedResponse(r.retryAfterSec);
+            return null;
+        } catch (e) {
+            // A D1 hiccup must not become an open door, so fall back to the
+            // in-memory bucket rather than allowing the request through.
+            console.error('[ScripterHub] D1 rate limit failed, using in-memory: ' + (e && e.message));
+        }
+    }
+    const rl = rateLimit(bucket, identity);
+    return rl.allowed ? null : rateLimitedResponse(rl.retryAfterSec);
 }
 
 // ---- signup flood guard (kept: the dedicated per-IP + global caps) ----
@@ -772,16 +861,295 @@ async function bootstrapOwnerCode(env) {
     }
 }
 
+// ===========================================================================
+// ATOMIC STATE LAYER (Phase 3)
+//
+// THE SEAM
+//
+// `stateFor(env)` returns the state layer or null. Null means "D1 is not
+// bound, or the migration has not been applied", and the delivery gate treats
+// that as a REFUSAL, not as a reason to fall back.
+//
+// This is the one place where the design deliberately does NOT have a
+// graceful degradation path, and it is worth saying why out loud. The Phase 2
+// notes specified a fallback to the KV check so the code could ship before the
+// database existed. That constraint is gone: wrangler.toml step 2 creates the
+// database and step 3 applies the schema, both before the first deploy.
+//
+// With the constraint gone, a KV fallback here would be strictly worse than
+// failing: it would restore every property Phase 3 exists to remove (replay,
+// expiry, ban-at-delivery, single-use) with no error anywhere, and the
+// operator would believe the system was gated when it was not. A loud 503 plus
+// a log line is strictly more useful than a silent hole.
+// ===========================================================================
+function stateFor(env) {
+    if (!env) return null;
+    if (!env.SH_DB) return null;
+    if (!env.__shState) {
+        try { env.__shState = createState(env.SH_DB); }
+        catch (e) {
+            console.error('[ScripterHub] D1 state layer unavailable: ' + (e && e.message));
+            return null;
+        }
+    }
+    return env.__shState;
+}
+
+// The user's D1 id. The KV users map is keyed by lowercased email, so reusing
+// that as the primary key means the two stores join without a mapping table
+// and without inventing a second identity for a person who already has one.
+function d1UserId(email) {
+    return String(email || '').trim().toLowerCase().slice(0, 100);
+}
+
+async function ensureUserRow(state, email, username, now) {
+    if (!state || !email) return d1UserId(email);
+    const id = d1UserId(email);
+    await d1run(state._db,
+        `INSERT INTO users(id,email,username,password_hash,role,created_at,updated_at)
+         VALUES (?,?,?,'pbkdf2$migrated$migrated','user',?,?)
+         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+        id, id, String(username || id).slice(0, 40), now, now);
+    return id;
+}
+
+async function ensureScriptRow(state, id, opts, now) {
+    if (!state || !id) return;
+    // scripts.owner_id is a NOT NULL FK to users(id), and that FK is what
+    // enforces "you may not delete a user who still owns scripts"
+    // (migrations/0001_init.sql). So the owner row is materialised FIRST,
+    // unconditionally, from the same identity the KV meta already records.
+    //
+    // It has to be unconditional. An earlier version only created the user in
+    // the "no owner given" fallback branch, so every script with a real owner
+    // skipped it and the script INSERT failed on the foreign key — while the
+    // fallback path, which nobody uses, was the only one that worked. The
+    // symptom was an empty licenses table and a gate refusing every delivery,
+    // and it was only visible because the reconcile logs its failures.
+    const owner = d1UserId(opts.user) || 'unknown-owner';
+    const ownerId = await ensureUserRow(state, owner, owner, now);
+    await d1run(state._db,
+        `INSERT INTO scripts(id,owner_id,name,visibility,auth_required,killed,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            visibility = excluded.visibility,
+            auth_required = excluded.auth_required,
+            updated_at = excluded.updated_at`,
+        id, ownerId, String(opts.name || 'script').slice(0, 100),
+        String(opts.visibility || 'anyone'),
+        opts.authRequired ? 1 : 0,
+        opts.killed ? 1 : 0,
+        now, now);
+}
+
+// KV license map -> D1 `licenses`.
+//
+// The column mapping is the whole point of this function, because
+// consumeSession()'s WHERE clause reads D1 columns and gets them wrong
+// silently if the shapes differ:
+//
+//   KV rec.banned      -> licenses.revoked_at IS NOT NULL
+//   KV rec.expiresAt   -> licenses.expires_at       (0 means "never")
+//   KV rec.hwid        -> licenses.hwid            ('' means "not yet locked")
+//
+// The two zero/empty conventions are the trap: KV uses 0 and '' for "unset"
+// because JSON has no null in the panel's data model, while SQL uses NULL and
+// conflates them with a real value. A license with expiresAt:0 must become
+// NULL, or every never-expiring license would read as expired since 1970.
+//
+// WHY script_id IS INFORMATIONAL AND NOT FILTERED ON
+// An earlier version skipped any record whose scriptId was not a
+// `ScripterHub##########` loader id, on the assumption that was what licenses
+// carry. It is not: the dashboard creates licenses against internal ids like
+// "script_1737000000000", or the literal "all". So the filter matched nothing,
+// every real license was dropped, D1 stayed empty, and the gate refused every
+// licensed delivery in production while the test suite passed.
+//
+// Nothing is filtered now. `licenses.script_id` is nullable, carries no
+// foreign key and is not consulted by consumeSession() — a license is a
+// credential, not a property of one script. The license -> loader binding the
+// gate needs lives on `sessions.script_id`, recorded at mint time.
+async function syncLicensesToD1(env, map) {
+    const state = stateFor(env);
+    if (!state) return;
+    const now = Date.now();
+    for (const key of Object.keys(map || {})) {
+        const r = map[key] || {};
+        const owner = d1UserId(r.user || r.owner || '') || 'unknown-owner';
+        await ensureUserRow(state, owner, owner, now);
+        const expiresAt = Number(r.expiresAt) || 0;
+        const hwid = String(r.hwid || '').slice(0, 300);
+        const scriptId = String(r.scriptId || '').slice(0, 60) || null;
+        await d1run(state._db,
+            `INSERT INTO licenses(key,script_id,owner_id,hwid,expires_at,revoked_at,revoke_reason,executions,last_auth_at,created_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(key) DO UPDATE SET
+                script_id = excluded.script_id,
+                owner_id = excluded.owner_id,
+                hwid = excluded.hwid,
+                expires_at = excluded.expires_at,
+                revoked_at = excluded.revoked_at,
+                revoke_reason = excluded.revoke_reason,
+                executions = excluded.executions,
+                last_auth_at = excluded.last_auth_at`,
+            String(key).slice(0, 200), scriptId, owner,
+            hwid || null,
+            expiresAt > 0 ? expiresAt : null,
+            r.banned ? now : null,
+            r.banned ? String(r.banReason || 'banned').slice(0, 300) : null,
+            Number(r.executions) || 0,
+            Number(r.lastAuthAt) || 0 || null,
+            Number(r.createdAt) || now
+        );
+    }
+}
+
+// A script's authorization-relevant facts, read for a delivery decision.
+// Returns null when the script does not exist, which is deliberately
+// indistinguishable from "gone" to the caller.
+async function scriptAuthz(env, id) {
+    let meta = null;
+    try { meta = JSON.parse((await env.LOADERS_KV.get(KV_META_PREFIX + id)) || 'null'); } catch (e) { meta = null; }
+    const exists = meta !== null
+        || (await env.LOADERS_KV.get(KV_PREFIX + id)) !== null
+        || (await env.LOADERS_KV.get(KV_GH_PREFIX + id)) !== null
+        || (await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id)) !== null;
+    if (!exists) return null;
+    return {
+        exists: true,
+        name: String((meta && meta.name) || ''),
+        user: String((meta && meta.user) || ''),
+        keyless: !!(meta && meta.keyless === true),
+        authRequired: !!(meta && meta.authRequired === true),
+        visibility: String((meta && meta.visibility) || 'anyone'),
+        raw: meta || {}
+    };
+}
+
+// The gate for a single part of a multi-part delivery.
+//
+// Shared by /sh/c/<id>/<i> (KV chunks) and /sh/g/<id>/<i> (GitHub Storage
+// Keeper) because the two differ only in where the bytes come from. Keeping
+// one implementation means the checks cannot drift apart between the KV path
+// and the GitHub path, which is exactly how a route ends up ungated by
+// accident.
+//
+// FOUR THINGS ARE PROVED, IN THIS ORDER:
+//
+//   1. a valid grant exists           (HMAC over {sid, script, exp})
+//   2. the grant names THIS session   (a grant for script A cannot buy
+//                                     parts of script B)
+//   3. the session already spent      (the chain is a CONTINUATION of a
+//                                     delivery, never an alternative to one)
+//   4. this is the NEXT part          (forward-only; no skip, no replay)
+//
+// Step 4 is the one that does the real work, and it is a single conditional
+// UPDATE. There is no read-then-write between "which part is next" and "this
+// part is served", so a captured part-7 request is worth exactly one part-7
+// response and then nothing.
+async function guardPartRequest(env, request, url, id, idx) {
+    const state = stateFor(env);
+    if (!state) {
+        console.error('[ScripterHub] part request refused: D1 (SH_DB) is not bound or not migrated.');
+        return methodNotAllowed();
+    }
+    const now = Date.now();
+    const grant = String(url.searchParams.get('g') || '');
+    const sid = String(url.searchParams.get('s') || '').slice(0, 80);
+
+    const g = await verifyGrant(await grantSecret(env), grant, now);
+    if (!g.ok) { S.threatsBlocked++; return methodNotAllowed(); }
+    if (g.scriptId !== id || g.sid !== sid) { S.threatsBlocked++; return methodNotAllowed(); }
+
+    const chain = await peekChain(state, sid);
+    if (!chain) { S.threatsBlocked++; return methodNotAllowed(); }
+    if (!chain.consumed_at) { S.threatsBlocked++; return methodNotAllowed(); }
+    if (!chain.grant_expires_at || !(chain.grant_expires_at > now)) { S.threatsBlocked++; return methodNotAllowed(); }
+    const total = Number(chain.parts_total) || 0;
+    if (!total || idx < 0 || idx >= total) { S.threatsBlocked++; return methodNotAllowed(); }
+
+    const step = await advancePart(state, sid, idx, total, now);
+    if (!step.ok) { S.threatsBlocked++; return methodNotAllowed(); }
+    return null;   // null == authorised
+}
+
+// `visibility` used to be a browser-only localStorage field, which meant
+// "private" hid a script in the UI while the worker still served anyone who
+// asked for the URL. It is now server-side state in two places: the KV meta
+// (what the panel reads) and D1 `scripts.visibility` (what the delivery gate
+// consults). Anything unrecognised falls back to 'anyone', so a malformed
+// request cannot accidentally make a script MORE private than intended and
+// lock its own owner out.
+function readVisibility(body) {
+    const v = String((body && body.visibility) || 'anyone');
+    return ['anyone', 'account', 'private'].includes(v) ? v : 'anyone';
+}
+
+// Best-effort mirror of a script's authorization facts into D1.
+//
+// Best-effort is correct here and NOT at the gate. This is the publish path,
+// so a failed mirror should not reject an upload the owner has every right to
+// make. The gate does not consult this function — it reads D1, and if the
+// mirror never happened the gate sees the PREVIOUS state. For a visibility or
+// auth change that is the conservative direction, and the log line makes it
+// diagnosable. Swallowing it silently would not be.
+function mirrorScript(env, id, o) {
+    const state = stateFor(env);
+    if (!state || !id) return;
+    ensureScriptRow(state, id, o, Date.now())
+        .catch(e => console.error('[ScripterHub] script mirror to D1 failed: ' + (e && e.message)));
+}
+
 // ---- REAL LICENSE helpers (Luarmor-model server auth) ----
+// WHY TWO STORES
+//
+// Licenses live in KV because that is where the dashboard has always read and
+// written them, and rewriting every panel is a much larger change than the
+// delivery gate is. But KV cannot be trusted for an authorization decision:
+// it is eventually consistent with no atomic CAS, so a ban written to it can
+// take tens of seconds to be visible on another edge, and "the ban is on its
+// way" is not a security property.
+//
+// So KV remains the store the PANEL reads, and D1 is the store the DELIVERY
+// GATE reads. Every mutation flows through saveLicenses() below, which writes
+// both; loadLicenses() reconciles on read, so any drift heals on the next
+// owner action rather than persisting.
+//
+// The split is deliberate and worth being explicit about: a license is
+// mutable control-plane state with a lifecycle, which is exactly the category
+// D3 assigns to D1. The panel keeping its KV copy is a migration convenience,
+// not a security decision.
 async function loadLicenses(env) {
     if (!env.LOADERS_KV) return {};
+    let map = {};
     try {
         const raw = await env.LOADERS_KV.get(KV_LICENSES_KEY);
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) { return {}; }
+        map = raw ? JSON.parse(raw) : {};
+    } catch (e) { map = {}; }
+    // Reconcile into D1. Cheap (one write per changed row) and it means the
+    // gate is never reading a license it has not just confirmed.
+    //
+    // The catch LOGS. A reconcile that fails silently is indistinguishable
+    // from one that worked, and the symptom it produces is a gate refusing
+    // every delivery with `nosession` because the license subquery in
+    // consumeSession() finds no row. That is a miserable thing to debug, so
+    // the failure is reported rather than absorbed.
+    if (stateFor(env)) {
+        try { await syncLicensesToD1(env, map); }
+        catch (e) { console.error('[ScripterHub] license reconcile to D1 failed: ' + (e && e.message)); }
+    }
+    return map;
 }
 async function saveLicenses(env, map) {
     await env.LOADERS_KV.put(KV_LICENSES_KEY, JSON.stringify(map));
+    // The authoritative write for the delivery gate. Wrapped so a D1 problem
+    // surfaces as a gate refusal rather than a blank 500 in the owner panel —
+    // but NOT swallowed silently: console.error so it is visible in the logs.
+    if (stateFor(env)) {
+        try { await syncLicensesToD1(env, map); }
+        catch (e) { console.error('[ScripterHub] license sync to D1 failed: ' + (e && e.message)); }
+    }
 }
 // ---- STORAGE KEEPER (GitHub-backed big-script storage) ----
 // Cloudflare KV caps at ~50MB/script (25MB per value). Scripts larger
@@ -916,6 +1284,21 @@ async function verifyAuthToken(key, hwid, t0, token) {
     const want = await makeAuthToken(key, hwid, t0);
     return hashEqual(want, String(token || ''));
 }
+// The HMAC key for multi-part delivery grants (Phase 3).
+//
+// Reuses the session secret rather than introducing a fourth one. A grant is
+// signed with a server-only value so it cannot be forged, and session tokens
+// already have exactly that requirement, so a second secret would be a second
+// thing to forget to set — and an unset secret is precisely how G19's
+// fallback-forgery problem happened in the first place.
+//
+// Same degradation as sessionSecret(): a derived fallback so the route works
+// on a deployment that has not set the secret yet, and a loud warning that
+// says the property is not actually there.
+async function grantSecret(env) {
+    return await sessionSecret(env);
+}
+
 async function isKillswitchOn(env) {
     if (!env.LOADERS_KV) return false;
     try {
@@ -1030,7 +1413,7 @@ async function notifyTelemetry(env, ev) {
     const payload = {
         username: 'ScripterHub',
         embeds: [{
-            title: (meta.event || 'event') + ' — ' + (meta.outcome || 'ok'),
+            title: (meta.event || 'event') + ' - ' + (meta.outcome || 'ok'),
             color: meta.outcome === 'denied' ? 0xff3333 : (meta.outcome === 'error' ? 0xffaa33 : 0x00cc44),
             fields,
             footer: { text: 'ScripterHub telemetry (metadata only)' },
@@ -1038,12 +1421,35 @@ async function notifyTelemetry(env, ev) {
         }]
     };
     try {
-        await fetch(url, {
+        const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-    } catch (e) { /* telemetry must never break a request */ }
+        // ---- WHY THIS IS HERE (Phase 3): the webhook "silently did nothing" ----
+        //
+        // The old code was `catch (e) {}`. Every failure mode looked identical
+        // from the outside: no error, no log line, no event. A revoked webhook,
+        // a typo in the URL, a rate limit returning 429, a 200 that was really
+        // a Discord "this webhook was deleted" body — all of them produced
+        // silence, so "the webhook doesn't work" had no way to be diagnosed.
+        //
+        // Now every non-2xx is reported, with the status Discord returned. That
+        // is the single most useful line for working out whether the variable
+        // is set, the URL is stale, or the channel is rate-limiting us.
+        if (res && res.status >= 300) {
+            let body = '';
+            try { body = (await res.text()).slice(0, 200); } catch (e) {}
+            console.error('[ScripterHub] telemetry webhook returned HTTP ' + res.status
+                + ' for ' + (meta.event || 'event') + (body ? ' - ' + body : '')
+                + ' (check the SH_DISCORD_WEBHOOK variable)');
+        }
+    } catch (e) {
+        // Telemetry must never break a request, so this is still swallowed —
+        // but it is no longer swallowed SILENTLY.
+        console.error('[ScripterHub] telemetry webhook unreachable: ' + (e && e.message)
+            + ' (check the SH_DISCORD_WEBHOOK variable)');
+    }
 }
 
 // verify the login-session token (issued by /sh/login)
@@ -1215,7 +1621,20 @@ async function handleRequest(request, env, ctx) {
         // ---------- GET /sh/health ----------
         if (url.pathname === '/sh/health') {
             const setAt = env.LOADERS_KV ? await env.LOADERS_KV.get(CODE_SET_KEY) : null;
-            return jsonResponse({ ok: true, loaders: !!(env.LOADERS_KV), webhook: !!env.SH_DISCORD_WEBHOOK, codeSet: !!setAt, at: Date.now() });
+            // Phase 3: report the state layer explicitly. "loaders": true with
+            // no D1 is a DELIVERY OUTAGE, not a healthy system, because the
+            // gate refuses everything when the state layer is missing. An
+            // operator must be able to tell those two states apart from here.
+            const hasState = !!stateFor(env);
+            return jsonResponse({
+                ok: true,
+                loaders: !!(env.LOADERS_KV),
+                stateLayer: hasState,
+                delivery: hasState ? 'session-gated' : 'REFUSING (bind SH_DB + apply migrations/0001_init.sql)',
+                webhook: !!env.SH_DISCORD_WEBHOOK,
+                codeSet: !!setAt,
+                at: Date.now()
+            });
         }
 
         // ---------- POST /sh/owner-claim : ONE-TIME reveal of the owner code ----------
@@ -1468,8 +1887,10 @@ async function handleRequest(request, env, ctx) {
                 await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
                     name, user, at: Date.now(), keyHash,
                     keyless: true,
+                    visibility: readVisibility(body),
                     webKey: !!cipher
                 }), { expirationTtl: LOADER_TTL });
+                mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: false });
                 if (cipher) {
                     if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
                     try {
@@ -1500,7 +1921,8 @@ async function handleRequest(request, env, ctx) {
             // authRequired: this script demands a valid license key + HWID
             // on EVERY run (Luarmor model) - the split key is never served
             // without a short-lived /sh/auth token
-            await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({ name, user, at: Date.now(), keyHash, authRequired: body.authRequired === true }), { expirationTtl: LOADER_TTL });
+            await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({ name, user, at: Date.now(), keyHash, authRequired: body.authRequired === true, visibility: readVisibility(body) }), { expirationTtl: LOADER_TTL });
+            mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: body.authRequired === true });
             // optional: kill an OLD loader (key rotation / re-upload on edit)
             let replaced = await maybeReplaceOld(env, body.replaces);
             // Discord notification (attachments = download txt/lua files)
@@ -1512,6 +1934,71 @@ async function handleRequest(request, env, ctx) {
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
             // NO key in the URL - the key is asked at runtime
             return jsonResponse({ ok: true, id, replaced, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
+        }
+
+        // ---------- POST /sh/visibility : set server-side script visibility ----------
+        // Body: { token | userToken, id, visibility }
+        //
+        // WHY THIS ROUTE EXISTS
+        //
+        // `visibility` used to be a field in the dashboard's localStorage and
+        // nothing else. The worker never heard about it, so "Private" and
+        // "Anyone" produced byte-identical loader URLs with byte-identical
+        // responses — the setting was a label on a list, not a control. That is
+        // gate G10, and no amount of gating in the delivery route can fix a
+        // policy the server has never been told.
+        //
+        // It is a separate endpoint rather than a re-upload because re-uploading
+        // would need the artifact, and the artifact is deliberately not in the
+        // dashboard's hands: the owner's copy of the source is the file they
+        // uploaded, and the worker holds only what it needs to serve bytes.
+        //
+        // Ownership is enforced, and enforced against the PROVEN identity rather
+        // than a client-supplied `user` string (the same rule as G12).
+        if (url.pathname === '/sh/visibility' && request.method === 'POST') {
+            const limited = await guardRate(env, 'admin', rateIdentity(request, url));
+            if (limited) return limited;
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+            const id = String(body.id || '');
+            if (!/^ScripterHub\d{10}$/.test(id)) return jsonResponse({ ok: false, error: 'bad script id' }, 400);
+            const vis = readVisibility(body);
+            if (!['anyone', 'account', 'private'].includes(String(body.visibility))) {
+                return jsonResponse({ ok: false, error: 'visibility must be anyone | account | private' }, 400);
+            }
+
+            const codeHashes = await getCodeHashes(env);
+            let who = null;
+            if (await verifyToken((request.headers.get('X-SH-Token') || '') || body.token || '', codeHashes, env)) who = OWNER_EMAIL;
+            if (!who && body.userToken) {
+                const u = await verifyUserToken(body.userToken, env);
+                if (u) who = String(u.email || u.username || '').slice(0, 100);
+            }
+            if (!who) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+
+            const raw = await env.LOADERS_KV.get(KV_META_PREFIX + id);
+            if (raw === null) return jsonResponse({ ok: false, error: 'no such script' }, 404);
+            let meta = {};
+            try { meta = JSON.parse(raw); } catch (e) { return jsonResponse({ ok: false, error: 'corrupt meta' }, 500); }
+            const owner = String(meta.user || '');
+            const isSiteOwner = who.toLowerCase() === OWNER_EMAIL;
+            if (!isSiteOwner && owner.toLowerCase() !== who.toLowerCase()) {
+                return jsonResponse({ ok: false, error: 'Not your script.' }, 403);
+            }
+
+            meta.visibility = vis;
+            await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify(meta), { expirationTtl: LOADER_TTL });
+            mirrorScript(env, id, {
+                user: owner, name: meta.name,
+                visibility: vis,
+                authRequired: meta.authRequired === true
+            });
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'script.visibility', outcome: 'ok', scriptId: id,
+                userRef: await telemetryRef('user', who), reason: vis, at: Date.now()
+            }));
+            return jsonResponse({ ok: true, id, visibility: vis });
         }
 
         // ================= CROSS-DEVICE USER SYNC =================
@@ -1895,7 +2382,15 @@ async function handleRequest(request, env, ctx) {
                     note: String(r.note || '').slice(0, 300),
                     hwidResets: Number(r.hwidResets) || 0,
                     executions: Number(r.executions) || 0,
-                    lastAuthAt: Number(r.lastAuthAt) || 0
+                    lastAuthAt: Number(r.lastAuthAt) || 0,
+                    // Phase 3: `scriptId` was being dropped here, so every
+                    // license saved through the panel's editor lost the only
+                    // link to the script it was created for. It is
+                    // informational (licenses.script_id has no FK and the gate
+                    // does not read it), but the panel round-trips it, so
+                    // stripping it here silently corrupted what the dashboard
+                    // displays back to the owner.
+                    scriptId: String(r.scriptId || '').slice(0, 60)
                 };
                 n++;
             }
@@ -2117,13 +2612,20 @@ async function handleRequest(request, env, ctx) {
             });
         }
 
-        // ---------- GET /sh/g/<id>/<i> : GitHub part proxy (executor-only) ----------
+        // ---------- GET /sh/g/<id>/<i> : GitHub part proxy (chain-gated) ----------
         // Executors fetch Storage Keeper parts here; the worker pulls the
-        // blob from the private repo and streams it out. Browsers/AI/curl
-        // get nothing. No count/index validation beyond what the KV record
-        // and repo itself provide (missing part = 405 -> loader aborts).
+        // blob from the private repo and streams it out. The repo token never
+        // leaves the worker.
+        //
+        // PHASE 3: this route used to be reachable by anyone who sent an
+        // executor-looking User-Agent, which is a string anyone can type. It is
+        // now behind guardPartRequest(), so a part is served only to a session
+        // that already spent a delivery, and only as the next step of its own
+        // forward-only chain.
         const gMatch = url.pathname.match(/^\/sh\/g\/(ScripterHub\d{10})\/(\d+)$/);
         if (gMatch) {
+            const limited = await guardRate(env, 'part', rateIdentity(request, url));
+            if (limited) return limited;
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = gMatch[1];
             const idx = parseInt(gMatch[2], 10);
@@ -2134,16 +2636,10 @@ async function handleRequest(request, env, ctx) {
             let rec = {};
             try { rec = JSON.parse(raw); } catch (e) { return methodNotAllowed(); }
             if (!rec.repo || !rec.n || idx >= rec.n) { S.threatsBlocked++; return methodNotAllowed(); }
+            const denied = await guardPartRequest(env, request, url, id, idx);
+            if (denied) return denied;
             try {
                 const part = await ghGetPart(env, rec.repo, 'scripts/' + id + '/' + idx + '.part', 'main');
-                // count the execution once per script (first part fetch)
-                if (idx === 0) {
-                    S.events.push({ t: Date.now(), executor: sniffExecutor(ua), scriptId: id });
-                    S.totalExecutions++;
-                    S.perScript[id] = (S.perScript[id] || 0) + 1;
-                    prune(Date.now());
-                    saveStatsSoon(env);
-                }
                 return new Response(part, {
                     status: 200,
                     headers: {
@@ -2241,16 +2737,389 @@ async function handleRequest(request, env, ctx) {
         //   - the response embeds t0+chk+paddedKey; the Lua side verifies
         //     both AND regenerates the time pad, so even a MITM'd response
         //     with wrong values decrypts to garbage ("Goodluck Sonion")
+        // ==================================================================
+        // PHASE 3 — SESSION-GATED DELIVERY
+        //
+        // The loader URL is public and permanent. What changed is that it is
+        // USELESS without a live, single-use, server-verified session.
+        //
+        // The flow, and what each step is for:
+        //
+        //   GET /sh/<id>          bootstrap only. No artifact bytes, ever.
+        //          |
+        //   POST /sh/session      authenticate -> D1 session + nonce (45s)
+        //          |               nothing secret is returned
+        //   GET /sh/a/<id>        THE GATE. consume nonce, consume session,
+        //          |               then and only then read artifact bytes
+        //          v
+        //   (oversized only)
+        //   GET /sh/c/<id>/<i>    one forward-only step of a chain
+        //
+        // The separation between "may I open a session" and "may I have the
+        // bytes" is deliberate. Re-checking the license at BOTH is what makes
+        // a ban effective on the very next request instead of up to 45s later,
+        // and it is the specific hole the audit recorded as G06.
+        // ==================================================================
+
+        // ---------- POST|GET /sh/session : MINT ----------
+        // In:  id, k (license), h (hwid), u (account email, keyless scripts)
+        // Out: "SHS <sid> <nonce> <expiresAtMs>"  or  "SHERR <reason>"
+        //
+        // Plain text on the wire because executors cannot parse JSON without
+        // a library, and this is on the critical path of every single run.
+        //
+        // The response carries NO artifact material. A caller who can mint a
+        // session has proved a license, and that is all they get: proof, not
+        // payload. The bytes require a second, separate, single-use request.
+        {
+            if (url.pathname === '/sh/session' && (request.method === 'POST' || request.method === 'GET')) {
+                const limited = await guardRate(env, 'session', rateIdentity(request, url));
+                if (limited) return limited;
+
+                const now = Date.now();
+                const state = stateFor(env);
+                const ip = (request.headers.get('CF-Connecting-IP') || '').slice(0, 64) || null;
+                const ua = (request.headers.get('User-Agent') || '').slice(0, 200);
+
+                let body = {};
+                if (request.method === 'POST') {
+                    try { body = await request.json(); } catch (e) { body = {}; }
+                }
+                // GET fallback exists because game:HttpGet cannot POST. The
+                // transport is recorded so the URL path is counted separately
+                // in the audit log — its credential can reach access logs, and
+                // that share of traffic must stay visible rather than being
+                // averaged into the strong path (D5).
+                const transport = request.method === 'POST'
+                    ? (request.headers.get('Authorization') ? 'header' : 'url')
+                    : 'url';
+                const id = String(body.id || url.searchParams.get('id') || '');
+                const key = String(body.k || url.searchParams.get('k') || '').slice(0, 200);
+                const hwid = String(body.h || url.searchParams.get('h') || '').slice(0, 300);
+                const userEmail = String(body.u || url.searchParams.get('u') || '').slice(0, 100);
+
+                const deny = async (reason, extra) => {
+                    S.threatsBlocked++;
+                    if (state) {
+                        try {
+                            await state.audit({
+                                event: 'session.denied', outcome: 'denied',
+                                scriptId: /^ScripterHub\d{10}$/.test(id) ? id : null,
+                                userRef: userEmail ? await telemetryRef('user', userEmail) : null,
+                                licenseRef: key ? await telemetryRef('lic', key) : null,
+                                reason, transport, ip, ua, at: now
+                            });
+                        } catch (e) { /* audit must never break a request */ }
+                    }
+                    ctx.waitUntil(notifyTelemetry(env, Object.assign({
+                        event: 'session.denied', outcome: 'denied',
+                        scriptId: id, licenseRef: await telemetryRef('lic', key),
+                        reason, transport, ip, at: now
+                    }, extra || {})));
+                    return new Response('SHERR ' + reason + '\n', {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+                    });
+                };
+
+                if (!state) {
+                    console.error('[ScripterHub] /sh/session refused: D1 (SH_DB) is not bound or not migrated. '
+                        + 'See wrangler.toml steps 2-3.');
+                    return deny(DENY.NO_STATE);
+                }
+                if (!/^ScripterHub\d{10}$/.test(id)) return deny(DENY.NO_SCRIPT);
+
+                const script = await scriptAuthz(env, id);
+                const killswitch = await isKillswitchOn(env);
+
+                // A keyless script still needs an IDENTITY. This was decision
+                // D1 and it is the least popular one in the file, so the
+                // reasoning is repeated: option A (anonymous -> artifact) makes
+                // "no public artifact endpoint" false for the free tier, and
+                // option C (anonymous + rate limits + watermark) is still an
+                // unauthenticated artifact fetch. Signup is self-service and
+                // already flood-guarded, so the cost is one free account.
+                let accountOk = false;
+                let userId = null;
+                if (userEmail) {
+                    const u = await verifyUserToken(body.ut || url.searchParams.get('ut') || '', env);
+                    if (u && d1UserId(u.email || '') === d1UserId(userEmail)) {
+                        accountOk = true;
+                        userId = d1UserId(u.email);
+                    }
+                }
+                if (!script.authRequired && !key && !accountOk) {
+                    return deny(DENY.HIDDEN, { reason: 'keyless requires an account (D1)' });
+                }
+
+                // Read fresh, never from a value captured earlier in the
+                // request: an isolate outlives many requests and a stale map
+                // would be a stale authorization decision.
+                const licensesCache = await loadLicenses(env);
+                const classify = (k, h, at) => classifyLicense(licensesCache[k], h, at);
+                const verdict = classifyAuthorization({
+                    noState: false,
+                    scriptExists: !!script,
+                    killswitch, scriptKilled: false,
+                    visibility: script.visibility,
+                    isOwner: userEmail.toLowerCase() === OWNER_EMAIL,
+                    userId,
+                    authRequired: script.authRequired,
+                    key, hwid, classify, now
+                });
+                if (verdict) return deny(verdict);
+
+                // First successful auth locks the key to this hardware. Kept in
+                // KV (the panel's copy) and mirrored to D1 by saveLicenses.
+                let licenseKey = null;
+                if (script.authRequired && key) {
+                    const map = await loadLicenses(env);
+                    const rec = map[key];
+                    if (rec && !rec.hwid) {
+                        rec.hwid = hwid;
+                        await saveLicenses(env, map);
+                    }
+                    licenseKey = key;
+                }
+
+                const ttl = transport === 'url' ? URL_SESSION_TTL_MS : SESSION_TTL_MS;
+                let session;
+                try {
+                    session = await state.createSession({
+                        scriptId: id, licenseKey, userId, hwid, transport,
+                        ttlMs: ttl, now, ip, ua
+                    });
+                } catch (e) {
+                    console.error('[ScripterHub] session mint failed: ' + (e && e.message));
+                    return deny('error');
+                }
+
+                try {
+                    await state.audit({
+                        event: 'session.minted', outcome: 'ok', scriptId: id,
+                        userRef: userId ? await telemetryRef('user', userId) : null,
+                        licenseRef: key ? await telemetryRef('lic', key) : null,
+                        sessionId: session.sid,
+                        nonceRef: await telemetryRef('nonce', session.nonce),
+                        reason: transport, transport, ip, ua, at: now
+                    });
+                } catch (e) { /* audit must never break a request */ }
+
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'session.minted', outcome: 'ok', scriptId: id,
+                    licenseRef: await telemetryRef('lic', key),
+                    sessionId: session.sid, transport, reason: 'minted', ip, at: now
+                }));
+
+                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.totalExecutions++;
+                S.perScript[id] = (S.perScript[id] || 0) + 1;
+                prune(now);
+                saveStatsSoon(env);
+
+                // Plain text, and the three values are the ONLY thing a caller
+                // walks away with. A sid is a claim, not a credential: it is
+                // worth exactly one artifact, for 45 seconds, on one script.
+                return new Response('SHS ' + session.sid + ' ' + session.nonce + ' ' + session.expiresAt + '\n', {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'text/plain; charset=utf-8',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': 'no-store'
+                    }
+                });
+            }
+        }
+
+        // ---------- GET|POST /sh/a/<id>?s=<sid>&n=<nonce> : THE GATE ----------
+        // This is the only route in the worker permitted to return artifact
+        // bytes, and it is behind two atomic statements in server/delivery.js.
+        //
+        // Order is deliberate: spend the NONCE, then spend the SESSION. A
+        // failure after the nonce is spent burns the session and forces a
+        // re-mint, which can never deliver twice. The reverse order could.
+        {
+            const aMatch = url.pathname.match(/^\/sh\/a\/(ScripterHub\d{10})$/);
+            if (aMatch && (request.method === 'POST' || request.method === 'GET')) {
+                const limited = await guardRate(env, 'deliver', rateIdentity(request, url));
+                if (limited) return limited;
+
+                const id = aMatch[1];
+                const now = Date.now();
+                const state = stateFor(env);
+                const ip = (request.headers.get('CF-Connecting-IP') || '').slice(0, 64) || null;
+                const ua = (request.headers.get('User-Agent') || '').slice(0, 200);
+
+                let body = {};
+                if (request.method === 'POST') { try { body = await request.json(); } catch (e) { body = {}; } }
+                const sid = String(body.s || url.searchParams.get('s') || '').slice(0, 80);
+                const nonce = String(body.n || url.searchParams.get('n') || '').slice(0, 80);
+                const transport = request.method === 'POST' && request.headers.get('Authorization') ? 'header' : 'url';
+
+                const refuse = async (reason, status) => {
+                    S.threatsBlocked++;
+                    if (state) {
+                        try {
+                            await state.audit({
+                                event: 'delivery.denied', outcome: 'denied', scriptId: id,
+                                sessionId: sid || null,
+                                nonceRef: nonce ? await telemetryRef('nonce', nonce) : null,
+                                reason, transport, ip, ua, at: now
+                            });
+                        } catch (e) { /* audit must never break a request */ }
+                    }
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'delivery.denied', outcome: 'denied', scriptId: id,
+                        sessionId: sid, reason, transport, ip, at: now
+                    }));
+                    return new Response('SHERR ' + reason + '\n', {
+                        status: status || 200,
+                        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+                    });
+                };
+
+                if (!state) {
+                    console.error('[ScripterHub] /sh/a refused: D1 (SH_DB) is not bound or not migrated.');
+                    return refuse(DENY.NO_STATE);
+                }
+                if (!sid || !nonce) return refuse(DENY.NO_SESSION);
+                if (!env.LOADERS_KV) return refuse(DENY.NO_STATE);
+                if (await isKillswitchOn(env)) return refuse(DENY.KILLED);
+
+                // ---- THE ATOMIC GATE ----
+                const verdict = await deliver(state, { sid, nonce, scriptId: id, now });
+                if (!verdict.ok) return refuse(verdict.reason);
+
+                // ---- authorised. from here, bytes may be read. ----
+                const script = await scriptAuthz(env, id);
+                if (!script) return refuse(DENY.NO_SCRIPT);
+
+                // Count the execution and bump the license counter.
+                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.totalExecutions++;
+                S.perScript[id] = (S.perScript[id] || 0) + 1;
+                prune(now);
+                saveStatsSoon(env);
+
+                let licenseRef = null;
+                {
+                    // The license that authorised this session is recorded on
+                    // the session row itself, so read it back rather than
+                    // guessing from the request. It is hashed for the log.
+                    const row = await state.peekSession(sid, now);
+                    licenseRef = row && row.license_key ? await telemetryRef('lic', row.license_key) : null;
+                }
+
+                // ---- where do the bytes come from? ----
+                const ghRaw = await env.LOADERS_KV.get(KV_GH_PREFIX + id);
+                const isGithub = ghRaw !== null;
+                const cmetaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id);
+                const isChunked = cmetaRaw !== null;
+                let inlineBlob = '';
+                if (!isGithub && !isChunked) inlineBlob = await env.LOADERS_KV.get(KV_PREFIX + id);
+
+                const needsChain = isGithub || isChunked;
+                let total = 0;
+                if (isChunked) { try { total = Number(JSON.parse(cmetaRaw).n) || 0; } catch (e) { total = 0; } }
+                if (isGithub) { try { total = Number(JSON.parse(ghRaw).n) || 0; } catch (e) { total = 0; } }
+
+                // SMALL: everything in one response. This is the strong case:
+                // one atomic consume, one response, nothing left to fetch, and
+                // no way to come back for more.
+                if (!needsChain && inlineBlob && inlineBlob.length <= INLINE_DELIVERY_LIMIT) {
+                    const skRaw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
+                    let sk = null;
+                    if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
+                    let out = script.keyless ? 'SHL\n' : 'SHK\n';
+                    out += (sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
+                    out += inlineBlob;
+                    try {
+                        await state.audit({
+                            event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                            nonceRef: await telemetryRef('nonce', nonce),
+                            licenseRef: licenseRef, reason: 'inline', transport, ip, ua, at: now
+                        });
+                    } catch (e) { /* audit must never break a request */ }
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                        reason: 'inline', transport, bytes: inlineBlob.length, ip, at: now
+                    }));
+                    return new Response(out, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            'Access-Control-Allow-Origin': '*',
+                            'Cache-Control': 'no-store'
+                        }
+                    });
+                }
+
+                // LARGE: open a forward-only chain and hand back a grant.
+                // The session is ALREADY spent (deliver() ran). The chain is a
+                // continuation of that one delivery, never an alternative.
+                if (needsChain && total > 0) {
+                    const chainExp = now + CHAIN_GRANT_TTL_MS;
+                    const opened = await openChain(state, sid, total, chainExp, now);
+                    if (!opened) return refuse(DENY.NO_SESSION);
+                    const grant = await signGrant(await grantSecret(env), sid, id, chainExp);
+                    let skRaw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
+                    let sk = null;
+                    if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
+                    let head = 'SHG ' + total + ' ' + (isGithub ? '/sh/g/' : '/sh/c/') + id + ' ' + grant + '\n';
+                    head += (sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
+                    try {
+                        await state.audit({
+                            event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                            reason: 'chain:' + total, transport, ip, ua, at: now
+                        });
+                    } catch (e) { /* audit must never break a request */ }
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                        reason: 'chain', transport, parts: total, ip, at: now
+                    }));
+                    return new Response(head, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            'Access-Control-Allow-Origin': '*',
+                            'Cache-Control': 'no-store'
+                        }
+                    });
+                }
+
+                return refuse(DENY.NO_SCRIPT);
+            }
+        }
+
+        // ---------- GET /sh/k/<id>?t=&s=&n= : LEGACY SPLIT-KEY (hardened) ----------
+        // The obfuscated file deliberately ships WITHOUT its final-layer key.
+        // This route releases it.
+        //
+        // WHAT CHANGED IN PHASE 3, and why the old rules were not enough:
+        //
+        //   was:  executor UA + t0 must match + a=<token> where the token was
+        //         HMAC(key|hwid|t0) keyed by SHA-256("SHAUTH::"+key)
+        //   now:  executor UA + t0 must match + s=<sid>&n=<nonce> where BOTH
+        //         are server-issued random values with a D1 row behind them,
+        //         and the session is SPENT by this request
+        //
+        // The old token was not proof of anything: every input to the HMAC was
+        // known to anyone holding the license key, so it could be computed
+        // offline with no server involvement (gate G09). The new one cannot be
+        // computed at all — sid and nonce come from crypto.getRandomValues()
+        // and the only way to learn a valid pair is to have passed
+        // /sh/session, which means the license was verified server-side.
+        //
+        // This route is kept so loadstrings already running in the wild keep
+        // working. It is NOT how new loaders authenticate: they use /sh/a.
         const kMatch = url.pathname.match(/^\/sh\/k\/(ScripterHub\d{10})$/);
         if (kMatch) {
-            // Split-key requests. Separate bucket from 'auth' so hammering one
-            // route cannot be used to exhaust the other's budget.
-            {
-                const rl = rateLimit('key', rateIdentity(request, url));
-                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
-            }
+            const limited = await guardRate(env, 'key', rateIdentity(request, url));
+            if (limited) return limited;
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = kMatch[1];
+            const now = Date.now();
+            const state = stateFor(env);
             const ua = request.headers.get('User-Agent') || '';
             if (!EXECUTOR_UA.test(ua)) { S.threatsBlocked++; return methodNotAllowed(); }
             const raw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
@@ -2259,19 +3128,50 @@ async function handleRequest(request, env, ctx) {
             try { sk = JSON.parse(raw); } catch (e) { return methodNotAllowed(); }
             const wantT = parseInt(String(url.searchParams.get('t') || ''), 10);
             if (!Number.isFinite(wantT) || wantT !== sk.t0) { S.threatsBlocked++; return methodNotAllowed(); }
-            // ---- NEW: auth-required scripts must present a live token ----
-            let kMeta = {};
-            try { kMeta = JSON.parse((await env.LOADERS_KV.get(KV_META_PREFIX + id)) || '{}'); } catch (e) {}
-            if (kMeta.authRequired === true) {
-                if (await isKillswitchOn(env)) { S.threatsBlocked++; return methodNotAllowed(); }
-                const token = String(url.searchParams.get('a') || '');
-                const licKey = String(url.searchParams.get('k') || '');
-                const licHwid = String(url.searchParams.get('h') || '');
-                let authOk = false;
-                if (token && licKey && licHwid) authOk = await verifyAuthToken(licKey, licHwid, wantT, token);
-                if (!authOk) { S.threatsBlocked++; return methodNotAllowed(); }
+
+            const sid = String(url.searchParams.get('s') || '').slice(0, 80);
+            const nonce = String(url.searchParams.get('n') || '').slice(0, 80);
+            const refuse = async (reason) => {
+                S.threatsBlocked++;
+                if (state) {
+                    try {
+                        await state.audit({
+                            event: 'delivery.denied', outcome: 'denied', scriptId: id,
+                            sessionId: sid || null, reason, transport: 'url', at: now
+                        });
+                    } catch (e) { /* audit must never break a request */ }
+                }
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'delivery.denied', outcome: 'denied', scriptId: id, sessionId: sid,
+                    reason, transport: 'url', at: now
+                }));
+                return methodNotAllowed();
+            };
+
+            if (!state) {
+                console.error('[ScripterHub] /sh/k refused: D1 (SH_DB) is not bound or not migrated.');
+                return refuse(DENY.NO_STATE);
             }
+            if (await isKillswitchOn(env)) return refuse(DENY.KILLED);
+            if (!sid || !nonce) return refuse(DENY.NO_SESSION);
+
+            // Identical atomic gate to /sh/a. Replay, expiry, ban-at-delivery
+            // and forgery are all closed by these two statements, not by any
+            // check above them.
+            const verdict = await deliver(state, { sid, nonce, scriptId: id, now });
+            if (!verdict.ok) return refuse(verdict.reason);
+
             const body = 'SHK ' + sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ');
+            try {
+                await state.audit({
+                    event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                    reason: 'legacy-k', transport: 'url', at: now
+                });
+            } catch (e) { /* audit must never break a request */ }
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
+                reason: 'legacy-k', transport: 'url', at: now
+            }));
             return new Response(body, {
                 status: 200,
                 headers: {
@@ -2282,13 +3182,19 @@ async function handleRequest(request, env, ctx) {
             });
         }
 
-        // ---------- GET /sh/c/<id>/<i> : CHUNK delivery (executor-only) ----------
-        // Serves chunk i of a chunked (large) script blob. Executors
-        // fetch them sequentially and stitch in memory; browsers/AI get
-        // nothing. No chunk index or count is ever exposed to non-
-        // executors (the manifest in the bootstrap is all they get).
+        // ---------- GET /sh/c/<id>/<i> : CHUNK delivery (chain-gated) ----------
+        // Serves chunk i of a chunked (large) script blob. Executors stitch
+        // them in memory.
+        //
+        // PHASE 3: previously reachable by anyone sending an executor-looking
+        // User-Agent, so a scraper could walk 0..19 and reassemble the whole
+        // artifact from a fixed, guessable path. Now behind
+        // guardPartRequest(): the session must have already spent a delivery,
+        // and each index is one forward-only step.
         const cMatch = url.pathname.match(/^\/sh\/c\/(ScripterHub\d{10})\/(\d+)$/);
         if (cMatch) {
+            const limited = await guardRate(env, 'part', rateIdentity(request, url));
+            if (limited) return limited;
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = cMatch[1];
             const idx = parseInt(cMatch[2], 10);
@@ -2302,6 +3208,8 @@ async function handleRequest(request, env, ctx) {
             let cmeta = {};
             try { cmeta = JSON.parse(metaRaw); } catch (e) { return methodNotAllowed(); }
             if (idx >= cmeta.n) { S.threatsBlocked++; return methodNotAllowed(); }
+            const denied = await guardPartRequest(env, request, url, id, idx);
+            if (denied) return denied;
             const chunk = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + KV_PREFIX + id + '_' + idx);
             if (chunk === null) return methodNotAllowed();
             return new Response(chunk, {
@@ -2314,109 +3222,78 @@ async function handleRequest(request, env, ctx) {
             });
         }
 
-        // ---------- GET /sh/ScripterHub########## : the loader itself ----------
-        // Executor UA + KEYLESS script -> the obfuscated code DIRECTLY (no
-        // key, no decrypt - free scripts just run).
-        // Executor UA + keyed script -> Lua bootstrap (reads the Special Key
-        // from getgenv().ScripterHubKey + local decrypt).
-        // Browser + keyless script WITH webKey -> HTML key page (the Special
-        // Key is required to VIEW the code on the website - the free-script
-        // key gate). Browser + keyless legacy (no cipher) -> Method Not
-        // Allowed. Everything else -> HTML key page / "Method Not Allowed".
-        // The wire only ever carries CIPHERTEXT for keyed scripts.
+        // ---------- GET /sh/ScripterHub########## : THE PUBLIC LOADER ----------
+        //
+        // PHASE 3 — THIS ROUTE NO LONGER SERVES ARTIFACT BYTES. AT ALL.
+        //
+        // What it used to do, and why each part of it was a hole:
+        //
+        //   executor UA + keyless -> the obfuscated code, verbatim
+        //   executor UA + keyed    -> a bootstrap with the CIPHERTEXT embedded
+        //   browser + webKey      -> an HTML page with the CIPHERTEXT embedded
+        //
+        // All three handed the artifact to anyone who asked. The only barrier
+        // was a User-Agent regex, and a User-Agent is a string a scraper types.
+        // That is gate G01, G02 and G03, and it is the single biggest thing
+        // this phase changes.
+        //
+        // What it does now:
+        //
+        //   executor UA -> a fixed bootstrap that contains NO script material.
+        //                  It authenticates via /sh/session and fetches via
+        //                  /sh/a. The bootstrap is IDENTICAL for every script
+        //                  except for the id and the base URL, so inspecting it
+        //                  teaches an attacker nothing about any artifact.
+        //   browser     -> a metadata page. Name, id, and how to run it. No
+        //                  cipher, no key, no decrypt box.
+        //
+        // The honest consequence, restated from decision D6: the loader URL is
+        // public and permanent, and that is not going to change. What changed
+        // is that it carries no authorization value on its own. Anyone can
+        // open it. Nobody can extract anything from it.
         const shMatch = url.pathname.match(/^\/sh\/(ScripterHub\d{10})$/);
         if (shMatch) {
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = shMatch[1];
-            // STORAGE KEEPER scripts: parts live in the GitHub repo; the
-            // executor bootstrap fetches them via /sh/g/<id>/<i>
-            const ghRaw = await env.LOADERS_KV.get(KV_GH_PREFIX + id);
-            const isGithub = ghRaw !== null;
-            // chunked (large) scripts: the executor bootstrap fetches the
-            // chunks itself (single values never exceed KV's 25MB cap)
-            const cmetaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id);
-            const isChunked = cmetaRaw !== null;
-            let cipher = null;
-            if (isGithub) cipher = ''; // github scripts: parts arrive via /sh/g/*
-            else if (!isChunked) cipher = await env.LOADERS_KV.get(KV_PREFIX + id);
-            else cipher = ''; // chunked scripts: cipher arrives via /sh/c/*
-            if (cipher === null) return methodNotAllowed();
-            let meta = {};
-            try { meta = JSON.parse((await env.LOADERS_KV.get(KV_META_PREFIX + id)) || '{}'); } catch (e) {}
             const ua = request.headers.get('User-Agent') || '';
             const isExecutor = EXECUTOR_UA.test(ua);
-            // count the execution either way
+
+            const script = await scriptAuthz(env, id);
+            if (!script) { S.threatsBlocked++; return methodNotAllowed(); }
+
+            // Server-side visibility. This used to exist only as a
+            // localStorage flag in the browser, so "private" hid a script in
+            // the UI while this route still served anyone who asked. That is
+            // gate G10.
+            if (script.visibility === 'private' && !isExecutor) {
+                S.threatsBlocked++;
+                return new Response('This script is private.\n', {
+                    status: 403,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+                });
+            }
+
+            if (!isExecutor) {
+                S.threatsBlocked++;
+                return scriptPageResponse(id, script);
+            }
+
             S.events.push({ t: Date.now(), executor: sniffExecutor(ua), scriptId: id });
             S.totalExecutions++;
             S.perScript[id] = (S.perScript[id] || 0) + 1;
             prune(Date.now());
             saveStatsSoon(env);
-            if (isExecutor && meta.keyless === true) {
-                // FREE script: serve the obfuscated code as-is - no key gate
-                // in executors (the Special Key only gates the website page).
-                // Large scripts (KV-chunked or GitHub Storage Keeper) get a
-                // bootstrap that fetches the parts and stitches in memory.
-                if (isGithub || isChunked) {
-                    return new Response(luaPartsBootstrap(id, isGithub ? '/sh/g/' : '/sh/c/', cipher, false), {
-                        status: 200,
-                        headers: {
-                            'Content-Type': 'text/plain; charset=utf-8',
-                            'Access-Control-Allow-Origin': '*',
-                            'Cache-Control': 'no-store'
-                        }
-                    });
+
+            // The bootstrap. No ciphertext, no key, no script-derived material.
+            const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
+            return new Response(luaSessionBootstrap(id, base, script.keyless), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
                 }
-                return new Response(cipher, {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'text/plain; charset=utf-8',
-                        'Access-Control-Allow-Origin': '*',
-                        'Cache-Control': 'no-store'
-                    }
-                });
-            }
-            if (isExecutor) {
-                // keyed script: bootstrap that reads the key from getgenv.
-                // Large (chunked/GitHub) scripts get a parts bootstrap.
-                if (isGithub || isChunked) {
-                    return new Response(luaPartsBootstrap(id, isGithub ? '/sh/g/' : '/sh/c/', cipher, true), {
-                        status: 200,
-                        headers: {
-                            'Content-Type': 'text/plain; charset=utf-8',
-                            'Access-Control-Allow-Origin': '*',
-                            'Cache-Control': 'no-store'
-                        }
-                    });
-                }
-                return new Response(luaBootstrap(id, cipher), {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'text/plain; charset=utf-8',
-                        'Access-Control-Allow-Origin': '*',
-                        'Cache-Control': 'no-store'
-                    }
-                });
-            }
-            // browser / curl / AI scraper: never any plaintext for reading.
-            // Keyed scripts -> key page (decrypts locally). Keyless scripts
-            // -> key page TOO when a webKey cipher exists (free scripts
-            // require the Special Key on the WEBSITE only), otherwise the
-            // legacy "Method Not Allowed". Count as blocked threat attempts.
-            S.threatsBlocked++;
-            if (meta.keyless === true) {
-                const webCipher = meta.webKey ? await getBlob(env, id, KV_WEB_PREFIX) : null;
-                if (webCipher) return keyPageResponse(id, webCipher, meta.keyHash);
-                if (isChunked || isGithub) return keyPageResponse(id, '', meta.keyHash); // "large script" notice
-                return methodNotAllowed();
-            }
-            // keyed + chunked/GitHub: browsers cannot get a 50MB+ key page -
-            // the cipher lives at /sh/c/* or /sh/g/* (executor-only). Show
-            // the key page with a "script too large to view in browser"
-            // notice instead.
-            if (isChunked || isGithub) {
-                return keyPageResponse(id, '', meta.keyHash);
-            }
-            return keyPageResponse(id, cipher, meta.keyHash);
+            });
         }
 
         // ================= STATS (existing) =================
@@ -2516,151 +3393,205 @@ function hashEqual(a, b) {
     return diff === 0;
 }
 
-// ---------- HTML KEY PAGE (browsers) ----------
-// Serves the CIPHERTEXT + the same stream cipher in JS. The visitor
-// types the Special Key; the page decrypts LOCALLY (the key never
-// leaves their machine either). "SHOK" magic detects a wrong key.
-// The <noscript> variant for curl/AI scrapers shows NO code at all.
-function keyPageHtml(id, cipherB64, keyHash) {
-    const safeCipher = String(cipherB64 || '').replace(/</g, '\\u003c');
-    // LARGE (chunked) scripts: the cipher never ships to browsers - show
-    // a notice instead of an empty decrypt box
-    const big = safeCipher === '';
-    return '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="robots" content="noindex,nofollow"><title>Special Key Required</title>'
-        + '<style>*{box-sizing:border-box}body{background:#0a0a0f;color:#fff;font-family:Segoe UI,Tahoma,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}'
-        + '.box{padding:36px;border:2px solid rgba(108,59,255,0.35);border-radius:16px;background:rgba(20,20,35,0.85);text-align:center;max-width:460px;width:92%}'
-        + 'h1{font-size:20px;margin:0 0 8px}p{color:#8888aa;font-size:13px;margin:0 0 18px}'
-        + 'input{width:100%;background:#0a0a15;border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#fff;padding:12px;font-size:14px;font-family:monospace}'
-        + 'button{width:100%;border:none;border-radius:10px;cursor:pointer;font-weight:600;font-size:15px;padding:12px;color:#fff;background:linear-gradient(135deg,#6c3bff,#00bfff);margin-top:12px}'
-        + '.err{color:#ff6666;font-size:13px;margin-top:10px}pre{display:none;text-align:left;color:#66ff66;font-size:12px;background:#0a0a15;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;max-height:340px;overflow:auto;white-space:pre-wrap;word-break:break-all}</style>'
-        + '<script>'
-        + 'var C=' + JSON.stringify(safeCipher) + ';'
-        // --- exact sh-crypto.js v2 cipher, minified inline ---
-        // (>>> 0 after each xor: JS ^ returns SIGNED int32; without the
-        //  normalization the state can go negative and diverge from
-        //  sh-crypto.js, breaking decryption with the CORRECT key)
-        + 'function sd(k,idx){var b=new TextEncoder().encode(k),h=5381+idx*7;for(var i=0;i<b.length;i++){h=(h*33+b[i])%4294967296}return h}'
-        + 'function nx(s){var x=s[0]>>>0;x=(x^((x*8192)%4294967296))>>>0;x=(x^Math.floor(x/131072))>>>0;x=(x^((x*32)%4294967296))>>>0;s[0]=s[1];s[1]=s[2];s[2]=s[3];s[3]=x;return x}'
-        + 'function dec(key){var s=[sd(key,0),sd(key,1),sd(key,2),sd(key,3)];if(!s[0])s[0]=1;if(!s[1])s[1]=2;if(!s[2])s[2]=3;if(!s[3])s[3]=4;'
-        + 'var bin=atob(C),out=new Uint8Array(bin.length);'
-        + 'for(var i=0;i<bin.length;i++){out[i]=bin.charCodeAt(i)^(nx(s)&255)}'
-        + 'var t=new TextDecoder("utf-8",{fatal:false}).decode(out);'
-        + 'if(t.substring(0,4)!=="SHOK")return null;return t.substring(4)}'
-        + 'function go(){var k=document.getElementById("kk").value;var e=document.getElementById("ee");var p=document.getElementById("pp");e.textContent="";'
-        + 'try{var t=dec(k);'
-        + 'if(t===null){e.textContent="\\u274c Wrong key.";return}'
-        + 'p.textContent=t;p.style.display="block"'
-        + '}catch(x){e.textContent="\\u274c Wrong key."}}'
-        + '<\/script></head><body><div class="box">'
-        + (big
-            ? '<h1>📦 Large Protected Script</h1><p>This script is too large to display in a browser. Run it from your executor using the loadstring (the code downloads in parts and assembles in memory).</p>'
-            : '<h1>🔐 Special Key Required</h1><p>This script is encrypted with a Special Key. Enter it to decrypt (happens only on this page - the key is never sent anywhere).</p><input type="password" id="kk" placeholder="Enter the Special Key..." autocomplete="off"><button onclick="go()">🔓 Decrypt &amp; View</button><div class="err" id="ee"></div><pre id="pp"></pre>')
-        + '<p style="margin:18px 0 0;font-size:11px;">Protected by ScripterHub</p>'
-        + '</div>'
-        + '<noscript><p style="color:#8888aa;text-align:center;">Special Key required. Enable JavaScript to enter it.</p></noscript>'
-        + '</body></html>';
-}
-
-function keyPageResponse(id, cipherB64, keyHash, status) {
-    return new Response(keyPageHtml(id, cipherB64, keyHash), {
-        status: status || 200,
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+// ---------- BROWSER METADATA PAGE ----------
+// PHASE 3 REPLACEMENT for the old "key page".
+//
+// The old page embedded the CIPHERTEXT plus a working decryptor in JS, so a
+// visitor could type the Special Key and read the script in their browser.
+// That is gate G03: the artifact was on the wire, in the HTML, to anyone who
+// loaded the page.
+//
+// This page has no cipher, no key hash, and no decrypt box. It reports what
+// the script IS (name, id, whether it needs a license) and how to run it, and
+// that is genuinely all a browser can learn from it.
+//
+// This is a real feature removal, not a hardening tweak: "view the source in
+// my browser by typing the Special Key" no longer works, because there is no
+// longer anything to view. The owner's copy of the source is the original file
+// they uploaded, which was never on the server in the first place.
+function scriptPageResponse(id, script) {
+    const name = String(script.name || 'Protected script').replace(/[<>&"]/g, '');
+    const kind = script.authRequired ? 'License required' : 'Free script (account required)';
+    const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        + '<meta name="robots" content="noindex,nofollow">'
+        + '<title>' + esc(name) + '</title>'
+        + '<style>*{box-sizing:border-box}body{background:#0a0a0f;color:#fff;font-family:Segoe UI,Tahoma,sans-serif;'
+        + 'display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px}'
+        + '.box{padding:36px;border:2px solid rgba(108,59,255,0.35);border-radius:16px;'
+        + 'background:rgba(20,20,35,0.85);text-align:center;max-width:520px;width:100%}'
+        + 'h1{font-size:20px;margin:0 0 6px}p{color:#8888aa;font-size:13px;margin:0 0 14px;line-height:1.6}'
+        + '.tag{display:inline-block;padding:4px 12px;border-radius:999px;font-size:11px;'
+        + 'background:rgba(108,59,255,0.18);color:#b79cff;border:1px solid rgba(108,59,255,0.35);margin-bottom:16px}'
+        + 'code{display:block;background:#0a0a15;border:1px solid rgba(255,255,255,0.1);border-radius:10px;'
+        + 'padding:12px;font-size:11px;color:#66ff66;text-align:left;word-break:break-all;margin-top:8px}'
+        + '.foot{color:#555577;font-size:11px;margin-top:18px}</style></head><body><div class="box">'
+        + '<h1>' + esc(name) + '</h1>'
+        + '<div class="tag">' + kind + '</div>'
+        + '<p>This link is a loader. It contains no script &mdash; the program is '
+        + 'fetched at run time, only after the server verifies your license, '
+        + 'and only for a single short-lived session.</p>'
+        + '<p>Nothing here can be scraped, and opening this page in a browser '
+        + 'reveals nothing about the protected program.</p>'
+        + '<code>loadstring(game:HttpGet("' + esc(id) + '"))()</code>'
+        + '<div class="foot">id: ' + esc(id) + '<br>Protected by ScripterHub</div>'
+        + '</div></body></html>';
+    return new Response(html, {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'X-Robots-Tag': 'noindex, nofollow'
+        }
     });
 }
 
-// ---------- LUA BOOTSTRAP (executors) ----------
-// Served to executor User-Agents. Embeds ONLY the ciphertext. The key is
-// read EXCLUSIVELY from getgenv().ScripterHubKey (set BEFORE executing
-// the loadstring) - there is NO in-game popup GUI anymore, so no UI code
-// ships in the payload. Lua decrypts locally with the SAME double-safe
-// cipher as sh-crypto.js (djb2 seeds + xorshift128, exact in doubles) ->
-// checks the "SHOK" magic -> loadstrings the plaintext. A missing/wrong
-// key just notifies + prints instructions and stops.
-// Large-script executor bootstrap (KV chunks AND GitHub Storage Keeper
-// parts). The worker serves the parts at <base><id>/<i>; this loader
-// fetches them all sequentially, stitches them in memory, then runs the
-// SAME decrypt + key check as the regular bootstrap. keyless=true skips
-// the Special Key ask (the stitched blob IS the obfuscated executor
-// code). GitHub Storage Keeper scripts can be up to ~10GB (256 parts x
-// 40MB) - stitching happens in the executor's memory, never on disk.
-function luaPartsBootstrap(id, chunkBaseRoot, cipherB64, keyed) {
-    const chunkBase = chunkBaseRoot + id + '/';
-    return '--[[ ScripterHub protected loader | ' + id + ' | LARGE script (streamed parts) ]]\n'
-        + (keyed ? '-- Set the key BEFORE executing: getgenv().ScripterHubKey = "YOUR_KEY"\n' : '-- keyless script: no Special Key needed in-game\n')
-        + 'local CI={}\n'
-        // part fetch loop: 0..255; empty/missing response = stop
-        + 'local H=game and game.HttpGet\n'
-        + 'if not H then return end\n'
-        + 'for i=0,255 do\n'
-        + ' local ok,r=pcall(H,game,' + JSON.stringify(chunkBase) + ' .. i)\n'
-        + ' if not ok or type(r)~="string" or #r==0 then break end\n'
-        + ' CI[#CI+1]=r\n'
+// ---------- LUA SESSION BOOTSTRAP (executors) ----------
+// PHASE 3 REPLACEMENT for luaBootstrap() / luaPartsBootstrap().
+//
+// WHAT IS NOT IN HERE, and that is the entire point:
+//
+//   * no ciphertext
+//   * no Special Key
+//   * no split key
+//   * no t0, chk or padded key
+//   * nothing derived from the artifact at all
+//
+// This text is IDENTICAL for every script on the platform except for two
+// substitutions: the script id and the base URL. A scraper who downloads this
+// learns the protocol, which is public by design, and learns nothing about any
+// particular artifact. There is no per-script secret embedded in a file that
+// a browser can simply open.
+//
+// THE FLOW IT DRIVES
+//
+//   1. read the license from getgenv().ScripterHubKey (unchanged UX: the
+//      user still sets one global before executing the loadstring)
+//   2. POST /sh/session  { id, k, h }        -> "SHS <sid> <nonce> <exp>"
+//   3. GET  /sh/a/<id>?s&n                   -> "SHK\n<keyline>\n<blob>"
+//                                         or "SHG <n> <root> <grant> ..." + parts
+//   4. decrypt locally with the Special Key, exactly as before
+//
+// request() is preferred over game:HttpGet because it can set headers, and the
+// header transport is the strong one: a 45s session and a credential that
+// never appears in a URL. The HttpGet path is kept as a fallback and is
+// deliberately the weaker of the two (15s, URL-borne), matching D5. Both are
+// recorded server-side, so the share of traffic on the weak path stays visible
+// instead of being silently averaged in.
+function luaSessionBootstrap(id, base, keyless) {
+    const KEYED = keyless ? 'false' : 'true';
+    return '--[[ ScripterHub session loader | ' + id + ' | no script material in this file ]]\n'
+        + '-- 1. set your license ONCE before running this loadstring:\n'
+        + '--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"\n'
+        + '-- 2. run the loadstring. Nothing else to do.\n'
+        + 'local ID=' + JSON.stringify(id) + '\n'
+        + 'local BASE=' + JSON.stringify(base) + '\n'
+        + 'local KEYED=' + KEYED + '\n'
+        + 'local G=(getgenv and getgenv()) or _G\n'
+        + 'local function NT(t,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",'
+        + '{Title="ScripterHub",Text=t,Duration=d or 5}) end) end\n'
+        + 'local function DIE(t) NT(t,7) print("[ScripterHub] "..t) end\n'
+        // ---- transport
+        //
+        // request() is preferred: it can set headers, and the header transport
+        // is the strong one (45s session, a credential that never reaches an
+        // access log). game:HttpGet is the fallback and is deliberately the
+        // weaker path, matching D5.
+        //
+        // The query is built ONCE and used by both, because /sh/session accepts
+        // GET as well as POST. That matters: the HttpGet fallback cannot POST,
+        // so a bootstrap that only ever spoke POST would silently fail on every
+        // executor without `request`. The server records which transport was
+        // used, so the weak path stays visible instead of being averaged in.
+        + 'local function QS(t) local o={} for k,v in pairs(t) do o[#o+1]=k.."="..tostring(v) end return table.concat(o,"&") end\n'
+        + 'local function GET(url)\n'
+        + ' if request then\n'
+        + '  local ok,r=pcall(function() return request({Url=url,Method="GET",'
+        + 'Headers={["X-SH-Transport"]="header"}}) end)\n'
+        + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
+        + ' end\n'
+        + ' if game and game.HttpGet then\n'
+        + '  local ok,r=pcall(function() return game:HttpGet(url,true) end)\n'
+        + '  if ok and type(r)=="string" and r~="" then return r end\n'
+        + ' end\n'
+        + ' return nil\n'
         + 'end\n'
-        + 'if #CI==0 then return end\n'
-        + 'local B=table.concat(CI)\n'
-        // ---- identical crypto to luaBootstrap ----
-        + 'local function BX(a,b) a=a%4294967296 b=b%4294967296 local r,p=0.0,1.0 for _=1,32 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end\n'
-        + 'local function SD(k,idx) local h=5381.0+idx*7 for i=1,#k do local c=string.byte(k,i) h=(h*33+c)%4294967296 end return h end\n'
-        + 'local function NX(s) local x=s[1] x=BX(x,(x*8192)%4294967296) x=BX(x,math.floor(x/131072)) x=BX(x,(x*32)%4294967296) s[1]=s[2] s[2]=s[3] s[3]=s[4] s[4]=x return x end\n'
-        + 'local function DEC(k) local a=SD(k,0) if a==0 then a=1 end local b=SD(k,1) if b==0 then b=2 end local c=SD(k,2) if c==0 then c=3 end local d=SD(k,3) if d==0 then d=4 end local s={a,b,c,d} local o={} for i=1,#B do local x=NX(s) o[i]=string.char(BX(string.byte(B,i),x%256)) end local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end\n'
-        + 'local NT=function(t2,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text=t2,Duration=d or 5}) end) end\n'
-        + 'local LS=loadstring or load\n'
-        + 'local G=(getgenv and getgenv()) or _G\n'
-        + (keyed ? (
-            'local K=G and G.ScripterHubKey\n'
-            + 'if type(K)~="string" or #K==0 then\n'
-            + ' NT("Special Key required! Set getgenv().ScripterHubKey and re-execute.",7)\n'
-            + ' print("[ScripterHub] Special Key required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute this loadstring.")\n'
-            + ' return\n'
-            + 'end\n'
-            + 'local src=DEC(K)\n'
-            + 'if not src then NT("Wrong Special Key!") print("[ScripterHub] Wrong Special Key.") return end\n'
-        ) : (
-            // keyless: the stitched blob IS the obfuscated executor code
-            'local src=B\n'
-        ))
-        + 'local fn=LS(src)\n'
-        + 'if not fn then NT("Load failed - re-execute or contact the script owner.") return end\n'
-        + 'pcall(function() fn() end)\n';
-}
-
-function luaBootstrap(id, cipherB64) {
-    // base64 ciphertext -> escaped \ddd lua string literals (chunked)
-    const bin = atob(String(cipherB64 || ''));
-    let lit = '';
-    const CH = 4000;
-    for (let i = 0; i < bin.length; i += CH) {
-        let seg = '';
-        for (let j = i; j < Math.min(i + CH, bin.length); j++) seg += '\\' + bin.charCodeAt(j);
-        lit += (i === 0 ? '' : '\n..') + '"' + seg + '"';
-    }
-    if (bin.length === 0) lit = '""';
-    return '--[[ ScripterHub protected loader | ' + id + ' | encrypted with your Special Key ]]\n'
-        + '-- Set the key BEFORE executing: getgenv().ScripterHubKey = "YOUR_KEY"\n'
-        + '-- (no popup - the key is read only from getgenv().ScripterHubKey)\n'
-        + 'local B=' + lit + '\n'
-        // 5.1/Luau/5.3-safe 32-bit xor — float math (0.0 seeds) so 32-bit
-        // integer builds never wrap negative; exact in doubles everywhere
-        + 'local function BX(a,b) a=a%4294967296 b=b%4294967296 local r,p=0.0,1.0 for _=1,32 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end\n'
-        // djb2-style seed: h=(5381.0+idx*7); h=(h*33+byte)%2^32 (float, exact)
-        + 'local function SD(k,idx) local h=5381.0+idx*7 for i=1,#k do local c=string.byte(k,i) h=(h*33+c)%4294967296 end return h end\n'
-        // xorshift128 step (only *8192, /131072, *32 + BX - double & 5.1 safe)
-        + 'local function NX(s) local x=s[1] x=BX(x,(x*8192)%4294967296) x=BX(x,math.floor(x/131072)) x=BX(x,(x*32)%4294967296) s[1]=s[2] s[2]=s[3] s[3]=s[4] s[4]=x return x end\n'
-        // decrypt: seeds from the key, xor keystream, check "SHOK" magic
-        + 'local function DEC(k) local a=SD(k,0) if a==0 then a=1 end local b=SD(k,1) if b==0 then b=2 end local c=SD(k,2) if c==0 then c=3 end local d=SD(k,3) if d==0 then d=4 end local s={a,b,c,d} local o={} for i=1,#B do local x=NX(s) o[i]=string.char(BX(string.byte(B,i),x%256)) end local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end\n'
-        + 'local NT=function(t2,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text=t2,Duration=d or 5}) end) end\n'
-        + 'local LS=loadstring or load\n'
-        // key comes ONLY from getgenv - no popup GUI ships in the payload
-        + 'local G=(getgenv and getgenv()) or _G\n'
+        + 'local function CALL(path,q)\n'
+        + ' local u=BASE..path..(q and ("?"..q) or "")\n'
+        + ' if request then\n'
+        + '  local ok,r=pcall(function() return request({Url=u,Method="POST",'
+        + 'Headers={["Content-Type"]="application/json",["X-SH-Transport"]="header"}}) end)\n'
+        + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
+        + ' end\n'
+        + ' return GET(u)\n'
+        + 'end\n'
+        // ---- 1. license + hardware fingerprint
         + 'local K=G and G.ScripterHubKey\n'
-        + 'if type(K)~="string" or #K==0 then\n'
-        + ' NT("Special Key required! Set getgenv().ScripterHubKey and re-execute.",7)\n'
-        + ' print("[ScripterHub] Special Key required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute this loadstring.")\n'
+        + 'local HW=(G and G.ScripterHubHwid) or (identifyexecutor and (pcall(identifyexecutor) and identifyexecutor())) or "?"\n'
+        + 'if KEYED and (type(K)~="string" or K=="") then\n'
+        + ' DIE("License required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute.")\n'
         + ' return\n'
         + 'end\n'
-        + 'local src=DEC(K)\n'
-        + 'if not src then NT("Wrong Special Key!") print("[ScripterHub] Wrong Special Key.") return end\n'
-        + 'local fn=LS(src)\n'
-        + 'if not fn then NT("Wrong Special Key!") return end\n'
+        // ---- 2. mint a session. proof, not payload.
+        + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW)}))\n'
+        + 'if type(resp)~="string" then DIE("Could not reach the license server.") return end\n'
+        + 'if resp:sub(1,7)=="SHERR " then DIE("Denied: "..resp:sub(7):gsub("%s+$","")) return end\n'
+        + 'local S,N=resp:match("^SHS (%S+) (%S+) %S+")\n'
+        + 'if not S or not N then DIE("Bad response from the license server.") return end\n'
+        // ---- 3. spend it. one shot, this is where the bytes come from.
+        + 'local body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N)\n'
+        + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
+        + 'if body:sub(1,7)=="SHERR " then DIE("Denied: "..body:sub(7):gsub("%s+$","")) return end\n'
+        // ---- 4. assemble the payload
+        + 'local SK, B\n'
+        + 'if body:sub(1,4)=="SHL\\n" then\n'
+        + '  B=body:sub(5)                      -- keyless: the obfuscated code\n'
+        + 'elseif body:sub(1,4)=="SHK\\n" then\n'
+        + '  local nl=body:find("\\n",5)\n'
+        + '  local rest=body:sub(nl+1)\n'
+        + '  local second=rest:find("\\n")\n'
+        + '  SK=rest:sub(1,second-1)           -- "t0 chk k1 k2 k3..."\n'
+        + '  B=rest:sub(second+1)              -- the ciphertext\n'
+        + 'elseif body:sub(1,4)=="SHG " then\n'
+        + '  local n,root,g=body:match("^SHG (%d+) (%S+) (%S+)")\n'
+        + '  local nl=body:find("\\n")\n'
+        + '  local rel=body:sub(nl+1)\n'
+        + '  local s2=rel:find("\\n")\n'
+        + '  if s2 then SK=rel:sub(1,s2-1) end\n'
+        + '  if not n or not g then DIE("Bad chain header.") return end\n'
+        + '  local P={}\n'
+        + '  for i=0,tonumber(n)-1 do\n'
+        + '   local u=root.."/"..i.."?g="..g.."&s="..S\n'
+        + '   local ok,part=pcall(function() return game:HttpGet(u,true) end)\n'
+        + '   if not ok or type(part)~="string" or #part==0 then DIE("Part "..i.." failed.") return end\n'
+        + '   P[#P+1]=part\n'
+        + '  end\n'
+        + '  B=table.concat(P)\n'
+        + 'else\n'
+        + '  DIE("Unrecognised delivery format.") return\n'
+        + 'end\n'
+        // ---- 5. decrypt locally with the Special Key (unchanged cipher)
+        + 'local function BX(a,b) a=a%4294967296 b=b%4294967296 local r,p=0.0,1.0 for _=1,32 do '
+        + 'local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end\n'
+        + 'local function SD(k,i) local h=5381.0+i*7 for j=1,#k do local c=string.byte(k,j) '
+        + 'h=(h*33+c)%4294967296 end return h end\n'
+        + 'local function NX(s) local x=s[1] x=BX(x,(x*8192)%4294967296) x=BX(x,math.floor(x/131072)) '
+        + 'x=BX(x,(x*32)%4294967296) s[1]=s[2] s[2]=s[3] s[3]=s[4] s[4]=x return x end\n'
+        + 'local function DEC(k) local a,b,c,d=SD(k,0),SD(k,1),SD(k,2),SD(k,3)\n'
+        + ' if a==0 then a=1 end if b==0 then b=2 end if c==0 then c=3 end if d==0 then d=4 end\n'
+        + ' local s={a,b,c,d} local o={} for i=1,#B do local x=NX(s) o[i]=string.char(BX(string.byte(B,i),x%256)) end\n'
+        + ' local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end\n'
+        + 'local src=B\n'
+        + 'if KEYED then\n'
+        + ' if type(SK)~="string" or SK=="" then DIE("Missing key material.") return end\n'
+        + ' -- SK carries "t0 chk k1 k2 ...". The obfuscated file verifies the\n'
+        + ' -- time pad and the check value itself, so a tampered delivery\n'
+        + ' -- decrypts to garbage and fails the SHOK magic rather than running.\n'
+        + ' src=DEC(K)\n'
+        + ' if not src then DIE("Wrong Special Key, or the delivery was tampered with.") return end\n'
+        + 'end\n'
+        + 'local LS=loadstring or load\n'
+        + 'local fn=LS and LS(src)\n'
+        + 'if not fn then DIE("Load failed - re-execute or contact the script owner.") return end\n'
         + 'pcall(function() fn() end)\n';
 }

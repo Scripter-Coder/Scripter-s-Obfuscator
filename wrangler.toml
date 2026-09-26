@@ -71,9 +71,29 @@
 #       the secret store and never in KV, so a stolen database dump alone does
 #       not allow offline cracking. 32+ random bytes, same command as above.
 #
+# TELEMETRY (optional, but you want it):
+#   wrangler secret put SH_DISCORD_WEBHOOK
+#       Your Discord log webhook. METADATA ONLY — there is no code path that can
+#       put source, a license key, a Special Key or artifact bytes into it (the
+#       event builder takes a fixed allowlist and refuses anything else; gate
+#       G15 pins this).
+#
+#       This is the variable people report as "the webhook doesn't work". Two
+#       reasons it looks broken, both now diagnosable:
+#         1. It used to swallow every error (`catch (e) {}`), so a revoked URL,
+#            a typo and a 429 all looked identical: silence. As of Phase 3 the
+#            worker logs `telemetry webhook returned HTTP <status>` or
+#            `telemetry webhook unreachable` to the worker log. Run
+#            `wrangler tail` and trigger one event (publish a script) to see
+#            which one you have.
+#         2. Discord invalidates old webhook URLs on some channels. Re-copy it
+#            from Server Settings -> Integrations -> Webhooks.
+#       It can equally be set as a plain TEXT variable in the dashboard
+#       (Settings -> Variables and Secrets). Text is arguably better here: a
+#       Secret is redacted in the UI, which makes a typo invisible.
+#
 # Optional:
 #   wrangler secret put SH_ARTIFACT_KEK      (Phase 4: at-rest encryption)
-#   wrangler secret put SH_DISCORD_WEBHOOK   (telemetry only; see notifyTelemetry)
 #   wrangler secret put SH_GH_REPO / SH_GH_TOKEN  (Storage Keeper)
 #
 # NOTE ON password migration: existing accounts hold legacy btoa() records.
@@ -122,8 +142,25 @@ database_name = "scripterhub"
 # OBSERVABILITY
 # -----------------------------------------------------------------------------
 # Phase 5. Off until the audit-log writer lands, then flip to true.
+# -----------------------------------------------------------------------------
+# OBSERVABILITY — TURN THIS ON
+# -----------------------------------------------------------------------------
+# Phase 3 turned this on deliberately, and it is the only way to find out why
+# the telemetry webhook is not delivering.
+#
+# Every non-2xx from the webhook now produces a console.error, and console.error
+# is invisible without logs. So with this off, "the webhook doesn't work" is
+# undiagnosable by construction: the worker knows and tells nobody.
+#
+#   wrangler tail                 # live, no config change needed
+#   dashboard: Observability -> enabled
+#
+# Cost: worker logs retain metadata (script ids, hashed license refs, IPs,
+# User-Agents, reasons). They never contain source, keys or artifacts, because
+# the audit_log table and the telemetry allowlist have no column or field that
+# could hold one. That is a property of the shape, not of discipline.
 [observability]
-enabled = false
+enabled = true
 
 # -----------------------------------------------------------------------------
 # HARDENING DEFAULTS
@@ -132,10 +169,24 @@ enabled = false
 [placement]
 mode = "smart"
 
-# No public artifact route may ever be cached by an edge node. This is a
-# backstop against a future regression, not the primary control: the primary
-# control is that unauthenticated requests get no artifact at all.
+# NOTE ON THESE THREE
+#
+# They are documentation, not configuration. The session TTLs live in
+# server/delivery.js (SESSION_TTL_MS / URL_SESSION_TTL_MS) next to the code that
+# enforces them, and the 60s ceiling is ALSO a database trigger, so it cannot be
+# raised from here even if someone edits this file. They are repeated as vars so
+# the intended numbers are visible in one place.
+#
+# Set them ONLY if you know why you are changing them. Raising SH_SESSION_TTL_MS
+# to anything large is a direct reduction in security: a session is worth
+# exactly one artifact, and the value of a captured one is its remaining life.
 [vars]
 SH_DELIVERY_REQUIRE_AUTH = "1"        # Phase 3: refuse artifact without session
 SH_URL_TOKEN_TTL_SECONDS = "15"       # the weaker HttpGet fallback path
 SH_SESSION_TTL_SECONDS = "45"         # primary request() path
+
+# Your telemetry webhook. Set this HERE or in the dashboard — the dashboard is
+# usually easier, and a Text variable keeps the value visible so a typo is
+# obvious. See the SH_DISCORD_WEBHOOK notes near the top of this file for the
+# three failure modes and how to tell them apart.
+# SH_DISCORD_WEBHOOK = "https://discord.com/api/webhooks/…/…"

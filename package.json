@@ -18,6 +18,8 @@
     "test:hardening": "node hardening.test.mjs",
     "test:inline-multiret": "node tools/inline_multiret_differential_test.mjs",
     "test:gates": "node tools/security_gates_test.mjs",
+    "test:atomic": "node tools/atomic_state_test.mjs",
+    "test:delivery": "node tools/atomic_state_test.mjs && node tools/security_gates_test.mjs",
     "test:ownerproof": "node tools/ownerproof_removed_test.mjs",
     "test:legacy-migration": "node tools/legacy_password_migration_test.mjs",
     "test:atomic": "node tools/atomic_state_test.mjs",

@@ -201,7 +201,7 @@ console.log('[A7] an explicitly revoked session is refused...');
 }
 
 // ---------------------------------------------------------------------------
-console.log('[A8] a nonce is consumed exactly once, by DELETE ... RETURNING...');
+console.log('[A8] a nonce is consumed exactly once, by a conditional UPDATE...');
 {
     const db = freshDb();
     const now = await seed(db);
@@ -214,9 +214,48 @@ console.log('[A8] a nonce is consumed exactly once, by DELETE ... RETURNING...')
     const second = await st.consumeNonce(s.nonce, now + 10);
     if (!second.ok) ok('the same nonce cannot be claimed twice'); else bad('nonce replay', 'the nonce was accepted twice');
 
+    // The row must still be there, marked. The table is the audit trail (D4),
+    // so spending a nonce has to leave the evidence behind; a DELETE would be
+    // equally atomic but would erase the only record that it was ever used.
+    const row = db.prepare('SELECT consumed_at, session_id FROM nonces WHERE nonce = ?').get(s.nonce);
+    if (row) {
+        ok('a spent nonce row is RETAINED and marked, not deleted');
+        if (row.consumed_at === null) bad('nonce mark', 'the retained row is not marked consumed');
+    } else {
+        bad('nonce audit trail', 'the nonce row was deleted on consumption, so the audit trail is gone');
+    }
+
+    // NO EXPIRY PREDICATE ON THE NONCE, DELIBERATELY.
+    //
+    // This used to read:
+    //     DELETE FROM nonces WHERE nonce = ? AND expires_at > ? RETURNING ...
+    // and the assertion below was that an expired nonce is refused. That
+    // assertion was WRONG in effect, because refusing to spend an expired
+    // nonce means leaving it unspent — so a (session, nonce) pair presented
+    // after its TTL leaves a fully unconsumed nonce in the table, and any later
+    // attempt whose clock reads slightly earlier finds a live pair. An expired
+    // credential that can be revived is not expired.
+    //
+    // The TTL is enforced where it belongs, on the session's expires_at in
+    // consumeSession(). Spending the nonce unconditionally means a presented
+    // pair is dead either way, which is the only safe failure direction.
     const expired = await st.createSession({ scriptId: SID, userId: 'u1', now, ttlMs: 1000 });
     const late = await st.consumeNonce(expired.nonce, now + 5000);
-    if (!late.ok) ok('an expired nonce cannot be claimed'); else bad('nonce expiry', 'an expired nonce was accepted');
+    if (late.ok) {
+        ok('an expired pair is BURNED on presentation rather than left unspent');
+        const after = await st.consumeNonce(expired.nonce, now + 10);   // clock rewound
+        if (!after.ok) ok('and it stays dead even if the clock reads earlier afterwards');
+        else bad('nonce revival', 'a burned nonce was claimable again after the clock was rewound');
+        // the session itself must still refuse: that is where the TTL lives.
+        // Checked PAST its expiry (ttlMs was 1000), not at `now + 10` — the
+        // point is that burning the nonce authorises nothing, which is only
+        // meaningful at a time the session is genuinely dead.
+        const sres = await st.consumeSession(expired.sid, now + 5000);
+        if (!sres.ok) ok('the SESSION still enforces the TTL, so nothing is authorised by burning the nonce');
+        else bad('ttl', 'an expired session was authorised');
+    } else {
+        ok('an expired nonce cannot be claimed');
+    }
 }
 
 // ---------------------------------------------------------------------------

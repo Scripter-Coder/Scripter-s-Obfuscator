@@ -1,7 +1,16 @@
 // Worker test harness: exercises the Cloudflare worker logic in Node with a
-// mocked KV binding. Covers the keyless webKey flow (Issue 1), plan changes
-// via ownerProof (Issue 3), user sync, and the browser/executor UA split.
+// mocked KV binding. Covers the keyless webKey flow, plan changes, user sync,
+// and the browser/executor UA split.
+//
+// PHASE 3: the delivery tests below were rewritten, because the behaviour they
+// asserted no longer exists — on purpose. They used to check that an executor
+// User-Agent received the artifact directly and that a browser received a page
+// with the ciphertext embedded in it. Both were the holes (G01, G02, G03). The
+// rewrite asserts the new contract: the public loader carries NO artifact to
+// anyone, and the bytes appear only after a real session is spent.
 import assert from 'assert';
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 
 // ---- mock KV ----
@@ -15,13 +24,31 @@ function makeKV() {
     };
 }
 
+// A real D1 (D1 IS SQLite, and d1_state.js normalises the two calling
+// conventions). Without it the delivery gate refuses everything, so these
+// tests would be measuring the absence of a database rather than the delivery
+// contract.
+function makeD1() {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(fs.readFileSync(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
+    return db;
+}
+
 // ---- import the worker (it reads globals at import time; atob/btoa/crypto/
 // Response/Request/URL/FormData all exist in Node 18+) ----
 const workerSrc = await import('./For Cloudflare/worker.js');
 const worker = workerSrc.default;
 
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
+const env = {
+    LOADERS_KV: KV,
+    SH_SETUP_TOKEN: 'TESTTOKEN123',
+    SH_BASE_URL: 'https://test.workers.dev',
+    SH_OWNER_CODE_HASH: OWNER_CODE_HASH,
+    SH_SESSION_SECRET: 'test-only-session-secret',
+    SH_DB: makeD1()
+};
 
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
@@ -50,11 +77,39 @@ async function j(method, path, body, ua, extraHeaders) {
 const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 
 // ============ TESTS ============
+// helper: the honest delivery path. Mint a session, then spend it.
+//
+// `lic` matters: decision D1 says a KEYLESS script still requires an account,
+// so an anonymous keyless mint is refused with `SHERR hidden` and this helper
+// would appear to fail for the right reason at the wrong moment. Licensed
+// delivery is the real product path anyway, so that is what is exercised.
+async function authorizedFetch(id, ua, lic) {
+    const m = await call('POST', '/sh/session', { id, k: lic || 'TESTLIC', h: 'HW' }, ua || EXECUTOR_UA);
+    const text = await m.text();
+    const parsed = text.trim().split(/\s+/);
+    if (parsed[0] !== 'SHS') return { status: m.status, text };
+    const [, sid, nonce] = parsed;
+    const r = await call('GET', `/sh/a/${id}?s=${sid}&n=${nonce}`, null, ua || EXECUTOR_UA);
+    return { status: r.status, text: await r.text() };
+}
+
+// Seed a license through the product's own endpoint (which mirrors it into the
+// table the gate reads), so these tests never bypass the sync path.
+async function seedLicense(key, rec) {
+    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    return j('POST', '/sh/licenses', {
+        token: login.token,
+        licenses: { [key]: Object.assign({ hwid: 'HW', expiresAt: 0, banned: false }, rec || {}) }
+    });
+}
+
 console.log('[W1] health endpoint...');
 {
     const d = await j('GET', '/sh/health');
     assert.strictEqual(d.ok, true);
     assert.strictEqual(d.loaders, true);
+    assert.strictEqual(d.stateLayer, true, 'D1 is bound, so the state layer must report healthy');
+    assert.ok(!/REFUSING/.test(String(d.delivery)), 'delivery must not report an outage: ' + d.delivery);
     console.log('    OK');
 }
 
@@ -92,33 +147,55 @@ let KEYLESS_ID = '';
     console.log('    OK: executor blob + encrypted web view stored');
 }
 
-console.log('[W4] keyless loader: EXECUTOR UA gets the plain blob (no key)...');
+// PHASE 3 REWRITE. Was: "EXECUTOR UA gets the plain blob (no key)".
+// That WAS the hole: a User-Agent is a string a scraper types, so the artifact
+// went to anyone who asked. The loader now returns a protocol bootstrap that
+// contains no script material at all, and the bytes only come from the gate.
+console.log('[W4] keyless loader: EXECUTOR UA gets a bootstrap with NO artifact...');
 {
     const r = await call('GET', '/sh/' + KEYLESS_ID, null, EXECUTOR_UA);
     const text = await r.text();
     assert.strictEqual(r.status, 200);
-    assert.strictEqual(text, '-- obfuscated executor blob (fake)');
-    console.log('    OK: executor gets the code directly');
+    assert.ok(text.includes('ScripterHub session loader'), 'must be the session bootstrap');
+    assert.ok(!text.includes('-- obfuscated executor blob (fake)'),
+        'the executor blob must NOT be in the loader response');
+    // the bootstrap is the SAME protocol script for every artifact, so it must
+    // not grow with the payload
+    assert.ok(text.length < 12000, 'the bootstrap must stay small, got ' + text.length);
+    console.log('    OK: loader is artifact-free for executors too');
 }
 
-console.log('[W5] keyless loader: BROWSER gets the KEY PAGE (webKey cipher)...');
+// PHASE 3 REWRITE. Was: "BROWSER gets the KEY PAGE (webKey cipher)".
+// The old page embedded the ciphertext plus a working decryptor, so a browser
+// visitor could read the script by typing the Special Key. There is nothing to
+// decrypt now: the page is metadata only. This is a real feature removal.
+console.log('[W5] keyless loader: BROWSER gets a metadata page with no cipher...');
 {
     const r = await call('GET', '/sh/' + KEYLESS_ID, null, BROWSER_UA);
     const text = await r.text();
     assert.strictEqual(r.status, 200);
-    assert.ok(text.includes('Special Key Required'), 'browser must get the key page');
-    assert.ok(text.includes('U0hPS0Zha2VDaXBoZXI='), 'key page embeds the web cipher');
+    assert.ok(!text.includes('U0hPS0Zha2VDaXBoZXI='), 'the web cipher must NOT be embedded');
     assert.ok(!text.includes('-- obfuscated executor blob'), 'browser must NOT see the executor blob');
-    console.log('    OK: browser needs the Special Key (Issue 1 fixed)');
+    assert.ok(!/function dec\(/.test(text), 'the page must not ship a decryptor');
+    assert.ok(text.includes(KEYLESS_ID), 'the page should still identify the script');
+    console.log('    OK: browser sees metadata only');
 }
 
-console.log('[W6] keyless legacy (plainCode only, no cipher): browser -> Method Not Allowed...');
+// PHASE 3 REWRITE. Was: "legacy keyless -> 405 for browsers".
+// There is no longer a "legacy" distinction: every script gets the same
+// metadata page, because the page never contained anything worth hiding. What
+// is asserted here is that the page is identical in shape for a script that
+// has no web cipher, i.e. the response does not vary with what is stored.
+console.log('[W6] keyless with no cipher: browser still gets the same metadata page...');
 {
     const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const d = await j('POST', '/sh/upload', { token: login.token, name: 'OldFree', user: 't', keyless: true, plainCode: '-- legacy blob' });
     const r = await call('GET', '/sh/' + d.id, null, BROWSER_UA);
-    assert.strictEqual(r.status, 405);
-    console.log('    OK: legacy keyless stays hidden from browsers');
+    const text = await r.text();
+    assert.strictEqual(r.status, 200);
+    assert.ok(!text.includes('-- legacy blob'), 'the blob must not appear');
+    assert.ok(text.includes(d.id), 'the page should identify the script');
+    console.log('    OK: no artifact for a script with no web cipher either');
 }
 
 console.log('[W7] user signup + cross-device login...');
@@ -211,46 +288,82 @@ console.log('[W12] non-owner user-sync cannot change own plan...');
     console.log('    OK: plan stays owner-controlled');
 }
 
-console.log('[W13] SPLIT-KEY: upload stores the padded key, /sh/k serves it (executor only)...');
+// PHASE 3 REWRITE. Was: "/sh/k with a matching t0 serves the key to executors".
+// t0 alone is not a credential — it is a constant baked into the shipped file
+// and therefore known to anyone holding the file, which is exactly the
+// client-forgeable token the audit flagged as G09. /sh/k now additionally
+// requires a server-issued (sid, nonce) pair, and spends it.
+console.log('[W13] SPLIT-KEY: /sh/k needs a live session, not just the baked t0...');
+const SPLIT_ID = 'ScripterHub0000000042';
 {
     const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const t0 = Date.now();
     const padded = [12, 34, 56, 78, 90, 123, 45, 67];
-    let up;
-    try {
-        up = await j('POST', '/sh/upload', {
-            token: login.token,
-            name: 'SplitTest', user: 'tester',
-            keyless: true, plainCode: '-- obf blob',
-            cipher: 'U0hPS0Zha2U=', keyHash: 'cafe',
-            wantId: 'ScripterHub0000000042',
-            splitKey: { paddedKey: padded, t0: t0, chk: 777 }
-        });
-    } catch (e) { throw e; }
+    const up = await j('POST', '/sh/upload', {
+        token: login.token,
+        name: 'SplitTest', user: 'tester',
+        cipher: 'U0hPS0Zha2U=', keyHash: 'cafe',
+        authRequired: true,
+        wantId: SPLIT_ID,
+        splitKey: { paddedKey: padded, t0: t0, chk: 777 }
+    });
     assert.strictEqual(up.ok, true, JSON.stringify(up));
-    assert.strictEqual(up.id, 'ScripterHub0000000042', 'worker must honor the pre-generated wantId');
-    // executor gets the key with the right t0
-    const r = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, EXECUTOR_UA);
+    assert.strictEqual(up.id, SPLIT_ID, 'worker must honor the pre-generated wantId');
+    const lic = await seedLicense('TESTLIC');
+    assert.strictEqual(lic.ok, true, 'license seed failed: ' + JSON.stringify(lic));
+
+    // t0 alone must NOT release the key any more
+    const noSess = await call('GET', `/sh/k/${SPLIT_ID}?t=${t0}`, null, EXECUTOR_UA);
+    assert.strictEqual(noSess.status, 405, 'a matching t0 with no session must be refused');
+
+    // mint, then present the real pair
+    const m = await call('POST', '/sh/session', { id: SPLIT_ID, k: 'TESTLIC', h: 'HW' }, EXECUTOR_UA);
+    const mtext = (await m.text()).trim().split(/\s+/);
+    assert.strictEqual(mtext[0], 'SHS', 'expected a session, got: ' + mtext.join(' '));
+    const r = await call('GET', `/sh/k/${SPLIT_ID}?t=${t0}&s=${mtext[1]}&n=${mtext[2]}`, null, EXECUTOR_UA);
     const text = await r.text();
     assert.strictEqual(r.status, 200);
     assert.ok(text.startsWith('SHK ' + t0 + ' 777 '), 'key response format');
     assert.ok(text.includes(padded.join(' ')), 'padded bytes present');
+
+    // and the pair is single-use: the same s/n a second time must fail
+    const again = await call('GET', `/sh/k/${SPLIT_ID}?t=${t0}&s=${mtext[1]}&n=${mtext[2]}`, null, EXECUTOR_UA);
+    assert.strictEqual(again.status, 405, 'a session must not release the key twice');
+
     // browser gets NOTHING
-    const rb = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, BROWSER_UA);
+    const m2 = await call('POST', '/sh/session', { id: SPLIT_ID, k: 'TESTLIC', h: 'HW' }, EXECUTOR_UA);
+    const p2 = (await m2.text()).trim().split(/\s+/);
+    const rb = await call('GET', `/sh/k/${SPLIT_ID}?t=${t0}&s=${p2[1]}&n=${p2[2]}`, null, BROWSER_UA);
     assert.strictEqual(rb.status, 405, 'browsers must not fetch split keys');
-    // wrong t0 gets NOTHING (replay protection)
-    const rw = await call('GET', '/sh/k/ScripterHub0000000042?t=' + (t0 + 1), null, EXECUTOR_UA);
+
+    // wrong t0 gets NOTHING
+    const m3 = await call('POST', '/sh/session', { id: SPLIT_ID, k: 'TESTLIC', h: 'HW' }, EXECUTOR_UA);
+    const p3 = (await m3.text()).trim().split(/\s+/);
+    const rw = await call('GET', `/sh/k/${SPLIT_ID}?t=${t0 + 1}&s=${p3[1]}&n=${p3[2]}`, null, EXECUTOR_UA);
     assert.strictEqual(rw.status, 405, 'wrong t0 must be rejected');
-    console.log('    OK: split key served to executors only, exact-t0 enforced');
+    console.log('    OK: split key needs a spent-once session, exact-t0 enforced, executor only');
 }
 
-console.log('[W14] SPLIT-KEY: loader route + key route work together (free script)...');
+// PHASE 3 REWRITE. Was: "free script blob still served to executors".
+// The artifact now only comes from the gate, and only after a session is spent.
+console.log('[W14] SPLIT-KEY: the loader + the gate work together...');
 {
-    // executor fetches the script blob then the key
-    const r = await call('GET', '/sh/ScripterHub0000000042', null, EXECUTOR_UA);
-    const text = await r.text();
-    assert.strictEqual(text, '-- obf blob');
-    console.log('    OK: free script blob still served to executors');
+    const boot = await call('GET', '/sh/' + SPLIT_ID, null, EXECUTOR_UA);
+    const bootText = await boot.text();
+    assert.ok(bootText.includes('ScripterHub session loader'), 'loader must be the bootstrap');
+    assert.ok(!bootText.includes('U0hPS0Zha2U='), 'the loader must not carry the artifact');
+
+    // and the gate delivers it on the honest path, key line and all
+    const got = await authorizedFetch(SPLIT_ID, EXECUTOR_UA, 'TESTLIC');
+    assert.strictEqual(got.status, 200, 'gate must deliver: ' + got.text.slice(0, 120));
+    assert.ok(got.text.startsWith('SHK\n'), 'a keyed delivery carries the key line first');
+    assert.ok(got.text.includes('U0hPS0Zha2U='), 'the gated delivery must contain the artifact');
+
+    // and a second attempt with a fresh session is a NEW authorized delivery,
+    // which is correct: a session is one fetch, not a permanent ban.
+    const again = await authorizedFetch(SPLIT_ID, EXECUTOR_UA, 'TESTLIC');
+    assert.strictEqual(again.status, 200, 'a fresh session must still be able to fetch');
+    console.log('    OK: artifact arrives only through the gate');
 }
 
 console.log('\nALL WORKER TESTS PASSED');

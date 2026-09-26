@@ -241,9 +241,15 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         if (keyless) {
             // free script: executor blob (plainCode, no key needed in-game)
             // + browser view (cipher, Special Key required on the website)
-            payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+            // `visibility` is sent so the worker's D1 mirror is correct from
+            // the first publish. Before Phase 3 it existed only in this
+            // browser's localStorage, so a "Private" script's loader URL was
+            // byte-identical to an "Anyone" one's and the server had no policy
+            // to enforce. Anything unrecognised falls back to 'anyone'
+            // server-side, so a malformed value can never over-restrict.
+            payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
         } else {
-            payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '' };
+            payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
             // requireAuth (Luarmor model): the split key is only served
             // after a valid license key + HWID auth against /sh/auth
             if (requireAuth) payload.authRequired = true;
@@ -4800,6 +4806,54 @@ function openScriptSettings(projectId, scriptId) {
     document.body.appendChild(overlay);
 }
 
+// Map the dashboard's 3-value visibility onto the server's 3-value model.
+//
+// 'friends' has no server equivalent — there is no friends graph on the worker
+// to authorise against — so it degrades to 'account', which is the honest
+// meaning of "not everyone": some account is required. Defaulting to 'anyone'
+// instead would silently turn a restricted script into an unrestricted one,
+// which is the exact failure this whole change exists to stop.
+function shServerVisibility() {
+    var v = document.getElementById('scriptVisibility');
+    var raw = v ? v.value : (document.getElementById('editScriptVisibility') ? document.getElementById('editScriptVisibility').value : 'anyone');
+    if (raw === 'private') return 'private';
+    if (raw === 'friends') return 'account';
+    return 'anyone';
+}
+
+// The published loader id for a dashboard script, or '' if it has never been
+// published.
+//
+// Shape-checked against /sh/(ScripterHub\d{10})$ because that is the only
+// thing the worker will accept, and a stale value from an older schema (the
+// old default project still carries 'ScripterHubOfficial_...') must be treated
+// as "not published" rather than sent to the API and rejected.
+function shLoaderIdFor(projectId, scriptId) {
+    var projects = loadProjects();
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id !== projectId) continue;
+        if (!projects[i].scripts) return '';
+        for (var j = 0; j < projects[i].scripts.length; j++) {
+            if (projects[i].scripts[j].id === scriptId) {
+                var id = projects[i].scripts[j].loaderId || '';
+                return /^ScripterHub\d{10}$/.test(id) ? id : '';
+            }
+        }
+    }
+    return '';
+}
+
+// PHASE 3: visibility is now SERVER-SIDE state, not a localStorage label.
+//
+// It used to be written here and nowhere else, so the worker never heard about
+// it and "Private" produced a loader URL identical to "Anyone" — the setting
+// was decoration. The delivery gate consults scripts.visibility (KV meta + D1),
+// so a change has to reach the worker or it does not exist.
+//
+// The local copy is still written, so the UI renders correctly offline and on
+// the next load, but it is a CACHE of the server's answer rather than the
+// source of truth. A failure here is surfaced rather than swallowed, because a
+// silently-failed visibility change is exactly the bug this fixes.
 function updateScriptVisibility(projectId, scriptId) {
     var visibility = document.getElementById('scriptVisibility').value;
     var projects = loadProjects();
@@ -4819,8 +4873,41 @@ function updateScriptVisibility(projectId, scriptId) {
     saveProjects(projects);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    showNotification('Success', 'Visibility updated!', 'success');
-    renderProjects();
+
+    // push to the worker. The map from the dashboard's 3-value model to the
+    // server's 3-value model is 1:1; 'friends' is not a server concept (there
+    // is no friends graph to authorise against) so it degrades to 'account',
+    // which is the honest meaning: some account required.
+    var serverVisibility = visibility === 'private' ? 'private'
+        : (visibility === 'friends' ? 'account' : 'anyone');
+    var loaderId = shLoaderIdFor(projectId, scriptId);
+    if (!loaderId) {
+        showNotification('Visibility', 'Saved locally, but this script has no published loader yet.', 'warning');
+        renderProjects();
+        return;
+    }
+    // Prefer the USER session token (normal users have no owner access code);
+    // fall back to the owner token. Mirrors shUploadLoader's own auth order.
+    var payload = { id: loaderId, visibility: serverVisibility };
+    payload.userToken = shGetUserToken();
+    if (!payload.userToken) payload.token = shOwnerToken();
+    fetch(SH_STATS_ENDPOINT + 'sh/visibility', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    }).then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
+      .then(function (res) {
+          if (res.d && res.d.ok) {
+              showNotification('Success', 'Visibility updated on the server.', 'success');
+          } else {
+              showNotification('Visibility',
+                  'Saved in this browser only. The server refused: ' + ((res.d && res.d.error) || ('HTTP ' + res.status)),
+                  'error');
+          }
+          renderProjects();
+      }).catch(function (e) {
+          showNotification('Visibility', 'Could not reach the server: ' + e.message, 'error');
+      });
 }
 
 // ============ AUTO-LOGIN CHECK ============

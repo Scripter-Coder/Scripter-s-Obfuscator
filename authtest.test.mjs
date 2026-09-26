@@ -11,6 +11,8 @@
 //     static peel still fails, and the runtime auth sequence in Lua
 //     produces a correct signed fetch chain
 import assert from 'assert';
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 import luaparse from 'luaparse';
 import fengari from 'fengari';
@@ -34,7 +36,23 @@ function makeKV() {
 const workerSrc = await import('./For Cloudflare/worker.js');
 const worker = workerSrc.default;
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH };
+// PHASE 3: a real D1. The delivery gate is fail-closed without one, so without
+// this the /sh/k cases below would pass by refusing everything rather than by
+// gating anything. D1 IS SQLite; d1_state.js normalises the calling convention.
+function makeD1() {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(fs.readFileSync(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
+    return db;
+}
+const env = {
+    LOADERS_KV: KV,
+    SH_SETUP_TOKEN: 'TESTTOKEN123',
+    SH_BASE_URL: 'https://test.workers.dev',
+    SH_OWNER_CODE_HASH: OWNER_CODE_HASH,
+    SH_SESSION_SECRET: 'test-only-session-secret',
+    SH_DB: makeD1()
+};
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 
@@ -55,21 +73,24 @@ async function j(method, path, body, ua) {
 const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 
 // helper: owner login + upload an auth-required script (returns id + t0)
-async function uploadAuthScript(name) {
+// `wantId` is optional so a test can create a second script without clobbering
+// the first one's split key.
+async function uploadAuthScript(name, wantId) {
     const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
     const t0 = Date.now();
     const padded = [11, 22, 33, 44, 55, 66, 77, 88];
+    const id = wantId || 'ScripterHub0000000099';
     const up = await j('POST', '/sh/upload', {
         token: login.token, name: name, user: 'tester',
         cipher: 'U0hPS0Zha2U=', keyHash: 'cafe',
-        wantId: 'ScripterHub0000000099',
+        wantId: id,
         authRequired: true,
         splitKey: { paddedKey: padded, t0: t0, chk: 4242 }
     });
     assert.strictEqual(up.ok, true, JSON.stringify(up));
-    const meta = JSON.parse(KV._store.get('sh_meta_ScripterHub0000000099'));
+    const meta = JSON.parse(KV._store.get('sh_meta_' + id));
     assert.strictEqual(meta.authRequired, true, 'meta must record authRequired');
-    return { id: 'ScripterHub0000000099', t0: t0, padded };
+    return { id: id, t0: t0, padded };
 }
 
 console.log('[A1] owner syncs licenses (2 keys) to the worker...');
@@ -141,23 +162,42 @@ console.log('[A4] browsers cannot hit /sh/auth at all...');
     console.log('    OK: browsers get 405');
 }
 
-console.log('[A5] /sh/k serves the split key ONLY with a valid token...');
+// PHASE 3 REWRITE. The credential is no longer the client-computable
+// HMAC(key|hwid|t0) token — every input to that expression is known to anyone
+// holding the license key, so it was a checksum, not proof (gate G09). /sh/k
+// now requires a server-issued (sid, nonce) pair, and spends it.
+console.log('[A5] /sh/k serves the split key ONLY with a live, unspent session...');
 {
-    // no token -> refused
+    // no credential -> refused
     const rNone = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0, null, EXECUTOR_UA);
     assert.strictEqual(rNone.status, 405, 'auth-required script must refuse tokenless key fetch');
-    // wrong token -> refused
-    const rBad = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0 + '&a=deadbeefdeadbeefdeadbeefdeadbeef&k=VALIDKEY-AAAA&h=my-hwid-1', null, EXECUTOR_UA);
-    assert.strictEqual(rBad.status, 405, 'forged token must be refused');
-    // valid token + matching key/hwid -> served
-    const rOk = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0 + '&a=' + TOKEN + '&k=VALIDKEY-AAAA&h=my-hwid-1', null, EXECUTOR_UA);
+
+    // the OLD token, correctly formed, must now be worthless
+    const rBad = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0 + '&a=' + TOKEN + '&k=VALIDKEY-AAAA&h=my-hwid-1', null, EXECUTOR_UA);
+    assert.strictEqual(rBad.status, 405, 'a client-computed token must be refused');
+
+    // a real session -> served
+    const m = await call('POST', '/sh/session', { id: script.id, k: 'VALIDKEY-AAAA', h: 'my-hwid-1' }, EXECUTOR_UA);
+    const p = (await m.text()).trim().split(/\s+/);
+    assert.strictEqual(p[0], 'SHS', 'expected a session, got: ' + p.join(' '));
+    const rOk = await call('GET', `/sh/k/${script.id}?t=${script.t0}&s=${p[1]}&n=${p[2]}`, null, EXECUTOR_UA);
     assert.strictEqual(rOk.status, 200);
     const text = await rOk.text();
     assert.ok(text.startsWith('SHK ' + script.t0 + ' 4242 '), 'key bytes served');
-    // token bound to a different hwid -> refused
-    const rHw = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0 + '&a=' + TOKEN + '&k=VALIDKEY-AAAA&h=someone-else', null, EXECUTOR_UA);
-    assert.strictEqual(rHw.status, 405, 'token is hwid-bound');
-    console.log('    OK: split key is token-gated + hwid-bound');
+
+    // single-use: the same pair a second time is refused
+    const rReplay = await call('GET', `/sh/k/${script.id}?t=${script.t0}&s=${p[1]}&n=${p[2]}`, null, EXECUTOR_UA);
+    assert.strictEqual(rReplay.status, 405, 'a session must not release the key twice');
+
+    // a session is bound to ONE script and one t0: mint for script B, then ask
+    // script A for its key with script B's session. The t0 check must refuse.
+    const other = await uploadAuthScript('AuthScript2', 'ScripterHub0000000077');
+    const m2 = await call('POST', '/sh/session', { id: other.id, k: 'VALIDKEY-AAAA', h: 'my-hwid-1' }, EXECUTOR_UA);
+    const q = (await m2.text()).trim().split(/\s+/);
+    assert.strictEqual(q[0], 'SHS', 'second script must mint its own session');
+    const crossed = await call('GET', `/sh/k/${other.id}?t=${script.t0}&s=${q[1]}&n=${q[2]}`, null, EXECUTOR_UA);
+    assert.strictEqual(crossed.status, 405, "another script's t0 must be refused");
+    console.log('    OK: split key is session-gated, single-use, and t0-bound');
 }
 
 console.log('[A6] kill-switch fails every auth instantly...');
@@ -205,9 +245,20 @@ console.log('[A8] keyless (non-auth) scripts keep the legacy split-key behavior.
     assert.strictEqual(up.ok, true);
     const meta = JSON.parse(KV._store.get('sh_meta_ScripterHub0000000042'));
     assert.strictEqual(meta.authRequired, undefined, 'keyless scripts never require auth');
-    const r = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, EXECUTOR_UA);
-    assert.strictEqual(r.status, 200, 'keyless split key still served with t0 only');
-    console.log('    OK: keyless flow unchanged');
+    // PHASE 3: a matching t0 with NO session must be refused, exactly like the
+    // auth-required case. "Keyless" means no LICENSE, not no session — the
+    // split key is still the thing that decrypts the artifact, so it is still
+    // behind the gate. Serving it on t0 alone was the same hole as G01 wearing
+    // a different hat.
+    const rNoSess = await call('GET', '/sh/k/ScripterHub0000000042?t=' + t0, null, EXECUTOR_UA);
+    assert.strictEqual(rNoSess.status, 405, 'keyless split key must also require a session');
+    // and with a session it is served
+    const m = await call('POST', '/sh/session', { id: 'ScripterHub0000000042', k: 'VALIDKEY-AAAA', h: 'my-hwid-1' }, EXECUTOR_UA);
+    const p = (await m.text()).trim().split(/\s+/);
+    assert.strictEqual(p[0], 'SHS', 'keyless script with a license must mint: ' + p.join(' '));
+    const r = await call('GET', `/sh/k/ScripterHub0000000042?t=${t0}&s=${p[1]}&n=${p[2]}`, null, EXECUTOR_UA);
+    assert.strictEqual(r.status, 200, 'keyless split key is served once a session exists');
+    console.log('    OK: keyless means "no license", not "no gate"');
 }
 
 console.log('[A9] the obfuscated AUTH file: valid Lua, no key material, auth URL baked...');

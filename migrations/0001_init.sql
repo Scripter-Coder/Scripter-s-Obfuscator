@@ -77,9 +77,31 @@ CREATE INDEX IF NOT EXISTS idx_scripts_owner ON scripts(owner_id);
 -- Replaces the `sh_licenses` KV map. `revoked_at` is separate from the flag so
 -- revocation has a timestamp for the audit log and for "when did this stop
 -- working" questions.
+--
+-- ON script_id, AND WHY IT IS NOT A FOREIGN KEY
+--
+-- The obvious shape is `script_id TEXT NOT NULL REFERENCES scripts(id)`, and
+-- that is what the first version of this schema had. It does not fit the data.
+-- In the dashboard a license is created against a project script whose id is
+-- an internal value like "script_1737000000000", or against the literal "all"
+-- meaning "valid for every script this owner publishes". Neither is a
+-- `ScripterHub##########` loader id, so the FK could not be satisfied and the
+-- whole mirror silently dropped every real license — the gate then had no row
+-- to check and refused all licensed deliveries.
+--
+-- So this column is INFORMATIONAL: it records which dashboard script the
+-- license was created for, and it is deliberately nullable with no FK and no
+-- ON DELETE CASCADE. Deleting a dashboard script must not delete a license
+-- that people are still paying for.
+--
+-- The license -> loader binding that the gate actually needs is not stored
+-- here at all. It is `sessions.script_id`, recorded at mint time on the one row
+-- that is genuinely about a delivery. consumeSession() checks the license by
+-- key alone, which is correct: a license is a credential, not a property of
+-- one script.
 CREATE TABLE IF NOT EXISTS licenses (
     key         TEXT PRIMARY KEY,
-    script_id   TEXT NOT NULL,
+    script_id   TEXT,                        -- informational, NOT a FK (see above)
     owner_id    TEXT NOT NULL,
     hwid        TEXT,                        -- NULL until first successful auth
     expires_at  INTEGER,                     -- NULL = never
@@ -87,9 +109,7 @@ CREATE TABLE IF NOT EXISTS licenses (
     revoke_reason TEXT,
     executions  INTEGER NOT NULL DEFAULT 0,
     last_auth_at INTEGER,
-    created_at  INTEGER NOT NULL,
-    FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE CASCADE,
-    FOREIGN KEY (owner_id)  REFERENCES users(id)   ON DELETE CASCADE
+    created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_licenses_script ON licenses(script_id);
 CREATE INDEX IF NOT EXISTS idx_licenses_owner  ON licenses(owner_id);
@@ -132,11 +152,46 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at   INTEGER NOT NULL,          -- 30-60s, CHECK-enforced below
     consumed_at  INTEGER,                   -- set exactly once
     revoked      INTEGER NOT NULL DEFAULT 0,
+    -- ---- multi-part delivery (Phase 3) ----
+    -- A session is ONE delivery, which is the right shape for the normal case:
+    -- one atomic validate-and-consume returns the whole artifact. But an
+    -- artifact can be ~10GB (Storage Keeper GitHub parts), which no single
+    -- Worker response can carry, so that path needs a request sequence.
+    --
+    -- The reconciliation is a FORWARD-ONLY CHAIN, not a reusable grant. A
+    -- bearer token that unlocks all N parts until it expires is a session with
+    -- extra steps: whoever captures it walks the whole artifact.
+    --
+    -- So the session row carries the cursor instead, and each part is one
+    -- atomic forward step (see advancePart in server/d1_state.js):
+    --
+    --     UPDATE sessions SET parts_served = parts_served + 1
+    --      WHERE sid = ? AND parts_served = ? AND parts_total = ?
+    --        AND consumed_at IS NOT NULL AND grant_expires_at > ?
+    --
+    -- `parts_served = ?` must EQUAL the index being requested, so a captured
+    -- part-7 request succeeds once and never again, and a caller cannot skip
+    -- ahead. "Which part is next" and "this part is now served" are the same
+    -- comparison in the same statement, so there is no window between them.
+    --
+    -- What this does NOT buy, stated plainly: a legitimate client still
+    -- receives every byte, and someone watching an authorized run can
+    -- reconstruct the artifact. The chain makes a capture non-replayable and
+    -- non-resumable and leaves a per-part audit trail. It is a work-factor and
+    -- blast-radius reduction, not a proof.
+    parts_total     INTEGER NOT NULL DEFAULT 0,
+    parts_served    INTEGER NOT NULL DEFAULT 0,
+    grant_expires_at INTEGER,               -- set when a chain is opened
     ip           TEXT,
     ua           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_script ON sessions(script_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry  ON sessions(expires_at);
+-- Partial: only ever holds the few rows currently mid-delivery, not every
+-- session ever minted.
+CREATE INDEX IF NOT EXISTS idx_sessions_grant
+    ON sessions(grant_expires_at)
+    WHERE grant_expires_at IS NOT NULL;
 
 -- A session that outlives its stated TTL is a bug, not a tuning choice.
 -- This makes an accidental "expires_at = now + 86400" impossible to merge.
@@ -157,10 +212,23 @@ END;
 -- `sessions` so that "one artifact per session" and "one use per nonce" are
 -- two independent constraints rather than one overloaded flag.
 --
--- Consumption is a single atomic statement; only one concurrent caller can
--- ever receive the returned row:
+-- Consumption is a single conditional UPDATE, so a concurrent second caller
+-- matches zero rows and success is changes()===1:
 --
---   DELETE FROM nonces WHERE nonce = ? AND expires_at > ? RETURNING session_id
+--   UPDATE nonces SET consumed_at = ?
+--    WHERE nonce = ? AND consumed_at IS NULL
+--  RETURNING session_id, script_id
+--
+-- UPDATE and not DELETE, deliberately: this table is the audit trail (D4), so
+-- spending a nonce must leave the evidence behind. A DELETE is equally atomic
+-- and was the first implementation, but it made "was this nonce ever spent,
+-- and when?" unanswerable after the fact.
+--
+-- Note there is deliberately NO expires_at predicate on the consumption. The
+-- session's own expires_at enforces the TTL; spending the nonce
+-- unconditionally means that once a (session, nonce) pair has been presented
+-- it is dead, so a stale or clock-skewed retry cannot find a live pair. An
+-- expired credential that can be revived is not expired.
 CREATE TABLE IF NOT EXISTS nonces (
     nonce       TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL,

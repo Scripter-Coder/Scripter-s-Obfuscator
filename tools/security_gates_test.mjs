@@ -28,8 +28,13 @@
 // regression in a `pass` gate, or if a gate is malformed.
 // =============================================================================
 
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+
 const workerSrc = await import('../For Cloudflare/worker.js');
 const worker = workerSrc.default;
+
+const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
 
 // ---------------------------------------------------------------------------
 // harness
@@ -44,14 +49,42 @@ function makeKV() {
   };
 }
 
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 0.0; Win64; x64) Chrome/120';
+// A REAL D1, not a mock.
+//
+// Phase 3 made the delivery gate refuse everything when the state layer is
+// absent, which is the honest behaviour, but it also means a gate harness with
+// no database would report EVERY delivery property as "closed" for the wrong
+// reason: the routes would be refusing because D1 is missing, not because
+// sessions are single-use.
+//
+// That is exactly the failure mode this file was written to prevent, so the
+// harness supplies a real one. D1 *is* SQLite and server/d1_state.js already
+// normalises the two calling conventions, so a DatabaseSync is a faithful
+// stand-in and the SQL under test is the SQL that will run in production.
+function makeD1() {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(SCHEMA);
+  return db;
+}
+
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 // An attacker picks this string. It costs nothing and is not a secret.
 const SPOOFED_UA = 'Roblox/570 Delta Executor';
 const ID = 'ScripterHub1234567890';
 const ID2 = 'ScripterHub0987654321';
 
-function makeEnv() {
-  return { LOADERS_KV: makeKV(), SH_SETUP_TOKEN: 'SETUPTOK', SH_BASE_URL: 'https://audit.workers.dev' };
+function makeEnv(opts = {}) {
+  const env = {
+    LOADERS_KV: makeKV(),
+    SH_SETUP_TOKEN: 'SETUPTOK',
+    SH_BASE_URL: 'https://audit.workers.dev',
+    SH_SESSION_SECRET: 'a-real-server-only-secret-for-gates'
+  };
+  // opt out for the one gate that specifically asserts the missing-D1
+  // behaviour, so every other gate is measuring what it claims to measure.
+  if (!opts.noD1) env.SH_DB = makeD1();
+  return env;
 }
 
 async function call(env, method, path, body, ua, headers) {
@@ -75,6 +108,57 @@ function seedScript(env, id, opts = {}) {
   env.LOADERS_KV._store.set('sh_skey_' + id, JSON.stringify({ paddedKey: [1, 2, 3], t0: 1700000000, chk: 424242 }));
 }
 
+// Mirror a license into KV (what the panel reads).
+function seedLicense(env, key, rec) {
+  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({ [key]: Object.assign({ key, scriptId: ID }, rec) }));
+}
+
+// The full honest path: mint a REAL session through /sh/session, then spend it
+// through the gate. Every delivery gate below goes through this rather than
+// fabricating a token, because a fabricated token is refused for the trivial
+// reason that it is fabricated — and a gate that asserts "the forged thing is
+// rejected" while never proving the REAL thing is accepted passes without
+// testing anything.
+//
+// Returns { sid, nonce, mint, deliver } or throws, so a broken setup reports as
+// a gate setup error rather than as a security pass.
+async function authorizedSession(env, opts = {}) {
+  const key = opts.key || 'LIC';
+  const id = opts.id || ID;
+  seedLicense(env, key, { hwid: 'HW', expiresAt: 0, banned: false, ...(opts.lic || {}) });
+  const mint = await call(env, 'POST', '/sh/session', { id, k: key, h: 'HW' }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.20' });
+  if (mint.status !== 200 || !/^SHS /.test(mint.body)) {
+    throw new Error('gate setup failed: could not mint a session (' + mint.status + ' ' + mint.body.slice(0, 80) + ')');
+  }
+  const [, sid, nonce] = mint.body.trim().split(/\s+/);
+  return { sid, nonce, key, id, mint };
+}
+
+// An owner token, via the real claim + login path.
+//
+// G05 and G06 need to apply a ban THROUGH THE PRODUCT, not by writing KV
+// directly. Writing KV by hand was the first version of those gates and it was
+// measuring the wrong thing: the worker's ban path is
+// `/sh/license-ban` -> saveLicenses() -> mirror to D1, and a test that skips
+// straight to KV never exercises any of it. It also silently "passed" for a
+// completely wrong reason — the D1 mirror never ran, so the gate was asserting
+// that a ban which had not been applied did not take effect.
+async function ownerToken(env) {
+  const claim = await call(env, 'POST', '/sh/owner-claim', { setupToken: 'SETUPTOK' });
+  let c = null;
+  try { const d = JSON.parse(claim.body); if (d.ok && d.code) c = d.code; } catch (e) {}
+  need(c, 'gate setup failed: could not claim the owner code (' + claim.body.slice(0, 90) + ')');
+  const li = await call(env, 'POST', '/sh/login', { code: c });
+  need(/"ok":true/.test(li.body), 'gate setup failed: owner login failed (' + li.body.slice(0, 90) + ')');
+  return JSON.parse(li.body).token;
+}
+
+async function spend(env, s, ua) {
+  return get(env, `/sh/a/${s.id}?s=${s.sid}&n=${s.nonce}`, ua || SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.20' });
+}
+
 // Reproduce the worker's own token derivation, which is fully specified by
 // makeAuthToken: HMAC-SHA256 keyed by SHA-256("SHAUTH::"+key) over key|hwid|t0,
 // truncated to 32 hex chars. Everything in that expression is known to any
@@ -94,99 +178,302 @@ const gate = (id, name, status, fn) => GATES.push({ id, name, status, fn });
 // CORE DELIVERY
 // ===========================================================================
 
-gate('G01', 'Spoofed executor UA with no credential gets no artifact', 'xfail', async () => {
+// G01 REWRITTEN IN PHASE 3.
+//
+// The original asserted `status !== 200`, which encoded an assumption that has
+// changed: /sh/<id> now SERVES 200 on purpose, because it returns a bootstrap.
+// A gate that keeps asserting non-200 would have "passed" the moment the
+// bootstrap shipped, while the actual property it cares about — no artifact
+// bytes — was never checked.
+//
+// So the assertion is now about the ARTIFACT, not the status. It is also
+// strictly stronger than the original, because it inspects the bytes rather
+// than the envelope: a 200 that leaks the source would still fail this.
+gate('G01', 'Loader URL with no credential returns no artifact bytes', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
+  const secretB64 = env.LOADERS_KV._store.get('sh_loader_' + ID);
+  const secretPlain = Buffer.from(secretB64, 'base64').toString('utf8');
   const r = await get(env, '/sh/' + ID, SPOOFED_UA);
-  // Desired: refused. Today: 200 + the artifact embedded in the bootstrap.
-  if (r.status === 200) throw new Error(`delivered the artifact to an unauthenticated scraper (HTTP 200, ${r.body.length} bytes)`);
+
+  // 1. the artifact must not be present in any form
+  if (r.body.includes(secretB64)) throw new Error('the artifact cipher is in the /sh/<id> response');
+  if (r.body.includes(secretPlain)) throw new Error('the artifact plaintext is in the /sh/<id> response');
+  // 2. nor the split key that would decrypt it.
+  //
+  //    Checked by VALUE, not by the literal "SHK". The bootstrap legitimately
+  //    contains "SHK" as a wire-format marker — it has to, to know how to parse
+  //    a delivery — so matching the marker tests nothing. The padded key and
+  //    the check value are the actual secrets, and those are what is asserted
+  //    here. An earlier revision of this gate matched "SHK" and reported a
+  //    leak that did not exist.
+  const sk = JSON.parse(env.LOADERS_KV._store.get('sh_skey_' + ID));
+  if (r.body.includes(String(sk.chk))) throw new Error('the split-key check value is in the /sh/<id> response');
+  if (r.body.includes(String(sk.t0))) throw new Error('the split-key t0 is in the /sh/<id> response');
+  if (r.body.includes(sk.paddedKey.join(' '))) throw new Error('the padded key is in the /sh/<id> response');
+  // 3. and the response must be a fixed protocol script, not a payload in
+  //    disguise. The bootstrap is identical for every script except the id,
+  //    so it must be small and must not scale with the artifact.
+  if (r.body.length > 12000) {
+    throw new Error(`/sh/<id> returned ${r.body.length} bytes - too large to be a fixed bootstrap`);
+  }
+  // 4. the honest counter-check: the same script DOES deliver bytes once a
+  //    real session is spent. Without this the gate would pass simply by
+  //    serving nothing at all, forever, which is not a working product.
+  const s = await authorizedSession(env);
+  const ok = await spend(env, s);
+  need(ok.status === 200, 'gate setup failed: an authorized session did not deliver (' + ok.body.slice(0, 80) + ')');
+  // The stored artifact IS base64 (that is what an upload produces), so the
+  // delivery must contain the base64 form, not the decoded form.
+  if (!ok.body.includes(secretB64)) throw new Error('gate setup failed: the authorized delivery did not contain the artifact');
 });
 
-gate('G02', 'Keyless artifact is not served anonymously', 'xfail', async () => {
+gate('G02', 'Keyless artifact is not served anonymously', 'pass', async () => {
   const env = makeEnv();
   const secret = '-- OBFUSCATED FREE PAYLOAD';
   env.LOADERS_KV._store.set('sh_loader_' + ID2, secret);
   env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'u', keyless: true }));
-  const r = await get(env, '/sh/' + ID2, SPOOFED_UA);
-  if (r.body === secret) throw new Error('exact artifact bytes returned to an unauthenticated client');
+
+  // 1. the public loader must not carry it
+  const boot = await get(env, '/sh/' + ID2, SPOOFED_UA);
+  if (boot.body.includes(secret)) throw new Error('exact artifact bytes returned by the public loader');
+
+  // 2. and decision D1 must be enforced at the gate: keyless still needs an
+  //    identity. An anonymous mint must be refused, not served.
+  const anon = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.21' });
+  if (/^SHS /.test(anon.body)) {
+    throw new Error('an anonymous client minted a session for a keyless script (D1 violated)');
+  }
+  // 3. no unauthenticated delivery route exists that would hand it over
+  const direct = await get(env, `/sh/a/${ID2}?s=made-up&n=made-up`, SPOOFED_UA);
+  if (direct.status === 200 && direct.body.includes(secret)) {
+    throw new Error('the delivery gate served a keyless artifact to a fabricated session');
+  }
 });
 
-gate('G03', 'Browser key page embeds no artifact bytes', 'xfail', async () => {
+gate('G03', 'Browser loader page embeds no artifact bytes', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
   const cipher = env.LOADERS_KV._store.get('sh_loader_' + ID);
   const r = await get(env, '/sh/' + ID, BROWSER_UA);
   if (r.body.includes(cipher)) throw new Error('artifact cipher is embedded in the HTML page');
+  // The old page shipped a working JS decryptor. Its absence is the property.
+  if (/function dec\(/.test(r.body) || /atob\(/.test(r.body)) {
+    throw new Error('the HTML page still ships a decryptor - it can only do that if it has the cipher');
+  }
+  // and the page must not be a copy of the artifact with a wrapper
+  if (r.body.includes(Buffer.from(cipher, 'base64').toString('utf8'))) {
+    throw new Error('artifact plaintext is embedded in the HTML page');
+  }
 });
 
-gate('G10', 'private script + unauthorized request returns 403', 'xfail', async () => {
+// G10 REWRITTEN IN PHASE 3.
+//
+// `visibility` was a localStorage field, so "private" hid a script in the UI
+// while /sh/<id> served anyone who asked. The original gate sent a spoofed
+// EXECUTOR User-Agent, and the natural fix — 403 the bootstrap too — is wrong:
+// the bootstrap is artifact-free and identical for every script, so refusing it
+// protects nothing and breaks the owner.
+//
+// So visibility is asserted where it actually matters: the browser page (the
+// existence of the script is itself information) and the session mint (the
+// gate is where a private script must become unrunnable).
+gate('G10', 'private script: no browser page, no session for an outsider', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID, { meta: { visibility: 'private' } });
-  const r = await get(env, '/sh/' + ID, SPOOFED_UA);
-  if (r.status !== 403) throw new Error(`expected 403 for a private script, got HTTP ${r.status}`);
+
+  const page = await get(env, '/sh/' + ID, BROWSER_UA);
+  if (page.status !== 403) {
+    throw new Error(`a private script rendered a page to a browser (HTTP ${page.status})`);
+  }
+  if (page.body.includes(env.LOADERS_KV._store.get('sh_loader_' + ID))) {
+    throw new Error('the private script page embedded the artifact');
+  }
+
+  seedLicense(env, 'LIC', { hwid: 'HW', expiresAt: 0 });
+  const mint = await call(env, 'POST', '/sh/session', { id: ID, k: 'LIC', h: 'HW' }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.22' });
+  if (/^SHS /.test(mint.body)) {
+    throw new Error('an outsider with a valid license minted a session for a PRIVATE script');
+  }
+
+  // the property must be real, not "everything is broken": an ordinary script
+  // with the same license DOES mint, so this gate cannot pass by disabling
+  // delivery altogether.
+  const env2 = makeEnv();
+  seedScript(env2, ID2, { id: ID2, meta: { visibility: 'anyone' } });
+  seedLicense(env2, 'LIC', { hwid: 'HW', expiresAt: 0 });
+  const ok = await call(env2, 'POST', '/sh/session', { id: ID2, k: 'LIC', h: 'HW' }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.23' });
+  need(/^SHS /.test(ok.body), 'gate setup failed: a public script was refused too (' + ok.body.slice(0, 80) + ')');
 });
 
 // ===========================================================================
 // EXPIRY / REVOCATION / REPLAY  (enforced at DELIVERY, not just at /auth)
+//
+// ALL FIVE REWRITTEN IN PHASE 3, and the rewrite is the important part.
+//
+// The originals forged a token and asserted the server refused it. Under the
+// new design a forged token is refused for the trivial reason that it is
+// forged, so all five "passed" the moment Phase 3 landed — while proving
+// nothing about replay, expiry or revocation, which are properties of a REAL
+// session. A gate suite that reports nine closed holes when five of them were
+// never exercised is worse than no suite, because it ends the work.
+//
+// Each gate below mints a real session, proves the artifact DOES come back on
+// the honest path, and then asserts the specific property. The counter-check
+// in every one of them is what stops a gate passing by breaking delivery.
 // ===========================================================================
 
-gate('G05', 'Expired license gets no split key at /sh/k', 'xfail', async () => {
+// A license can be banned AFTER a session was minted, and the delivery must
+// still refuse. This is the difference between "checked at login" and
+// "checked at the door", and it is the specific hole the audit recorded.
+gate('G05', 'A license banned after minting gets no artifact at delivery', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({
-    LIC: { key: 'LIC', hwid: 'HW', expiresAt: Date.now() - 60000 }
-  }));
-  const tok = await forgeToken('LIC', 'HW', 1700000000);
-  const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
-  if (r.status === 200) throw new Error('expired license still received the split key at delivery time');
+  const s = await authorizedSession(env);
+
+  // The ban is applied THROUGH THE PRODUCT while the session is still live:
+  // /sh/license-ban -> saveLicenses() -> mirror into D1. That mirror is the
+  // thing under test, so bypassing it (as an earlier version of this gate did
+  // by writing KV directly) would assert nothing.
+  const tok = await ownerToken(env);
+  const ban = await call(env, 'POST', '/sh/license-ban',
+    { token: tok, key: s.key, banned: true, reason: 'banned mid-session' },
+    BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.27' });
+  need(/"ok":true/.test(ban.body), 'gate setup failed: the ban was not applied (' + ban.body.slice(0, 90) + ')');
+
+  // and the ban must actually be in the gate's table, not only in KV
+  const row = env.SH_DB.prepare('SELECT revoked_at FROM licenses WHERE key = ?').get(s.key);
+  need(row, 'gate setup failed: the license never reached the D1 table the gate reads');
+  if (row.revoked_at === null) {
+    throw new Error('the ban is in KV but not in D1 - the gate would still honour it');
+  }
+
+  const r = await spend(env, s);
+  if (r.status === 200 && r.body.includes('SHK')) {
+    throw new Error('a license banned AFTER minting still received the artifact');
+  }
+  // and the gate must still work for a good license, or this proves nothing
+  const env2 = makeEnv();
+  seedScript(env2, ID);
+  const s2 = await authorizedSession(env2);
+  const ok = await spend(env2, s2);
+  need(ok.status === 200, 'gate setup failed: a valid license was refused after the ban test');
 });
 
-gate('G06', 'Revoked (banned) license gets no split key at /sh/k', 'xfail', async () => {
+gate('G06', 'An expired license gets no artifact', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({
-    LIC: { key: 'LIC', hwid: 'HW', banned: true, banReason: 'banned', expiresAt: 0 }
-  }));
-  const tok = await forgeToken('LIC', 'HW', 1700000000);
-  const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
-  if (r.status === 200) throw new Error('banned license still received the split key at delivery time');
+  // expiry in the past, so the mint itself must already refuse
+  seedLicense(env, 'EXPIRED1', { hwid: 'HW', expiresAt: Date.now() - 60000 });
+  const mint = await call(env, 'POST', '/sh/session', { id: ID, k: 'EXPIRED1', h: 'HW' }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.24' });
+  if (/^SHS /.test(mint.body)) throw new Error('an expired license was allowed to mint a session');
+
+  // The stronger case: mint while VALID, then let it expire before delivery.
+  // Applied through the product's own sync path so the gate's table is what
+  // actually changes.
+  const s = await authorizedSession(env);
+  const tok = await ownerToken(env);
+  await call(env, 'POST', '/sh/licenses', {
+    token: tok,
+    licenses: { [s.key]: { hwid: 'HW', expiresAt: Date.now() - 1000, banned: false } }
+  }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.24' });
+  const row = env.SH_DB.prepare('SELECT expires_at FROM licenses WHERE key = ?').get(s.key);
+  need(row && row.expires_at !== null, 'gate setup failed: the expiry never reached the D1 table');
+  if (row.expires_at > Date.now()) {
+    throw new Error('the expiry is not in the past in the gate\'s table - the test would prove nothing');
+  }
+
+  const r = await spend(env, s);
+  if (r.status === 200 && r.body.includes('SHK')) {
+    throw new Error('a license that expired after minting still received the artifact');
+  }
+  const env2 = makeEnv();
+  seedScript(env2, ID);
+  const s2 = await authorizedSession(env2);
+  need((await spend(env2, s2)).status === 200, 'gate setup failed: a valid license was refused');
 });
 
-gate('G07', 'An auth token cannot be replayed', 'xfail', async () => {
+gate('G07', 'A session cannot be replayed', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({ LIC: { key: 'LIC', hwid: 'HW', expiresAt: 0 } }));
-  const tok = await forgeToken('LIC', 'HW', 1700000000);
-  const url = `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`;
-  const first = await get(env, url, SPOOFED_UA);
-  const second = await get(env, url, SPOOFED_UA);
-  if (first.status === 200 && second.status === 200) throw new Error('the same token was accepted twice — it is not one-time');
+  const s = await authorizedSession(env);
+
+  const first = await spend(env, s);
+  need(first.status === 200 && first.body.includes('SHK'),
+    'gate setup failed: the first (and only legitimate) delivery was refused (' + first.body.slice(0, 80) + ')');
+
+  // same sid, same nonce, any number of times
+  for (let i = 0; i < 3; i++) {
+    const again = await spend(env, s);
+    if (again.status === 200 && again.body.includes('SHK')) {
+      throw new Error('the same session was accepted a second time - it is not one-time');
+    }
+  }
+  // and a replayed NONCE with a different (fresh) session must not work either
+  const s2 = await authorizedSession(env, { key: 'LIC2' });
+  const crossed = await get(env, `/sh/a/${s2.id}?s=${s2.sid}&n=${s.nonce}`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.25' });
+  if (crossed.status === 200 && crossed.body.includes('SHK')) {
+    throw new Error("another session's nonce was accepted - the nonce is not bound to its session");
+  }
 });
 
-gate('G08', 'Auth token expires server-side (not just an advisory timestamp)', 'xfail', async () => {
+gate('G08', 'A session expires server-side, not just on an advisory timestamp', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({ LIC: { key: 'LIC', hwid: 'HW', expiresAt: 0 } }));
-  // The worker advertises AUTH_TOKEN_TTL_MS = 90s. Wait past it and present
-  // the same token again: a server-enforced TTL must now refuse.
-  const tok = await forgeToken('LIC', 'HW', 1700000000);
-  const url = `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`;
-  if ((await get(env, url, SPOOFED_UA)).status !== 200) return; // already closed
+  const s = await authorizedSession(env);
+
+  // The worker advertises a 45s session TTL (SHS carries the expiry, and the
+  // expiry is in the response as an ISO string a client can ignore). What
+  // matters is that the SERVER refuses past it.
   const realNow = Date.now;
   try {
-    Date.now = () => realNow() + 91 * 1000; // past the advertised 90s TTL
-    const later = await get(env, url, SPOOFED_UA);
-    if (later.status === 200) throw new Error('token still valid 91s after issue — TTL is advisory to the client, not enforced here');
+    Date.now = () => realNow() + 46 * 1000;   // past SESSION_TTL_MS
+    const late = await spend(env, s);
+    if (late.status === 200 && late.body.includes('SHK')) {
+      throw new Error('a session was still honoured 46s after issue - the TTL is advisory to the client, not enforced');
+    }
+    // and it must not be revivable by going back in time within the same
+    // process: the row is spent/expired in the database, not in a Map
+    Date.now = realNow;
+    const revive = await spend(env, s);
+    if (revive.status === 200 && revive.body.includes('SHK')) {
+      throw new Error('an expired session was accepted again once the clock was restored');
+    }
   } finally { Date.now = realNow; }
 });
 
-gate('G09', 'A self-forged token (from a valid key) is rejected', 'xfail', async () => {
+gate('G09', 'A token the client computed for itself is rejected', 'pass', async () => {
   const env = makeEnv();
   seedScript(env, ID);
-  env.LOADERS_KV._store.set('sh_licenses', JSON.stringify({ LIC: { key: 'LIC', hwid: 'HW', expiresAt: 0 } }));
-  const tok = await forgeToken('LIC', 'HW', 1700000000);
-  const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
-  if (r.status === 200) throw new Error('server accepted a token the client computed offline; the token is not proof of anything');
+  const s = await authorizedSession(env);
+
+  // The OLD credential: HMAC(key|hwid|t0) keyed by SHA-256("SHAUTH::"+key).
+  // Every input is known to anyone holding the key, so it could be computed
+  // with no server involvement at all. It must now be worthless.
+  const forged = await forgeToken(s.key, 'HW', 1700000000);
+  const viaLegacy = await get(env, `/sh/k/${s.id}?t=1700000000&a=${forged}&k=${s.key}&h=HW`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.26' });
+  if (viaLegacy.status === 200) {
+    throw new Error('the server accepted a credential the client computed offline - it is not proof of anything');
+  }
+
+  // The NEW credential must also not be derivable: guessing a sid/nonce pair
+  // that the server never issued must fail even with a valid license.
+  const guessed = await get(env, `/sh/a/${s.id}?s=sid_${'0'.repeat(48)}&n=n_${'0'.repeat(48)}`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.26' });
+  if (guessed.status === 200 && guessed.body.includes('SHK')) {
+    throw new Error('a fabricated session id + nonce was accepted');
+  }
+
+  // counter-check: the real one still works
+  const ok = await spend(env, s);
+  need(ok.status === 200 && ok.body.includes('SHK'),
+    'gate setup failed: the genuine session was refused - this gate would pass by breaking delivery');
 });
 
 // ===========================================================================
@@ -558,7 +845,10 @@ gate('G15', 'Webhook carries metadata only (no source, no license keys)', 'pass'
           : (typeof opts.body.text === 'function' ? await opts.body.text() : String(opts.body));
       }
       sent.push(body);
-      return new Response('{}', { status: 204 });
+      // 204 with a body is not a legal HTTP response and the runtime rejects
+      // it, which the new telemetry logging then reports as an unreachable
+      // webhook. A bare 204 is what Discord actually replies with.
+      return new Response(null, { status: 204 });
     }
     return realFetch(url, opts);
   };
@@ -583,16 +873,139 @@ gate('G15', 'Webhook carries metadata only (no source, no license keys)', 'pass'
 });
 
 // ===========================================================================
-// DEFERRED — need the D1 atomic layer (Phase 2/3) before these are testable
+// PHASE 3 — the atomic state layer
+//
+// These three were `deferred` because they needed D1. They are no longer
+// deferred, and the harness supplies a REAL SQLite database (see makeD1) so
+// they exercise the same SQL that runs in production rather than a mock.
 // ===========================================================================
+
+gate('G17', 'A nonce is consumed exactly once', 'pass', async () => {
+  const env = makeEnv();
+  seedScript(env, ID);
+  const s = await authorizedSession(env);
+
+  const first = await spend(env, s);
+  need(first.status === 200 && first.body.includes('SHK'),
+    'gate setup failed: the legitimate delivery was refused (' + first.body.slice(0, 80) + ')');
+
+  // Read the database directly rather than inferring from HTTP responses:
+  // this gate is about the row, and asserting only on responses would let a
+  // route that refuses for the wrong reason look like a correct one.
+  const row = env.SH_DB.prepare('SELECT consumed_at FROM nonces WHERE nonce = ?').get(s.nonce);
+  if (!row) throw new Error('the nonce row was deleted instead of marked - the audit trail is gone');
+  if (row.consumed_at === null) {
+    throw new Error('a spent nonce is still unspent in the database');
+  }
+
+  // and every replay is refused
+  for (let i = 0; i < 3; i++) {
+    const again = await spend(env, s);
+    if (again.status === 200 && again.body.includes('SHK')) throw new Error('a consumed nonce was accepted again');
+  }
+});
+
+gate('G18', 'Concurrent delivery with one valid nonce yields exactly one artifact', 'pass', async () => {
+  const env = makeEnv();
+  seedScript(env, ID);
+  const s = await authorizedSession(env);
+
+  // Fire N deliveries at once with the SAME (valid, unspent) session. The
+  // property under test is that the database serialises them and exactly one
+  // sees changes()===1.
+  //
+  // node:sqlite is synchronous, so the calls cannot interleave at the JS
+  // level — which is precisely the point. A read-then-write implementation
+  // would let every one of these read "unspent" first and then all of them
+  // would succeed. Here the guard lives in the WHERE clause, so the second
+  // caller simply matches zero rows regardless of scheduling.
+  const N = 25;
+  const results = await Promise.all(
+    Array.from({ length: N }, () => spend(env, s))
+  );
+  const delivered = results.filter(r => r.status === 200 && r.body.includes('SHK'));
+  if (delivered.length !== 1) {
+    throw new Error(`${N} concurrent deliveries with ONE nonce produced ${delivered.length} artifacts (expected exactly 1)`);
+  }
+  // exactly one row marked, no more
+  const spent = env.SH_DB.prepare('SELECT consumed_at FROM sessions WHERE sid = ?').get(s.sid);
+  if (!spent || spent.consumed_at === null) throw new Error('the session row was not marked consumed');
+});
+
+gate('G21', 'The gate refuses when the state layer is absent, rather than degrading', 'pass', async () => {
+  // THE MOST IMPORTANT NEGATIVE TEST IN THIS FILE.
+  //
+  // The obvious implementation of "handle a deployment without D1" is to fall
+  // back to the KV check. That fallback would restore every property Phase 3
+  // exists to remove - replay, expiry, ban-at-delivery, single-use - and would
+  // do it SILENTLY, with no error anywhere, while the operator believed the
+  // system was gated.
+  //
+  // So the required behaviour is a refusal, and this gate pins it. It is also
+  // the reason every other gate in this file supplies a database: without
+  // `noD1`, they would be measuring the absence of a database rather than the
+  // property they claim to test.
+  const env = makeEnv({ noD1: true });
+  seedScript(env, ID);
+
+  const mint = await call(env, 'POST', '/sh/session', { id: ID, k: 'LIC', h: 'HW' }, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.30' });
+  if (/^SHS /.test(mint.body)) {
+    throw new Error('a session was minted with NO state layer - the gate is not fail-closed');
+  }
+  // and no delivery route may serve bytes in that state
+  const del = await get(env, `/sh/a/${ID}?s=x&n=y`, SPOOFED_UA, { 'CF-Connecting-IP': '198.51.100.30' });
+  if (del.status === 200 && del.body.includes('SHK')) {
+    throw new Error('the delivery gate served the split key with NO state layer');
+  }
+  // /sh/health must make the outage visible rather than reporting healthy
+  const health = await get(env, '/sh/health', BROWSER_UA);
+  let h = null; try { h = JSON.parse(health.body); } catch (e) {}
+  need(h, 'gate setup failed: /sh/health did not return JSON');
+  if (h.delivery && !/REFUSING/.test(h.delivery)) {
+    throw new Error('/sh/health reports a healthy delivery path with no state layer: ' + h.delivery);
+  }
+});
+
+// The scenario the Phase 2 notes describe as "caught by F7 and fixed" — except
+// the predicate was never actually in the shipped statement, so nothing was
+// asserting it. A license is locked to hardware on first auth; re-locking it to
+// DIFFERENT hardware must invalidate sessions minted against the old one, or
+// the lock is advisory and a shared key stays shareable for as long as one old
+// session survives.
+gate('G22', 'Re-locking a license to other hardware kills the live session', 'pass', async () => {
+  const env = makeEnv();
+  seedScript(env, ID);
+  const s = await authorizedSession(env);          // minted against HW
+
+  // the key is re-locked to different hardware while the session is still live
+  const tok = await ownerToken(env);
+  const reset = await call(env, 'POST', '/sh/license-reset', { token: tok, key: s.key },
+    BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.28' });
+  need(/"ok":true/.test(reset.body), 'gate setup failed: the reset was refused (' + reset.body.slice(0, 90) + ')');
+  // now a different machine authenticates with the same key and re-locks it
+  await call(env, 'POST', '/sh/licenses', {
+    token: tok, licenses: { [s.key]: { hwid: 'OTHER-HW', expiresAt: 0, banned: false } }
+  }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.28' });
+  const row = env.SH_DB.prepare('SELECT hwid FROM licenses WHERE key = ?').get(s.key);
+  need(row && row.hwid === 'OTHER-HW',
+    'gate setup failed: the re-lock never reached the table the gate reads (got ' + (row && row.hwid) + ')');
+
+  // the session minted against HW must now be refused
+  const r = await spend(env, s);
+  if (r.status === 200 && r.body.includes('SHK')) {
+    throw new Error('a session minted against the OLD hardware still delivered after the key was re-locked');
+  }
+});
+
+// G16 stays deferred. Rotating a build invalidates the previous build's
+// credential, and the schema for it (build_versions) exists, but t0 is still
+// baked into the shipped file at build time and nothing increments a
+// generation on re-upload yet. That is Phase 4 work, and claiming it now
+// would be a gate that passes because the feature is absent rather than
+// working.
 gate('G16', 'Rotating a build invalidates the previous build\'s credential', 'deferred', async () => {
-  throw new Error('deferred: requires build_versions in D1 (Phase 2) + rotation (Phase 4)');
-});
-gate('G17', 'A nonce is consumed exactly once', 'deferred', async () => {
-  throw new Error('deferred: requires the nonces table (Phase 2)');
-});
-gate('G18', 'Concurrent delivery with one valid nonce yields exactly one artifact', 'deferred', async () => {
-  throw new Error('deferred: requires the atomic validate-and-consume path (Phase 3)');
+  throw new Error('deferred: build_versions exists but generation is not incremented on re-upload (Phase 4)');
 });
 
 // ===========================================================================

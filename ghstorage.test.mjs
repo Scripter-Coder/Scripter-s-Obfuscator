@@ -3,12 +3,19 @@
 // API (global fetch shim) captures the calls. Covers:
 //   - gh-put rejects non-owners + oversized parts
 //   - multi-part upload -> finalize registers the loader
-//   - /sh/<id> serves the parts bootstrap (both keyless + keyed)
-//   - /sh/g/<id>/<i> proxies parts to executors only
+//   - /sh/<id> is artifact-free; the GATE opens a chain
+//   - /sh/g/<id>/<i> proxies parts behind that chain, forward-only
 //   - the bootstrap stitches + (keyless) actually RUNS in Lua
 //   - gh-delete removes parts
 //   - gh-status summarizes usage
+//
+// PHASE 3: /sh/g used to be a bare proxy — any executor-looking User-Agent
+// could walk 0..N on a fixed path and reassemble a 30MB (or 10GB) artifact.
+// It is now behind the delivery gate's grant AND the forward-only cursor.
+// The tests drive that flow explicitly.
 import assert from 'assert';
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 import fengari from 'fengari';
 
@@ -68,9 +75,47 @@ function makeKV() {
     };
 }
 const KV = makeKV();
-const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'https://test.workers.dev', SH_OWNER_CODE_HASH: OWNER_CODE_HASH, SH_GH_TOKEN: 'ghp_test', SH_GH_REPO: GH_REPO };
+// A real D1: the part route is fail-closed without one, so without this every
+// case below would pass by refusing everything rather than by gating anything.
+function makeD1() {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(fs.readFileSync(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
+    return db;
+}
+const env = {
+    LOADERS_KV: KV,
+    SH_SETUP_TOKEN: 'TESTTOKEN123',
+    SH_BASE_URL: 'https://test.workers.dev',
+    SH_OWNER_CODE_HASH: OWNER_CODE_HASH,
+    SH_GH_TOKEN: 'ghp_test',
+    SH_GH_REPO: GH_REPO,
+    SH_SESSION_SECRET: 'test-only-session-secret',
+    SH_DB: makeD1()
+};
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
+const LIC = 'GHLIC';
+
+// Mint a session and open a chain — the only way to reach a part now.
+async function openChain(id) {
+    const m = await call('POST', '/sh/session', { id, k: LIC, h: 'HW' }, EXECUTOR_UA);
+    const p = (await m.text()).trim().split(/\s+/);
+    assert.strictEqual(p[0], 'SHS', 'expected a session for ' + id + ', got: ' + p.join(' '));
+    const r = await call('GET', `/sh/a/${id}?s=${p[1]}&n=${p[2]}`, null, EXECUTOR_UA);
+    const text = await r.text();
+    assert.ok(text.startsWith('SHG '), 'a multi-part artifact must open a chain, got: ' + text.slice(0, 80));
+    const [, n, root, grant] = text.slice(0, text.indexOf('\n')).split(' ');
+    return { sid: p[1], n: Number(n), root, grant };
+}
+
+async function seedLicense() {
+    const token = await login();
+    const d = await j('POST', '/sh/licenses', {
+        token, licenses: { [LIC]: { hwid: 'HW', expiresAt: 0, banned: false } }
+    });
+    assert.strictEqual(d.ok, true, 'license seed failed: ' + JSON.stringify(d));
+}
 
 async function call(method, path, body, ua) {
     const req = new Request('https://test.workers.dev' + path, {
@@ -141,14 +186,24 @@ console.log('[G3] finalize rejects missing parts...');
     console.log('    OK: no parts -> rejected');
 }
 
-console.log('[G4] /sh/<id> serves the Storage Keeper parts bootstrap...');
+// PHASE 3 REWRITE. Was: "/sh/<id> serves the parts bootstrap".
+// The loader is now artifact-free and identical for every script; the chain
+// root is decided by the GATE, not baked into the loader.
+console.log('[G4] /sh/<id> is artifact-free; the gate hands out the /sh/g chain...');
 {
+    await seedLicense();
     const r = await call('GET', '/sh/' + GH_ID, null, EXECUTOR_UA);
     const boot = await r.text();
-    assert.ok(boot.includes('/sh/g/' + GH_ID + '/'), 'bootstrap fetches /sh/g parts');
-    assert.ok(boot.includes('keyless'), 'keyless header present');
-    assert.ok(!boot.includes('AAAA'), 'raw part data NOT embedded');
-    // keyed version
+    assert.ok(boot.includes('ScripterHub session loader'), 'loader is the session bootstrap');
+    assert.ok(!boot.includes('AAA'), 'raw part data NOT embedded');
+    assert.ok(!boot.includes('/sh/g/' + GH_ID + '/'), 'the loader must not bake in a part route');
+
+    // the gate is what reveals the /sh/g root
+    const chain = await openChain(GH_ID);
+    assert.strictEqual(chain.n, 3, 'chain reports 3 parts');
+    assert.strictEqual(chain.root, '/sh/g/' + GH_ID, 'chain root is the GitHub proxy');
+
+    // keyed version: the loader must still ask for the Special Key
     const token = await login();
     const kid = 'ScripterHub0000000013';
     await j('POST', '/sh/gh-put', { token, id: kid, part: 0, content: 'K'.repeat(1024) });
@@ -156,46 +211,91 @@ console.log('[G4] /sh/<id> serves the Storage Keeper parts bootstrap...');
     const r2 = await call('GET', '/sh/' + kid, null, EXECUTOR_UA);
     const boot2 = await r2.text();
     assert.ok(boot2.includes('ScripterHubKey'), 'keyed bootstrap asks for the Special Key');
-    console.log('    OK: executor bootstraps for both modes');
+    console.log('    OK: loaders are artifact-free for both modes; the gate owns the route');
 }
 
-console.log('[G5] /sh/g proxies parts to executors only + exact reassembly...');
+// PHASE 3 REWRITE. Was: "/sh/g proxies parts to executors only".
+// An executor User-Agent is necessary but no longer sufficient: a grant from
+// the gate is required, and the chain is forward-only.
+console.log('[G5] /sh/g is chain-gated, forward-only, and reassembles exactly...');
 {
-    const r0 = await call('GET', '/sh/g/' + GH_ID + '/0', null, EXECUTOR_UA);
-    const r1r = await call('GET', '/sh/g/' + GH_ID + '/1', null, EXECUTOR_UA);
-    const r2r = await call('GET', '/sh/g/' + GH_ID + '/2', null, EXECUTOR_UA);
-    assert.strictEqual(r0.status, 200); assert.strictEqual(r1r.status, 200); assert.strictEqual(r2r.status, 200);
-    const stitched = (await r0.text()) + (await r1r.text()) + (await r2r.text());
+    // 1. the OLD attack: fixed path + executor UA, no grant. Must fail.
+    const scrape = await call('GET', '/sh/g/' + GH_ID + '/0', null, EXECUTOR_UA);
+    assert.strictEqual(scrape.status, 405, 'the proxy must NOT be open to a spoofed UA');
+
+    // 2. a real chain reassembles exactly, in order
+    const chain = await openChain(GH_ID);
+    const parts = [];
+    for (let i = 0; i < chain.n; i++) {
+        const rc = await call('GET', `${chain.root}/${i}?g=${chain.grant}&s=${chain.sid}`, null, EXECUTOR_UA);
+        assert.strictEqual(rc.status, 200, 'part ' + i + ' must be served');
+        parts.push(await rc.text());
+    }
+    const stitched = parts.join('');
     assert.strictEqual(stitched.length, 30 * 1024 * 1024, 'exact total length');
     assert.ok(stitched.startsWith('AAA') && stitched.endsWith('CCC'), 'order preserved');
-    // browsers + out-of-range + unknown -> 405
-    const rb = await call('GET', '/sh/g/' + GH_ID + '/0', null, BROWSER_UA);
+
+    // 3. forward-only: part 2 before part 0 must be refused
+    const c2 = await openChain(GH_ID);
+    const skip = await call('GET', `${c2.root}/2?g=${c2.grant}&s=${c2.sid}`, null, EXECUTOR_UA);
+    assert.strictEqual(skip.status, 405, 'a chain must not allow skipping ahead');
+    // and a served part is not replayable
+    const p0 = await call('GET', `${c2.root}/0?g=${c2.grant}&s=${c2.sid}`, null, EXECUTOR_UA);
+    assert.strictEqual(p0.status, 200);
+    const again = await call('GET', `${c2.root}/0?g=${c2.grant}&s=${c2.sid}`, null, EXECUTOR_UA);
+    assert.strictEqual(again.status, 405, 'a served part must not be replayable');
+
+    // 4. browsers + out-of-range + unknown -> 405
+    const c3 = await openChain(GH_ID);
+    const rb = await call('GET', `${c3.root}/0?g=${c3.grant}&s=${c3.sid}`, null, BROWSER_UA);
     assert.strictEqual(rb.status, 405, 'browsers blocked');
-    const ro = await call('GET', '/sh/g/' + GH_ID + '/9', null, EXECUTOR_UA);
+    const ro = await call('GET', `${c3.root}/9?g=${c3.grant}&s=${c3.sid}`, null, EXECUTOR_UA);
     assert.strictEqual(ro.status, 405, 'beyond part count blocked');
     const ru = await call('GET', '/sh/g/ScripterHub0000000099/0', null, EXECUTOR_UA);
     assert.strictEqual(ru.status, 405, 'unknown script blocked');
-    console.log('    OK: proxy locked to executors, parts reassemble exactly');
+    const forged = await call('GET', `${c3.root}/0?g=forged.grant&s=${c3.sid}`, null, EXECUTOR_UA);
+    assert.strictEqual(forged.status, 405, 'a forged grant is worthless');
+    console.log('    OK: proxy is grant-gated, forward-only, non-replayable, reassembles exactly');
 }
 
 console.log('[G6] the parts bootstrap RUNS in Lua (keyless stitch + execute)...');
 {
     const r = await call('GET', '/sh/' + GH_ID, null, EXECUTOR_UA);
     const boot = await r.text();
+    const chain = await openChain(GH_ID);
     const parts = [];
-    for (let i = 0; i < 3; i++) {
-        const rc = await call('GET', '/sh/g/' + GH_ID + '/' + i, null, EXECUTOR_UA);
+    for (let i = 0; i < chain.n; i++) {
+        const rc = await call('GET', `${chain.root}/${i}?g=${chain.grant}&s=${chain.sid}`, null, EXECUTOR_UA);
         parts.push(await rc.text());
     }
-    const tblLua = '{' + parts.map(p => JSON.stringify(p)).join(',') + '}';
+    const gateBody = 'SHG ' + chain.n + ' ' + chain.root + ' ' + chain.grant + '\n';
     const L = lauxlib.luaL_newstate();
     lualib.luaL_openlibs(L);
-    lauxlib.luaL_dostring(L, to_luastring('getgenv=function() return _G end'));
-    lauxlib.luaL_dostring(L, to_luastring('game={HttpGet=function(self,url) local i=tonumber(url:match("(%d+)$")) return _T[i+1] end,GetService=function() return {} end}'));
-    lauxlib.luaL_dostring(L, to_luastring('_T=' + tblLua));
+    lauxlib.luaL_dostring(L, to_luastring([
+        'getgenv = function() return _G end',
+        'loadstring = function(s) SH_RUN = s SH_LEN = #s return function() end end',
+        'game = { GetService = function() return { SetCore = function() end } end }',
+        'SH_SESS = ' + JSON.stringify('SHS sid_fake nonce_fake ' + (Date.now() + 45000)),
+        'SH_GATE = ' + JSON.stringify(gateBody),
+        'SH_PARTS = {' + parts.map(p => JSON.stringify(p)).join(',') + '}',
+        'request = function(o)',
+        '  if o.Url:find("/sh/session", 1, true) then return { Body = SH_SESS } end',
+        '  if o.Url:find("/sh/a/", 1, true) then return { Body = SH_GATE } end',
+        '  return { Body = "" }',
+        'end',
+        'game.HttpGet = function(self, u)',
+        '  local i = tonumber(u:match("/(%d+)%?"))',
+        '  if i then return SH_PARTS[i + 1] end',
+        '  return nil',
+        'end'
+    ].join('\n')));
     const st = lauxlib.luaL_dostring(L, to_luastring(boot));
     assert.strictEqual(st, lua.LUA_OK, 'bootstrap must run clean (30MB stitch!)');
-    console.log('    OK: 30MB stitched + executed in fengari');
+    lua.lua_getglobal(L, to_luastring('SH_LEN'));
+    const len = Number(lua.lua_tonumber(L, -1));
+    lua.lua_pop(L, 1);
+    assert.strictEqual(len, 30 * 1024 * 1024, 'the stitched payload must be the full artifact');
+    console.log('    OK: 30MB stitched + executed in fengari through the gated chain');
 }
 
 console.log('[G7] gh-delete removes parts + meta...');

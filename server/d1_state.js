@@ -99,6 +99,22 @@ function qOne(db, sql, ...params) {
     return r === undefined ? null : r;
 }
 
+// The same three, exported so callers OUTSIDE this module can use them.
+//
+// WHY THEY ARE EXPORTED RATHER THAN PRIVATE
+// The WHERE-clause discipline that makes the whole layer work applies to every
+// query in the system, not only to the ones that happen to live here. An
+// earlier revision had the worker call `db.prepare(sql).bind(...)` directly for
+// its own INSERT/UPDATE statements, and that silently does not work on
+// node:sqlite: `.bind` does not exist there, so params are never bound and
+// every column is written as NULL. It threw only once the tests happened to
+// assert on stored values.
+//
+// Exporting the helper is the fix that cannot regress the same way, because
+// there is now no way to write a parameterised statement in this codebase
+// without going through the engine-normalising path.
+export { q as run, qAll as all, qOne as one };
+
 export function createState(db) {
     if (!db) throw new Error('createState requires a D1 binding');
 
@@ -158,7 +174,22 @@ export function createState(db) {
                     SELECT 1 FROM licenses l
                      WHERE l.key = sessions.license_key
                        AND l.revoked_at IS NULL
-                       AND (l.expires_at IS NULL OR l.expires_at > ?)))
+                       AND (l.expires_at IS NULL OR l.expires_at > ?)
+                       -- THE HWID RE-LOCK PREDICATE.
+                       --
+                       -- A license is locked to hardware on first successful
+                       -- auth. If it is re-locked to DIFFERENT hardware while a
+                       -- session minted against the OLD hardware is still live,
+                       -- that session must stop working. Without this, the lock
+                       -- is only advisory and a shared key stays shareable for
+                       -- as long as one old session happens to survive.
+                       --
+                       -- This was genuinely missing: the Phase 2 commit notes
+                       -- describe it as caught and fixed by test F7, but the
+                       -- predicate was not in the statement that shipped. It
+                       -- is now asserted by G22 in
+                       -- tools/security_gates_test.mjs.
+                       AND (l.hwid IS NULL OR l.hwid = sessions.hwid)))
               AND (user_id IS NULL OR EXISTS (
                     SELECT 1 FROM users u
                      WHERE u.id = sessions.user_id
@@ -169,18 +200,37 @@ export function createState(db) {
 
     // Consume the nonce, and report which session it belonged to.
     //
-    // DELETE ... RETURNING is atomic: only one concurrent caller can receive
-    // the row. A caller that gets no row must refuse.
+    // ONE conditional UPDATE, not a read-then-write and not a DELETE.
     //
-    // Order matters at the call site: consume the NONCE first, then the
-    // SESSION. If the session is spent but the nonce check fails, the session
-    // is burned and the client must restart the flow — which is the correct
-    // failure direction, because it can never deliver an artifact twice.
+    // Why UPDATE rather than DELETE: the schema carries `consumed_at` on this
+    // table and D4 records the nonces table as an AUDIT TRAIL. A DELETE is
+    // also atomic, and it was the original implementation, but it destroys the
+    // evidence — after a replay attempt there was nothing left to look at, so
+    // "was this nonce ever spent, and when?" became unanswerable. The
+    // conditional UPDATE keeps the atomicity property (success is
+    // changes()===1, so a concurrent second caller matches zero rows) AND
+    // leaves the row for forensics.
+    //
+    // Why there is NO expiry predicate here, which is a deliberate change:
+    //
+    //   The first version was `DELETE ... WHERE nonce = ? AND expires_at > ?`.
+    //   That means a session presented after its TTL does not burn the nonce,
+    //   it leaves a fully unconsumed nonce sitting in the table. Any later
+    //   attempt with a clock reading slightly earlier — a client with a skewed
+    //   clock, a retry through a different edge, a captured response replayed
+    //   later — finds the pair still good and the session still live. An
+    //   expired credential that can be revived is not expired.
+    //
+    //   Spending the nonce unconditionally makes the failure direction safe:
+    //   once a pair has been presented it is dead, whether or not the attempt
+    //   succeeded. The session's own `expires_at` still enforces the TTL in
+    //   consumeSession, so nothing is authorised by this change — the only
+    //   difference is that the pair cannot come back to life.
     async function consumeNonce(nonce, now) {
-        now = now || Date.now();
-        const row = await qOne(db, `DELETE FROM nonces
-            WHERE nonce = ? AND expires_at > ? RETURNING session_id, script_id`,
-            nonce, now);
+        const row = await qOne(db, `UPDATE nonces SET consumed_at = ?
+            WHERE nonce = ? AND consumed_at IS NULL
+       RETURNING session_id, script_id`,
+            now || Date.now(), nonce);
         return row ? { ok: true, sessionId: row.session_id, scriptId: row.script_id } : { ok: false };
     }
 
