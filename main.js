@@ -4081,9 +4081,43 @@ function obfuscateScriptCode(code, engine, options) {
                 // so the baked-in key URL matches the id /sh/upload will use.
                 var dbgInfo = {};
                 var wantId = 'ScripterHub' + String(Date.now()).slice(-10);
-                var withServerKey = Object.assign({}, options, {
-                    serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId }
-                });
+                // A KEYLESS SCRIPT GETS NO SPLIT KEY.
+                //
+                // A split key is the protection for a PAID build: the last layer never
+                // ships in the file and the worker hands it over at runtime. A keyless
+                // script has no license to gate, so there was nothing for it to protect -
+                // it was pure friction, and actively broken:
+                //
+                //   * the delivery is SHL, and the keyless branch of the loader is
+                //     body:sub(5) - it never expects a key line, which is precisely what
+                //     the envelope bug (fixed two commits ago) was violating;
+                //   * the payload fallback fetch in custom-obfuscator.js is a plain GET
+                //     to /sh/k with no session, and /sh/k requires a live session. It
+                //     gets a refusal, the reply holds fewer than three numbers, and the
+                //     payload bails at the `#PT < 3` check.
+                //
+                // The user saw exactly that, on a script whose gate and whose Lua were
+                // both provably fine:
+                //
+                //     [ScripterHub] Key response too short
+                //     VERDICT: the delivered source COMPILES on this executor
+                //
+                // The dashboard already promises "anyone can execute it, NO key needed"
+                // for a keyless script. This makes the code agree with that promise.
+                //
+                // The obfuscator emits no key-fetch code at all without serverKey, so the
+                // artifact is self-contained: still fully obfuscated, still only ever
+                // reachable through a minted single-use session.
+                //
+                // Server-side behaviour is deliberately UNCHANGED. authtest A8 uploads a
+                // keyless script WITH a split key and asserts /sh/k still gates it. This
+                // is only about what the client generates.
+                var withServerKey = Object.assign({}, options);
+                if (options.keyless) {
+                    delete withServerKey.serverKey;
+                } else {
+                    withServerKey.serverKey = { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId };
+                }
                 var out = applyCustomObfuscator(code, withServerKey, dbgInfo);
                 if (dbgInfo.splitKey && dbgInfo.splitKey.paddedKey) {
                     resolve({ code: out, splitKey: dbgInfo.splitKey, wantId: wantId });
