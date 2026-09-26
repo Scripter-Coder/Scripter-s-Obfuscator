@@ -108,7 +108,34 @@
 #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # ============================================================================
 
-name = "scripterhub-loaders"          # CHANGE ME
+# =============================================================================
+# THREE NAMES THAT LOOK THE SAME AND ARE NOT. GET THIS RIGHT.
+# =============================================================================
+#
+#   1. THE WORKER              -> name = "..."  (this line)
+#      This is the deployed script. Your live loadstrings all point at
+#      https://scripterhub-stats.dubovikstanislav51.workers.dev/..., so the
+#      worker is named "scripterhub-stats".
+#      That URL is read from main.js:54 (SH_STATS_ENDPOINT). That is the
+#      authority — it is where real customers are pointed today.
+#
+#   2. THE KV NAMESPACE TITLE  -> shown in the dashboard as "scripterhub-loaders"
+#      A label for the namespace. It is NOT a worker name and wrangler does
+#      not need it if you give the id below.
+#      If you are ever tempted to type it into `name =`, you will deploy a
+#      SECOND, EMPTY worker while your customers keep hitting the old one —
+#      and nothing will look wrong until you go looking for your scripts.
+#      An earlier revision of this file had exactly that bug.
+#
+#   3. THE BINDING VARIABLE    -> binding = "LOADERS_KV"
+#      The name your code uses: env.LOADERS_KV. Unrelated to both above.
+#      Changing it would break every `env.LOADERS_KV` reference in worker.js.
+#
+# After `wrangler login`, confirm the real worker name:
+#     wrangler deployments list
+# =============================================================================
+
+name = "scripterhub-stats"             # the WORKER, not the KV namespace
 main = "For Cloudflare/worker.js"
 compatibility_date = "2024-11-01"
 account_id = "CHANGE_ME"              # CHANGE ME
@@ -125,17 +152,29 @@ account_id = "CHANGE_ME"              # CHANGE ME
 # (c) validate-and-consume in a single step. Those three are the core of
 # session-gated delivery. Do not try to build them on KV.
 #
-# Until the D1 migration is applied the worker keeps reading its existing KV
-# namespaces, so applying this file changes nothing on its own.
+# `wrangler deploy --dry-run` lists the binding as present even with no id
+# below, so do NOT read a clean dry-run as "KV is fine". Set the real id.
 [[kv_namespaces]]
 binding = "LOADERS_KV"
-# id = "CHANGE ME - the existing namespace id"   # uncomment + set on first deploy
-# preview_id = "CHANGE ME"
+# MUST BE UNCOMMENTED. Get it from:
+#     wrangler kv namespace list
+#   (or dashboard -> Storage & Databases -> KV -> your namespace -> ID)
+# then copy the `id` column, which looks like a 32-char hex string. That is
+# NOT the title "scripterhub-loaders".
+#
+# THIS NAMESPACE HOLDS ALL YOUR LIVE DATA: sh_loader_, sh_meta_, sh_licenses,
+# sh_users_db, sh_skey_, sh_chunk_*. Point it at the existing namespace. Do
+# not create a new one, and do not guess the id — a wrong or empty id either
+# fails the deploy or points at an empty store, and in both cases every
+# script, license and key you have ever published becomes unreachable.
+# id = "PASTE_THE_NAMESPACE_ID_HERE"
+# preview_id = "PASTE_THE_PREVIEW_NAMESPACE_ID_OR_COMMENT_OUT"
 
 [[d1_databases]]
 binding = "SH_DB"
 database_name = "scripterhub"
-# database_id = "CHANGE ME - created by: wrangler d1 create scripterhub"
+# wrangler d1 create scripterhub   -> paste the returned database_id
+# database_id = "CHANGE_ME"
 # migrations_dir = "migrations"
 
 # -----------------------------------------------------------------------------
