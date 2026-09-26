@@ -26,16 +26,21 @@ const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'TESTTOKEN123', SH_BASE_URL: 'http
 const EXECUTOR_UA = 'Roblox/570 Delta Executor';
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120';
 
-async function call(method, path, body, ua) {
+async function call(method, path, body, ua, extraHeaders) {
+    const headers = Object.assign(
+        body ? { 'Content-Type': 'application/json' } : {},
+        { 'User-Agent': ua || BROWSER_UA },
+        extraHeaders || {}
+    );
     const req = new Request('https://test.workers.dev' + path, {
         method: method,
-        headers: body ? { 'Content-Type': 'application/json', 'User-Agent': ua || BROWSER_UA } : { 'User-Agent': ua || BROWSER_UA },
+        headers,
         body: body ? JSON.stringify(body) : undefined
     });
     return worker.fetch(req, env, { waitUntil: () => {} });
 }
-async function j(method, path, body, ua) {
-    const r = await call(method, path, body, ua);
+async function j(method, path, body, ua, extraHeaders) {
+    const r = await call(method, path, body, ua, extraHeaders);
     const text = await r.text();
     try { return { status: r.status, ...JSON.parse(text), _text: text }; }
     catch (e) { return { status: r.status, ok: false, _text: text }; }
@@ -128,7 +133,7 @@ let USER_EMAIL = 'planuser@example.com';
     console.log('    OK: signup + login work');
 }
 
-console.log('[W8] owner signup keeps owner flags usable for ownerProof...');
+console.log('[W8] owner signup keeps owner flags usable for owner auth...');
 {
     // simulate the owner account being created/migrated on another device
     let d = await j('POST', '/sh/user-sync', {
@@ -141,10 +146,18 @@ console.log('[W8] owner signup keeps owner flags usable for ownerProof...');
     console.log('    OK: owner flags survive migration');
 }
 
-console.log('[W9] PLAN CHANGE via ownerProof works (Issue 3)...');
+// PHASE 1: these two cases used to authenticate with `ownerProof`, which was
+// the base64 owner PASSWORD. That path is removed from the worker (a password
+// in a request is not an acceptable admin credential, and it was accepted from
+// a query string). The BEHAVIOUR under test is unchanged and still asserted:
+// an authenticated owner may change a plan, and an unauthenticated caller may
+// not. Only the credential changed, to a real owner session token.
+
+console.log('[W9] PLAN CHANGE by an authenticated owner works...');
 {
-    const ownerB64 = b64('ownerpass1');
-    let d = await j('POST', '/sh/users', { ownerProof: ownerB64, email: USER_EMAIL, user: { plan: 'Pro', stats: { projects: { used: 0, max: 500 }, keys: { used: 0, max: 100000 }, scripts: { used: 0, max: 300 }, fileSize: { used: 0, max: 1024 } } } });
+    const owner = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    assert.strictEqual(owner.ok, true, 'owner login must succeed: ' + JSON.stringify(owner));
+    let d = await j('POST', '/sh/users', { token: owner.token, email: USER_EMAIL, user: { plan: 'Pro', stats: { projects: { used: 0, max: 500 }, keys: { used: 0, max: 100000 }, scripts: { used: 0, max: 300 }, fileSize: { used: 0, max: 1024 } } } });
     assert.strictEqual(d.ok, true, 'plan change must sync: ' + JSON.stringify(d));
     assert.strictEqual(d.user.plan, 'Pro');
     // the user now pulls their own record -> sees the new plan
@@ -153,22 +166,37 @@ console.log('[W9] PLAN CHANGE via ownerProof works (Issue 3)...');
     console.log('    OK: plan change reaches the user record');
 }
 
-console.log('[W10] plan change with WRONG ownerProof is rejected...');
+console.log('[W10] plan change without owner authorization is rejected...');
 {
-    const d = await j('POST', '/sh/users', { ownerProof: b64('wrongpass'), email: USER_EMAIL, user: { plan: 'God' } });
+    // no token at all
+    let d = await j('POST', '/sh/users', { email: USER_EMAIL, user: { plan: 'God' } });
     assert.strictEqual(d.ok, false);
     assert.strictEqual(d.status, 401);
-    console.log('    OK: no privilege escalation');
+    // a garbage token
+    d = await j('POST', '/sh/users', { token: 'not-a-real-token', email: USER_EMAIL, user: { plan: 'God' } });
+    assert.strictEqual(d.ok, false, 'a forged token must not authorize a plan change');
+    assert.strictEqual(d.status, 401);
+    // the REMOVED credential: the base64 owner password must no longer work
+    d = await j('POST', '/sh/users', { ownerProof: b64('ownerpass1'), email: USER_EMAIL, user: { plan: 'God' } });
+    assert.strictEqual(d.ok, false, 'ownerProof (base64 password) must be rejected — the path was removed in Phase 1');
+    assert.strictEqual(d.status, 401);
+    console.log('    OK: no privilege escalation, and the old password credential is dead');
 }
 
 console.log('[W11] owner pulls all users (panel)...');
 {
-    const d = await j('GET', '/sh/users?ownerProof=' + encodeURIComponent(b64('ownerpass1')));
-    assert.strictEqual(d.ok, true);
+    const owner = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    assert.strictEqual(owner.ok, true, 'owner login must succeed: ' + JSON.stringify(owner));
+    // Prefer the header: a token in a query string lands in access logs.
+    const d = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': owner.token });
+    assert.strictEqual(d.ok, true, 'owner panel pull must work via the auth header: ' + JSON.stringify(d));
     assert.ok(d.users[USER_EMAIL]);
     assert.strictEqual(d.users[USER_EMAIL].plan, 'Pro');
     assert.ok(!d.users[USER_EMAIL].password, 'passwords must never be returned');
-    console.log('    OK: panels see every user, plan included');
+    // and the removed credential must not open the panel either
+    const bad = await j('GET', '/sh/users?ownerProof=' + encodeURIComponent(b64('ownerpass1')));
+    assert.strictEqual(bad.ok, false, 'ownerProof in a query string must no longer authorize the user table');
+    console.log('    OK: panels see every user via a header token, plan included');
 }
 
 console.log('[W12] non-owner user-sync cannot change own plan...');

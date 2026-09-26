@@ -311,10 +311,26 @@ function shApi(endpoint, body) {
 
 // owner proof = b64 password of the owner (Scripter) account - lets the
 // panels sync (plan changes, deletes) without the raw-page access code
-function shOwnerProof() {
-    if (!currentUser || currentUser.username !== 'Scripter') return '';
-    var u = users[currentUser.email];
-    return (u && u.password) ? u.password : '';
+// PHASE 1: ownerProof is GONE from the worker.
+//
+// It used to be b64(ownerPassword) and was sent as ?ownerProof= in query
+// strings, which puts a password-equivalent credential into proxy logs,
+// browser history and Referer headers. Owner admin calls now authenticate
+// with the real owner session token from /sh/login, sent in the X-SH-Token
+// header.
+//
+// Migration note for the panel: the first owner action will prompt for the
+// access code (shLoginRaw) and cache the resulting token in sessionStorage.
+// If the site is served over plain http on a non-localhost origin, the
+// browser will refuse to attach the header to a cross-origin request and the
+// admin panel will appear to fail - deploy the worker behind https.
+function shOwnerToken() {
+    return shGetRawToken() || '';
+}
+
+// True when the current browser session holds a usable owner token.
+function shHasOwnerToken() {
+    return !!shGetRawToken();
 }
 
 // push one local user record to the cloud (public fields only).
@@ -394,83 +410,75 @@ async function shSyncUsersOnLogin(user, rawPassword) {
     } catch (e) { /* offline: keep working locally */ }
 }
 
+// Owner admin call. Authenticates with the real owner session token in the
+// X-SH-Token header, and retries once through the access-code prompt if the
+// token has expired.
+//
+// PHASE 1: this replaced ?ownerProof=<base64 password>, which put a
+// password-equivalent credential in a URL (proxy logs, browser history,
+// Referer). The token goes in a header, so it is not logged as a query param.
+async function shOwnerApi(path, body) {
+    var token = shGetRawToken();
+    if (!token) {
+        var ok = await shLoginRaw();
+        if (!ok) return { ok: false, error: 'Owner sign-in required.' };
+        token = shGetRawToken() || '';
+    }
+    var res = await fetch(SH_STATS_ENDPOINT + path, {
+        method: body === null || body === undefined ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-SH-Token': token },
+        body: (body === null || body === undefined) ? undefined : JSON.stringify(body)
+    });
+    var d;
+    try { d = await res.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
+    if (!d.ok && /author/i.test(d.error || '')) {
+        // token expired mid-session: re-login once, retry
+        sessionStorage.removeItem('sh_raw_token');
+        var ok2 = await shLoginRaw();
+        if (!ok2) return { ok: false, error: 'Owner sign-in required.' };
+        var t2 = shGetRawToken() || '';
+        var res2 = await fetch(SH_STATS_ENDPOINT + path, {
+            method: body === null || body === undefined ? 'GET' : 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-SH-Token': t2 },
+            body: (body === null || body === undefined) ? undefined : JSON.stringify(body)
+        });
+        try { d = await res2.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
+    }
+    return d;
+}
+
 // owner pull of all cloud users -> { email: user } (no passwords).
- // Auth: raw-page token OR ownerProof (b64 owner password) - the proof
- // keeps the panels working without the raw-page access-code prompt.
- async function shPullCloudUsers() {
-     try {
-         let token = shGetRawToken();
-         if (!token) {
-             const ok = await shLoginRaw();
-             if (!ok) token = ''; // no raw-page code in this session - fall back to ownerProof
-             token = shGetRawToken() || '';
-         }
-         const proof = shOwnerProof();
-         let res;
-         let url = SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof);
-         try {
-             res = await fetch(url);
-         } catch (e) {
-             // network error - try login once and retry
-             sessionStorage.removeItem('sh_raw_token');
-             const ok2 = await shLoginRaw();
-             if (ok2) {
-                 token = shGetRawToken() || '';
-                 res = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
-             } else {
-                 return null;
-             }
-         }
-         let d;
-         try {
-             d = await res.json();
-         } catch (e) {
-             return null;
-         }
-         if (!d.ok && /author/i.test(d.error || '')) {
-             sessionStorage.removeItem('sh_raw_token');
-             const ok2 = await shLoginRaw();
-             if (ok2) {
-                 token = shGetRawToken() || '';
-                 let res2;
-                 try {
-                     res2 = await fetch(SH_STATS_ENDPOINT + 'sh/users?token=' + encodeURIComponent(token) + '&ownerProof=' + encodeURIComponent(proof));
-                 } catch (e) { return null; }
-                 try {
-                     d = await res2.json();
-                 } catch (e) { return null; }
-             } else {
-                 return null;
-             }
-         }
-         if (d.ok && d.users) {
-             // re-attach local passwords where we have them (panels need them
-             // for delete/edit flows; cloud never stores them in responses)
-             for (var k in d.users) {
-                 if (users[k] && users[k].password) d.users[k].password = users[k].password;
-             }
-             return d.users;
-         }
-         return null;
-     } catch (e) { return null; }
- }
+async function shPullCloudUsers() {
+    try {
+        var d = await shOwnerApi('sh/users', null);
+        if (d.ok && d.users) {
+            // re-attach local passwords where we have them (panels need them
+            // for delete/edit flows; cloud never stores them in responses)
+            for (var k in d.users) {
+                if (users[k] && users[k].password) d.users[k].password = users[k].password;
+            }
+            return d.users;
+        }
+        return null;
+    } catch (e) { return null; }
+}
 
 // owner upsert/delete of cloud user records (plan changes, deletes)
 async function shPushCloudUserUpdate(email, userRecord) {
     try {
-        return await shApi('sh/users', { ownerProof: shOwnerProof(), email: email, user: userRecord });
+        return await shOwnerApi('sh/users', { token: shOwnerToken(), email: email, user: userRecord });
     } catch (e) { return { ok: false }; }
 }
 
 async function shDeleteCloudUser(email) {
     try {
-        return await shApi('sh/users-delete', { ownerProof: shOwnerProof(), email: email });
+        return await shOwnerApi('sh/users-delete', { token: shOwnerToken(), email: email });
     } catch (e) { return { ok: false }; }
 }
 
 async function shClearCloudUsers(keepEmails) {
     try {
-        return await shApi('sh/users-clear', { ownerProof: shOwnerProof(), keep: (keepEmails || []).join(',') });
+        return await shOwnerApi('sh/users-clear', { token: shOwnerToken(), keep: (keepEmails || []).join(',') });
     } catch (e) { return { ok: false }; }
 }
 
@@ -495,7 +503,7 @@ async function shSyncLicenses() {
                 executions: k.executions || 0
             };
         }
-        return await shApi('sh/licenses', { ownerProof: shOwnerProof(), licenses: licenses });
+        return await shOwnerApi('sh/licenses', { token: shOwnerToken(), licenses: licenses });
     } catch (e) { return { ok: false, error: 'network' }; }
 }
 window.shSyncLicenses = shSyncLicenses;
@@ -503,7 +511,7 @@ window.shSyncLicenses = shSyncLicenses;
 // owner-only: flip the global kill-switch (every auth fails instantly)
 async function shSetKillswitch(on) {
     try {
-        return await shApi('sh/killswitch', { ownerProof: shOwnerProof(), on: !!on });
+        return await shOwnerApi('sh/killswitch', { token: shOwnerToken(), on: !!on });
     } catch (e) { return { ok: false, error: 'network' }; }
 }
 window.shSetKillswitch = shSetKillswitch;
@@ -1435,7 +1443,7 @@ function resetOneHwid(keyId) {
     };
     // server-side reset first (enforces the 24h cooldown on /sh/auth),
     // then mirror locally. Offline/local-only keys fall back to local.
-    shApi('sh/license-reset', { ownerProof: shOwnerProof(), key: found.key.key }).then(function(d) {
+    shOwnerApi('sh/license-reset', { token: shOwnerToken(), key: found.key.key }).then(function(d) {
         if (d && d.ok) doLocal();
         else showNotification('HWID Reset Blocked', (d && d.error) || 'Server rejected the reset (is this a cloud-synced key?). Reset locally?', 'warning', 6000);
     }).catch(function() { doLocal(); });
@@ -1463,7 +1471,7 @@ function blacklistKey(keyId) {
         openKeySettingsUI(keyId);
     };
     // server ban first so /sh/auth rejects the key on the next run
-    shApi('sh/license-ban', { ownerProof: shOwnerProof(), key: found.key.key, banned: ban, reason: reason }).then(function(d) {
+    shOwnerApi('sh/license-ban', { token: shOwnerToken(), key: found.key.key, banned: ban, reason: reason }).then(function(d) {
         if (d && d.ok) doLocal();
         else doLocal(); // local ban still applies (sync mirrors it later)
     }).catch(function() { doLocal(); });

@@ -73,15 +73,22 @@ async function uploadAuthScript(name) {
 }
 
 console.log('[A1] owner syncs licenses (2 keys) to the worker...');
-const OWNER_B64 = b64('ownerpass1');
+// PHASE 1: ownerProof (the base64 owner password) was removed as a credential.
+// Owner operations now use this real session token from /sh/login.
+const OWNER_TOKEN = (await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN })).token;
+if (!OWNER_TOKEN) { console.error('FATAL: owner login failed - cannot authorize owner operations'); process.exit(1); }
 {
-    // create the owner account first (ownerProof auth)
+    // create the owner account first (user-sync needs no owner credential)
     await j('POST', '/sh/user-sync', {
         email: 'dubovikstanislav51@gmail.com', password: 'ownerpass1',
         user: { id: 'user_owner', email: 'dubovikstanislav51@gmail.com', username: 'Scripter', isScripter: true, isAdmin: true }
     });
+    // PHASE 1: ownerProof (the base64 owner password) no longer authorizes
+    // anything. Owner operations use a real session token from /sh/login.
+    const owner = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    assert.strictEqual(owner.ok, true, 'owner login failed: ' + JSON.stringify(owner));
     const d = await j('POST', '/sh/licenses', {
-        ownerProof: OWNER_B64,
+        token: owner.token,
         licenses: {
             'VALIDKEY-AAAA': { hwid: '', expiresAt: 0, banned: false, hwidResets: 0, executions: 0 },
             'EXPIREDKEY-BBB': { hwid: '', expiresAt: Date.now() - 1000, banned: false },
@@ -155,14 +162,14 @@ console.log('[A5] /sh/k serves the split key ONLY with a valid token...');
 
 console.log('[A6] kill-switch fails every auth instantly...');
 {
-    const ks = await j('POST', '/sh/killswitch', { ownerProof: OWNER_B64, on: true });
+    const ks = await j('POST', '/sh/killswitch', { token: OWNER_TOKEN, on: true });
     assert.strictEqual(ks.ok, true);
     const r = await call('GET', '/sh/auth/' + script.id + '?k=VALIDKEY-AAAA&h=my-hwid-1&t=' + script.t0, null, EXECUTOR_UA);
     assert.strictEqual((await r.text()), 'SHERR killswitch');
     const rK = await call('GET', '/sh/k/' + script.id + '?t=' + script.t0 + '&a=' + TOKEN + '&k=VALIDKEY-AAAA&h=my-hwid-1', null, EXECUTOR_UA);
     assert.strictEqual(rK.status, 405, 'even a valid token dies while the switch is on');
     // disarm
-    await j('POST', '/sh/killswitch', { ownerProof: OWNER_B64, on: false });
+    await j('POST', '/sh/killswitch', { token: OWNER_TOKEN, on: false });
     const r2 = await call('GET', '/sh/auth/' + script.id + '?k=VALIDKEY-AAAA&h=my-hwid-1&t=' + script.t0, null, EXECUTOR_UA);
     assert.ok((await r2.text()).startsWith('SHA '), 'auth works again after disarm');
     console.log('    OK: kill-switch arms/disarms');
@@ -170,13 +177,13 @@ console.log('[A6] kill-switch fails every auth instantly...');
 
 console.log('[A7] HWID reset with 24h server-side cooldown...');
 {
-    const d = await j('POST', '/sh/license-reset', { ownerProof: OWNER_B64, key: 'VALIDKEY-AAAA' });
+    const d = await j('POST', '/sh/license-reset', { token: OWNER_TOKEN, key: 'VALIDKEY-AAAA' });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     const lic = JSON.parse(KV._store.get('sh_licenses'));
     assert.strictEqual(lic['VALIDKEY-AAAA'].hwid, '', 'hwid cleared');
     assert.strictEqual(lic['VALIDKEY-AAAA'].hwidResets, 1);
     // second reset immediately -> cooldown rejected
-    const d2 = await j('POST', '/sh/license-reset', { ownerProof: OWNER_B64, key: 'VALIDKEY-AAAA' });
+    const d2 = await j('POST', '/sh/license-reset', { token: OWNER_TOKEN, key: 'VALIDKEY-AAAA' });
     assert.strictEqual(d2.ok, false);
     assert.strictEqual(d2.status, 429, 'cooldown enforced');
     // a new hwid may now auth (lock released)

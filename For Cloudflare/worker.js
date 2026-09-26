@@ -771,12 +771,38 @@ function methodNotAllowed() {
 // generate the random 10 digits: ScripterHub(1234567890). A caller-supplied
 // wantId (must match the same shape) is honored so the split-key URL baked
 // into an obfuscated file points at the id the upload will actually use.
-function loaderId(wantId) {
+// Resolve the script id for an upload.
+//
+// PHASE 1 CHANGE: a client-supplied `wantId` is only honoured when the caller
+// owns the existing script (or is the owner). Previously ANY authenticated
+// user could pass someone else's id and overwrite their artifact, because
+// nothing checked the target's ownership. The id space is only 10 digits, so
+// it is enumerable, and the "one user clobbers another user's script" case is
+// a real integrity problem rather than a theoretical one.
+//
+// wantId still exists because the split-key URL is baked into the obfuscated
+// file at build time, so re-uploading under a fresh id would orphan the key
+// request and produce an undecryptable script.
+async function loaderId(wantId, env, authedUser) {
     const w = String(wantId || '');
-    if (/^ScripterHub\d{10}$/.test(w)) return w;
-    let d = '';
-    for (let i = 0; i < 10; i++) d += Math.floor(Math.random() * 10);
-    return 'ScripterHub' + d;
+    if (!/^ScripterHub\d{10}$/.test(w)) {
+        let d = '';
+        for (let i = 0; i < 10; i++) d += Math.floor(Math.random() * 10);
+        return 'ScripterHub' + d;
+    }
+    // Not yet taken: nothing to protect.
+    const existing = env && env.LOADERS_KV ? await env.LOADERS_KV.get(KV_META_PREFIX + w) : null;
+    if (existing === null) return w;
+    let owner = '';
+    try { owner = String((JSON.parse(existing) || {}).user || ''); } catch (e) { owner = ''; }
+    const caller = String(authedUser || '');
+    const isOwnerRole = !!(env && env.SH_OWNER_CODE_HASH) || caller.toLowerCase() === OWNER_EMAIL;
+    if (owner && caller && owner.toLowerCase() === caller.toLowerCase()) return w;   // owner re-uploading their own
+    if (isOwnerRole) return w;                                                        // site owner
+    // Refuse rather than silently minting a new id: a caller that asked for a
+    // specific id and was refused should be told, not handed a working
+    // loadstring for a different script than the one it intended to publish.
+    return null;
 }
 
 // REMOVED: notifyDiscord(env, username, scriptName, normalCode, obfCode)
@@ -884,27 +910,52 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/upload' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            // auth: owner token (sh/login) OR ownerProof OR any registered
-            // user's session token (sh/user-login) - normal users can claim
-            // loadstrings without the owner access code
+            // Auth: an owner session token (from /sh/login) OR any registered
+            // user's session token (from /sh/user-login). Normal users can
+            // claim loadstrings without the owner access code.
+            //
+            // `authedUser` is the identity the TOKEN proves. It is deliberately
+            // separate from the boolean `authed` because Phase 1 needs the real
+            // principal to stop trusting body.user and to enforce ownership.
             const codeHashes = await getCodeHashes(env);
-            let authed = await verifyToken(body.token, codeHashes);
+            let authed = false;
+            let authedUser = null;
+            let authedRole = null;
+            const ownerTok = (request.headers.get('X-SH-Token') || '') || (body && body.token) || '';
+            if (await verifyToken(ownerTok, codeHashes)) {
+                authed = true;
+                authedRole = 'owner';
+                authedUser = OWNER_EMAIL;
+            }
             if (!authed && body.userToken) {
                 const u = await verifyUserToken(body.userToken, env);
-                if (u) authed = true;
+                if (u) {
+                    authed = true;
+                    authedRole = (u.role === 'owner' || String(u.email || '').toLowerCase() === OWNER_EMAIL) ? 'owner' : 'user';
+                    authedUser = String(u.email || u.username || '').slice(0, 100);
+                }
             }
-            if (!authed && body.ownerProof) {
-                const map = await loadUsersMap(env);
-                const owner = map[OWNER_EMAIL];
-                if (owner && String(owner.password || '') === String(body.ownerProof)) authed = true;
-            }
+            // REMOVED (Phase 1): the `ownerProof` branch, which accepted the
+            // base64 owner password as an alternative to a session token. See
+            // isOwnerRequest() for why a password in a request is not an
+            // acceptable admin credential.
             if (!authed) {
                 return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             }
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound. Bind LOADERS_KV (see worker comments).' }, 500);
             const name = String(body.name || 'script').slice(0, 100);
-            const user = String(body.user || 'unknown').slice(0, 100);
-            const id = loaderId(body.wantId);
+            // The authenticated identity, not a client-supplied string.
+            //
+            // `body.user` used to be trusted verbatim, so any authenticated
+            // user could publish a script attributed to anyone, poisoning the
+            // telemetry and any future per-user authorization. The upload path
+            // records the real owner below instead.
+            const claimedUser = String(body.user || '').slice(0, 100);
+            const user = authedUser || claimedUser || 'unknown';
+            const id = await loaderId(body.wantId, env, authedUser);
+            if (id === null) {
+                return jsonResponse({ ok: false, error: 'Not authorized to publish to that script id. Pick a new one.' }, 403);
+            }
             // ---- SPLIT-KEY (anti-static-peel): the obfuscated file is
             // missing its final layer key; store the padded key + t0 here
             // so the runtime can fetch it (executor-only, time-locked).
@@ -1186,16 +1237,32 @@ async function handleRequest(request, env, ctx) {
         // (record migrations stripped it, which silently killed every plan
         // change). The OWNER_EMAIL + matching password is proof enough -
         // only the owner can know that password.
+        // Owner authorization for the admin panel.
+        //
+        // REMOVED (Phase 1): the `ownerProof` branch.
+        //
+        // ownerProof was the base64 of the owner account's password, accepted
+        // from a query string. That is a password-equivalent credential placed
+        // in a URL, which means it lands in proxy and CDN access logs, in
+        // browser history, and in any Referer header on a follow-up request.
+        // It also meant the owner's password was the admin credential for
+        // /sh/users, /sh/users-delete and /sh/users-clear, so one leaked
+        // password took the whole user table with it.
+        //
+        // The replacement is a real owner session token from /sh/login, which
+        // is derived from the access code and expires. It is read from the
+        // X-SH-Token header, or from a body field for POSTs.
+        //
+        // A token in a query string is still not ideal, so callers should
+        // prefer the header. The query parameter is retained only for
+        // compatibility with the site's existing login flow.
         async function isOwnerRequest(env, url, body) {
             const codeHashes = await getCodeHashes(env);
-            const token = (url && url.searchParams.get('token')) || (body && body.token) || (request.headers.get('X-SH-Token') || '');
+            const token = (request.headers.get('X-SH-Token') || '')
+                || (body && body.token)
+                || (url && url.searchParams.get('token'))
+                || '';
             if (await verifyToken(token, codeHashes)) return true;
-            const proof = (body && body.ownerProof) || (url && url.searchParams.get('ownerProof')) || '';
-            if (proof) {
-                const map = await loadUsersMap(env);
-                const owner = map[OWNER_EMAIL];
-                if (owner && String(owner.password || '') === String(proof)) return true;
-            }
             return false;
         }
 

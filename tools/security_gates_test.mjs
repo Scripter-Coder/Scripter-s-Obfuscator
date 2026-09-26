@@ -236,34 +236,63 @@ gate('G13', 'Stored credentials are not recoverable from state', 'xfail', async 
   }
 });
 
-gate('G12', 'body.user must match the authenticated identity', 'xfail', async () => {
+gate('G12', 'body.user must match the authenticated identity', 'pass', async () => {
   const env = makeEnv();
   const tok = await loginUserToken(env, 'owner@t.com', 'ownpass123');
   const r = await call(env, 'POST', '/sh/upload', {
     userToken: tok, name: 'x', user: 'somebody-else', plainCode: 'print(1)', keyless: true
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.2' });
-  need(r.status === 200, `upload was rejected (${r.status} ${r.body.slice(0, 90)}) — cannot test impersonation if the upload itself fails`);
-  throw new Error('upload accepted a body.user that differs from the token identity (impersonation)');
+  need(r.status === 200, `upload rejected (${r.status}) — cannot test impersonation if the upload itself fails`);
+  let d; try { d = JSON.parse(r.body); } catch (e) { throw new Error('gate setup: upload body was not JSON'); }
+  const meta = JSON.parse(env.LOADERS_KV._store.get('sh_meta_' + d.id) || '{}');
+  need(typeof meta.user === 'string' && meta.user.length > 0, 'no user was recorded against the script');
+  if (meta.user !== 'owner@t.com') {
+    throw new Error(`the script was attributed to ${JSON.stringify(meta.user)} but the token proved owner@t.com`);
+  }
 });
 
-gate('G11', 'A user cannot overwrite another user\'s script id', 'xfail', async () => {
+gate('G11', 'A user cannot overwrite another user\'s script id', 'pass', async () => {
   const env = makeEnv();
+  // MUST be ScripterHub + exactly 10 digits: loaderId() falls back to a
+  // RANDOM id when wantId does not match, which would make this gate "pass"
+  // while never touching the victim at all.
   const victim = 'ScripterHub5550001111';
   need(/^ScripterHub\d{10}$/.test(victim), 'gate setup: bad victim id shape');
-  env.LOADERS_KV._store.set('sh_meta_' + victim, JSON.stringify({ name: 'victim', user: 'owner', keyless: false }));
+  env.LOADERS_KV._store.set('sh_meta_' + victim, JSON.stringify({ name: 'victim', user: 'owner@other.com', keyless: false }));
   env.LOADERS_KV._store.set('sh_loader_' + victim, 'VICTIM PAYLOAD');
   const tok = await loginUserToken(env, 'mallory@t.com', 'mallorypass');
+
+  // 1. the cross-user overwrite must be refused outright
   const r = await call(env, 'POST', '/sh/upload', {
-    userToken: tok, name: 'evil', user: 'mallory', wantId: victim, plainCode: 'OVERWRITTEN', keyless: true
+    userToken: tok, name: 'evil', user: 'mallory@t.com', wantId: victim, plainCode: 'OVERWRITTEN', keyless: true
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
-  need(r.status === 200, `upload was rejected (${r.status} ${r.body.slice(0, 90)}) — cannot test cross-user overwrite`);
-  let d; try { d = JSON.parse(r.body); } catch (e) { throw new Error('gate setup: upload body was not JSON'); }
-  need(d.id === victim, `the server ignored wantId and created ${d.id} instead — this gate cannot observe an overwrite`);
-  const after = env.LOADERS_KV._store.get('sh_loader_' + victim);
-  if (after !== 'VICTIM PAYLOAD') {
+  if (env.LOADERS_KV._store.get('sh_loader_' + victim) !== 'VICTIM PAYLOAD') {
     throw new Error('a different user overwrote an existing script by supplying its wantId');
   }
-  throw new Error('upload accepted, id honoured, artifact intact — gate cannot tell what happened');
+  if (r.status === 200) {
+    // Silently minting a different id is NOT an acceptable pass: the caller
+    // asked for a specific id and must be told, not handed a working
+    // loadstring for a different script than the one it meant to publish.
+    let d; try { d = JSON.parse(r.body); } catch (e) { throw new Error('gate setup: upload body was not JSON'); }
+    if (d.id !== victim) throw new Error('the id was silently reassigned instead of refusing the request');
+    throw new Error('200 with the victim id but an intact payload — server behaviour is unclassifiable');
+  }
+  if (r.status !== 403) throw new Error(`expected 403 for a cross-user overwrite, got HTTP ${r.status}`);
+
+  // 2. re-publishing to your OWN existing id must still work, or this gate
+  //    would pass by breaking the republish flow the split-key URL depends on
+  const mine = await call(env, 'POST', '/sh/upload', {
+    userToken: tok, name: 'mine', user: 'mallory@t.com', plainCode: 'V1', keyless: true
+  }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
+  need(mine.status === 200, `own upload failed (${mine.status}) — legitimate publishing is broken`);
+  const myId = JSON.parse(mine.body).id;
+  const again = await call(env, 'POST', '/sh/upload', {
+    userToken: tok, name: 'mine', user: 'mallory@t.com', wantId: myId, plainCode: 'V2', keyless: true
+  }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
+  if (again.status !== 200) throw new Error(`re-uploading to your own id was refused (${again.status}) — split-key republish would break`);
+  if (env.LOADERS_KV._store.get('sh_loader_' + myId) !== 'V2') {
+    throw new Error('own re-upload returned 200 but did not replace the artifact');
+  }
 });
 
 // helper: register a user and return its session token.
