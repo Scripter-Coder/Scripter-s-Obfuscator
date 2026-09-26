@@ -4866,13 +4866,16 @@ function luaSessionBootstrap(id, base, keyless) {
         + '  B=body:sub(5)                      -- keyless: the obfuscated code\n'
         + 'elseif body:sub(1,4)=="SHK\\n" then\n'
         + '  local nl=body:find("\\n",5)\n'
-        + '  local rest=body:sub(nl+1)\n'
-        + '  local second=rest:find("\\n")\n'
-        + '  SK=rest:sub(1,second-1)           -- "t0 chk k1 k2 k3..."\n'
-        + '  B=rest:sub(second+1)              -- the ciphertext\n'
+        + '  if not nl then DIE("Malformed delivery - no key line.") return end\n'
+        + '  SK=body:sub(5,nl-1)                -- "t0 chk k1 k2 k3..."\n'
+        + '  B=body:sub(nl+1)                   -- the ciphertext\n'
         + 'elseif body:sub(1,4)=="SHG " then\n'
         + '  local n,root,g=body:match("^SHG (%d+) (%S+) (%S+)")\n'
         + '  local nl=body:find("\\n")\n'
+        // Same class of fault as the SHK branch: an unterminated header made
+        // body:sub(nl+1) do arithmetic on nil, which kills the chunk with a
+        // bare Lua error instead of a message the user can act on.
+        + '  if not nl then DIE("Malformed chain header.") return end\n'
         + '  local rel=body:sub(nl+1)\n'
         + '  local s2=rel:find("\\n")\n'
         + '  if s2 then SK=rel:sub(1,s2-1) end\n'
