@@ -77,18 +77,40 @@ const SPLITKEY_GENV = (() => {
 // production worker just to satisfy a test would widen the deployed file for a
 // test's convenience. Extract it instead. If it is renamed or reshaped, the
 // brace-match below fails loudly rather than silently testing nothing.
+//
+// THE EXTRACTOR UNDERSTANDS COMMENTS, and it has to. The first version tracked
+// only string delimiters, so a ' or a " or a ` appearing anywhere in a COMMENT
+// put it into string mode and it never came back out:
+//
+//     could not brace-match luaSessionBootstrap
+//
+// which reads like "the worker is malformed" and is actually "somebody wrote
+// an apostrophe in a comment". Two separate comments did that in a row - the
+// SCRIPT's error, and pcall(function() fn() end) in backticks. Avoiding
+// particular characters in prose is not a fix; parsing comments properly is.
 function extractBootstrapFn() {
   const start = workerSrc.indexOf('function luaSessionBootstrap(');
   if (start < 0) throw new Error('luaSessionBootstrap not found in worker.js');
   let i = workerSrc.indexOf('{', start);
-  let depth = 0, inStr = null;
+  let depth = 0, inStr = null, inLine = false, inBlock = false;
   for (; i < workerSrc.length; i++) {
     const c = workerSrc[i];
+    const next = workerSrc[i + 1];
+
+    if (inLine) { if (c === '\n') inLine = false; continue; }
+    if (inBlock) { if (c === '*' && next === '/') { inBlock = false; i++; } continue; }
+
     if (inStr) {
       if (c === '\\') { i++; continue; }
       if (c === inStr) inStr = null;
       continue;
     }
+
+    // a '/' can begin a comment, or be division - but inside this function the
+    // only '/' we care about is the start of a comment
+    if (c === '/' && next === '/') { inLine = true; i++; continue; }
+    if (c === '/' && next === '*') { inBlock = true; i++; continue; }
+
     if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
     if (c === '{') depth++;
     if (c === '}') { depth--; if (depth === 0) return workerSrc.slice(start, i + 1); }

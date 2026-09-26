@@ -4926,7 +4926,25 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'if type(SK)=="string" and SK~="" then G[' + JSON.stringify(SPLITKEY_GENV) + ']=SK end\n'
         + 'local fn=LS and LS(src)\n'
         + 'if not fn then DIE("Load failed - re-execute or contact the script owner.") return end\n'
-        + 'pcall(function() fn() end)\n';
+        // Surface payload errors instead of swallowing them.
+        //
+        // This used to be pcall(function() fn() end) with the result thrown
+        // away, so a script that failed anywhere in its own body produced NO
+        // output at all - no print, no error, nothing. That is the worst
+        // possible failure mode: a user cannot tell a broken script from a
+        // broken platform, and the owner has nothing to go on.
+        //
+        // NOTE: no backticks in this comment. tools/bootstrap_exec_test.mjs
+        // brace-matches luaSessionBootstrap out of this file, and it treats a
+        // backtick as a string delimiter - so a comment containing one puts the
+        // matcher into string mode and it never comes back out. A comment is not
+        // a safe place to be clever.
+        //
+        // The delivery is already fully validated by this point (session spent,
+        // envelope parsed, payload decrypted), so an error here is the SCRIPT's
+        // error and the user needs to see it verbatim.
+        + 'local ran,perr=pcall(fn)\n'
+        + 'if not ran then DIE("The script itself failed: "..tostring(perr)) end\n';
 }
 
 // ===========================================================================

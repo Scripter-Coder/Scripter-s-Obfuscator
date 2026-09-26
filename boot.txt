@@ -1,0 +1,92 @@
+--[[ ScripterHub session loader | ScripterHub0448326633 | no script material in this file ]]
+-- 1. set your license ONCE before running this loadstring:
+--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"
+-- 2. run the loadstring. Nothing else to do.
+local ID="ScripterHub0448326633"
+local BASE="https://scripterhub-stats.dubovikstanislav51.workers.dev"
+local KEYED=false
+local G=(getgenv and getgenv()) or _G
+local function NT(t,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text=t,Duration=d or 5}) end) end
+local function DIE(t) NT(t,7) print("[ScripterHub] "..t) end
+local function QS(t) local o={} for k,v in pairs(t) do o[#o+1]=k.."="..tostring(v) end return table.concat(o,"&") end
+local function GET(url)
+ if request then
+  local ok,r=pcall(function() return request({Url=url,Method="GET",Headers={["X-SH-Transport"]="header"}}) end)
+  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end
+ end
+ if game and game.HttpGet then
+  local ok,r=pcall(function() return game:HttpGet(url,true) end)
+  if ok and type(r)=="string" and r~="" then return r end
+ end
+ return nil
+end
+local function CALL(path,q)
+ local u=BASE..path..(q and ("?"..q) or "")
+ if request then
+  local ok,r=pcall(function() return request({Url=u,Method="POST",Headers={["Content-Type"]="application/json",["X-SH-Transport"]="header"}}) end)
+  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end
+ end
+ return GET(u)
+end
+local K=G and G.ScripterHubKey
+local HW=(G and G.ScripterHubHwid) or (identifyexecutor and (pcall(identifyexecutor) and identifyexecutor())) or "?"
+if KEYED and (type(K)~="string" or K=="") then
+ DIE("License required: run getgenv().ScripterHubKey = \"YOUR_KEY\" then re-execute.")
+ return
+end
+local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW)}))
+if type(resp)~="string" then DIE("Could not reach the license server.") return end
+if resp:sub(1,7)=="SHERR " then DIE("Denied: "..resp:sub(7):gsub("%s+$","")) return end
+local S,N=resp:match("^SHS (%S+) (%S+) %S+")
+if not S or not N then DIE("Bad response from the license server.") return end
+local body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N)
+if type(body)~="string" then DIE("Delivery failed.") return end
+if body:sub(1,7)=="SHERR " then DIE("Denied: "..body:sub(7):gsub("%s+$","")) return end
+local SK, B
+if body:sub(1,4)=="SHL\n" then
+  B=body:sub(5)                      -- keyless: the obfuscated code
+elseif body:sub(1,4)=="SHK\n" then
+  local nl=body:find("\n",5)
+  if not nl then DIE("Malformed delivery - no key line.") return end
+  SK=body:sub(5,nl-1)                -- "t0 chk k1 k2 k3..."
+  B=body:sub(nl+1)                   -- the ciphertext
+elseif body:sub(1,4)=="SHG " then
+  local n,root,g=body:match("^SHG (%d+) (%S+) (%S+)")
+  local nl=body:find("\n")
+  if not nl then DIE("Malformed chain header.") return end
+  local rel=body:sub(nl+1)
+  local s2=rel:find("\n")
+  if s2 then SK=rel:sub(1,s2-1) end
+  if not n or not g then DIE("Bad chain header.") return end
+  local P={}
+  for i=0,tonumber(n)-1 do
+   local u=root.."/"..i.."?g="..g.."&s="..S
+   local ok,part=pcall(function() return game:HttpGet(u,true) end)
+   if not ok or type(part)~="string" or #part==0 then DIE("Part "..i.." failed.") return end
+   P[#P+1]=part
+  end
+  B=table.concat(P)
+else
+  DIE("Unrecognised delivery format.") return
+end
+local function BX(a,b) a=a%4294967296 b=b%4294967296 local r,p=0.0,1.0 for _=1,32 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end
+local function SD(k,i) local h=5381.0+i*7 for j=1,#k do local c=string.byte(k,j) h=(h*33+c)%4294967296 end return h end
+local function NX(s) local x=s[1] x=BX(x,(x*8192)%4294967296) x=BX(x,math.floor(x/131072)) x=BX(x,(x*32)%4294967296) s[1]=s[2] s[2]=s[3] s[3]=s[4] s[4]=x return x end
+local function DEC(k) local a,b,c,d=SD(k,0),SD(k,1),SD(k,2),SD(k,3)
+ if a==0 then a=1 end if b==0 then b=2 end if c==0 then c=3 end if d==0 then d=4 end
+ local s={a,b,c,d} local o={} for i=1,#B do local x=NX(s) o[i]=string.char(BX(string.byte(B,i),x%256)) end
+ local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end
+local src=B
+if KEYED then
+ if type(SK)~="string" or SK=="" then DIE("Missing key material.") return end
+ -- SK carries "t0 chk k1 k2 ...". The obfuscated file verifies the
+ -- time pad and the check value itself, so a tampered delivery
+ -- decrypts to garbage and fails the SHOK magic rather than running.
+ src=DEC(K)
+ if not src then DIE("Wrong Special Key, or the delivery was tampered with.") return end
+end
+local LS=loadstring or load
+if type(SK)=="string" and SK~="" then G["__SH_SPLITKEY"]=SK end
+local fn=LS and LS(src)
+if not fn then DIE("Load failed - re-execute or contact the script owner.") return end
+pcall(function() fn() end)
