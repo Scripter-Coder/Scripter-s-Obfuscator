@@ -1019,6 +1019,82 @@ gate('G22', 'Re-locking a license to other hardware kills the live session', 'pa
   }
 });
 
+// Rotation was deferred for two phases because nothing incremented
+// `generation` on re-upload, so `t0` — baked into every published file and
+// therefore identical forever — was not rotatable. Both halves exist now:
+//
+//   * the obfuscator generates a FRESH t0 per build
+//   * the upload records the build and retires every older generation
+//   * the gate refuses a t0 that is not the active build's
+//
+// So this asserts the property the audit was really asking about: after a
+// rotation, a credential derived from the PREVIOUS build stops working.
+gate('G16', 'Rotating a build invalidates the previous build\'s credential', 'pass', async () => {
+  const env = makeEnv();
+  seedScript(env, ID);
+
+  // ---- build 1 ----
+  // NOTE: this file's `call()` returns { status, body } with an UNPARSED body,
+  // unlike the `j()` helper. Parsing here rather than assuming `.ok` exists,
+  // because a gate that reports "upload rejected" while the response literally
+  // says "ok": true is a gate that lies.
+  const T0_1 = 1700000000;
+  const raw1 = await call(env, 'POST', '/sh/upload', {
+    token: await ownerToken(env), name: 'rot', user: 'owner@t.com',
+    wantId: ID, authRequired: true, cipher: 'U0hPS0JBUlRFU1Q=', keyHash: 'k',
+    buildId: 'build_one',
+    splitKey: { paddedKey: [1, 2, 3], t0: T0_1, chk: 1111 }
+  });
+  let b1 = null;
+  try { b1 = JSON.parse(raw1.body); } catch (e) {}
+  need(b1 && b1.ok, 'gate setup failed: build 1 upload rejected (' + raw1.status + ' ' + raw1.body.slice(0, 90) + ')');
+  seedLicense(env, 'LIC', { hwid: 'HW', expiresAt: 0 });
+
+  const gen1 = env.SH_DB.prepare('SELECT generation FROM build_versions WHERE script_id = ? AND active = 1').get(ID);
+  need(gen1 && gen1.generation === 1, 'gate setup failed: build 1 was not recorded as generation 1');
+
+  // build 1 must WORK, or the gate proves nothing
+  const s1 = await authorizedSession(env);
+  const ok1 = await get(env, `/sh/k/${ID}?t=${T0_1}&s=${s1.sid}&n=${s1.nonce}`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.40' });
+  need(ok1.status === 200, 'gate setup failed: the active build was refused (' + ok1.status + ' ' + ok1.body.slice(0, 60) + ')');
+
+  // ---- rotate: build 2 with a FRESH t0, same script id ----
+  const T0_2 = 1800000000;
+  const raw2 = await call(env, 'POST', '/sh/upload', {
+    token: await ownerToken(env), name: 'rot', user: 'owner@t.com',
+    wantId: ID, authRequired: true, cipher: 'U0hPS1CT1RFRUQ=', keyHash: 'k',
+    buildId: 'build_two',
+    splitKey: { paddedKey: [4, 5, 6], t0: T0_2, chk: 2222 }
+  });
+  let b2 = null;
+  try { b2 = JSON.parse(raw2.body); } catch (e) {}
+  need(b2 && b2.ok, 'gate setup failed: build 2 upload rejected (' + raw2.status + ' ' + raw2.body.slice(0, 90) + ')');
+
+  const rows = env.SH_DB.prepare('SELECT generation, active FROM build_versions WHERE script_id = ? ORDER BY generation').all(ID);
+  need(rows.length === 2, 'gate setup failed: expected 2 build rows, got ' + rows.length);
+  if (rows[0].active !== 0) throw new Error('build 1 is still active after a rotation');
+  if (rows[1].active !== 1) throw new Error('build 2 is not active after a rotation');
+  if (rows[1].generation !== 2) throw new Error('build 2 was not recorded as generation 2');
+
+  // ---- the previous build's credential must now be dead ----
+  const s2 = await authorizedSession(env);
+  const stale = await get(env, `/sh/k/${ID}?t=${T0_1}&s=${s2.sid}&n=${s2.nonce}`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.40' });
+  if (stale.status === 200) {
+    throw new Error('the RETIRED build\'s t0 still released the split key - t0 is not rotatable');
+  }
+
+  // ---- and the NEW build must work, or the rotation is a self-DoS ----
+  const s3 = await authorizedSession(env);
+  const fresh = await get(env, `/sh/k/${ID}?t=${T0_2}&s=${s3.sid}&n=${s3.nonce}`, SPOOFED_UA,
+    { 'CF-Connecting-IP': '198.51.100.40' });
+  if (fresh.status !== 200) {
+    throw new Error('the NEW build was refused after rotation (HTTP ' + fresh.status + ') - rotation must not break the live script');
+  }
+  if (!fresh.body.includes('2222')) throw new Error('the new build served the OLD check value: ' + fresh.body.slice(0, 60));
+});
+
 // The /sh/k COMPATIBILITY WINDOW is a deliberate, temporary security
 // downgrade, and it is the only place in this codebase where an old,
 // client-computable credential is still accepted.
@@ -1115,10 +1191,6 @@ gate('G23', 'The /sh/k compatibility window is opt-in and re-opens only what is 
 // generation on re-upload yet. That is Phase 4 work, and claiming it now
 // would be a gate that passes because the feature is absent rather than
 // working.
-gate('G16', 'Rotating a build invalidates the previous build\'s credential', 'deferred', async () => {
-  throw new Error('deferred: build_versions exists but generation is not incremented on re-upload (Phase 4)');
-});
-
 // ===========================================================================
 // runner
 // ===========================================================================

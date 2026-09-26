@@ -149,6 +149,32 @@ import {
     openChain, advancePart, peekChain,
     SESSION_TTL_MS, URL_SESSION_TTL_MS, CHAIN_GRANT_TTL_MS, INLINE_DELIVERY_LIMIT
 } from '../server/delivery.js';
+import {
+    encryptAtRest, decryptAtRest, tryDecryptAtRest, isEncrypted, kekConfigured
+} from '../server/artifact_crypto.js';
+
+// ===========================================================================
+// THE SPLIT-KEY HANDOFF — a contract with the obfuscator
+// ===========================================================================
+//
+// The baked chunk inside an obfuscated file used to fetch its own split key
+// from /sh/k over HTTP. That was a SECOND, weaker, replayable round trip
+// performed after the gate had already paid for one, and it is the reason the
+// /sh/k compatibility window exists at all.
+//
+// Now the bootstrap injects the key line into this genv slot and the baked
+// chunk prefers it, falling back to HTTP only when the global is absent (an
+// older bootstrap, or a file published before Phase 3).
+//
+// The name is duplicated in custom-obfuscator.js as SPLITKEY_GENV. That is
+// deliberate duplication rather than a shared import: the obfuscator runs in
+// the BROWSER (via main.js) and the worker runs on Cloudflare's edge, so they
+// are two separately-bundled programs with no module graph in common. The
+// alternative — a generated file — is a build step nobody would remember to
+// run. So it is a name in two places, and tools/splitkey_handoff_test.mjs
+// asserts the two agree, which is better than a comment asking people to be
+// careful.
+const SPLITKEY_GENV = '__SH_SPLITKEY';
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -284,10 +310,19 @@ const MAX_CHUNKS = 20;              // 20 * ~25MB = ~50MB blob ceiling
 // ---- user sync helpers ----
 async function loadUsersMap(env) {
     if (!env.LOADERS_KV) return {};
+    let map = {};
     try {
         const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) { return {}; }
+        map = raw ? JSON.parse(raw) : {};
+    } catch (e) { map = {}; }
+    // Reconcile into D1 so the gate's live account check has rows to read.
+    // Best-effort, but NOT silent: a failure here shows up as account-bound
+    // deliveries being refused with no other explanation.
+    if (stateFor(env)) {
+        try { await syncUsersToD1(env, map); }
+        catch (e) { console.error('[ScripterHub] user reconcile to D1 failed: ' + (e && e.message)); }
+    }
+    return map;
 }
 // kill an OLD loader (key rotation / re-upload on edit); returns true if replaced
 async function maybeReplaceOld(env, replaces) {
@@ -349,6 +384,61 @@ function storageSafeUser(u) {
 // save the users map WITHOUT ever throwing a blank 500: oversized maps
 // are repaired by dropping image payloads (in size order) until the
 // serialized value fits the KV cap
+// Mirror the KV users map into the D1 `users` table.
+//
+// WHY THIS EXISTS NOW (it did not before)
+// consumeSession() re-checks the account live as part of the atomic delivery
+// statement: `EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.disabled = 0)`.
+// Before this, the `users` table was a stub nothing ever wrote to except a
+// placeholder row, so that subquery could never be satisfied and every
+// account-bound session would have been refused. The column existed; the data
+// did not. A table that looks authoritative and is empty is worse than no
+// table, because the SQL reads as though the check is happening.
+//
+// The KV map stays the store the DASHBOARD reads — that is a migration
+// convenience (D3), not a security decision. D1 is what the GATE reads,
+// because a disabled user must stop the very next delivery, not up to 45s
+// later.
+//
+// Only the fields the gate actually consults are mirrored: id, email,
+// username, role, disabled, created_at, updated_at, last_login_at. NOT the
+// password hash — the gate never needs it, and duplicating a credential into
+// a second store doubles the blast radius of a dump for no benefit.
+async function syncUsersToD1(env, map) {
+    const state = stateFor(env);
+    if (!state) return;
+    const now = Date.now();
+    for (const email of Object.keys(map || {})) {
+        const u = map[email] || {};
+        const id = d1UserId(u.email || email);
+        if (!id) continue;
+        // A legacy KV record may hold btoa(password) rather than a PBKDF2
+        // record. It is mirrored as a clearly-fake hash so the row is NEVER
+        // mistaken for a real credential: the value is not a valid KDF record
+        // and no login path reads it. Mirroring the btoa value instead would
+        // copy a recoverable credential into a second store.
+        const stored = String(u.password || '');
+        const hash = /^pbkdf2\$\d+\$/.test(stored)
+            ? stored
+            : 'pbkdf2$0$legacy$unmigrated';
+        await d1run(state._db,
+            `INSERT INTO users(id,email,username,password_hash,role,disabled,created_at,updated_at,last_login_at)
+             VALUES (?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET
+                username = excluded.username,
+                role = excluded.role,
+                disabled = excluded.disabled,
+                updated_at = excluded.updated_at,
+                last_login_at = excluded.last_login_at`,
+            id, id, String(u.username || id).slice(0, 40), hash,
+            (u.isAdmin || u.isScripter || String(u.email || '').toLowerCase() === OWNER_EMAIL) ? 'owner' : 'user',
+            u.disabled ? 1 : 0,
+            Date.parse(u.createdAt) || now, now,
+            u.lastLoginAt || null
+        );
+    }
+}
+
 async function saveUsersMap(env, map) {
     let json = JSON.stringify(map);
     if (json.length > KV_MAX_VALUE - 1000) {
@@ -368,6 +458,13 @@ async function saveUsersMap(env, map) {
         json = JSON.stringify(map);
     }
     await env.LOADERS_KV.put(USERS_KV_KEY, json);
+    // Authoritative write for the gate's live account check. Wrapped so a D1
+    // problem surfaces as refused account-bound deliveries rather than a blank
+    // 500 in the panel — but never swallowed silently.
+    if (stateFor(env)) {
+        try { await syncUsersToD1(env, map); }
+        catch (e) { console.error('[ScripterHub] user sync to D1 failed: ' + (e && e.message)); }
+    }
 }
 // ===========================================================================
 // PASSWORD HASHING (Phase 1, item 15)
@@ -1242,25 +1339,50 @@ async function ghHead(env, repo, ref) {
 // LAST so a half-finished upload can never be served as a valid script).
 const KV_CHUNK_PREFIX = 'sh_chunk_';
 const KV_CMETA_PREFIX = 'sh_cmeta_';
+// The artifact blob store, with optional at-rest encryption.
+//
+// ENCRYPTION BOUNDARY, and it is a deliberate one: each CHUNK is encrypted
+// independently, not the joined artifact. That costs one GCM nonce+tag per
+// chunk (~28 bytes) but means a 10GB artifact never has to exist in memory as
+// one plaintext buffer, and a partially-uploaded blob is never briefly
+// plaintext. For a 25MB chunk the overhead is ~0.0001%.
+//
+// `len` in the manifest stays the PLAINTEXT length, because that is what the
+// integrity check compares against after decryption.
 async function putBlob(env, id, prefix, text) {
     const s = String(text);
+    const enc = !!kekConfigured(env);
     if (s.length <= CHUNK_THRESHOLD) {
         // legacy single-value path (scripts < ~25MB - the common case)
-        await env.LOADERS_KV.put(prefix + id, s, { expirationTtl: LOADER_TTL });
-        return { chunked: false, len: s.length };
+        await env.LOADERS_KV.put(prefix + id, enc ? await encryptAtRest(env, s) : s, { expirationTtl: LOADER_TTL });
+        return { chunked: false, len: s.length, encrypted: enc };
     }
     const n = Math.ceil(s.length / CHUNK_THRESHOLD);
     if (n > MAX_CHUNKS) throw new Error('too large');
     for (let i = 0; i < n; i++) {
-        await env.LOADERS_KV.put(KV_CHUNK_PREFIX + prefix + id + '_' + i, s.slice(i * CHUNK_THRESHOLD, (i + 1) * CHUNK_THRESHOLD), { expirationTtl: LOADER_TTL });
+        const part = s.slice(i * CHUNK_THRESHOLD, (i + 1) * CHUNK_THRESHOLD);
+        await env.LOADERS_KV.put(KV_CHUNK_PREFIX + prefix + id + '_' + i,
+            enc ? await encryptAtRest(env, part) : part, { expirationTtl: LOADER_TTL });
     }
-    await env.LOADERS_KV.put(KV_CMETA_PREFIX + prefix + id, JSON.stringify({ n, len: s.length }), { expirationTtl: LOADER_TTL });
-    return { chunked: true, n, len: s.length };
+    await env.LOADERS_KV.put(KV_CMETA_PREFIX + prefix + id, JSON.stringify({ n, len: s.length, enc: enc ? 1 : 0 }), { expirationTtl: LOADER_TTL });
+    return { chunked: true, n, len: s.length, encrypted: enc };
 }
 async function getBlob(env, id, prefix) {
     // legacy single value first
     const v = await env.LOADERS_KV.get(prefix + id);
-    if (v !== null) return v;
+    if (v !== null) {
+        if (!isEncrypted(v)) return v;                 // legacy plaintext
+        const r = await tryDecryptAtRest(env, v);
+        // A marked value with no working KEK is REFUSED, not passed through.
+        // Returning the raw "SHKEK1:..." string would look to the loader like
+        // a corrupt script rather than a misconfigured operator, and the
+        // failure would be reported as a user problem instead of a server one.
+        if (!r.ok) {
+            console.error('[ScripterHub] artifact at-rest decrypt failed: ' + r.error);
+            return null;
+        }
+        return r.text;
+    }
     // chunked? read the meta then every chunk in order
     const metaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + prefix + id);
     if (metaRaw === null) return null;
@@ -1270,7 +1392,16 @@ async function getBlob(env, id, prefix) {
     for (let i = 0; i < meta.n; i++) {
         const c = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + prefix + id + '_' + i);
         if (c === null) return null; // missing chunk = corrupted upload
-        parts.push(c);
+        if (isEncrypted(c)) {
+            const r = await tryDecryptAtRest(env, c);
+            if (!r.ok) {
+                console.error('[ScripterHub] chunk ' + i + ' at-rest decrypt failed: ' + r.error);
+                return null;
+            }
+            parts.push(r.text);
+        } else {
+            parts.push(c);
+        }
     }
     const joined = parts.join('');
     return joined.length === meta.len ? joined : null;
@@ -1619,6 +1750,56 @@ export default {
                 headers: CORS_HEADERS
             });
         }
+    },
+
+    // -----------------------------------------------------------------------
+    // CRON: the janitor (Phase 3.2)
+    // -----------------------------------------------------------------------
+    //
+    // Every table the state layer writes is append-or-update, so all of them
+    // grow without bound: sessions, nonces, rate_limits, audit_log,
+    // revocations. None is read except by explicit id or by a current window,
+    // which means old rows are pure cost. They inflate the database, they slow
+    // the indices, and they eventually make every write slower — a slow-motion
+    // outage that nobody diagnoses because nothing is actually broken.
+    //
+    // This used to be listed as an open item with a function written and
+    // nothing calling it, which is the same as not having it: the tables grew
+    // either way and the function was documentation of a wish.
+    //
+    // Wired to a Cloudflare cron trigger (see [triggers] in wrangler.toml).
+    // Runs on a schedule, not on a request, because sweeping on the request
+    // path would put a multi-table DELETE in front of somebody trying to run
+    // a script.
+    async scheduled(event, env, ctx) {
+        const started = Date.now();
+        const state = stateFor(env);
+        if (!state) {
+            // Not an error condition to shout about: a deployment without D1
+            // has nothing to sweep, and the delivery gate is already refusing
+            // loudly for that same reason.
+            console.warn('[ScripterHub] cron: no state layer, nothing to sweep');
+            return;
+        }
+        try {
+            const out = await state.sweepExpired(started);
+            console.log('[ScripterHub] cron sweep: ' + JSON.stringify(out) + ' in ' + (Date.now() - started) + 'ms');
+            // Non-zero counts are worth surfacing: a sweeper that suddenly
+            // deletes 200k rows means something was not running before, and
+            // that is a signal in itself.
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'cron.sweep', outcome: 'ok',
+                reason: 'sessions=' + out.sessions + ' nonces=' + out.nonces
+                    + ' rateLimits=' + out.rateLimits + ' audit=' + out.audit,
+                at: started
+            }));
+        } catch (e) {
+            // A failed sweep is not fatal — the tables keep working, they just
+            // keep growing — so this is logged and not rethrown. Rethrowing
+            // would mark the cron invocation failed and Cloudflare would
+            // retry, multiplying the load of a job that is already unhealthy.
+            console.error('[ScripterHub] cron sweep FAILED: ' + (e && e.message));
+        }
     }
 };
 
@@ -1649,8 +1830,16 @@ async function handleRequest(request, env, ctx) {
                 stateLayer: hasState,
                 delivery: hasState ? 'session-gated' : 'REFUSING (bind SH_DB + apply migrations/0001_init.sql)',
                 webhook: !!env.SH_DISCORD_WEBHOOK,
+                // At-rest encryption is OPTIONAL, so this reports which of the
+                // three states you are in. "on" and "off" both work; the
+                // dangerous one is having marked artifacts on disk with no KEK
+                // to read them, and that shows up as a decrypt failure in the
+                // log plus refused deliveries, not here.
+                artifactCrypto: kekConfigured(env) ? 'on' : 'off',
+                legacyWindow: legacySplitKeyEnabled(env) ? 'OPEN' : 'closed',
                 codeSet: !!setAt,
-                at: Date.now()
+                at: Date.now(),
+                state: hasState ? await stateFor(env).stats().catch(() => null) : null
             });
         }
 
@@ -1877,6 +2066,58 @@ async function handleRequest(request, env, ctx) {
                 };
                 if (sk.t0 < 1 || sk.chk < 1) return jsonResponse({ ok: false, error: 'splitKey.t0/chk required' }, 400);
                 await env.LOADERS_KV.put(KV_SKEY_PREFIX + id, JSON.stringify(sk), { expirationTtl: LOADER_TTL });
+                // PHASE 4 — record the build so t0 becomes rotatable.
+                //
+                // Every re-upload carries a FRESH t0 (the obfuscator generates
+                // one per build), and that is the whole mechanism: the split
+                // key record now holds the newest t0, so the previous build's
+                // t0 matches nothing and its files stop unlocking. Before this
+                // the row existed but nothing wrote it, so `generation` was
+                // always 0 and t0 was permanent — a credential that could
+                // never be revoked.
+                //
+                // This is deliberately NOT a silent rotation of everything
+                // already published. Re-uploading a script id kills the
+                // previous build's files, which is the point, but it is also
+                // why the owner should treat a re-upload as a rotation and
+                // re-issue loadstrings. The audit trail records both.
+                if (stateFor(env) && typeof body.buildId === 'string' && /^ScripterHub\d{10}$/.test(id)) {
+                    try {
+                        const st = stateFor(env);
+                        const gen = await st.nextGeneration(id);
+                        // The scripts row must exist BEFORE the build row:
+                        // build_versions.script_id is a foreign key, and the
+                        // splitKey block runs ahead of the meta write further
+                        // down this route. Without this the insert fails on the
+                        // FK, and the failure surfaces as a rejected upload
+                        // rather than as the missing row it actually is.
+                        await ensureScriptRow(st, id, {
+                            user, name, visibility: readVisibility(body),
+                            authRequired: body.authRequired === true
+                        }, Date.now());
+                        await st.recordBuild({
+                            id: body.buildId.slice(0, 64) || ('b_' + id + '_' + gen),
+                            scriptId: id, generation: gen,
+                            // The schema's artifact_id is NOT NULL and is meant
+                            // to name the KV key holding the bytes, so it is
+                            // NOT NULL in practice: there is always one, even
+                            // for a chunked or GitHub-backed script, because the
+                            // manifest and the parts are both addressed from it.
+                            // Passing null here is a NOT NULL violation, and it
+                            // surfaced as a rejected upload rather than as a
+                            // clear "you forgot a field".
+                            artifactId: KV_PREFIX + id,
+                            now: Date.now()
+                        });
+                        await st.retireOlder(id, gen, Date.now());
+                        await st.audit({
+                            event: 'build.published', outcome: 'ok', scriptId: id,
+                            reason: 'generation=' + gen, at: Date.now()
+                        });
+                    } catch (e) {
+                        console.error('[ScripterHub] build record failed: ' + (e && e.message));
+                    }
+                }
             }
             // ---- KEYLESS (free) scripts ----
             // Executor blob (plainCode) = the obfuscated code, served to
@@ -3033,7 +3274,25 @@ async function handleRequest(request, env, ctx) {
                 const cmetaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id);
                 const isChunked = cmetaRaw !== null;
                 let inlineBlob = '';
-                if (!isGithub && !isChunked) inlineBlob = await env.LOADERS_KV.get(KV_PREFIX + id);
+                if (!isGithub && !isChunked) {
+                    const rawInline = await env.LOADERS_KV.get(KV_PREFIX + id);
+                    if (rawInline !== null) {
+                        if (isEncrypted(rawInline)) {
+                            const r = await tryDecryptAtRest(env, rawInline);
+                            if (!r.ok) {
+                                // Refuse loudly rather than serving the raw
+                                // envelope. The operator needs to know the KEK
+                                // is missing; the user needs to know the script
+                                // is not broken.
+                                console.error('[ScripterHub] delivery refused: at-rest decrypt failed: ' + r.error);
+                                return refuse(DENY.NO_STATE);
+                            }
+                            inlineBlob = r.text;
+                        } else {
+                            inlineBlob = rawInline;
+                        }
+                    }
+                }
 
                 const needsChain = isGithub || isChunked;
                 let total = 0;
@@ -3269,6 +3528,15 @@ async function handleRequest(request, env, ctx) {
             }
             if (!sid || !nonce) return refuse(DENY.NO_SESSION);
 
+            // PHASE 4 — rotation check. A retired build's t0 no longer matches
+            // the active one, so a re-upload kills the previous build's files
+            // on the next request rather than whenever their last run happens
+            // to notice. Scripts with no recorded build are exempt, because a
+            // script published before rotation existed must keep working.
+            if (state && !(await state.isActiveT0(id, wantT))) {
+                return refuse('rotated');
+            }
+
             // Identical atomic gate to /sh/a. Replay, expiry, ban-at-delivery
             // and forgery are all closed by these two statements, not by any
             // check above them.
@@ -3324,8 +3592,17 @@ async function handleRequest(request, env, ctx) {
             if (idx >= cmeta.n) { S.threatsBlocked++; return methodNotAllowed(); }
             const denied = await guardPartRequest(env, request, url, id, idx);
             if (denied) return denied;
-            const chunk = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + KV_PREFIX + id + '_' + idx);
-            if (chunk === null) return methodNotAllowed();
+            const rawChunk = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + KV_PREFIX + id + '_' + idx);
+            if (rawChunk === null) return methodNotAllowed();
+            let chunk = rawChunk;
+            if (isEncrypted(rawChunk)) {
+                const r = await tryDecryptAtRest(env, rawChunk);
+                if (!r.ok) {
+                    console.error('[ScripterHub] part decrypt failed: ' + r.error);
+                    return methodNotAllowed();
+                }
+                chunk = r.text;
+            }
             return new Response(chunk, {
                 status: 200,
                 headers: {
@@ -3705,6 +3982,18 @@ function luaSessionBootstrap(id, base, keyless) {
         + ' if not src then DIE("Wrong Special Key, or the delivery was tampered with.") return end\n'
         + 'end\n'
         + 'local LS=loadstring or load\n'
+        // ---- HAND THE SPLIT KEY TO THE ARTIFACT ----
+        // The gate already returned this build's key line and charged the
+        // session for it. Handing it over here means the obfuscated file's
+        // baked chunk does NOT need a second, weaker HTTP round trip to
+        // /sh/k, which is what forced the compatibility window open.
+        //
+        // This is not a way to forge a key. The chunk still verifies t0 and
+        // chk against values baked into the file itself, and the padded key
+        // bytes are not in the file — so an injected value that is wrong
+        // fails the comparison and the payload never unlocks. The global
+        // changes where the bytes come from, not whether they are correct.
+        + 'if type(SK)=="string" and SK~="" then G[' + JSON.stringify(SPLITKEY_GENV) + ']=SK end\n'
         + 'local fn=LS and LS(src)\n'
         + 'if not fn then DIE("Load failed - re-execute or contact the script owner.") return end\n'
         + 'pcall(function() fn() end)\n';

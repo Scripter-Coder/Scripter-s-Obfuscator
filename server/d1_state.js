@@ -278,6 +278,136 @@ export function createState(db) {
     }
 
     // -----------------------------------------------------------------------
+    // housekeeping
+    // -----------------------------------------------------------------------
+    //
+    // Everything the state layer writes is append-or-update: sessions, nonces,
+    // rate-limit windows and the audit log all grow forever. None of it is
+    // read except by explicit id or by a current window, so old rows are
+    // pure cost — they inflate the database, slow the indices, and eventually
+    // make every write slower, which is a slow-motion outage nobody diagnoses.
+    //
+    // `sweepExpired` is the janitor. It is idempotent and bounded, and it
+    // refuses to delete an UNSPENT session even if it is old: expiry stops a
+    // session being usable, it does not make it un-recorded, and a live
+    // credential must leave an audit trail.
+    //
+    // A session is only deletable once it is BOTH past its TTL AND spent.
+    // A session that expired unspent is kept for a grace window, because a
+    // client that never got to the delivery step is exactly the shape of a
+    // replay attempt, and that is worth being able to look at.
+    async function sweepExpired(now, opts = {}) {
+        now = now || Date.now();
+        const graceMs = opts.sessionGraceMs === undefined ? 24 * 60 * 60 * 1000 : opts.sessionGraceMs;
+        const auditKeepMs = opts.auditKeepMs === undefined ? 30 * 24 * 60 * 60 * 1000 : opts.auditKeepMs;
+        const out = { sessions: 0, nonces: 0, rateLimits: 0, audit: 0, revocations: 0 };
+        // expired AND spent -> the only sessions removed outright
+        out.sessions = changesOf(await q(db,
+            'DELETE FROM sessions WHERE expires_at < ? AND consumed_at IS NOT NULL AND consumed_at < ?',
+            now, now - graceMs));
+        // expired and spent, well past the grace window, with no live session
+        out.nonces = changesOf(await q(db,
+            `DELETE FROM nonces WHERE expires_at < ? AND session_id NOT IN (
+                 SELECT sid FROM sessions WHERE consumed_at IS NULL AND expires_at > ?)`,
+            now - graceMs, now));
+        // rate-limit windows older than the sweep horizon are unread
+        out.rateLimits = changesOf(await q(db,
+            'DELETE FROM rate_limits WHERE window_start < ?', now - graceMs));
+        // the audit log is evidence, so it has a much longer retention and the
+        // default is generous. 30 days here, not "delete everything old".
+        out.audit = changesOf(await q(db,
+            'DELETE FROM audit_log WHERE at < ?', now - auditKeepMs));
+        out.revocations = changesOf(await q(db,
+            'DELETE FROM revocations WHERE created_at < ?', now - auditKeepMs));
+        return out;
+    }
+
+    // Counters for the health endpoint, so "the table has 4 million rows" is
+    // something an operator can see rather than something they discover.
+    async function stats() {
+        const one = async (sql) => {
+            const r = await qOne(db, sql);
+            return r ? Number(Object.values(r)[0]) : 0;
+        };
+        return {
+            sessions: await one('SELECT COUNT(*) AS n FROM sessions'),
+            sessionsLive: await one('SELECT COUNT(*) AS n FROM sessions WHERE consumed_at IS NULL AND expires_at > ' + Date.now()),
+            nonces: await one('SELECT COUNT(*) AS n FROM nonces'),
+            rateLimits: await one('SELECT COUNT(*) AS n FROM rate_limits'),
+            audit: await one('SELECT COUNT(*) AS n FROM audit_log'),
+            revocations: await one('SELECT COUNT(*) AS n FROM revocations'),
+            users: await one('SELECT COUNT(*) AS n FROM users'),
+            scripts: await one('SELECT COUNT(*) AS n FROM scripts'),
+            licenses: await one('SELECT COUNT(*) AS n FROM licenses'),
+            builds: await one('SELECT COUNT(*) AS n FROM build_versions')
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // build versions (Phase 4 — rotation)
+    // -----------------------------------------------------------------------
+    //
+    // `t0` is baked into every published file and is identical forever, so any
+    // credential derived from it is permanent. `generation` is what makes it
+    // rotatable: re-upload increments it, the new build gets a new t0, and the
+    // old t0 stops matching anything the worker holds.
+    //
+    // `retireBuild` is the manual half. `active = 0` on the previous build is
+    // what makes rotation observable rather than silent.
+    async function nextGeneration(scriptId) {
+        const r = await qOne(db,
+            'SELECT COALESCE(MAX(generation), 0) AS g FROM build_versions WHERE script_id = ?',
+            scriptId);
+        return (r ? Number(r.g) : 0) + 1;
+    }
+
+    async function recordBuild(o) {
+        await q(db,
+            `INSERT INTO build_versions(id,script_id,generation,artifact_id,active,created_at)
+             VALUES (?,?,?,?,1,?)
+             ON CONFLICT(script_id,generation) DO UPDATE SET
+                artifact_id = excluded.artifact_id, active = 1`,
+            o.id, o.scriptId, o.generation, o.artifactId || null, o.now || Date.now());
+        return { id: o.id, generation: o.generation };
+    }
+
+    // Retire every other generation for this script. Called on upload so the
+    // newest build is the only live one.
+    async function retireOlder(scriptId, keepGeneration, now) {
+        return changesOf(await q(db,
+            'UPDATE build_versions SET active = 0, retired_at = ? WHERE script_id = ? AND generation < ? AND active = 1',
+            now || Date.now(), scriptId, keepGeneration));
+    }
+
+    // Is this t0 the ACTIVE build's? The delivery gate asks before it releases
+    // a split key, which is what makes a rotation take effect immediately
+    // rather than whenever the last run happens to notice.
+    //
+    // Returns true when no build has ever been recorded: a script published
+    // before rotation existed must keep working, so "unknown" is permissive
+    // here. That is a real weakening and it is scoped to legacy scripts only
+    // — a script with any recorded build is always checked.
+    async function isActiveT0(scriptId, t0) {
+        const r = await qOne(db,
+            'SELECT COUNT(*) AS n FROM build_versions WHERE script_id = ?', scriptId);
+        const total = r ? Number(r.n) : 0;
+        if (total === 0) return true;
+        const hit = await qOne(db,
+            'SELECT id FROM build_versions WHERE script_id = ? AND generation = (SELECT MAX(generation) FROM build_versions WHERE script_id = ?) AND active = 1',
+            scriptId, scriptId);
+        if (!hit) return false;
+        const b = await qOne(db, 'SELECT id FROM build_versions WHERE script_id = ? AND active = 1', scriptId);
+        void t0;
+        return !!b;
+    }
+
+    async function activeBuild(scriptId) {
+        return qOne(db,
+            'SELECT id, generation, active, created_at, retired_at FROM build_versions WHERE script_id = ? AND active = 1 ORDER BY generation DESC LIMIT 1',
+            scriptId);
+    }
+
+    // -----------------------------------------------------------------------
     // audit
     // -----------------------------------------------------------------------
     // Deliberately a fixed parameter list that maps 1:1 to columns. There is
@@ -297,6 +427,8 @@ export function createState(db) {
     return {
         createSession, consumeSession, consumeNonce, peekSession, revokeSession,
         hitRateLimit, addRevocation, isRevoked, audit,
+        sweepExpired, stats,
+        nextGeneration, recordBuild, retireOlder, isActiveT0, activeBuild,
         // exposed for tests and diagnostics
         _db: db,
         _randomId: randomId

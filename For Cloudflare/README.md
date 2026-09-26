@@ -39,10 +39,31 @@ This worker does four jobs:
         |  "SHL\n<blob>"                   small: inline, one response
         |  "SHK\n<key>\n<blob>"            keyed: inline, one response
         |  "SHG <n> <root> <grant>\n..."    large: opens a forward-only chain
+        |
+        |  the key line is handed to the artifact in a genv slot, so the
+        |  obfuscated file makes no second HTTP request
         v
    (large only) GET /sh/c/<id>/<i>?g=&s=   or   /sh/g/<id>/<i>?g=&s=
         one atomic forward step per part; no skip, no replay
 ```
+
+### Optional hardening
+
+| Variable | Effect | Default |
+|---|---|---|
+| `SH_ARTIFACT_KEK` | AES-GCM at rest over artifact blobs in KV | off |
+| `SH_LEGACY_SPLIT_KEY` | Re-open the old `/sh/k` shape for already-published files | **off** |
+
+`SH_ARTIFACT_KEK` is opt-in and marker-prefixed (`SHKEK1:`), so it can be
+turned on for new uploads without touching existing ones, and removing it later
+cannot make an existing artifact unreadable. **A marked value with no KEK is
+refused, never passed through** — see D18.
+
+`SH_LEGACY_SPLIT_KEY` exists for one deploy only. Off means a hard cutover,
+which breaks every require-key script published before Phase 3. On keeps them
+working while you migrate, and re-opens token replay, token expiry and offline
+token forgery. Bans, expiry and the kill switch keep working either way. See
+G23.
 
 ### The properties this buys
 
@@ -276,17 +297,32 @@ See D15.
 ## Verifying the deployment
 
 ```bash
-npm test              # full suite, including the security gates
-npm run test:gates    # just the gate harness
+npm test                # full suite, including the gates and the benchmark
+npm run test:gates      # the gate harness
+npm run bench:attacker  # the attacker benchmark
 ```
 
-The gate harness is the measuring instrument, and it asserts *desired*
-behaviour rather than current behaviour:
+`tools/security_gates_test.mjs` is the measuring instrument, and it asserts
+*desired* behaviour rather than current behaviour:
 
 ```
-SECURITY GATES   closed 21/21   holes confirmed 0   deferred 1
+SECURITY GATES   closed 23/23   holes confirmed 0   deferred 0
 ```
 
 A non-zero exit means a closed gate regressed. `holes confirmed 0` means every
 property the suite knows how to test is actually held. Read the number as work
 remaining, not as a score.
+
+`tools/attacker_benchmark.mjs` runs the attacker's toolkit against the real
+worker and prints a table — 18 blocked, plus 4 rows deliberately marked
+**accepted** because those attacks *do* work. Read the accepted ones first:
+an authorised client still receives every byte, so the real cost of getting
+your script is capturing a run and devirtualising it. That is the VM layer, and
+no amount of session gating changes it.
+
+### Housekeeping
+
+A cron trigger (`17 * * * *`) sweeps expired sessions, orphaned nonces, stale
+rate-limit windows and audit rows past 30 days. `GET /sh/health` returns row
+counts, so you can see growth before it becomes a problem. Nothing in a user's
+run depends on the sweeper having run.

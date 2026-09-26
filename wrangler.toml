@@ -198,6 +198,24 @@ database_name = "scripterhub"
 enabled = true
 
 # -----------------------------------------------------------------------------
+# CRON: the janitor
+# -----------------------------------------------------------------------------
+# Every table the state layer writes grows without bound otherwise. The
+# `scheduled` handler sweeps expired sessions, orphaned nonces, stale
+# rate-limit windows and old audit rows.
+#
+# Hourly, because the tables grow from traffic volume rather than from
+# anything time-sensitive, and a sweep that runs more often does not delete
+# meaningfully more. A daily job would leave a full day of garbage between
+# runs, which is exactly the accumulation this exists to stop.
+#
+# Note this runs on a SCHEDULE, not on a request path: putting a multi-table
+# DELETE in front of somebody trying to run a script would be a self-inflicted
+# outage. Nothing in a user's run depends on this having happened.
+[triggers]
+crons = ["17 * * * *"]
+
+# -----------------------------------------------------------------------------
 # HARDENING DEFAULTS
 # -----------------------------------------------------------------------------
 # The whole delivery model assumes the origin is not directly reachable.
