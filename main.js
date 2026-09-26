@@ -154,6 +154,26 @@ function shNewScriptId() {
     return 'ScripterHub' + digits;
 }
 
+// Split-key is for PAID builds only. Returns the serverKey options to
+// merge in, or an empty object for a keyless one.
+//
+// A split key keeps a paid script's last layer out of the file; the worker
+// hands it over at runtime. A keyless script has no license to gate, so a
+// split key there is pure friction - and actively broken, because the SHL
+// delivery never carries a key line and the payload's own /sh/k fallback
+// needs a live session it does not have. The user saw exactly that:
+//
+//     [ScripterHub] Key response too short
+//     VERDICT: the delivered source COMPILES on this executor
+//
+// A plain function so tools/keyless_artifact_test.mjs can lift it out of
+// this file and assert the decision, instead of only asserting that the
+// obfuscator behaves when handed the right options.
+function shServerKeyOpts(keyless, wantId) {
+    if (keyless) return {};
+    return { serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId } };
+}
+
 const SH_GH_PART_SIZE = 40 * 1024 * 1024;
 async function shUploadGithub(o) {
     try {
@@ -4145,12 +4165,7 @@ function obfuscateScriptCode(code, engine, options) {
                 // Server-side behaviour is deliberately UNCHANGED. authtest A8 uploads a
                 // keyless script WITH a split key and asserts /sh/k still gates it. This
                 // is only about what the client generates.
-                var withServerKey = Object.assign({}, options);
-                if (options.keyless) {
-                    delete withServerKey.serverKey;
-                } else {
-                    withServerKey.serverKey = { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId };
-                }
+                var withServerKey = Object.assign({}, options, shServerKeyOpts(options.keyless, wantId));
                 var out = applyCustomObfuscator(code, withServerKey, dbgInfo);
                 if (dbgInfo.splitKey && dbgInfo.splitKey.paddedKey) {
                     resolve({ code: out, splitKey: dbgInfo.splitKey, wantId: wantId });

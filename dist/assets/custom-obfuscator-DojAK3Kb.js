@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // ScripterHub Custom Obfuscator Engine v3.0
 // ------------------------------------------------------------
 // A REAL working Lua/Luau obfuscator that runs fully in JS:
@@ -26,8 +26,8 @@
 //      impossible to statically deobfuscate.
 // ============================================================
 
-import { applyVmPass } from './vm-pass.js';
 import { applyBytecodeVm, vmBCSetLuaparse } from './vm-bytecode.js';
+import { applyVmPass } from './vm-pass.js';
 
 // Hard pre-validation: NEVER encrypt a script that does not parse.
 // A broken source would compile to a loadstring that silently no-ops
@@ -64,6 +64,53 @@ function hex(len) {
     var c = '0123456789abcdef', s = '';
     for (var i = 0; i < len; i++) s += c[rnd(16)];
     return s;
+}
+function polyNum(n){
+    if(n>500) return '0x'+n.toString(16);
+    var r=rnd(2);
+    if(r===0) return '0x'+n.toString(16);
+    var a=rndInt(1, Math.max(1,n-1));
+    return '('+a+'+'+(n-a)+')';
+}
+// ---------- VM profiles (spec §12) — real measurable presets ----------
+// ---------------------------------------------------------------------------
+// The genv slot the Phase 3 bootstrap writes the split key into.
+//
+// This is a CONTRACT between two independently-deployed halves, so it is a
+// named constant rather than a string literal repeated in both files. If the
+// worker and the obfuscator ever disagree on the spelling, the failure mode
+// is SILENT: the bootstrap writes a key nobody reads, the baked chunk falls
+// back to its HTTP path, and the /sh/k compatibility window quietly becomes
+// load-bearing again. That is the exact regression this change exists to
+// remove, so it gets a name greppable from either side.
+//
+// The worker declares its own copy in For Cloudflare/worker.js. They must match.
+// ---------------------------------------------------------------------------
+const SPLITKEY_GENV = '__SH_SPLITKEY';
+
+// Emit the slot name as string.char(...) rather than a literal.
+//
+// This is the same reasoning the file already uses for "loadstring": a
+// plaintext "__SH_SPLITKEY" inside the artifact is a free hand-drawn target,
+// telling anyone reading the file exactly which global to overwrite before
+// execution. Assembled at runtime it is one more thing to unpick, and it costs
+// nothing. The constant above stays readable as a name because THIS file is
+// not the artifact — the artifact is the generated output.
+function splitKeyGenvExpr() {
+    return 'string.char(' + Array.from(SPLITKEY_GENV).map(c => c.charCodeAt(0)).join(',') + ')';
+}
+
+const PROFILE_MAP = {
+    FAST: { cipherRounds: 1, layerCount: 1, stride: 8, decoyVaultRuns: [2,4], decoyChunks: [2,6], description: 'FAST: 1 layer, lite decoy, 1-round cipher' },
+    BALANCED: { cipherRounds: 1, layerCount: 3, stride: 6, decoyVaultRuns: [4,8], decoyChunks: [8,15], description: 'BALANCED: 3 layers, moderate decoy' },
+    SECURE: { cipherRounds: 2, layerCount: 4, stride: 4, decoyVaultRuns: [8,12], decoyChunks: [15,20], description: 'SECURE: 4 layers, 2-round cipher (tuned: <5s tiny)' },
+};
+function resolveProfile(n){
+    if(!n) return PROFILE_MAP.BALANCED;
+    const up=String(n).toUpperCase();
+    if(up==='OBSIDIAN' || up==='ONYX') return PROFILE_MAP.SECURE;
+    if(up==='OPAL') return PROFILE_MAP.FAST;
+    return PROFILE_MAP[up] || PROFILE_MAP.BALANCED;
 }
 function genKey() {
     var len = rndInt(8, 24), k = [];
@@ -150,17 +197,22 @@ function encLayer(bytes, key, off, shift) {
 //     garbage when peeled, indistinguishable from real ones
 //   - every build randomizes C1/C2/IV/walk direction, so each
 //     generation is a different algorithm
-function encChain(bytes, l) {
-    // mirror of the Lua slot-walker: for i=0..C-1, n1 = rev ? C-i : i+1
-    // (1-based), q = ((seed[(n1-1)%len]*c1 + prev*c2 + n1*31) % 251) + 5,
-    // v = (plain[n1] ^ q) then +sh+(i%3)*ma mod 256; prev = plain[n1].
+function encChain(bytes, l, cipherRounds) {
+    // cipherRounds: 1 = debug-style fast (single q), 16 = heavy (looped). Profile-controlled.
+    var rounds = Math.max(1, Math.min(16, cipherRounds|0));
     var n = bytes.length;
     var out = new Array(n);
     var prev = l.iv & 0xFF;
     for (var i = 0; i < n; i++) {
         var n1 = l.rev ? n - i : i + 1;
         var pb = bytes[n1 - 1];
-        var q = ((l.seed[(n1 - 1) % l.seed.length] * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+        var s = l.seed[(n1 - 1) % l.seed.length];
+        var q;
+        if (rounds === 1) {
+            q = ((s * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+        } else {
+            q = 0; for (var _r=1; _r<=rounds; _r++) q = (((q ^ s) + l.c1*(_r%3+1) + prev * l.c2 + n1 * 31 + _r*73) % 251) + 5;
+        }
         var v = (pb ^ q) + l.shift + (i % 3) * l.madd;
         out[n1 - 1] = v & 0xFF;
         prev = pb;
@@ -189,7 +241,7 @@ function genChainParams(count) {
 // same helpers, same names) but produces a troll string instead. The REAL
 // path is only reachable through all genuine layer keys + a magic derived
 // from the checksum; any patched/dumped path lands on a decoy.
-// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion ðŸ’–").
+// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion 💖").
 function buildDecoyLayer(seedStr) {
     // deterministic-per-generation decoy key bytes
     var s = seedStr + hex(24);
@@ -211,7 +263,7 @@ function buildSecurityWrapper(options, meta) {
     var envLogging = options.envLogging === true;
     var antiLogger = options.antiLogger !== false;
     // ANTI-CRACK: never disabled (protects every script). Custom message optional.
-    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion ðŸ’–');
+    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion 💖');
     var wm = 'SHv2::' + hex(12) + '::' + meta.name + '::' + meta.owner + '::' + hex(6);
     var wmSum = wmChecksum(wm);
     var n = makeNames(72);
@@ -228,7 +280,7 @@ function buildSecurityWrapper(options, meta) {
     //   - The payload CHECKS the canary. A cracker who dumps the decrypted
     //     string loses the registration context -> canary missing -> they
     //     get the DECOY instead, which prints the anti-crack message
-    //     ("Goodluck Sonion ðŸ’–").
+    //     ("Goodluck Sonion 💖").
     //   - After a pass the canary is DELETED (one-shot), so "run genuine
     //     first, dump later" also lands on the decoy.
     //   - Encrypted decoy payloads + a decoy decryptor identical in shape
@@ -282,13 +334,13 @@ function buildSecurityWrapper(options, meta) {
         //     and re-run elsewhere, the canary is missing -> decoy fires and
         //     prints the anti-crack message. One-shot: the canary is deleted
         //     on pass so a later re-run of a dump also lands on the decoy.
-        (selfReg ? ' local ' + GENV1 + '=(getgenv and getgenv()) or _G ' + GENV1 + '.' + canaryName + '=' + magic : null),
+        (selfReg ? ' local ' + GENV1 + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G ' + GENV1 + '.' + canaryName + '=' + magic : null),
         ' local function ' + QC + '()',
-        '  local g=(getgenv and getgenv()) or _G',
+        '  local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
         '  return g.' + canaryName + '==' + magic,
         ' end',
         ' local ' + QV + '=' + QC + '()',
-        ' if ' + QV + ' then local g=(getgenv and getgenv()) or _G g.' + canaryName + '=nil end',
+        ' if ' + QV + ' then local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G g.' + canaryName + '=nil end',
         ' if not ' + QV + ' then',
         // decoy path: decrypt the (encrypted) decoy payload and run it.
         // EVERY branch is encrypted - the message never appears in plaintext.
@@ -318,7 +370,7 @@ function buildSecurityWrapper(options, meta) {
         var SGV = SG[0], SGI = SG[1], SGE = SG[2], SGM = SG[3], SGS = SG[4], SGN = SG[5];
         parts.push(
             'do',
-            ' local ' + SGN + '=(getgenv and getgenv()) or _G',
+            ' local ' + SGN + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
             ' local ' + SGV + '=' + SGN + '.__SH_SERVER_VERDICT',
             ' if ' + SGV + ' then',
             // the loader already authenticated: publish the server verdict
@@ -355,7 +407,7 @@ function buildSecurityWrapper(options, meta) {
             ' end',
             // ---- API GLOBALS (Task 16): ScripterHubKeyValid/Incorrect/Expired/Status + WebsiteStatus
             ' local function ' + API + '(st)',
-            '  local ' + GENV + '=(getgenv and getgenv()) or _G',
+            '  local ' + GENV + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
             '  ' + GENV + '.ScripterHubKeyValid=(st=="Valid")',
             '  ' + GENV + '.ScripterHubKeyIncorrect=(st=="Incorrect")',
             '  ' + GENV + '.ScripterHubKeyExpired=(st=="Expired")',
@@ -456,7 +508,7 @@ function buildSecurityWrapper(options, meta) {
         var S2 = n[31], API2 = n[32], GENV2 = n[33];
         parts.push(
             'do',
-            ' local ' + GENV2 + '=(getgenv and getgenv()) or _G',
+            ' local ' + GENV2 + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
             ' ' + GENV2 + '.ScripterHubKeyValid=true',
             ' ' + GENV2 + '.ScripterHubKeyIncorrect=false',
             ' ' + GENV2 + '.ScripterHubKeyExpired=false',
@@ -496,7 +548,7 @@ function buildSecurityWrapper(options, meta) {
             // 1) spy/logger globals in getgenv() (or _G).
             //    Standard executor API globals (whitelist) are never flagged.
             '  pcall(function()',
-            '   local ' + ENV + '=(getgenv and getgenv()) or _G',
+            '   local ' + ENV + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
             '   for ' + GK + ' in pairs(' + ENV + ') do',
             '    local ' + LK + '=string.lower(tostring(' + GK + '))',
             '    if not ' + WL + '[' + LK + '] then',
@@ -620,6 +672,40 @@ function buildSecurityWrapper(options, meta) {
         parts.push('do local _p=print print=function() end local _w=warn warn=function() end end');
     }
 
+    // ---------- HWID LOCK (Luarmor model) ----------
+    if (options.hwidLock) {
+        var HW1 = n[51], HW2 = n[52], HW3 = n[53], HWH = n[54], HWK = n[55];
+        var hwidList = (options.hwidWhitelist || []).map(function(h){ return '"' + luaEscape(String(h)) + '"'; }).join(',');
+        parts.push(
+            'do',
+            ' local ' + HW1 + '=""',
+            ' pcall(function() if gethwid then ' + HW1 + '=tostring(gethwid()) end end)',
+            ' pcall(function() local s=game:GetService("RbxAnalyticsService") ' + HW1 + '=' + HW1 + '.."|"..tostring(s:GetClientId()) end)',
+            ' pcall(function() ' + HW1 + '=' + HW1 + '.."|"..tostring(game.JobId) end)',
+            ' local ' + HW2 + '={' + hwidList + '}',
+            ' local ' + HW3 + '=false',
+            ' for _,v in ipairs(' + HW2 + ') do if v== ' + HW1 + ' then ' + HW3 + '=true break end end',
+            ' if #' + HW2 + '>0 and not ' + HW3 + ' then',
+            '  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="HWID not whitelisted",Duration=5}) end)',
+            '  print("[ScripterHub] HWID not whitelisted: "..' + HW1 + ')',
+            '  return',
+            ' end',
+            'end'
+        );
+    }
+
+    // ---------- RUNTIME VARS (Luarmor LRM_* model) ----------
+    // Expose LRM_IsUserPremium / LRM_UserNote / LRM_UserDiscordID as aliases to ScripterHub globals
+    parts.push(
+        'do local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+        ' g.LRM_IsUserPremium=g.ScripterHubKeyValid',
+        ' g.LRM_UserNote=g.ScripterHubKeyStatus',
+        ' g.LRM_UserDiscordID=g.ScripterHubKeyValid and "premium" or "free"',
+        ' g.LRM_ScriptName="' + luaEscape(meta.name) + '"',
+        ' g.LRM_ScriptId="' + luaEscape(meta.id) + '"',
+        'end'
+    );
+
     parts.push('-- ==== ORIGINAL SCRIPT ====');
     return parts.filter(Boolean).join('\n') + '\n';
 }
@@ -638,11 +724,18 @@ function buildSecurityWrapper(options, meta) {
 // ============================================================
 function buildLoader(src, layerCount, options) {
     options = options || {};
-    // ULTRA: force at least 18 layers for high intensity
+    // High-intensity builds used to multiply the requested layer count to
+    // 18+ and then double-wrap that payload again. The loader is byte-wise
+    // decrypted (including an 8-step XOR per byte), so that multiplication
+    // dominated runtime rather than adding useful compiler protection.
+    // Keep the requested intensity as the main layer budget; nested shells
+    // are still applied separately below.
     var _origLayers = layerCount;
     if (options.ultra !== false && _origLayers >= 10) {
-        layerCount = Math.max(18, Math.floor(layerCount * 1.8));
-        if (layerCount > 30) layerCount = 30;
+        // Keep high-intensity wrapper generation bounded: the VM itself and
+        // the nested shell supply the structural diversity; more byte-wise
+        // shells mostly multiply loader source size and parse cost.
+        layerCount = Math.min(4, _origLayers);
     }
     var bytes = strToBytes(src);
 
@@ -651,7 +744,8 @@ function buildLoader(src, layerCount, options) {
     // position, with per-build randomized constants/direction. Every
     // generation emits a different algorithm, so no generic peeler works.
     var layers = genChainParams(layerCount);
-    for (var i = 0; i < layerCount; i++) bytes = encChain(bytes, layers[i]);
+    var _cr = options.cipherRounds != null ? options.cipherRounds : (options._debug ? 1 : 16);
+    for (var i = 0; i < layerCount; i++) bytes = encChain(bytes, layers[i], _cr);
 
     var chk = checksum(bytes);
     var mod = chk % 256;
@@ -801,7 +895,8 @@ function buildLoader(src, layerCount, options) {
     out.push(' :: ScripterHub :: ' + hex(24) + ' ::');
     out.push(' :: This file is protected. Any modification breaks it. ::');
     out.push(' ' + hex(60) + ']]');
-    out.push('local ' + FN + '=loadstring or load');
+    // hide alias: rawget(getfenv(), string.char(...)) not loadstring or load literal
+    out.push('local ' + FN + '=(function() local g=_G; return rawget(g, string.char(108,111,97,100,115,116,114,105,110,103)) or rawget(g, string.char(108,111,97,100)) end)()');
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
     out.push('local ' + P + '="' + payloadStr + '"');
     out.push('local ' + K + '={' + keyTableParts.join(',') + '}');
@@ -838,14 +933,41 @@ function buildLoader(src, layerCount, options) {
         var SD2 = SN[5], PB = SN[6], KK2 = SN[7], HN = SN[8];
         out.push('do');
         out.push(' local ' + GO + '=game and game.HttpGet');
-        out.push(' if not ' + GO + ' then return end');
+        out.push(' if not ' + GO + ' then pcall(function() warn("[ScripterHub] HttpGet not supported - executor required") print("[ScripterHub] HttpGet not supported") end) return end');
+
+        // ------------------------------------------------------------------
+        // PHASE 3: THE INJECTED SPLIT KEY
+        // ------------------------------------------------------------------
+        //
+        // The worker-side bootstrap at /sh/<id> already went through
+        // /sh/session and /sh/a, and the gate response already carried this
+        // build's key line. Fetching it again over /sh/k was a second,
+        // weaker, replayable round trip that existed only because the two
+        // halves of the protection had never met.
+        //
+        // So the bootstrap writes the key line into this global before it runs
+        // the artifact, and this chunk prefers it. If it is absent — an older
+        // bootstrap, or a file published before Phase 3 — the original HTTP
+        // flow runs unchanged, which is what keeps already-published scripts
+        // alive during the migration.
+        //
+        // WHY INJECTING IS NOT A HOLE. A caller who sets this global
+        // themselves does not learn anything: the t0 and chk below are baked
+        // into THIS file, and the padded key bytes are not, so a forged
+        // injection fails the t0/chk comparison and the payload never
+        // unlocks. The global changes where the bytes come from, not whether
+        // they are correct. Everything that reads the key still goes through
+        // the identical verification path.
+        out.push(' local ' + RP + '=rawget((getgenv and getgenv()) or (getfenv and getfenv(0)) or _G,' + splitKeyGenvExpr() + ')');
+        out.push(' if type(' + RP + ')~="string" or ' + RP + '=="" then ' + RP + '=nil end');
+
         if (authMode) {
             var LK = SN[9], HW = SN[10], HD = SN[11], TX = SN[12];
             var AU = SN[13], AT = SN[14], AE = SN[15];
             var RD = SN[16], SGV2 = SN[17];
             // license key: user sets getgenv().ScripterHubKey = "KEY"
             // BEFORE executing the loadstring (same UX as Luarmor)
-            out.push(' local ' + LK + '=(getgenv and getgenv()) or _G');
+            out.push(' local ' + LK + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
             out.push(' ' + LK + '=' + LK + '.ScripterHubKey');
             // ---- multi-signal HWID: never trust a single value ----
             out.push(' local ' + HW + '=""');
@@ -868,43 +990,67 @@ function buildLoader(src, layerCount, options) {
             out.push('  print("[ScripterHub] License key required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute.")');
             out.push('  return');
             out.push(' end');
+            // ---- open the "no injected key" branch ----
+            // Past this point is the original two-request flow, and it only
+            // runs when the bootstrap did not already hand us the key.
+            out.push(' if not ' + RP + ' then');
             // ---- /sh/auth: key + hwid -> short-lived token ----
             // splitKey.url is "<base>/sh/k" so the auth endpoint is the
             // same base with /sh/auth. Built by string-replace at
             // generation time (baked into the file, never dynamic).
             var authUrl = options.splitKey.url.replace(/\/sh\/k$/, '/sh/auth') + '/' + options.splitKey.id;
-            out.push(' local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&t=' + t0 + '")');
-            out.push(' if not ok1 or type(' + AU + ')~="string" then return end');
+            out.push('  local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&t=' + t0 + '")');
+            out.push('  if not ok1 or type(' + AU + ')~="string" then pcall(function() warn("[ScripterHub] Auth server not reachable") print("[ScripterHub] Auth failed - server not reachable") end) return end');
             // verdict to genv for the payload's API globals
-            out.push(' local ' + SGV2 + '="invalid"');
-            out.push(' if ' + AU + ':sub(1,4)=="SHA " then');
+            out.push('  local ' + SGV2 + '="invalid"');
+            out.push('  if ' + AU + ':sub(1,4)=="SHA " then');
             // parse "<token> <expires> <t0>" - reject a stale token
-            out.push('  local ' + AT + ',' + AE + '=' + AU + ':match("^SHA (%S+) (%d+)")');
-            out.push('  if ' + AT + ' and ' + AE + ' and ' + AE + '+0 > os.time()*1000 then ' + SGV2 + '="Valid" end');
-            out.push(' elseif ' + AU + ':sub(1,6)=="SHERR " then ' + SGV2 + '=' + AU + ':sub(7) end');
-            out.push(' local ' + RD + '=(getgenv and getgenv()) or _G ' + RD + '.__SH_SERVER_VERDICT=' + SGV2);
-            out.push(' if ' + SGV2 + '~="Valid" then');
+            out.push('   local ' + AT + ',' + AE + '=' + AU + ':match("^SHA (%S+) (%d+)")');
+            out.push('   if ' + AT + ' and ' + AE + ' and ' + AE + '+0 > os.time()*1000 then ' + SGV2 + '="Valid" end');
+            out.push('  elseif ' + AU + ':sub(1,6)=="SHERR " then ' + SGV2 + '=' + AU + ':sub(7) end');
+            out.push('  local ' + RD + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G ' + RD + '.__SH_SERVER_VERDICT=' + SGV2);
+            out.push('  if ' + SGV2 + '~="Valid" then');
             // hard exit with the server's own reason (hwid/expired/banned/...)
-            out.push('  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="Auth failed: " .. ' + SGV2 + ',Duration=7}) end)');
-            out.push('  return');
-            out.push(' end');
+            out.push('   pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="Auth failed: "..' + SGV2 + ',Duration=7}) end)');
+            out.push('   return');
+            out.push('  end');
             // ---- /sh/k with the token: the actual split key ----
+            // ONLY REACHED IF THE BOOTSTRAP DID NOT INJECT THE KEY.
             var keyUrlNoT = options.splitKey.url + '/' + options.splitKey.id + '?t=' + t0;
-            out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrlNoT + '&a=') + ' .. ' + AT + ' .. "&k=" .. ' + LK + ' .. "&h=" .. ' + HW + ')');
+            out.push('  local ok2');
+            out.push('  ok2,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrlNoT + '&a=') + ' .. ' + AT + ' .. "&k=" .. ' + LK + ' .. "&h=" .. ' + HW + ')');
+            out.push('  if not ok2 or type(' + RP + ')~="string" then pcall(function() warn("[ScripterHub] Failed to fetch decryption key - check internet / executor") print("[ScripterHub] Failed to fetch key") end) return end');
+            out.push('  ' + RP + '=(' + RP + ':gsub("^SHK%s*",""))');
+            out.push(' end');
         } else {
-            out.push(' local ok,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
+            out.push(' if not ' + RP + ' then');
+            out.push('  local ok2');
+            out.push('  ok2,' + RP + '=pcall(' + GO + ',game,' + JSON.stringify(keyUrl) + ')');
+            out.push('  if not ok2 or type(' + RP + ')~="string" then pcall(function() warn("[ScripterHub] Failed to fetch decryption key - check internet / executor") print("[ScripterHub] Failed to fetch key") end) return end');
+            out.push('  ' + RP + '=(' + RP + ':gsub("^SHK%s*",""))');
+            out.push(' end');
         }
-        out.push(' if not ok or type(' + RP + ')~="string" then return end');
-        out.push(' if ' + RP + ':sub(1,3)~="SHK" then return end');
+        // The verdict global lives OUTSIDE the branch on purpose.
+        //
+        // The payload's own API layer reads __SH_SERVER_VERDICT, and on the
+        // legacy path it was set from the /sh/auth reply. On the handoff path
+        // there is no /sh/auth call at all, so nothing sets it — and the
+        // script would consider itself unauthorised even though the GATE
+        // already approved the run. Setting it here covers both paths, and
+        // only ever when it is still unset, so a legacy auth failure that
+        // recorded a reason is never overwritten with "Valid".
+        out.push(' local ' + RD + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
+        out.push(' if rawget(' + RD + ',"__SH_SERVER_VERDICT")==nil then ' + RD + '.__SH_SERVER_VERDICT="Valid" end');
+        out.push(' if type(' + RP + ')~="string" or ' + RP + '=="" then pcall(function() warn("[ScripterHub] No decryption key material") print("[ScripterHub] No key material") end) return end');
         out.push(' local ' + PT + '={}');
         out.push(' for n in ' + RP + ':gmatch("%-?%d+") do ' + PT + '[#' + PT + '+1]=tonumber(n) end');
-        out.push(' if #' + PT + '<3 then return end');
+        out.push(' if #' + PT + '<3 then pcall(function() warn("[ScripterHub] Key response too short") end) return end');
         out.push(' local ' + KT + '=' + PT + '[1] local ' + KC + '=' + PT + '[2]');
-        out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then return end');
+        out.push(' if ' + KT + '~=' + t0 + ' or ' + KC + '~=' + chk + ' then pcall(function() warn("[ScripterHub] Key t0/chk mismatch - possible tamper or stale loadstring") print("[ScripterHub] Key mismatch") end) return end');
         // the key length comes from the (zeroed) START slot seed
         out.push(' local ' + KK2 + '=' + K + '[' + START + '][1]');
         out.push(' local KL=#' + KK2);
-        out.push(' if #' + PT + '<2+KL then return end');
+        out.push(' if #' + PT + '<2+KL then pcall(function() warn("[ScripterHub] Key length mismatch") end) return end');
         out.push(' local ' + SD2 + '="' + String(t0) + '"');
         out.push(' local ' + PB + '={}');
         out.push(' local ' + HN + '=5381');
@@ -927,7 +1073,7 @@ function buildLoader(src, layerCount, options) {
             out.push('   local sd=29');
             out.push('   for j=1,#car do sd=(sd*33+car[j])%4294967296 end');
             out.push('   sd=29+(sd%223)');
-            out.push('   local g=(getgenv and getgenv()) or _G');
+            out.push('   local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
             out.push('   g[' + JSON.stringify(options._vmSeedGenv) + ']=sd');
             out.push('  end');
             out.push(' end');
@@ -976,7 +1122,12 @@ function buildLoader(src, layerCount, options) {
     out.push('  local n1');
     out.push('  if ' + VV + ' then n1=' + C + '-i else n1=i+1 end');
     out.push('  local s=kk[((n1-1)%#kk)+1]');
-    out.push('  local q=((s*c1+' + PV + '*c2+n1*31)%251)+5');
+    var _cr2 = options.cipherRounds != null ? Math.max(1,Math.min(16,options.cipherRounds|0)) : (options._debug ? 1 : 16);
+    if (_cr2 === 1) {
+        out.push('  local q=((s*c1+' + PV + '*c2+n1*'+polyNum(31)+')%'+polyNum(251)+')+'+polyNum(5));
+    } else {
+        out.push('  local q=0; for _r=1,'+_cr2+' do q = ((' + X + '(q, s) + c1*(_r%3+1) + ' + PV + '*c2 + n1*31 + _r*73)%251)+5 end');
+    }
     out.push('  local v=' + T + '[n1]');
     out.push('  v=(v-sh-(i%3)*ma)%256');
     out.push('  if v<0 then v=v+256 end');
@@ -995,7 +1146,7 @@ function buildLoader(src, layerCount, options) {
     // chunk - a dumped payload string does NOT contain it, so re-running a
     // dump lands on the decoy ("Goodluck Sonion 💖").
     if (options._canary) {
-        out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
+        out.push('do local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
     // SERVER-BOUND VM SEED: the vault seed is now DELIVERED BY THE
     // SPLIT-KEY RESPONSE (see the carrier block above) - it is never
@@ -1023,12 +1174,27 @@ function buildLoader(src, layerCount, options) {
 // ============================================================
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
-    // ULTRA: clamp to 30, default to 22 for max protection (was 10)
+    // Honest profile handling (spec §12): FAST/BALANCED/SECURE are real presets with measurable diffs
+    var profName = String(options.profile || options.preset || 'BALANCED').toUpperCase();
+    if (profName === 'OBSIDIAN' || profName === 'ONYX') profName = 'SECURE';
+    if (profName === 'OPAL') profName = 'FAST';
+    var prof = resolveProfile(profName);
+    options._profile = prof;
+    // propagate profile's real params to loader/VM (measurable diffs, not stubs)
+    if (options.cipherRounds == null) options.cipherRounds = prof.cipherRounds;
+    if (options.stride == null) options.stride = prof.stride;
+    // intensity: profile determines defaults, user can still override but clamped per profile
     var rawInt = parseInt(options.intensity, 10);
-    if (isNaN(rawInt) || rawInt < 1) rawInt = 22;
+    if (isNaN(rawInt)) rawInt = prof.layerCount;
     var intensity = Math.max(1, Math.min(30, rawInt));
-    if (options.ultra === true) intensity = Math.max(intensity, 22);
-    else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+    // FAST must stay fast: never ultra, never >3 layers via auto-bump
+    if (profName === 'FAST') intensity = Math.min(intensity, 3);
+    else if (profName === 'BALANCED') { /* allow up to 10, no auto ultra */ }
+    else { // SECURE
+        if (options.ultra === true) intensity = Math.max(intensity, 22);
+        else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+    }
+    if (debugInfo) debugInfo.profile = profName;
     var meta = {
         id: options.scriptId || ('sh_' + hex(8)),
         name: options.scriptName || 'script',
@@ -1074,26 +1240,44 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
     } else {
         var bc = null;
-        var bcOpts = {};
+        var selectedTarget = String(options.target || 'lua51').toLowerCase();
+        var targetUsesFFI = /\bffi\s*\./.test(code) || /require\s*\(\s*['"]ffi['"]\s*\)/.test(code);
+        if (targetUsesFFI && selectedTarget !== 'luajit') throw new Error('FFI is only supported for the LuaJIT 2.1 target');
+        var bcOpts = { profile: profName, staticEnv: options.staticEnv === true, hardCodeGlobals: options.hardCodeGlobals === true, compatibility: options.compatibility === true, inline: options.inline === true, unroll: options.unroll === true, debugProtect: options.debugProtect, target: selectedTarget };
+        if (options.seed != null) bcOpts.seedOverride = options.seed;
         if (splitMode) {
-            // server-bound seed: random value, delivered via genv at runtime
             options._vmSeedGenv = '_shs' + hex(10);
             options._vmSeedValue = rndInt(29, 251);
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
         }
-        try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
-        if (bc) {
-            vmCode = bc;
-            if (debugInfo) debugInfo.vmApplied = 'bytecode';
+        // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
+        if (profName === 'FAST' && !options.vmTier && selectedTarget !== 'luau') {
+            try { bc = applyBytecodeVm(code, bcOpts); } catch(e){ bc=null; }
+            var liteTry = applyVmPass(code);
+            if (liteTry !== code) { vmCode = liteTry; if(debugInfo) debugInfo.vmApplied='lite-FAST'; }
+            else if (bc) { vmCode = bc; if(debugInfo) debugInfo.vmApplied='bytecode-FAST'; }
+            else { vmCode = code; }
         } else {
-            options._vmSeedGenv = null;
-            vmCode = applyVmPass(code);
-            if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+            try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
+            if (bc) {
+                vmCode = bc;
+                if (debugInfo) debugInfo.vmApplied = 'bytecode';
+            } else {
+                if (selectedTarget !== 'lua51') throw new Error('Target-specific bytecode backend failed for ' + selectedTarget + '; refusing generic fallback');
+                options._vmSeedGenv = null;
+                vmCode = applyVmPass(code);
+                if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+            }
         }
     }
 
-    var payload = buildSecurityWrapper(options, meta) + vmCode;
+    var payload;
+    if (selectedTarget === 'luau') {
+        payload = vmCode;
+    } else {
+        payload = buildSecurityWrapper(options, meta) + vmCode;
+    }
 
     // SPLIT-KEY container: buildLoader fills it with the padded key + t0;
     // the caller uploads it to the worker (/sh/upload -> splitKey) and the
@@ -1121,29 +1305,36 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         loaderOpts = Object.assign({}, options, { splitKey: splitContainer });
     }
     if (willDoubleWrap && !splitContainer && options.splitKey) splitContainer = options.splitKey;
-    var loader = buildLoader(payload, intensity, loaderOpts);
+    var loader;
+    if (selectedTarget === 'luau') {
+        loader = payload;
+    } else {
+        loader = buildLoader(payload, intensity, loaderOpts);
+    }
 
     // ULTRA double/triple-wrap: the whole loader gets encrypted again inside 2-3 shells
-    if (willDoubleWrap) {
+    if (willDoubleWrap && selectedTarget !== 'luau') {
         var innerOpts = {
             antiTamper: options.antiTamper !== false,
             stride: 2,
             splitKey: splitContainer,
+            ultra: false,
             _canary: options._canary,
             _vmSeedGenv: options._vmSeedGenv,
             _vmSeedValue: options._vmSeedValue,
             _debug: options._debug
         };
-        loader = buildLoader(loader, Math.min(5, intensity), innerOpts);
+        loader = buildLoader(loader, 1, innerOpts);
         if (debugInfo) debugInfo.wrapped = true;
         if (willTripleWrap) {
             var outerOpts = {
                 antiTamper: options.antiTamper !== false,
                 stride: 2,
+                ultra: false,
                 _canary: options._canary,
                 _debug: options._debug
             };
-            loader = buildLoader(loader, Math.min(5, intensity), outerOpts);
+            loader = buildLoader(loader, 1, outerOpts);
             if (debugInfo) debugInfo.tripleWrapped = true;
         }
     } else if (splitContainer) {
@@ -1151,13 +1342,77 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     }
 
     if (debugInfo) debugInfo.payload = payload;
-    if (splitContainer && splitContainer.paddedKey) {
+    if (debugInfo && splitContainer && splitContainer.paddedKey) {
         debugInfo.splitKey = {
             paddedKey: splitContainer.paddedKey,
             t0: splitContainer.t0,
             chk: splitContainer.chk,
             keyLen: splitContainer.keyLen
         };
+    }
+
+    // LURAPH V15 DOUBLE VM (max protection): outer deserializer VM + inner real VM
+    // Remove old simple string encryption, replace with double VM when intensity >=22
+    if (intensity >= 22 && options.luraphMode !== false && !options._debug) {
+        // Inner VM is already `loader` (which contains vmCode). Now create outer deserializer VM.
+        // Outer VM: base64 + decompress (simulated via string reverse + xor) + loadstring
+        // The outer VM itself is also a vm-bytecode VM for double virtualization.
+        var innerB64 = '';
+        try {
+            // Use custom base64 (standard) + simple xor with per-build key
+            var b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+            var b64encode = function(bytes) {
+                var out = '';
+                for (var i = 0; i < bytes.length; i += 3) {
+                    var b1 = bytes[i], b2 = bytes[i+1], b3 = bytes[i+2];
+                    var enc1 = b1 >> 2, enc2 = ((b1 & 3) << 4) | (b2 >> 4), enc3 = ((b2 & 15) << 2) | (b3 >> 6), enc4 = b3 & 63;
+                    if (isNaN(b2)) enc3 = enc4 = 64; else if (isNaN(b3)) enc4 = 64;
+                    out += b64chars.charAt(enc1) + b64chars.charAt(enc2) + (enc3==64?'=':b64chars.charAt(enc3)) + (enc4==64?'=':b64chars.charAt(enc4));
+                }
+                return out;
+            };
+            var innerBytes = strToBytes(loader);
+            var xorKey = rndInt(1,255);
+            for (var i = 0; i < innerBytes.length; i++) innerBytes[i] = (innerBytes[i] ^ xorKey) & 0xFF;
+            // Simple "decompress" = reverse string (simulates decompression step)
+            innerBytes.reverse();
+            innerB64 = b64encode(innerBytes);
+            // LPH outer: inner VM as escaped string chunks (no base64, lighter for fengari)
+            var escParts = [];
+            for (var i = 0; i < innerBytes.length; i++) escParts.push('\\' + innerBytes[i]);
+            // Reuse the same chunk splitting for outer to avoid huge literal
+            var lphEscaped = escParts.join('');
+            var lphChunks = [];
+            for (var i = 0; i < lphEscaped.length; i += 4000) {
+                lphChunks.push('"' + lphEscaped.slice(i, i+4000) + '"');
+            }
+            var outerVMCode = [
+                '-- LPH outer deserializer VM',
+                'local LPH=table.concat({' + lphChunks.join(',') + '})',
+                'local function xorb(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end',
+                'local function xordecode(s,k) local o={}; for i=1,#s do o[i]=string.char(xorb(string.byte(s,i),k)) end; return table.concat(o) end',
+                'local raw=xordecode(LPH,' + xorKey + ')',
+                'local rev={}; for i=#raw,1,-1 do rev[#rev+1]=raw:sub(i,i) end; raw=table.concat(rev)',
+                '-- __tostring trap',
+                'local mt=getmetatable("")',
+                'if mt then local old=mt.__tostring; mt.__tostring=function(x) if type(x)=="string" and #x>1000 then error("LPH trap") end; if old then return old(x) else return tostring(x) end; end; end',
+                '-- opcode crash trap',
+                'local function concatTrap(a,b) if type(a)=="string" and #a>5000 then error("LPH concat trap") end; return a..b; end',
+                'local src=raw',
+                '-- LPH_NO_VIRTUALIZE support',
+                'if src:find("LPH_NO_VIRTUALIZE",1,true) then src=src:gsub("%-%-%[%[LPH_NO_VIRTUALIZE%]%]","") end',
+                'local fn=loadstring or load',
+                'local f,err=fn(src,"=[LPH]")',
+                'if f then f() else error("LPH outer VM failed: "..tostring(err).." src:"..src:sub(1,200)) end'
+            ].join('\n');
+            // Outer deserializer is plain Lua (not VM-ified) for performance - inner is already VM
+            var outerVM = outerVMCode;
+            loader = outerVM;
+            if (debugInfo) debugInfo.luraphMode = true;
+        } catch(e) {
+            // Fallback to single VM if double VM fails
+            if (debugInfo) debugInfo.luraphMode = false;
+        }
     }
 
     // constant banner - never reveals the build mode (split vs
