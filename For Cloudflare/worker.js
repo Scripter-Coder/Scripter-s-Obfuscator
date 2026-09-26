@@ -4044,6 +4044,19 @@ async function handleRequest(request, env, ctx) {
                 if (!/^ScripterHub\d{10}$/.test(id)) return deny(DENY.NO_SCRIPT);
 
                 const script = await scriptAuthz(env, id);
+                // A missing script must be a REFUSAL, not a crash.
+                //
+                // scriptAuthz returns null for an id that was never published,
+                // was deleted, or was replaced by a newer build - all routine.
+                // The next line then read `script.authRequired` on null, threw,
+                // and the generic catch-all returned HTTP 500 with "worker
+                // error: Cannot read properties of null", which tells the caller
+                // nothing and hides the real answer (SHERR gone).
+                //
+                // Same class as the dead SHERR check: an error path that never
+                // worked, so every failure on it presented as a different and
+                // more alarming failure.
+                if (!script) return deny(DENY.NO_SCRIPT);
                 const killswitch = await isKillswitchOn(env);
 
                 // A keyless script still needs an IDENTITY. This was decision
