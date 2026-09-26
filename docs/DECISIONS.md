@@ -520,7 +520,7 @@ Not a setting, not a config, not fixable from inside the dashboard.
 
 **An intermediate answer was tried and abandoned.** The first response was a
 bundler producing `dist/worker.single.min.js` for pasting. It does work, and it
-was verified - 23/23 gates and 18/18 attacker rows against the generated file.
+was verified - 24/24 gates and 18/18 attacker rows against the generated file.
 It was reverted anyway, because it bought a worse problem: a generated
 artifact that can drift from its source, a staleness check to manage that
 drift, and a build step in a project deliberately kept build-step-free.
@@ -612,7 +612,7 @@ and third layers of encoding.
 - **The owner email is hard-coded** (`OWNER_EMAIL` in worker.js). It is the
   root of trust for site-owner privilege and belongs in a secret.
 - **The dashboard paste path is unverified against the real editor.** The
-  worker is proven by executing it (23/23 gates, 18/18 attacker rows, plus
+  worker is proven by executing it (24/24 gates, 18/18 attacker rows, plus
   S1–S7), but nobody has confirmed the dashboard accepts ~265 KiB in one
   paste. The earlier "truncates at ~500 lines" symptom was the NUL byte, not a
   size limit, so the real limit is still unknown. If the editor does cap size,

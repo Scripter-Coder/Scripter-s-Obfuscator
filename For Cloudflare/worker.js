@@ -4286,8 +4286,22 @@ async function handleRequest(request, env, ctx) {
                     const skRaw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
                     let sk = null;
                     if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
-                    let out = script.keyless ? 'SHL\n' : 'SHK\n';
-                    out += (sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
+                // The key line follows the SAME condition as the envelope.
+                //
+                // These used to be decided independently: the header by
+                // script.keyless, the key line by whether a skey happened to
+                // exist in KV. A keyless id that had once carried a split key
+                // therefore got an SHL header with a key line welded on, and
+                // the loader - which strips four bytes and nothing more for a
+                // keyless envelope - fed those numbers to the parser as line 1:
+                //
+                //     1790455763315 7148516 228 127 190 ...
+                //     loadstring:1: Expected identifier when parsing expression
+                //
+                // The artifact was never the problem. An SHL body is now pure
+                // Lua by construction, whatever is in KV.
+                let out = script.keyless ? 'SHL\n' : 'SHK\n';
+                out += (sk && !script.keyless ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
                     out += inlineBlob;
                     try {
                         await state.audit({
@@ -4322,7 +4336,10 @@ async function handleRequest(request, env, ctx) {
                     let sk = null;
                     if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
                     let head = 'SHG ' + total + ' ' + (isGithub ? '/sh/g/' : '/sh/c/') + id + ' ' + grant + '\n';
-                    head += (sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
+                    // Same rule as the inline path: a keyless script's chain
+                    // carries no key line. Fixed in both places because they are
+                    // separate code paths and the bug was in both.
+                    head += (sk && !script.keyless ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
                     try {
                         await state.audit({
                             event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,

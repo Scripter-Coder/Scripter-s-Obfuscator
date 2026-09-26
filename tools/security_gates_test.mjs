@@ -1227,6 +1227,123 @@ gate('G23', 'The /sh/k compatibility window is opt-in and re-opens only what is 
   }
 });
 
+gate('G24', 'A keyless delivery body is pure Lua and never carries a key line', 'pass', async () => {
+
+  // The suite had no gate that compared an envelope's declared type against its
+
+  // contents. Every earlier gate minted sessions and read blobs; none asked what the
+
+  // response body WAS.
+
+  const env = makeEnv();
+
+  const lua = '-- a keyless artifact that begins with a comment\nprint(1)\n';
+
+  env.LOADERS_KV._store.set('sh_loader_' + ID2, lua);
+
+  env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'u', keyless: true }));
+
+  // The precondition that caused it: the id ALSO carries a split-key record.
+
+  // A keyed publish writes sh_skey_<id>; a keyless re-publish over the same id
+
+  // used to leave it behind, and delivery then emitted its key line.
+
+  const sk = {
+
+    t0: 1790455763315,
+
+    chk: 7148516,
+
+    paddedKey: [228, 127, 190, 164, 140, 236, 77, 220, 28, 110, 62, 63, 20, 5]
+
+  };
+
+  env.LOADERS_KV._store.set('sh_skey_' + ID2, JSON.stringify(sk));
+
+  const mint = async () => {
+
+    const r = await call(env, 'POST', '/sh/session', { id: ID2 }, SPOOFED_UA,
+
+      { 'CF-Connecting-IP': '198.51.100.31' });
+
+    const p = r.body.trim().split(/\s+/);
+
+    return p[1] && p[2] ? p : null;
+
+  };
+
+  // 1. keyless + a stale skey: the body must be the artifact and nothing else.
+
+  const p1 = await mint();
+
+  need(p1, 'gate setup failed: could not mint a keyless session');
+
+  const d1 = await get(env, `/sh/a/${ID2}?s=${p1[1]}&n=${p1[2]}`, SPOOFED_UA);
+
+  if (d1.body.slice(0, 4) !== 'SHL\n') {
+
+    throw new Error('a keyless script did not get an SHL envelope: ' + JSON.stringify(d1.body.slice(0, 40)));
+
+  }
+
+  if (d1.body !== 'SHL\n' + lua) {
+
+    throw new Error('a KEYLESS delivery body is not exactly SHL\\n + artifact.\n'
+
+      + '         It carries extra bytes, which the loader feeds to the parser as Lua.\n'
+
+      + '         body after the header: ' + JSON.stringify(d1.body.slice(4, 90)));
+
+  }
+
+  // and specifically: no key line, even though one exists in KV
+
+  if (d1.body.includes(String(sk.t0)) || d1.body.includes(String(sk.chk))) {
+
+    throw new Error('a KEYLESS delivery leaked the split-key line (t0/chk) into the artifact');
+
+  }
+
+  // 2. the mirror image. A fix that ALWAYS dropped the key line would pass the
+  //    check above and silently break every keyed script, so the keyed path is
+  //    asserted here too - same KV state, opposite script type.
+  env.LOADERS_KV._store.set('sh_meta_' + ID2, JSON.stringify({ name: 'f', user: 'u', keyless: false }));
+
+  // A keyed script needs a real license, so this uses the file's honest-path
+  // helper rather than minting blind. authorizedSession throws if the setup
+  // fails, and a setup failure must be reported as such - reading a refusal as
+  // "the key line went missing" is how the previous version of this check
+  // produced a false failure.
+  const keyed = await authorizedSession(env, { key: 'LIC24', id: ID2, lic: { hwid: 'HW' } });
+  const d2 = await get(env, `/sh/a/${ID2}?s=${keyed.sid}&n=${keyed.nonce}`, SPOOFED_UA);
+  if (d2.body.slice(0, 4) !== 'SHK\n') {
+    throw new Error('gate setup failed: a keyed script did not get an SHK envelope: '
+      + JSON.stringify(d2.body.slice(0, 60)));
+  }
+  const nl2 = d2.body.indexOf('\n', 4);
+  if (nl2 < 0) {
+    throw new Error('gate setup failed: the SHK envelope has no key line at all');
+  }
+  // The key line starts at index 4, not 5. The worker builds it with Lua's
+  // body:sub(5, nl-1), which is 1-INDEXED; the equivalent JavaScript is
+  // slice(4, ...). Using 5 drops the first character, so t0 arrives as
+  // "790455763315" and the assertion below reports a missing key line on a
+  // delivery that has one. The same 1-vs-0 trap broke the SHK branch of the
+  // bootstrap earlier in this project, so it is named rather than just fixed.
+  const keyline = d2.body.slice(4, nl2);
+  if (keyline.indexOf(String(sk.t0)) < 0 || keyline.indexOf(String(sk.chk)) < 0) {
+    throw new Error('a KEYED delivery lost its key line - the fix in part 1 is too broad.\n'
+      + '         sk that was seeded: ' + JSON.stringify(sk) + '\n'
+      + '         envelope head: ' + JSON.stringify(d2.body.slice(0, 120)) + '\n'
+      + '         keyline: ' + JSON.stringify(keyline));
+  }
+  // and the ciphertext still follows it, so the envelope is well formed
+  if (d2.body.slice(nl2 + 1).length === 0) {
+    throw new Error('gate setup failed: the SHK envelope has a key line but no ciphertext');
+  }
+});
+
 // G16 stays deferred. Rotating a build invalidates the previous build's
 // credential, and the schema for it (build_versions) exists, but t0 is still
 // baked into the shipped file at build time and nothing increments a

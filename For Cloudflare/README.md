@@ -410,7 +410,7 @@ npm run bench:attacker  # the attacker benchmark
 *desired* behaviour rather than current behaviour:
 
 ```
-SECURITY GATES   closed 23/23   holes confirmed 0   deferred 0
+SECURITY GATES   closed 24/24   holes confirmed 0   deferred 0
 ```
 
 A non-zero exit means a closed gate regressed. `holes confirmed 0` means every
