@@ -72,7 +72,7 @@ function polyNum(n){
     var a=rndInt(1, Math.max(1,n-1));
     return '('+a+'+'+(n-a)+')';
 }
-// ---------- VM profiles (spec Â§12) â€” real measurable presets ----------
+// ---------- VM profiles (spec §12) — real measurable presets ----------
 // ---------------------------------------------------------------------------
 // The genv slot the Phase 3 bootstrap writes the split key into.
 //
@@ -241,7 +241,7 @@ function genChainParams(count) {
 // same helpers, same names) but produces a troll string instead. The REAL
 // path is only reachable through all genuine layer keys + a magic derived
 // from the checksum; any patched/dumped path lands on a decoy.
-// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion Ã°Å¸â€™â€“").
+// Decoy output: the configured antiCrackMessage (default "Goodluck Sonion 💖").
 function buildDecoyLayer(seedStr) {
     // deterministic-per-generation decoy key bytes
     var s = seedStr + hex(24);
@@ -263,7 +263,7 @@ function buildSecurityWrapper(options, meta) {
     var envLogging = options.envLogging === true;
     var antiLogger = options.antiLogger !== false;
     // ANTI-CRACK: never disabled (protects every script). Custom message optional.
-    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion Ã°Å¸â€™â€“');
+    var antiCrackMsg = String(options.antiCrackMessage || 'Goodluck Sonion 💖');
     var wm = 'SHv2::' + hex(12) + '::' + meta.name + '::' + meta.owner + '::' + hex(6);
     var wmSum = wmChecksum(wm);
     var n = makeNames(72);
@@ -280,7 +280,7 @@ function buildSecurityWrapper(options, meta) {
     //   - The payload CHECKS the canary. A cracker who dumps the decrypted
     //     string loses the registration context -> canary missing -> they
     //     get the DECOY instead, which prints the anti-crack message
-    //     ("Goodluck Sonion Ã°Å¸â€™â€“").
+    //     ("Goodluck Sonion 💖").
     //   - After a pass the canary is DELETED (one-shot), so "run genuine
     //     first, dump later" also lands on the decoy.
     //   - Encrypted decoy payloads + a decoy decryptor identical in shape
@@ -946,8 +946,8 @@ function buildLoader(src, layerCount, options) {
         // halves of the protection had never met.
         //
         // So the bootstrap writes the key line into this global before it runs
-        // the artifact, and this chunk prefers it. If it is absent â€” an older
-        // bootstrap, or a file published before Phase 3 â€” the original HTTP
+        // the artifact, and this chunk prefers it. If it is absent — an older
+        // bootstrap, or a file published before Phase 3 — the original HTTP
         // flow runs unchanged, which is what keeps already-published scripts
         // alive during the migration.
         //
@@ -1144,7 +1144,7 @@ function buildLoader(src, layerCount, options) {
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
     // chunk - a dumped payload string does NOT contain it, so re-running a
-    // dump lands on the decoy ("Goodluck Sonion ðŸ’–").
+    // dump lands on the decoy ("Goodluck Sonion 💖").
     if (options._canary) {
         out.push('do local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
@@ -1174,7 +1174,7 @@ function buildLoader(src, layerCount, options) {
 // ============================================================
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
-    // Honest profile handling (spec Â§12): FAST/BALANCED/SECURE are real presets with measurable diffs
+    // Honest profile handling (spec §12): FAST/BALANCED/SECURE are real presets with measurable diffs
     var profName = String(options.profile || options.preset || 'BALANCED').toUpperCase();
     if (profName === 'OBSIDIAN' || profName === 'ONYX') profName = 'SECURE';
     if (profName === 'OPAL') profName = 'FAST';
@@ -1251,7 +1251,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
         }
-        // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) â€” measurable profile diff
+        // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
         if (profName === 'FAST' && !options.vmTier && selectedTarget !== 'luau') {
             try { bc = applyBytecodeVm(code, bcOpts); } catch(e){ bc=null; }
             var liteTry = applyVmPass(code);

@@ -2,8 +2,8 @@
 // (mocked KV) and asks one question: can an UNAUTHENTICATED client that is
 // not a browser retrieve a protected artifact by spoofing User-Agent?
 // Nothing in the repository or in production is modified.
-const workerSrc = await import('../For Cloudflare/worker.js');
-const worker = workerSrc.default;
+import { loadWorker } from './worker_target.mjs';
+const worker = await loadWorker();
 
 function makeKV() {
   const store = new Map();

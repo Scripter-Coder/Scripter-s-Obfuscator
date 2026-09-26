@@ -26,8 +26,11 @@
     "test:legacy-migration": "node tools/legacy_password_migration_test.mjs",
     "test:inline-multiret": "node tools/inline_multiret_differential_test.mjs",
     "test:resilience": "node worker-resilience.test.mjs",
-    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs && node chunked.test.mjs && node ghstorage.test.mjs && node bigscript.test.mjs && node vm-stack.test.mjs && node usertoken.test.mjs && node hardening.test.mjs && node tools/inline_multiret_differential_test.mjs && node tools/ownerproof_removed_test.mjs && node tools/legacy_password_migration_test.mjs && node tools/atomic_state_test.mjs && node worker-resilience.test.mjs && node tools/splitkey_handoff_test.mjs && node tools/artifact_crypto_test.mjs && node tools/control_chars_test.mjs && node tools/security_gates_test.mjs",
-    "test:ctrlchars": "node tools/control_chars_test.mjs"
+    "test": "node obfuscator.test.mjs && node worker.test.mjs && node anticrack.test.mjs && node splitkey.test.mjs && node authtest.test.mjs && node chunked.test.mjs && node ghstorage.test.mjs && node bigscript.test.mjs && node vm-stack.test.mjs && node usertoken.test.mjs && node hardening.test.mjs && node tools/inline_multiret_differential_test.mjs && node tools/ownerproof_removed_test.mjs && node tools/legacy_password_migration_test.mjs && node tools/atomic_state_test.mjs && node worker-resilience.test.mjs && node tools/splitkey_handoff_test.mjs && node tools/artifact_crypto_test.mjs && node tools/control_chars_test.mjs && node tools/find_mojibake.mjs && node tools/security_gates_test.mjs && node tools/single_file_bundle_test.mjs",
+    "test:ctrlchars": "node tools/control_chars_test.mjs",
+    "build:worker": "node tools/bundle_worker.mjs",
+    "test:workerbundle": "node tools/single_file_bundle_test.mjs",
+    "test:mojibake": "node tools/find_mojibake.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

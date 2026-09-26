@@ -138,6 +138,11 @@ traffic.
    wrangler deploy
    ```
 
+   > **Note on the KV id.** `wrangler deploy --dry-run` lists
+   > `env.LOADERS_KV` even while the `id` line is commented out. A clean
+   > dry-run is therefore **not** evidence that KV is configured. Put the real
+   > id in before the real deploy.
+
 7. **Claim the owner access code, once.**
    ```bash
    curl -X POST https://<your-worker>/sh/owner-claim \
@@ -162,6 +167,108 @@ traffic.
    D9: the gate fails closed rather than falling back to KV, because a fallback
    would silently restore every hole this phase closes. Bind `SH_DB` and apply
    the migration.
+
+---
+
+## Deploying without the CLI — the single-file bundle
+
+`wrangler deploy` is the supported path and should be the one you use. This
+section exists for the case where you cannot or will not run the CLI, and you
+have to paste the worker into the Cloudflare dashboard instead.
+
+### Why the source cannot be pasted
+
+`For Cloudflare/worker.js` imports three sibling modules:
+
+```js
+import { createState, run as d1run } from '../server/d1_state.js';
+import { deliver, ... }                  from '../server/delivery.js';
+import { encryptAtRest, ... }            from '../server/artifact_crypto.js';
+```
+
+**The dashboard editor has no filesystem.** It evaluates one pasted string, so a
+relative import cannot resolve there — ever. The error is:
+
+```
+Uncaught TypeError: Invalid module specifier "../server/d1_state.js".
+                    imported from "worker.js".
+```
+
+That is not a setting you can change in the dashboard.
+
+> If your editor shows `Cannot find module '../server/d1_state.js'. Did you
+> mean to set the 'moduleResolution' option to 'nodenext'...` on those lines,
+> that is a **different and harmless** thing: a language-server diagnostic, not
+> a runtime error. The repo now has a `jsconfig.json` with
+> `moduleResolution: "bundler"`, which clears it. It does **not** make
+> dashboard paste work.
+
+### Build it
+
+```bash
+npm run build:worker
+```
+
+Produces two files:
+
+| File | Size | Use |
+|---|---|---|
+| `dist/worker.single.js` | ~265 KiB | same code, comments and section headers kept |
+| `dist/worker.single.min.js` | ~146 KiB | full-line comments removed — **paste this one** |
+
+The bundler inlines `server/d1_state.js`, `server/artifact_crypto.js`,
+`server/delivery.js` and then the worker, in dependency order, and collapses
+`import`/`export` into plain declarations. Top-level name collisions across
+those four files are a **hard error**, never a silent last-one-wins.
+
+### Paste it
+
+1. Cloudflare dashboard → your worker → **Edit code** / **Code** tab.
+2. Select everything, delete it.
+3. Open `dist/worker.single.min.js`, copy **the whole file**, paste.
+4. **Deploy**.
+
+### Do not skip the test
+
+```bash
+npm test
+```
+
+The last suite is `tools/single_file_bundle_test.mjs` (13 checks). It is not
+ceremony — it exists because this bundler already shipped one real defect:
+
+> The first version recorded the import alias `run as d1run` as a **comment**
+> instead of a declaration. The output was 265 KiB of clean, plausible,
+> syntactically valid JavaScript that referenced a name nothing declared.
+> `node --check` passed, because it validates syntax and not unresolved
+> references. Every source-level test passed, because none of them read
+> `dist/`. It was caught only by importing the bundle and running the gate and
+> benchmark suites against it, which is what B7 does.
+
+Two of its checks are the ones that will save you:
+
+- **B1 — the bundle is not stale.** A bundle that works but is out of date is
+  worse than no bundle, because it looks authoritative. If you change the
+  worker and forget to rebuild, B1 fails. Run `npm run build:worker`.
+- **B2 — no raw control bytes.** This is the bug that made `worker.js`
+  itself uncopyable: a literal `0x00` sat inside a string literal where the
+  source should have read the escape `\0`. It was semantically identical to
+  JavaScript, so **every test passed** — but a raw control byte terminates a
+  clipboard selection, so copying the file stopped dead at line 540 and the
+  paste arrived truncated to ~500 lines. That looked exactly like an editor
+  size limit and sent us hunting for the wrong cause. The same check now runs
+  against the artifacts you paste.
+
+### Verify the deployment, not just the paste
+
+```bash
+curl https://<your-worker>/sh/health
+```
+
+Then confirm the cron trigger survived. Dashboard paste does **not** carry
+`wrangler.toml`, so the `17 * * * *` schedule (D19) is configured in the
+dashboard under **Triggers → Cron Triggers**. Without it nothing sweeps
+expired sessions and the table only grows.
 
 ---
 

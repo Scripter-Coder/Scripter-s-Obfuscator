@@ -266,8 +266,8 @@ console.log('[C5] chunked KEYED script: the chain carries the key line + reassem
 //
 // Only the NETWORK is canned. The gate response, the chain header and every
 // part are the real bytes the worker produced for a real session, and all of
-// the bootstrap's own logic â€” wire-format parsing, the part loop, the stitch,
-// the local decrypt, the loadstring â€” runs for real. That is the part that can
+// the bootstrap's own logic — wire-format parsing, the part loop, the stitch,
+// the local decrypt, the loadstring — runs for real. That is the part that can
 // actually be wrong, so it is the part worth executing.
 console.log('[C6] the session bootstrap RUNS the full flow in Lua...');
 {

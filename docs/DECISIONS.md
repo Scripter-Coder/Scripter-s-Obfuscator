@@ -3,27 +3,27 @@
 Record of decisions that were open, and why they were settled. Anything here
 that later turns out to be wrong should be changed here first, with a reason.
 
-Phases 0, 1aâ€“1f and 2a were committed before Phase 3. Phase 3 is the phase that
+Phases 0, 1a–1f and 2a were committed before Phase 3. Phase 3 is the phase that
 actually wired the state layer into the worker, and it is where most of the
 remaining decisions live.
 
 ---
 
-## D1 â€” Keyless / free scripts require an account
+## D1 — Keyless / free scripts require an account
 
 **Decision: option B.** A free script is fetched as:
 
 ```
 FREE SCRIPT
-   â†“
+   ↓
 free account            (signup already exists, already flood-guarded)
-   â†“
+   ↓
 short-lived session
-   â†“
+   ↓
 artifact
 ```
 
-Not `anonymous â†’ artifact`.
+Not `anonymous → artifact`.
 
 **Why.** Option A means an anonymous request can still obtain an artifact, so
 for that tier the "no public artifact endpoint" property is false and Defense 1
@@ -36,12 +36,12 @@ client, so "free = anyone can run" no longer holds. An anonymous `/sh/session`
 for a keyless script returns `SHERR hidden`. This is asserted by G02, and it is
 the decision in this file most likely to surprise a user.
 
-**Rejected.** Option C (anonymous + rate limits + watermark) â€” still an
+**Rejected.** Option C (anonymous + rate limits + watermark) — still an
 unauthenticated artifact fetch.
 
 ---
 
-## D2 â€” PBKDF2, not Argon2id
+## D2 — PBKDF2, not Argon2id
 
 **Decision: PBKDF2-HMAC-SHA256 at 210k iterations**, via
 `crypto.subtle.deriveBits`, plus an optional server-side pepper.
@@ -57,11 +57,11 @@ accepted.
 
 ---
 
-## D3 â€” D1 for atomic state, KV for artifacts
+## D3 — D1 for atomic state, KV for artifacts
 
 **Decision.** D1 owns anything with a lifecycle or a uniqueness requirement:
 sessions, nonces, revocations, rate limits, audit log, build versions.
-KV keeps only large immutable values addressed by key â€” the artifact store.
+KV keeps only large immutable values addressed by key — the artifact store.
 
 **Why.** KV is eventually consistent with no atomic compare-and-swap, so it
 structurally cannot implement one-time nonce consumption, rate-limit
@@ -69,7 +69,7 @@ increments, or a single-step validate-and-consume. Those three are the core
 of session-gated delivery. A read-then-write on KV has a TOCTOU window in which
 two concurrent requests both pass the check.
 
-**Phase 3 nuance â€” dual store, on purpose.** Licenses and script metadata are
+**Phase 3 nuance — dual store, on purpose.** Licenses and script metadata are
 still *written* to KV because that is where the dashboard reads them, and
 rewriting every panel is a far larger change than the gate is. But the gate
 *reads* D1. Every mutation flows through `saveLicenses()` / `mirrorScript()`,
@@ -81,7 +81,7 @@ written to it can take tens of seconds to become visible on another edge, and
 
 ---
 
-## D4 â€” The session row is the authority for single-use
+## D4 — The session row is the authority for single-use
 
 **Decision.** One session = one delivery = one nonce. Consumption is a
 **single UPDATE with every precondition in the `WHERE` clause**, and success is
@@ -104,7 +104,7 @@ UPDATE sessions SET consumed_at = ?
 
 **Why.** A single conditional `UPDATE` is atomic on its own. There is no
 read-then-write window, so there is no TOCTOU hole, and it needs no explicit
-transaction â€” which matters because it behaves identically on D1, on a local
+transaction — which matters because it behaves identically on D1, on a local
 SQLite replica in tests, and on any future backend.
 
 **The `nonces` table is an audit trail, not the authority.** It records when
@@ -115,12 +115,12 @@ second source of truth that could disagree with the first would undermine it.
 
 **Consequence for "one artifact per session".** A session is therefore *one
 fetch*, not a reusable bearer for the remainder of its TTL. Reading it the other
-way â€” a spent nonce but a live session â€” would leave the session id usable
+way — a spent nonce but a live session — would leave the session id usable
 repeatedly, which is the permissive reading and a real hole.
 
 ---
 
-## D5 â€” Two token types, not one token in two transports
+## D5 — Two token types, not one token in two transports
 
 **Decision.** `request()` (header-capable) and `HttpGet` (URL only) get
 **different lifetimes** off the same session.
@@ -133,7 +133,7 @@ repeatedly, which is the permissive reading and a real hole.
 **Why.** `game:HttpGet` cannot set headers, so a credential must ride in the
 URL on that path. If the same bearer works in both, the URL path inherits the
 header path's TTL and the weak path is not actually weaker. The URL token is
-derived server-side per request and is never the session id itself â€” otherwise
+derived server-side per request and is never the session id itself — otherwise
 a logged URL equals a session.
 
 **Residual risk, accepted and documented.** URL-borne credentials can reach
@@ -143,7 +143,7 @@ telemetry so its share of traffic is visible.
 
 ---
 
-## D6 â€” No permanent artifact URL is achievable; do not claim it
+## D6 — No permanent artifact URL is achievable; do not claim it
 
 **Decision: restate the goal.** The loader URL is public and permanent. What
 changes is that it is *useless* without a live, single-use, server-verified
@@ -161,7 +161,7 @@ attacker nothing about any artifact. Asserted by G01.
 
 ---
 
-## D7 â€” Rate limits ship in-memory first, then move to D1
+## D7 — Rate limits ship in-memory first, then move to D1
 
 **Decision.** Phase 1 limits were in-memory (route + identity keyed). Phase 3
 moved them to the D1 `rate_limits` table where the increment is an atomic
@@ -174,19 +174,19 @@ collection rather than by the clock, and a distributed attacker got a fresh
 budget.
 
 **Now:** `guardRate()` prefers D1 and falls back to the in-memory bucket on a
-D1 error â€” falling back rather than allowing, because a D1 hiccup must not
+D1 error — falling back rather than allowing, because a D1 hiccup must not
 become an open door. G14 is closed and is measured on both paths.
 
 ---
 
-## D8 â€” Test doubles use real SQLite, not a mock
+## D8 — Test doubles use real SQLite, not a mock
 
 **Decision.** The D1 layer is exercised against Node's built-in `node:sqlite`
 with the actual `migrations/0001_init.sql` applied, behind a thin adapter that
 presents D1's `prepare().bind().first()/run()/all()` API.
 
 **Why.** D1 *is* SQLite. A hand-rolled mock would encode my assumptions about
-what `changes()` returns and whether an upsert is atomic â€” precisely the things
+what `changes()` returns and whether an upsert is atomic — precisely the things
 this work is supposed to verify. Using the real engine means the triggers,
 the `UNIQUE` constraints and the conditional-update semantics under test are
 the actual ones, not a reimplementation that could agree with a broken design.
@@ -200,7 +200,7 @@ the engine-normalising path.
 
 ---
 
-## D9 â€” The gate FAILS CLOSED when D1 is absent
+## D9 — The gate FAILS CLOSED when D1 is absent
 
 **Decision.** If the state layer is unavailable, `/sh/session`, `/sh/a`, `/sh/k`,
 `/sh/c/*` and `/sh/g/*` all refuse. There is no KV fallback.
@@ -212,8 +212,8 @@ step 2 creates the database and step 3 applies the schema, both before the
 first deploy.
 
 With the constraint gone, a fallback here would be strictly *worse* than
-failing: it would restore every property Phase 3 exists to remove â€” replay,
-expiry, ban-at-delivery, single-use â€” with no error anywhere, while the
+failing: it would restore every property Phase 3 exists to remove — replay,
+expiry, ban-at-delivery, single-use — with no error anywhere, while the
 operator believed the system was gated. A loud 503 plus a log line is more
 useful than a silent hole.
 
@@ -223,7 +223,7 @@ measuring the absence of D1 rather than the property they claim to test.
 
 ---
 
-## D10 â€” Nonces are spent unconditionally, with no expiry predicate
+## D10 — Nonces are spent unconditionally, with no expiry predicate
 
 **Decision.** `consumeNonce()` is
 `UPDATE nonces SET consumed_at = ? WHERE nonce = ? AND consumed_at IS NULL RETURNING ...`.
@@ -232,8 +232,8 @@ No `expires_at` check.
 **Why.** The first version was `DELETE ... WHERE nonce = ? AND expires_at > ?`,
 and it had a subtle resurrection property: a session presented *after* its TTL
 would fail the predicate and therefore leave a **fully unconsumed nonce** in
-the table. A later attempt whose clock read slightly earlier â€” a skewed client
-clock, a retry through a different edge, a captured response replayed later â€”
+the table. A later attempt whose clock read slightly earlier — a skewed client
+clock, a retry through a different edge, a captured response replayed later —
 would find the pair still good. An expired credential that can be revived is
 not expired.
 
@@ -250,7 +250,7 @@ was unused; it is now load-bearing.
 
 ---
 
-## D11 â€” Multi-part delivery is a forward-only chain, not a bearer grant
+## D11 — Multi-part delivery is a forward-only chain, not a bearer grant
 
 **Decision.** Large artifacts (>2MB, KV-chunked or Storage Keeper) are delivered
 as a *chain*: the session row carries `parts_total` / `parts_served`, and each
@@ -284,7 +284,7 @@ a continuation of a delivery, never an alternative to one.
 
 ---
 
-## D12 â€” Artifact bytes leave the worker through exactly one function
+## D12 — Artifact bytes leave the worker through exactly one function
 
 **Decision.** `deliver()` in `server/delivery.js` is the only path to artifact
 bytes. `/sh/<id>` contains no artifact at all; `/sh/c/*` and `/sh/g/*` require
@@ -298,7 +298,7 @@ than as a silent hole.
 
 ---
 
-## D13 â€” `licenses.script_id` is informational, with no foreign key
+## D13 — `licenses.script_id` is informational, with no foreign key
 
 **Decision.** The column is nullable, carries no FK and no `ON DELETE CASCADE`,
 and is not consulted by `consumeSession()`.
@@ -311,18 +311,18 @@ script this owner publishes". Neither is a `ScripterHub##########` loader id.
 
 An earlier implementation of `syncLicensesToD1()` therefore filtered on that
 shape, matched **nothing**, dropped every real license, left D1 empty, and made
-the gate refuse every licensed delivery in production â€” while the test suite
+the gate refuse every licensed delivery in production — while the test suite
 passed, because the tests seeded licenses with a loader id that the product
 never produces.
 
-A license is a credential, not a property of one script. The licenseâ†’loader
+A license is a credential, not a property of one script. The license→loader
 binding the gate actually needs lives on `sessions.script_id`, recorded at mint
 time on the one row that is genuinely about a delivery. Deleting a dashboard
 script must not delete a license people are still paying for.
 
 ---
 
-## D14 â€” `visibility` moved from localStorage to the server
+## D14 — `visibility` moved from localStorage to the server
 
 **Decision.** Added `POST /sh/visibility`, and `visibility` is now sent on
 upload. The dashboard keeps a local copy as a cache, but the server is the
@@ -331,7 +331,7 @@ authority.
 **Why.** `visibility` existed only in the browser's localStorage. The worker
 never heard about it, so "Private" and "Anyone" produced byte-identical loader
 URLs with byte-identical responses. No amount of gating in the delivery route
-can fix a policy the server has never been told â€” that is gate G10.
+can fix a policy the server has never been told — that is gate G10.
 
 A separate endpoint rather than a re-upload, because re-uploading would need
 the artifact, and the artifact is deliberately not in the dashboard's hands.
@@ -342,14 +342,14 @@ restricted script into an unrestricted one.
 
 ---
 
-## D15 â€” The browser "view the source" feature is removed, not deprecated
+## D15 — The browser "view the source" feature is removed, not deprecated
 
 **Decision.** The HTML key page (ciphertext + a working JS decryptor) is gone.
 `/sh/<id>` returns a metadata page for browsers.
 
 **Why.** The page embedded the ciphertext, so a visitor could read the script by
 typing the Special Key. That is gate G03. There is no hardening that preserves
-it, because the property that made it useful â€” the ciphertext is on the wire â€”
+it, because the property that made it useful — the ciphertext is on the wire —
 is exactly the property that made it a hole.
 
 **This is a real feature removal.** "View my script's source in a browser by
@@ -359,7 +359,7 @@ on the server.
 
 ---
 
-## D16 â€” The split key is HANDED OVER, not fetched twice
+## D16 — The split key is HANDED OVER, not fetched twice
 
 **Decision.** The gate returns the build's key line, the bootstrap writes it
 into a genv slot, and the obfuscated file's baked chunk reads it from there. The
@@ -372,7 +372,7 @@ trip, and it is the entire reason the `/sh/k` compatibility window had to
 exist: a file already in users' hands cannot be taught a new protocol.
 
 The slot name is `SPLITKEY_GENV` in two files. They are separately-bundled
-programs â€” the obfuscator runs in the owner's browser, the worker on the edge â€”
+programs — the obfuscator runs in the owner's browser, the worker on the edge —
 so there is no module graph to share, and a generated file is a build step
 nobody remembers. `tools/splitkey_handoff_test.mjs` asserts the two agree.
 
@@ -380,26 +380,26 @@ nobody remembers. `tools/splitkey_handoff_test.mjs` asserts the two agree.
 padded key bytes are not, so a forged injection fails the t0/chk comparison and
 the payload never unlocks. The global changes *where the bytes come from*, not
 *whether they are correct*. The handoff test asserts the right t0/chk plus the
-wrong key bytes yields a **different** payload â€” not no payload, because the VM
+wrong key bytes yields a **different** payload — not no payload, because the VM
 happily emits garbage from a wrong seed. Asserting "nothing runs" would have
 been the easy claim and the wrong one.
 
 ---
 
-## D17 â€” Rotation is a re-upload, and it kills the previous build
+## D17 — Rotation is a re-upload, and it kills the previous build
 
 **Decision.** Every upload carries a fresh `t0` from the obfuscator, records a
 `build_versions` row with an incrementing `generation`, and retires every older
 generation. The gate refuses a `t0` that is not the active build's.
 
 **Why.** `t0` is baked into the published file and was therefore identical
-forever, so anything derived from it was permanent â€” the one credential in the
+forever, so anything derived from it was permanent — the one credential in the
 system that could never be revoked. `generation` is what makes it rotatable.
 
 **Cost, stated plainly.** Rotating kills the previous build's files. That is the
 point, but it means a re-upload is a *rotation*: the owner must re-issue
 loadstrings afterwards. Doing that silently on every save would be hostile. G16
-asserts both halves â€” the retired `t0` is refused **and** the new build still
+asserts both halves — the retired `t0` is refused **and** the new build still
 works, because a rotation that broke the live script would be a self-DoS
 passing its own test.
 
@@ -410,7 +410,7 @@ is always checked.
 
 ---
 
-## D18 â€” At-rest encryption is opt-in, marker-prefixed, and fails closed
+## D18 — At-rest encryption is opt-in, marker-prefixed, and fails closed
 
 **Decision.** `SH_ARTIFACT_KEK` enables AES-GCM over artifact blobs in KV.
 Stored values carry a `SHKEK1:` marker. Unmarked values are plaintext and are
@@ -418,7 +418,7 @@ served as-is; marked values need the KEK. A marked value with no KEK is
 **refused**, never passed through.
 
 **What it does and does not protect.** The artifact is *already* ciphertext
-under the owner's Special Key, so this is not about hiding it from the worker â€”
+under the owner's Special Key, so this is not about hiding it from the worker —
 claiming that would be a category error. It narrows the blast radius of "the KV
 namespace leaked", which is the realistic case, because that namespace is one
 flat store that also holds licenses, users and split keys.
@@ -429,9 +429,9 @@ is data loss, not a downgrade, and it would happen silently. A marker makes the
 two states unambiguous, so a partial rollout is safe in both directions and the
 switch can be turned on for new uploads without touching existing ones.
 
-**Why it fails closed.** Passing the raw `SHKEK1:â€¦` string through when the KEK
+**Why it fails closed.** Passing the raw `SHKEK1:…` string through when the KEK
 is absent would reach the client, fail the SHOK magic, and surface as "wrong
-Special Key" â€” a flood of support tickets about a key that is correct. Refusing
+Special Key" — a flood of support tickets about a key that is correct. Refusing
 says what is actually wrong.
 
 **Encryption boundary.** Each KV chunk is encrypted independently, not the
@@ -440,14 +440,14 @@ joined artifact. That costs one GCM nonce+tag per chunk (~28 bytes) and means a
 
 ---
 
-## D19 â€” A scheduled Worker is the only correct sweeper
+## D19 — A scheduled Worker is the only correct sweeper
 
 **Decision.** `scheduled()` plus a cron trigger (`17 * * * *`) calls
 `state.sweepExpired()`. Not a request path, not a lazy threshold.
 
 **Why.** Every table the state layer writes is append-or-update, so all of them
 grow without bound. They inflate the database, slow the indices, and eventually
-make every write slower â€” a slow-motion outage nobody diagnoses because nothing
+make every write slower — a slow-motion outage nobody diagnoses because nothing
 is actually broken. `sweepExpired()` existed for a phase with nothing calling
 it, which is the same as not having it.
 
@@ -459,7 +459,7 @@ depend on housekeeping having happened.
 Cloudflare would retry, multiplying the load of a job that is already unhealthy.
 The tables keep working; they just keep growing. Logged, not swallowed.
 
-**Retention.** Sessions 24h past expiry *and* spent â€” a session that expired
+**Retention.** Sessions 24h past expiry *and* spent — a session that expired
 unspent is kept, because a client that never reached the delivery step is
 exactly the shape of a replay attempt and is worth being able to look at. Nonces
 only once their session is gone. Rate-limit windows 24h. Audit and revocations
@@ -469,7 +469,7 @@ before it becomes a problem.
 
 ---
 
-## D20 â€” `getgenv().ScripterHubKey` is BOTH the Special Key and the license
+## D20 — `getgenv().ScripterHubKey` is BOTH the Special Key and the license
 
 **Decision: unchanged, and now documented as a known confusion rather than
 quietly relied upon.**
@@ -478,7 +478,7 @@ The Special Key encrypts the artifact in the owner's browser. The license key
 authorises the run. Both are read from the same global.
 
 **Why it was not changed.** It is pre-existing product behaviour, and the
-Phase 3 bootstrap matches it exactly â€” changing one half without the other
+Phase 3 bootstrap matches it exactly — changing one half without the other
 would break published scripts. But it is genuinely confusing: one value
 presented as two credentials, and the dashboard does not make that clear.
 
@@ -488,6 +488,66 @@ runner sets is doing double duty, and the two cannot be rotated independently.
 
 **Not fixed here** because it is a UX change to every published script, not a
 security fix, and it should be a deliberate decision rather than a drive-by.
+
+---
+
+## D21 - The single-file bundle is generated, tested, and never hand-edited
+
+**Decision: `wrangler deploy` remains the supported path. The dashboard bundle
+is a generated artifact with a staleness check and its own test suite.**
+
+`For Cloudflare/worker.js` imports `../server/d1_state.js`,
+`../server/delivery.js` and `../server/artifact_crypto.js`. The Cloudflare
+dashboard editor has no filesystem, so a relative import cannot resolve there.
+`dist/worker.single.min.js` is the whole worker in one file, produced by
+`npm run build:worker`.
+
+**Why a generated artifact is checked at all.** Because "don't test generated
+code" is the wrong rule for something a human pastes into production. The first
+bundler recorded the import alias `run as d1run` as a *comment* instead of a
+declaration, producing 265 KiB of valid, plausible, syntactically perfect
+JavaScript that referenced a name nothing declared. `node --check` passed. Every
+source-level test passed. It was caught only by importing the bundle and running
+the gate and benchmark suites against it.
+
+**Why staleness is a failure and not a warning.** A bundle that works but is out
+of date is worse than no bundle, because it looks authoritative. Someone pastes
+it believing it matches the worker they just reviewed. B1 regenerates into a
+temp directory and byte-compares, so the artifacts under test are the ones
+actually on disk - the first version built in place, which silently repaired the
+files it was supposed to be inspecting.
+
+**Not a build step anyone has to remember.** `worker.js` stays the source of
+truth and is what wrangler deploys. The bundle is regenerated by `npm test`.
+
+---
+
+## D22 - Mojibake is a build failure, not a cosmetic issue
+
+**Decision: `tools/find_mojibake.mjs` runs in `npm test` and exits non-zero on
+any repairable double-encoded UTF-8.**
+
+Text decoded as cp1252 and re-saved as UTF-8 comes back as *valid* UTF-8
+containing mojibake. Nothing flags it: the encoding is legal, no decoder emits
+U+FFFD, and the tests pass because it is a comment or a string compared only
+against itself. Same failure class as the raw NUL byte in `worker.js` -
+behaviourally invisible, visible only to whoever reads the file.
+
+**One hit was a real shipping bug, not a comment.** `custom-obfuscator.js`
+carried the anti-crack message as a string literal, so every obfuscated script
+the tool has ever produced has contained a corrupted string. It is now
+`Goodluck Sonion 💖`, arrived at by three differently-corrupted copies of the
+same string each repairing to the same value - which is cross-validation rather
+than a guess.
+
+**Repair is proven, not assumed.** Every candidate repair must decode without
+U+FFFD, must not itself contain mojibake, and must strictly reduce the number of
+runs. The reverse table is built from `TextDecoder` rather than hand-listed, and
+the character class is asserted at startup - because three earlier versions of
+the detector were wrong in ways that made it confidently report *nothing wrong*:
+an unpadded `\\u` escape silently became a class of ASCII letters, a `latin1`
+inverse could not represent U+20AC, and a hand-picked lead set missed the second
+and third layers of encoding.
 
 ---
 
@@ -511,8 +571,17 @@ security fix, and it should be a deliberate decision rather than a drive-by.
   private repo reached through the worker's token, so the KEK does not apply.
   That path is protected by repo access, not by this mechanism.
 - **No automated devirtualization benchmark.** `tools/attacker_benchmark.mjs`
-  covers the delivery layer. Measuring the *runtime* cost â€” what it actually
-  takes to devirtualize a captured run â€” is still manual, and it is the number
+  covers the delivery layer. Measuring the *runtime* cost — what it actually
+  takes to devirtualize a captured run — is still manual, and it is the number
   that matters most.
 - **The owner email is hard-coded** (`OWNER_EMAIL` in worker.js). It is the
   root of trust for site-owner privilege and belongs in a secret.
+- **The dashboard paste path is unverified against the real editor.** The
+  bundle is proven by executing it (gates 23/23, benchmark 18/18 against both
+  artifacts), but nobody has confirmed the dashboard accepts 146 KiB in one
+  paste. The earlier "truncates at ~500 lines" symptom was the NUL byte, not a
+  size limit, so the limit is unknown. If the editor does cap size, the
+  fallback is `wrangler deploy`, which is the supported path anyway (D21).
+- **The KV namespace id is still commented out** in `wrangler.toml`.
+  `wrangler deploy --dry-run` lists `env.LOADERS_KV` regardless, so a clean
+  dry-run is not evidence that it is configured.

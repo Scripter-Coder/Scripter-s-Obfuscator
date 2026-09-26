@@ -30,9 +30,10 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { loadWorker } from './worker_target.mjs';
 
 const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
-const worker = (await import('../For Cloudflare/worker.js')).default;
+const worker = await loadWorker();
 
 const ORIGIN = 'https://bench.workers.dev';
 const ID = 'ScripterHub1234567890';

@@ -30,9 +30,9 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { loadWorker } from './worker_target.mjs';
 
-const workerSrc = await import('../For Cloudflare/worker.js');
-const worker = workerSrc.default;
+const worker = await loadWorker();
 
 const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
 

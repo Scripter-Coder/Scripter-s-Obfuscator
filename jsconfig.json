@@ -1,0 +1,58 @@
+{
+  "//": [
+    "Editor configuration ONLY. This has no effect on the deployed worker:",
+    "Cloudflare builds it with esbuild via wrangler, and Node runs the tests,",
+    "neither reads this file.",
+    "",
+    "It exists to clear three false errors on the first lines of the worker:",
+    "",
+    "    Cannot find module '../server/d1_state.js'. Did you mean to set the",
+    "    'moduleResolution' option to 'nodenext'...",
+    "",
+    "Those are language-server diagnostics, not runtime errors. Without a",
+    "jsconfig the editor falls back to moduleResolution 'node10', which does",
+    "not resolve the '.js' extension on a relative ESM import. Node and",
+    "esbuild both handle it, which is why the worker runs and the tests pass",
+    "while the editor insists the module is missing.",
+    "",
+    "'bundler' is the right setting rather than 'nodenext': it matches how the",
+    "worker is actually built (a bundler consumes these imports), and it does",
+    "not impose Node's stricter ESM rules on files that are not published as",
+    "packages.",
+    "",
+    "NOTE this does NOT make dashboard paste work. The Cloudflare dashboard",
+    "editor has no filesystem and cannot resolve a relative import no matter",
+    "what this file says. For that, use dist/worker.single.min.js - see",
+    "For Cloudflare/README.md."
+  ],
+
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "strict": false,
+    "skipLibCheck": true
+  },
+
+  "include": [
+    "For Cloudflare/worker.js",
+    "server/**/*.js",
+    "tools/**/*.mjs",
+    "custom-obfuscator.js",
+    "main.js"
+  ],
+
+  "exclude": [
+    "node_modules",
+    ".git",
+    ".wrangler",
+    "dist",
+    "new-obfuscator-copy",
+    "new-obfuscator-current-copy"
+  ]
+}
