@@ -171,7 +171,9 @@ let GH_ID = '';
         keyHash: 'abc', authRequired: false
     });
     assert.strictEqual(f.ok, true, JSON.stringify(f));
-    assert.ok(/loadstring\(game:HttpGet\("https:\/\/test\.workers\.dev\/sh\/ScripterHub0000000011"\)\)\(\)/.test(f.loadstring));
+    assert.ok(f.loadstring.includes('/sh/' + f.id), 'loader points at the GitHub script id');
+            assert.ok(f.loadstring.includes('test.workers.dev'), 'loader points at this worker');
+            assert.ok(!/SHOK|__SH_SPLITKEY/.test(f.loadstring), 'loader carries no script material');
     const meta = JSON.parse(KV._store.get('sh_meta_' + GH_ID));
     assert.strictEqual(meta.storage, 'github');
     assert.strictEqual(meta.parts, 3);

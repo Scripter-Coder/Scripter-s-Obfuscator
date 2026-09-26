@@ -137,7 +137,14 @@ let KEYLESS_ID = '';
     });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     assert.strictEqual(d.keyless, true);
-    assert.ok(/loadstring\(game:HttpGet\("https:\/\/test\.workers\.dev\/sh\/ScripterHub\d{10}"\)\)\(\)/.test(d.loadstring));
+    // The loader prefers `request` and falls back to game:HttpGet, because
+            // game:HttpGet throws on at least one executor in circulation. Assert what
+            // the loader MEANS rather than the formatting it used to have.
+            assert.ok(d.loadstring, 'upload returned a loader');
+            assert.ok(d.loadstring.includes('/sh/' + d.id), 'loader points at this script id');
+            assert.ok(d.loadstring.includes('test.workers.dev'), 'loader points at this worker');
+            assert.ok(d.loadstring.includes('request'), 'loader tries request first');
+            assert.ok(!/SHOK|__SH_SPLITKEY|4294967296/.test(d.loadstring), 'loader carries no script material');
     KEYLESS_ID = d.id;
     const meta = JSON.parse(KV._store.get('sh_meta_' + KEYLESS_ID));
     assert.strictEqual(meta.keyless, true);

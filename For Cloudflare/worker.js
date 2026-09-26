@@ -2612,6 +2612,35 @@ function jsonResponse(data, status) {
 }
 
 // "Method Not Allowed" page — what browsers see when opening a loader link
+// ---------- the loader we hand out ----------
+//
+// Prefers `request` and falls back to game:HttpGet, which is the same order
+// the bootstrap's own GET() uses. Hardcoding HttpGet here was a portability
+// bug: at least one executor in circulation throws
+//
+//     invalid argument #1 to find (string expected, got nil)
+//
+// from inside its own internal_request, before any request is made. The
+// bootstrap would have worked on that executor - it tries `request` first -
+// so the failure was purely in the one line a user pastes.
+//
+// It is longer than loadstring(game:HttpGet(url))() and that is the trade:
+// a loader that works on more executors is worth more than a short one. It
+// still contains no script material, which is what gate G01 is about.
+function shLoader(base, id) {
+    const u = base + '/sh/' + id;
+    return 'local u=' + JSON.stringify(u) + '\n'
+        + 'local b\n'
+        + 'if request then local ok,r=pcall(function() return request({Url=u,Method=\'GET\'}) end) '
+        + 'if ok and type(r)==\'table\' and type(r.Body)==\'string\' and r.Body~=\'\' then b=r.Body end end\n'
+        + 'if not b and game and game.HttpGet then local ok2,r2=pcall(function() return game:HttpGet(u,true) end) '
+        + 'if ok2 and type(r2)==\'string\' and r2~=\'\' then b=r2 end end\n'
+        + 'if not b then print(\'[ScripterHub] Could not reach the script. No usable HTTP function.\') return end\n'
+        + 'local LS=loadstring or load\n'
+        + 'local f=LS and LS(b)\n'
+        + 'if not f then print(\'[ScripterHub] Could not compile the loader.\') return end\n'
+        + 'f()';
+}
 function methodNotAllowed() {
     return new Response('Method Not Allowed\n', {
         status: 405,
@@ -3091,7 +3120,7 @@ async function handleRequest(request, env, ctx) {
                     at: Date.now(), bytes: plainCode.length
                 }));
                 const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-                return jsonResponse({ ok: true, id, replaced: false, keyless: true, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
+                return jsonResponse({ ok: true, id, replaced: false, keyless: true, loadstring: shLoader(base, id) });
             }
             // ---- keyed scripts: ENCRYPTED with the Special Key ----
             const cipher = String(body.cipher || '');
@@ -3118,7 +3147,7 @@ async function handleRequest(request, env, ctx) {
             }));
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
             // NO key in the URL - the key is asked at runtime
-            return jsonResponse({ ok: true, id, replaced, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
+            return jsonResponse({ ok: true, id, replaced, loadstring: shLoader(base, id) });
         }
 
         // ---------- POST /sh/visibility : set server-side script visibility ----------
@@ -3748,7 +3777,7 @@ async function handleRequest(request, env, ctx) {
                 scriptId: id, userRef: await telemetryRef('user', rec.user),
                 at: Date.now(), parts: n
             }));
-            return jsonResponse({ ok: true, id, parts: n, loadstring: 'loadstring(game:HttpGet("' + base + '/sh/' + id + '"))()' });
+            return jsonResponse({ ok: true, id, parts: n, loadstring: shLoader(base, id) });
         }
 
         // ---------- POST /sh/gh-delete : owner deletes a GitHub script ----------

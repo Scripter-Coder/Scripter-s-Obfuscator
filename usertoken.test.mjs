@@ -64,7 +64,7 @@ console.log('[U2] /sh/upload accepts the USER token (no owner code)...');
         cipher: 'U0hPS2ZyaWVuZA==', keyHash: 'abc123'
     });
     assert.strictEqual(d.ok, true, 'upload with user token: ' + (d.error || ''));
-    assert.ok(/loadstring\(game:HttpGet/.test(d.loadstring), 'loadstring returned');
+    assert.ok(d.loadstring && d.loadstring.includes('loadstring'), 'loadstring returned');
     console.log('    OK: friend can upload + get a loadstring');
 }
 
