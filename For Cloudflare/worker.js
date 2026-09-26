@@ -1101,6 +1101,23 @@ function mirrorScript(env, id, o) {
         .catch(e => console.error('[ScripterHub] script mirror to D1 failed: ' + (e && e.message)));
 }
 
+// The migration switch for the /sh/k compatibility window.
+//
+// DEFAULT OFF, and that default is the secure one: with the var absent, every
+// require-key script published before Phase 3 stops working. That is a
+// deliberate hard cutover, and the operator opts INTO continuity rather than
+// out of security — the reverse default would silently re-open G07/G08/G09 on
+// every deployment.
+//
+// Only the literal "1" and "true" enable it, so a typo like "yes" or
+// "enabled" leaves the secure behaviour in place. A misspelt security switch
+// should fail closed; that is the whole lesson of the owner access code, which
+// shipped as a hard-coded default and had to be removed in Phase 1b.
+function legacySplitKeyEnabled(env) {
+    const v = env && env.SH_LEGACY_SPLIT_KEY;
+    return v === '1' || v === 'true';
+}
+
 // ---- REAL LICENSE helpers (Luarmor-model server auth) ----
 // WHY TWO STORES
 //
@@ -3148,11 +3165,108 @@ async function handleRequest(request, env, ctx) {
                 return methodNotAllowed();
             };
 
+            if (await isKillswitchOn(env)) return refuse(DENY.KILLED);
+
+            // =================================================================
+            // THE COMPATIBILITY WINDOW   (SH_LEGACY_SPLIT_KEY, default OFF)
+            // =================================================================
+            //
+            // READ THIS BEFORE YOUR FIRST DEPLOY. IT IS A CUSTOMER-FACING
+            // DECISION, AND DEPLOYING WITHOUT IT BREAKS LIVE SCRIPTS.
+            //
+            // The obfuscator BAKES the old request shape into the file
+            // (custom-obfuscator.js:961):
+            //
+            //     requireKey ON  :  /sh/k/<id>?t=t0&a=<token>&k=KEY&h=HWID
+            //     requireKey OFF :  /sh/k/<id>?t=t0
+            //
+            // Those bytes are already in your users' hands. Re-obfuscating does
+            // not help them, and neither does re-copying the loadstring: the
+            // loadstring is only
+            //     loadstring(game:HttpGet(".../sh/<id>"))()
+            // so the NEW bootstrap will be fetched, but the artifact it
+            // delivers still contains the old baked-in chunk, which then calls
+            // /sh/k in the old shape and gets 405.
+            //
+            // So a hard cutover breaks every already-published require-key
+            // script, worldwide, on deploy day. Setting SH_LEGACY_SPLIT_KEY=1
+            // keeps them working while you migrate.
+            //
+            // WHAT THE WINDOW COSTS, precisely. It is not a free switch:
+            //
+            //   G05 expired license -> STILL CLOSED. The live license re-check
+            //                           below runs on this path too.
+            //   G06 banned license  -> STILL CLOSED. So the kill switch and the
+            //                           ban button keep working during the
+            //                           window, which is what you actually need
+            //                           when something goes wrong.
+            //   G07 replay          -> RE-OPENED. The old token is
+            //                           deterministic per (key, hwid, t0), so it
+            //                           is replayable for as long as t0 is
+            //                           baked, which is forever.
+            //   G08 expiry          -> RE-OPENED. t0 never changes.
+            //   G09 self-forged     -> RE-OPENED. Anyone holding a valid
+            //                           license can compute the token offline.
+            //
+            // That is a genuine reduction, which is why the window should be
+            // as short as you can make it. Note WHAT it does not give them:
+            // the artifact is still assembled at runtime through /sh/session
+            // and /sh/a, and the split key is still only the final decryption
+            // layer. A valid license holder can make themselves a permanent
+            // key-fetch credential; they still do not have the source.
+            //
+            // Every legacy delivery is counted as `legacy.delivery` in the
+            // audit log AND in telemetry, so you can watch the number reach
+            // zero and know the migration is finished rather than guessing.
+            // Turn it off by removing the var (or setting "0") and redeploying.
+            if ((!sid || !nonce) && legacySplitKeyEnabled(env)) {
+                const script = await scriptAuthz(env, id);
+                if (!script) return refuse(DENY.NO_SCRIPT);
+                if (script.visibility === 'private') return refuse(DENY.HIDDEN);
+                if (script.authRequired) {
+                    const licenses = await loadLicenses(env);
+                    const licKey = String(url.searchParams.get('k') || '').slice(0, 200);
+                    const licHwid = String(url.searchParams.get('h') || '').slice(0, 300);
+                    const v = classifyLicense(licenses[licKey], licHwid, now);
+                    // G05/G06 close here: this is a LIVE check, not the token.
+                    if (v.code !== 'ok') {
+                        return refuse(v.code === 'banned' ? DENY.BANNED
+                            : v.code === 'expired' ? DENY.EXPIRED
+                                : v.code === 'hwid' ? DENY.HWID : DENY.NEEDS_KEY);
+                    }
+                }
+                const body = 'SHK ' + sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ');
+                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.totalExecutions++;
+                S.perScript[id] = (S.perScript[id] || 0) + 1;
+                prune(now);
+                saveStatsSoon(env);
+                if (state) {
+                    try {
+                        await state.audit({
+                            event: 'legacy.delivery', outcome: 'ok', scriptId: id,
+                            reason: 'compat-window', transport: 'url', at: now
+                        });
+                    } catch (e) { /* audit must never break a request */ }
+                }
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'legacy.delivery', outcome: 'ok', scriptId: id,
+                    reason: 'compat-window', transport: 'url', at: now
+                }));
+                return new Response(body, {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'text/plain; charset=utf-8',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': 'no-store'
+                    }
+                });
+            }
+
             if (!state) {
                 console.error('[ScripterHub] /sh/k refused: D1 (SH_DB) is not bound or not migrated.');
                 return refuse(DENY.NO_STATE);
             }
-            if (await isKillswitchOn(env)) return refuse(DENY.KILLED);
             if (!sid || !nonce) return refuse(DENY.NO_SESSION);
 
             // Identical atomic gate to /sh/a. Replay, expiry, ban-at-delivery

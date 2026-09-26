@@ -137,21 +137,42 @@ async function authorizedSession(env, opts = {}) {
 
 // An owner token, via the real claim + login path.
 //
-// G05 and G06 need to apply a ban THROUGH THE PRODUCT, not by writing KV
-// directly. Writing KV by hand was the first version of those gates and it was
-// measuring the wrong thing: the worker's ban path is
-// `/sh/license-ban` -> saveLicenses() -> mirror to D1, and a test that skips
-// straight to KV never exercises any of it. It also silently "passed" for a
-// completely wrong reason — the D1 mirror never ran, so the gate was asserting
-// that a ban which had not been applied did not take effect.
+// G05, G06, G22 and G23 need to act as the OWNER (apply a ban, re-sync a
+// license, read the kill switch). Writing KV directly was the first version of
+// G05 and it was measuring the wrong thing: the worker's ban path is
+// `/sh/license-ban` -> saveLicenses() -> mirror into the table the gate reads,
+// and a test that skips straight to KV never exercises any of it. It also
+// "passed" for a completely wrong reason — the mirror never ran, so the gate
+// was asserting that a ban which had not been applied did not take effect.
+//
+// TWO rate-limit hazards here, both real and both hit while writing this:
+//
+//   1. /sh/login is limited to 10/min. Memoising per-env is NOT enough, because
+//      every gate builds a fresh env, so a WeakMap never gets a cache hit and
+//      each gate spends the same shared budget.
+//   2. rateIdentity() falls back to the literal 'anon' when there is no
+//      CF-Connecting-IP header, so EVERY gate's login lands in ONE bucket — and
+//      G04 deliberately fires five near-miss logins at it, and G20 fires more.
+//
+// The fix is to give each owner login its own identity, which is also what a
+// real second browser looks like. A gate failing on a 429 that has nothing to
+// do with what it is testing is the worst kind of test failure: it looks like
+// a security regression.
+let ownerIpSeq = 0;
+const OWNER_TOKENS = new WeakMap();
 async function ownerToken(env) {
-  const claim = await call(env, 'POST', '/sh/owner-claim', { setupToken: 'SETUPTOK' });
+  if (OWNER_TOKENS.has(env)) return OWNER_TOKENS.get(env);
+  const ip = '198.51.100.' + (150 + (ownerIpSeq++ % 40));
+  const hdr = { 'CF-Connecting-IP': ip };
+  const claim = await call(env, 'POST', '/sh/owner-claim', { setupToken: 'SETUPTOK' }, BROWSER_UA, hdr);
   let c = null;
   try { const d = JSON.parse(claim.body); if (d.ok && d.code) c = d.code; } catch (e) {}
   need(c, 'gate setup failed: could not claim the owner code (' + claim.body.slice(0, 90) + ')');
-  const li = await call(env, 'POST', '/sh/login', { code: c });
+  const li = await call(env, 'POST', '/sh/login', { code: c }, BROWSER_UA, hdr);
   need(/"ok":true/.test(li.body), 'gate setup failed: owner login failed (' + li.body.slice(0, 90) + ')');
-  return JSON.parse(li.body).token;
+  const tok = JSON.parse(li.body).token;
+  OWNER_TOKENS.set(env, tok);
+  return tok;
 }
 
 async function spend(env, s, ua) {
@@ -995,6 +1016,96 @@ gate('G22', 'Re-locking a license to other hardware kills the live session', 'pa
   const r = await spend(env, s);
   if (r.status === 200 && r.body.includes('SHK')) {
     throw new Error('a session minted against the OLD hardware still delivered after the key was re-locked');
+  }
+});
+
+// The /sh/k COMPATIBILITY WINDOW is a deliberate, temporary security
+// downgrade, and it is the only place in this codebase where an old,
+// client-computable credential is still accepted.
+//
+// It is gated here so that the cost is PINNED rather than assumed. If someone
+// later "simplifies" the flag check, or ships it on by default, these fail.
+// The assertion is not "the window is secure" — it is not. It is "the window
+// re-opens exactly the three documented gates, keeps the two that matter, and
+// is OFF unless explicitly enabled."
+gate('G23', 'The /sh/k compatibility window is opt-in and re-opens only what is documented', 'pass', async () => {
+  // 1. DEFAULT OFF: a legacy-shaped request with no session is refused.
+  {
+    const env = makeEnv();
+    seedScript(env, ID);
+    seedLicense(env, 'LIC', { hwid: 'HW', expiresAt: 0 });
+    const tok = await forgeToken('LIC', 'HW', 1700000000);
+    const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
+    if (r.status === 200) {
+      throw new Error('the compatibility window is ON with no opt-in - a hard cutover must be the default');
+    }
+  }
+
+  // 2. A MISSPELT value must not enable it. Failing open on a typo is how the
+  //    owner access code shipped as a hard-coded default in the first place.
+  for (const typo of ['yes', 'enabled', 'TRUE', 'on', ' 1', '1 ']) {
+    const env = makeEnv();
+    env.SH_LEGACY_SPLIT_KEY = typo;
+    seedScript(env, ID);
+    seedLicense(env, 'LIC', { hwid: 'HW', expiresAt: 0 });
+    const tok = await forgeToken('LIC', 'HW', 1700000000);
+    const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
+    if (r.status === 200) {
+      throw new Error(`the window was enabled by the typo ${JSON.stringify(typo)} - it must fail closed`);
+    }
+  }
+
+  // 3. Explicitly ON: the old shape is served again. This is the outage the
+  //    window exists to prevent, so it must actually work.
+  {
+    const env = makeEnv();
+    env.SH_LEGACY_SPLIT_KEY = '1';
+    seedScript(env, ID);
+    seedLicense(env, 'LIC', { hwid: 'HW', expiresAt: 0 });
+    const tok = await forgeToken('LIC', 'HW', 1700000000);
+    const r = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=LIC&h=HW`, SPOOFED_UA);
+    if (r.status !== 200) {
+      throw new Error('the window is enabled but the legacy shape is still refused - it does not do its job');
+    }
+  }
+
+  // 4. EVEN WITH THE WINDOW ON, the live license re-check must still run.
+  //    This is the whole reason the window is tolerable: bans and the kill
+  //    switch keep working during the migration, so an owner can still stop a
+  //    compromised key on a legacy client.
+  {
+    const env = makeEnv();
+    env.SH_LEGACY_SPLIT_KEY = '1';
+    seedScript(env, ID);
+    seedLicense(env, 'BANNED1', { hwid: 'HW', banned: true, expiresAt: 0 });
+    const tok = await forgeToken('BANNED1', 'HW', 1700000000);
+    const banned = await get(env, `/sh/k/${ID}?t=1700000000&a=${tok}&k=BANNED1&h=HW`, SPOOFED_UA);
+    if (banned.status === 200) {
+      throw new Error('a BANNED license was served with the compatibility window on - G06 must stay closed');
+    }
+
+    const env2 = makeEnv();
+    env2.SH_LEGACY_SPLIT_KEY = '1';
+    seedScript(env2, ID);
+    seedLicense(env2, 'EXPIRED1', { hwid: 'HW', expiresAt: Date.now() - 60000 });
+    const tok2 = await forgeToken('EXPIRED1', 'HW', 1700000000);
+    const expired = await get(env2, `/sh/k/${ID}?t=1700000000&a=${tok2}&k=EXPIRED1&h=HW`, SPOOFED_UA);
+    if (expired.status === 200) {
+      throw new Error('an EXPIRED license was served with the compatibility window on - G05 must stay closed');
+    }
+
+    // and the kill switch overrides the window entirely
+    const env3 = makeEnv();
+    env3.SH_LEGACY_SPLIT_KEY = '1';
+    seedScript(env3, ID);
+    seedLicense(env3, 'LIC', { hwid: 'HW', expiresAt: 0 });
+    const tok3 = await forgeToken('LIC', 'HW', 1700000000);
+    const owner = await ownerToken(env3);
+    await call(env3, 'POST', '/sh/killswitch', { token: owner, on: true });
+    const ks = await get(env3, `/sh/k/${ID}?t=1700000000&a=${tok3}&k=LIC&h=HW`, SPOOFED_UA);
+    if (ks.status === 200) {
+      throw new Error('the kill switch did not stop a legacy-window delivery');
+    }
   }
 });
 

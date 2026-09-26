@@ -139,10 +139,6 @@ database_name = "scripterhub"
 # migrations_dir = "migrations"
 
 # -----------------------------------------------------------------------------
-# OBSERVABILITY
-# -----------------------------------------------------------------------------
-# Phase 5. Off until the audit-log writer lands, then flip to true.
-# -----------------------------------------------------------------------------
 # OBSERVABILITY — TURN THIS ON
 # -----------------------------------------------------------------------------
 # Phase 3 turned this on deliberately, and it is the only way to find out why
@@ -190,3 +186,37 @@ SH_SESSION_TTL_SECONDS = "45"         # primary request() path
 # obvious. See the SH_DISCORD_WEBHOOK notes near the top of this file for the
 # three failure modes and how to tell them apart.
 # SH_DISCORD_WEBHOOK = "https://discord.com/api/webhooks/…/…"
+
+# -----------------------------------------------------------------------------
+# THE /sh/k COMPATIBILITY WINDOW — READ THIS BEFORE YOUR FIRST DEPLOY
+# -----------------------------------------------------------------------------
+# Phase 3 changed what /sh/k requires. The obfuscator BAKES the old request
+# shape into every published file, and those bytes are already in your users'
+# hands. Re-copying the loadstring does NOT fix it: the loadstring is only
+# `loadstring(game:HttpGet(".../sh/<id>"))()`, so the new bootstrap IS fetched,
+# but the artifact it delivers still contains the old baked-in chunk, which
+# then calls /sh/k the old way.
+#
+#   requireKey ON  :  /sh/k/<id>?t=t0&a=<token>&k=KEY&h=HWID
+#   requireKey OFF :  /sh/k/<id>?t=t0
+#
+# OFF (the default) = every require-key script published before today stops
+# working the moment you deploy, worldwide.
+#
+# ON = they keep working while you migrate, at a real cost:
+#
+#   still closed : expired licenses (G05), banned licenses (G06), kill switch,
+#                  private scripts
+#   re-opened    : token replay (G07), token expiry (G08), offline token
+#                  forgery by a valid license holder (G09)
+#
+# So during the window a valid license holder can mint themselves a permanent
+# key-fetch credential. They still do not get the source — the artifact is
+# assembled at runtime through /sh/session and /sh/a — but it is a genuine
+# reduction. Keep it as short as you can.
+#
+# Every legacy delivery is logged as `legacy.delivery` (audit table AND
+# Discord telemetry). Watch it reach zero, then remove this line and redeploy.
+# Only "1" or "true" enable it; a typo leaves the secure behaviour in place.
+#
+# SH_LEGACY_SPLIT_KEY = "1"
