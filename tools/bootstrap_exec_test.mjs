@@ -560,6 +560,62 @@ console.log('[B8] with no HTTP at all it reports and does not throw...');
   else ok('reports "Could not reach the license server" and returns cleanly');
 }
 
+// -----------------------------------------------------------------------------
+console.log('[B9] a SHERR refusal is reported as a refusal, not as a bad response...');
+// -----------------------------------------------------------------------------
+// The bug this guards: the check was
+//
+//     if resp:sub(1,7) == "SHERR " then
+//
+// Seven characters compared against a SIX-character literal, so it could never
+// be true. Every refusal fell through to the SHS match and was reported as
+// "Bad response from the license server" - which blames the network for what is
+// usually a missing account or a dead license. The user hit exactly this: the
+// server said "SHERR hidden" (D1: keyless needs an account) and the loader
+// said the response was malformed.
+//
+// B4 did not catch it, because a wrong Special Key fails at DEC, not at the
+// envelope check - so the SHERR branch had no coverage at all.
+{
+  const cases = [
+    ['hidden', /needs an account/i],
+    ['gone', /no longer exists/i],
+    ['expired', /expired/i],
+    ['banned', /banned/i],
+    ['killswitch', /disabled/i],
+    ['somethingnew', /Denied: somethingnew/]
+  ];
+  const bad = [];
+  for (const [reason, expect] of cases) {
+    const r = runBootstrap(factory(ID, BASE, false), {
+      request: (url) => url.includes('/sh/session') ? 'SHERR ' + reason + '\n' : null,
+      getgenv: true, identifyexecutor: true
+    });
+    const said = (r.printed || []).concat(r.notifications || []).join(' | ');
+    if (r.runtimeError) bad.push(reason + ' -> crashed: ' + r.runtimeError);
+    else if (/Bad response/.test(said)) bad.push(reason + ' -> reported as "Bad response", so the SHERR branch is dead again');
+    else if (!expect.test(said)) bad.push(reason + ' -> said: ' + JSON.stringify(said));
+  }
+  if (bad.length === 0) ok(cases.length + ' refusal reasons each produce an actionable message');
+  else { no(bad.length + ' refusal reason(s) mishandled:'); for (const b of bad) console.log('         ' + b); }
+}
+
+// -----------------------------------------------------------------------------
+console.log('[B10] the session request carries the account identity D1 requires...');
+// -----------------------------------------------------------------------------
+// D1: a keyless script needs an account. /sh/session reads the identity from
+// `u`. The bootstrap used to send only {id, k, h}, so a keyless script could
+// never satisfy the gate from the loader - there was no channel for it.
+{
+  let seen = '';
+  runBootstrap(factory(ID, BASE, true), {
+    request: (url) => { if (url.includes('/sh/session')) seen = url; return 'SHERR x\n'; },
+    getgenv: true, identifyexecutor: true
+  });
+  if (/[?&]u=/.test(seen)) ok('the session request includes u= (account identity)');
+  else no('the session request has no u= parameter, so keyless scripts can never pass D1.\n         url was: ' + seen);
+}
+
 console.log('');
 console.log('='.repeat(72));
 console.log('BOOTSTRAP EXECUTION   ' + pass + ' passed, ' + fail + ' failed');

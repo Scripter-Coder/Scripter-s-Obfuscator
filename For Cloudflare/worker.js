@@ -4830,7 +4830,9 @@ function luaSessionBootstrap(id, base, keyless) {
     return '--[[ ScripterHub session loader | ' + id + ' | no script material in this file ]]\n'
         + '-- 1. set your license ONCE before running this loadstring:\n'
         + '--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"\n'
-        + '-- 2. run the loadstring. Nothing else to do.\n'
+        + '-- 2. free/keyless scripts need an ACCOUNT instead (D1), set once:\n'
+        + '--      getgenv().ScripterHubUser = "your@email.com"\n'
+        + '-- 3. run the loadstring. Nothing else to do.\n'
         + 'local ID=' + JSON.stringify(id) + '\n'
         + 'local BASE=' + JSON.stringify(base) + '\n'
         + 'local KEYED=' + KEYED + '\n'
@@ -4838,6 +4840,27 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'local function NT(t,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",'
         + '{Title="ScripterHub",Text=t,Duration=d or 5}) end) end\n'
         + 'local function DIE(t) NT(t,7) print("[ScripterHub] "..t) end\n'
+        // A refusal the user can act on.
+        //
+        // "SHERR hidden" is the server saying D1: a keyless script needs an
+        // account. Printing the raw code tells the user nothing, and the bug
+        // below made it worse - the check never fired, so refusals were reported
+        // as "Bad response from the license server", which blames the network
+        // for what is usually a missing account.
+        + 'local function DENYMSG(r)\n'
+        // Single quotes inside the Lua double-quoted string, deliberately: this
+        // fragment lives inside a JS single-quoted string, where a backslash-
+        // quote collapses to a bare quote and closes the Lua string early. The
+        // first version shipped exactly that and every case failed to compile.
+        + ' if r=="hidden" then return "This script needs an account. Run once, then re-execute:  getgenv().ScripterHubUser = \'YOUR_EMAIL\'" end\n'
+        + ' if r=="gone" then return "This script no longer exists, or was replaced by a newer build." end\n'
+        + ' if r=="invalid" then return "That license key is not valid." end\n'
+        + ' if r=="expired" then return "That license has expired." end\n'
+        + ' if r=="banned" then return "That license has been banned." end\n'
+        + ' if r=="hwid" then return "That license is locked to different hardware." end\n'
+        + ' if r=="killswitch" then return "The owner has disabled this script." end\n'
+        + ' return "Denied: "..r\n'
+        + 'end\n'
         // ---- transport
         //
         // request() is preferred: it can set headers, and the header transport
@@ -4880,15 +4903,15 @@ function luaSessionBootstrap(id, base, keyless) {
         + ' return\n'
         + 'end\n'
         // ---- 2. mint a session. proof, not payload.
-        + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW)}))\n'
+        + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),u=tostring(G.ScripterHubUser or "")}))\n'
         + 'if type(resp)~="string" then DIE("Could not reach the license server.") return end\n'
-        + 'if resp:sub(1,7)=="SHERR " then DIE("Denied: "..resp:sub(7):gsub("%s+$","")) return end\n'
+        + 'if resp:sub(1,6)=="SHERR " then DIE(DENYMSG(resp:sub(7):gsub("%s+$",""))) return end\n'
         + 'local S,N=resp:match("^SHS (%S+) (%S+) %S+")\n'
         + 'if not S or not N then DIE("Bad response from the license server.") return end\n'
         // ---- 3. spend it. one shot, this is where the bytes come from.
         + 'local body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N)\n'
         + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
-        + 'if body:sub(1,7)=="SHERR " then DIE("Denied: "..body:sub(7):gsub("%s+$","")) return end\n'
+        + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'
         // ---- 4. assemble the payload
         + 'local SK, B\n'
         + 'if body:sub(1,4)=="SHL\\n" then\n'
