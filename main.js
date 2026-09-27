@@ -1897,20 +1897,21 @@ function saveAnalytics(a) {
     try { localStorage.setItem('sh_analytics_' + (currentUser ? currentUser.id : ''), JSON.stringify(a)); } catch (e) {}
 }
 
-function recordExecution(executor, scriptId) {
-    var a = loadAnalytics();
-    var exec = executor || 'Unknown';
-    a.executions.push({ t: Date.now(), executor: exec, scriptId: scriptId || null });
-    if (a.executions.length > 5000) a.executions = a.executions.slice(-5000);
-    var day = new Date().toISOString().slice(0, 10);
-    if (!a.daily[day]) a.daily[day] = {};
-    a.daily[day][exec] = (a.daily[day][exec] || 0) + 1;
-    // keep only last 10 days of daily stats
-    var days = Object.keys(a.daily).sort();
-    while (days.length > 10) { delete a.daily[days.shift()]; }
-    saveAnalytics(a);
-    refreshAnalyticsUI();
-}
+// recordExecution() USED TO BE HERE, and it was the only writer of a.daily -
+// which is what the Executor Statistics panel read. Nothing ever called it: the
+// obfuscated payload posts to the worker's /track, not back to this page, so it
+// could not. a.daily was therefore permanently {} and the panel permanently
+// rendered five rows of "-" and 0 while looking like real data.
+//
+// It is removed rather than left in place, because a function whose name
+// promises to record something, sitting next to a panel it used to feed and
+// which nothing calls, is exactly the kind of thing that makes the next person
+// believe the numbers are real. The panel now reads the worker's 60-second
+// window instead (see renderExecutorDailyStats).
+//
+// If execution counting is ever wanted on the page, it has to come from a real
+// call site - the site cannot observe an executor running a script, because the
+// script runs in Roblox, not here.
 
 function recordObfuscation() {
     var a = loadAnalytics();
@@ -1973,31 +1974,62 @@ function refreshAnalyticsUI() {
     if (ep && !ep.textContent) ep.textContent = SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT + '/v3/realtime_stats' : 'local simulation (deploy For Cloudflare/worker.js and set SH_STATS_ENDPOINT in main.js)';
 }
 
-// executor daily lines: 5 rows, dotted lines with per-day dots (last 10 days)
+// ============ EXECUTOR STATISTICS ============
+// Reads the WORKER, not a localStorage table that nothing ever writes.
+//
+// It used to read a.daily, which is populated only by recordExecution() - and
+// recordExecution is never called from anywhere. The obfuscated payload posts to
+// the worker's /track, not back to the site, so a.daily was permanently {} and
+// this panel permanently rendered five rows of "-" and 0. It looked like data
+// and was decorative.
+//
+// The worker keeps a 60-SECOND rolling window of events, so this shows live
+// per-executor rates. The panel title used to claim "daily, last 10 days",
+// which the server has never kept - the title is corrected to match the data
+// rather than leaving a claim on screen that nothing backs up.
+//
+// liveChart.last is set by the chart's own poll, so this is the same single
+// request rather than a second one every five seconds.
 function renderExecutorDailyStats(a) {
     var containers = document.querySelectorAll('#executorDailyStats');
     if (!containers.length) return;
-    var days = Object.keys(a.daily || {}).sort().slice(-10);
-    var top = [];
-    var totals = {};
-    for (var d in a.daily) { for (var e in a.daily[d]) { totals[e] = (totals[e] || 0) + a.daily[d][e]; } }
-    var sorted = Object.keys(totals).sort(function(x, y) { return totals[y] - totals[x]; });
-    for (var i = 0; i < 5; i++) top.push(sorted[i] || null);
+    if (!currentUser || currentUser.username !== 'Scripter') return;
+
+    var fromWorker = liveChart && liveChart.last && liveChart.last.executors ? liveChart.last.executors : null;
+
+    if (!fromWorker) {
+        // The worker has not answered yet (or is not deployed). Say so rather
+        // than drawing five zeroes that look like "nothing is running".
+        containers.forEach(function(c) {
+            c.innerHTML = '<div style="padding:8px 0; font-size:12px; color:#8888aa;">Waiting for the first reading from the worker...</div>';
+        });
+        return;
+    }
+
+    var names = Object.keys(fromWorker).sort(function(x, y) {
+        return (fromWorker[y].lastMinute || 0) - (fromWorker[x].lastMinute || 0);
+    }).slice(0, 5);
+    while (names.length < 5) names.push(null);
+
     var html = '';
-    for (var i = 0; i < top.length; i++) {
-        var name = top[i];
-        var total = name ? totals[name] : 0;
-        // build dotted line with dots sized by daily activity
-        var line = '';
-        for (var j = 0; j < 10; j++) {
-            var v = name ? (a.daily[days[j]] ? (a.daily[days[j]][name] || 0) : 0) : 0;
-            var dot = v > 0 ? '<span class="spark-dot' + (v >= 100 ? ' hot' : (v >= 20 ? ' warm' : '')) + '" title="' + (days[j] || '') + ': ' + v + '"></span>' : '<span class="spark-gap"></span>';
-            line += dot + '<span class="spark-sep"></span>';
+    for (var i = 0; i < names.length; i++) {
+        var name = names[i];
+        var n1 = name ? (fromWorker[name].lastMinute || 0) : 0;
+        var ps = name ? (fromWorker[name].perSecond || 0) : 0;
+        // one dot per 10s of activity in the last minute, so the row reads as a
+        // bar rather than a second chart
+        var dots = '';
+        var lit = Math.min(6, Math.ceil(n1 / 10));
+        for (var j = 0; j < 6; j++) {
+            dots += j < lit
+                ? '<span class="spark-dot' + (ps >= 1 ? ' hot' : (ps > 0 ? ' warm' : '')) + '" title="' + (j + 1) + '0s+"></span>'
+                : '<span class="spark-gap"></span>';
+            dots += '<span class="spark-sep"></span>';
         }
         html += '<div class="executor-row">' +
-            '<span class="executor-name">' + (name || '—') + '</span>' +
-            '<span class="executor-count">' + (name ? total : 0) + '</span>' +
-            '<span class="spark-line">' + line + '</span></div>';
+            '<span class="executor-name">' + (name ? escapeHtml(name) : '&mdash;') + '</span>' +
+            '<span class="executor-count">' + n1 + ' /min</span>' +
+            '<span class="spark-line">' + dots + '</span></div>';
     }
     containers.forEach(function(c) { c.innerHTML = html; });
 }
@@ -2060,6 +2092,10 @@ function startLiveChartPolling() {
                 })
                 .then(function(data) {
                     if (!data) return;
+                    // Kept for the Executor Statistics panel, which reads the same
+                    // response instead of issuing a second request every 5s.
+                    liveChart.last = data;
+                    renderExecutorDailyStats();
                     var exec = data.executors || {};
                     var series = SH_EXECUTORS.concat(['Other']);
                     series.forEach(function(e) {
@@ -5832,5 +5868,4 @@ window.handleResetPassword = handleResetPassword;
 window.openScriptRaw = openScriptRaw;
 window.generateLoadstring = generateLoadstring;
 window.shUploadLoader = shUploadLoader;
-window.recordExecution = recordExecution;
 window.recordThreat = recordThreat;

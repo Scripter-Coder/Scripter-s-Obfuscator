@@ -688,4 +688,52 @@ console.log('[W18] CUSTOM BACKGROUND: a new profile field needs BOTH allowlists.
     console.log('    OK: the background syncs across devices, clears properly, and is separate from the banner');
 }
 
+// ============ /v3/realtime_stats (feeds the admin dashboard) ============
+// Untested until now, and the Executor Statistics panel was repointed at it, so
+// its SHAPE is now load-bearing: the panel reads executors[name].lastMinute and
+// executors[name].perSecond, and renames itself if either goes missing.
+//
+// Two properties are worth pinning beyond the shape:
+//   * it is a SITE-WIDE view, which is why the panel is admin-gated on the
+//     client. If it ever stops being site-wide that gate becomes wrong, so the
+//     test records what it is.
+//   * the executor map is a 60-SECOND window. Events older than that are
+//     pruned, so a panel claiming ten days of history would be a lie. Asserted
+//     so the number cannot drift unnoticed.
+console.log('[W19] REALTIME STATS: the shape the admin dashboard reads...');
+{
+    const before = await j('GET', '/v3/realtime_stats');
+    assert.ok(before.ok, 'the endpoint must answer: ' + JSON.stringify(before).slice(0, 160));
+    assert.strictEqual(before.endpoint, 'v3/realtime_stats');
+    for (const k of ['totalExecutions', 'threatsBlocked', 'totalVisitors', 'executors', 'topScripts', 'uptimeSeconds', 'updatedAt']) {
+        assert.ok(before[k] !== undefined, 'the response must carry ' + k + ' - the dashboard reads it');
+    }
+    assert.strictEqual(typeof before.executors, 'object', 'executors must be a map');
+    // topScripts is a MAP (scriptId -> count), not a list. I asserted a list here
+    // first and it failed: S.perScript is a plain object, and nothing in the
+    // client reads topScripts at all. Asserting the shape it actually has is the
+    // point - a test that encodes a guess is worse than no test, because it looks
+    // like coverage.
+    assert.strictEqual(typeof before.topScripts, 'object', 'topScripts is a scriptId->count map');
+    assert.ok(!Array.isArray(before.topScripts), 'topScripts must not be an array');
+
+    // uptime sanity: a lost isolate used to report epoch-based uptime
+    assert.ok(before.uptimeSeconds >= 0 && before.uptimeSeconds < 60 * 60 * 24 * 400,
+        'uptime must be plausible, got ' + before.uptimeSeconds);
+
+    // post a real event, then require it to appear with BOTH fields the panel
+    // reads. This is the assertion that would catch a rename.
+    await call('POST', '/track', { executor: 'Delta', scriptId: 'w19probe', key: 'W19' }, EXECUTOR_UA);
+    const after = await j('GET', '/v3/realtime_stats');
+    assert.ok(after.totalExecutions >= before.totalExecutions, 'a tracked execution must move the total');
+    assert.ok(after.executors['Delta'], 'the executor must appear in the map, got: ' + JSON.stringify(Object.keys(after.executors)));
+    assert.strictEqual(typeof after.executors['Delta'].lastMinute, 'number',
+        'lastMinute must be a number - the panel reads it directly');
+    assert.strictEqual(typeof after.executors['Delta'].perSecond, 'number',
+        'perSecond must be a number - the panel reads it directly');
+    assert.ok(after.executors['Delta'].lastMinute >= 1, 'a just-posted event must be inside the 60s window');
+
+    console.log('    OK: totalExecutions/executors/lastMinute/perSecond all present and live');
+}
+
 console.log('\nALL WORKER TESTS PASSED');
