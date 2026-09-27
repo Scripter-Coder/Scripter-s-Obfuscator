@@ -271,24 +271,64 @@ async function shUploadGithub(o) {
 // Lets ANY registered account claim loadstrings without the owner access
 // code. Cached in sessionStorage for 12h. Falls back to the owner flow
 // (sh/login raw code) only if the user login is unavailable.
+// Session storage first (dies with the tab), then local storage (survives it).
+// See the note at the top of this block for why the second store is not a new
+// exposure: the base64 of this same password is already in localStorage.
 function shGetUserToken() {
-    try { return sessionStorage.getItem('sh_user_token'); } catch (e) { return null; }
+    try { var s = sessionStorage.getItem('sh_user_token'); if (s) return s; } catch (e) {}
+    try { return localStorage.getItem('sh_user_token'); } catch (e) { return null; }
 }
+
+// The ONE place a session token is written. Everything else reads it.
+function shSaveUserToken(tok) {
+    if (!tok) return "";
+    try { sessionStorage.setItem('sh_user_token', tok); } catch (e) {}
+    try { localStorage.setItem('sh_user_token', tok); } catch (e) {}
+    return tok;
+}
+
+// Mint a session token from a password the user just typed.
+//
+// Called ONLY from the login and signup handlers, because that is the only place
+// the raw password exists. Reconstructing it later is not possible: the local
+// record holds btoa(password), which the worker will not accept for an account
+// whose hash has been migrated to PBKDF2.
+
+// Signing out must revoke the credential client-side. Without this, logout()
+// only changed the UI: shGetUserToken() kept returning the previous account's
+// session, so the next person to sign in on a shared browser inherited it.
+function shClearUserToken() {
+    try { sessionStorage.removeItem('sh_user_token'); } catch (e) {}
+    try { localStorage.removeItem('sh_user_token'); } catch (e) {}
+}
+async function shMintUserToken(emailOrUsername, rawPassword) {
+    if (!emailOrUsername || !rawPassword) return null;
+    try {
+        var d = await shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: rawPassword });
+        if (d && d.ok && d.token) return shSaveUserToken(d.token);
+    } catch (e) {}
+    return null;
+}
+// LAST RESORT ONLY. Prefer the token saved at login.
+//
+// This replays the locally-stored btoa(password) to /sh/user-login. That works
+// only while the worker still holds a LEGACY base64 record: for a PBKDF2 record
+// the worker hashes whatever it is given, so a base64 string can never match.
+// And the worker migrates legacy records on the first successful login, so this
+// path tends to work exactly once per account.
+//
+// It is kept because a legacy account on a device that already holds the record
+// genuinely has no other way in, and because returning null is now a truthful
+// answer that the caller reports, rather than a silent undefined.
 async function shEnsureUserToken() {
     var existing = shGetUserToken();
     if (existing) return existing;
     if (!currentUser) return null;
-    // we need the raw password for the worker login - stored on the
-    // local record when this browser signed up / logged in
     var u = users[currentUser.email];
     if (!u || !u.password) return null;
     try {
-        var pw = u.password; // b64
-        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: pw });
-        if (d.ok && d.token) {
-            try { sessionStorage.setItem('sh_user_token', d.token); } catch (e) {}
-            return d.token;
-        }
+        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: u.password });
+        if (d && d.ok && d.token) return shSaveUserToken(d.token);
     } catch (e) {}
     return null;
 }
@@ -395,7 +435,7 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // token expired -> re-login once, retry (SAME id + flags so
             // the baked-in key URL + auth requirements stay valid)
             sessionStorage.removeItem('sh_raw_token');
-            sessionStorage.removeItem('sh_user_token');
+            shClearUserToken(); // both stores, not just this tab's
             const ok2 = await shLoginRaw();
             if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth);
             const userToken2 = await shEnsureUserToken();
@@ -2352,6 +2392,9 @@ function updateBar(name, used, max) {
 
 // ============ AUTH FUNCTIONS ============
 function logout() {
+    // Before anything else: clear the credential, so no request made after this
+    // point can still be authenticated as whoever was signed in before.
+    shClearUserToken();
     isLoggedIn = false;
     currentUser = null;
     window.currentUser = null;
@@ -2494,6 +2537,10 @@ function handleSignup(event) {
     document.getElementById('signupForm').reset();
     var userData = { ...user };
     delete userData.password;
+    // A new account is signed in immediately, and the admin panel, the users list
+    // and the cloud sync all authenticate with a session token. Start it now, while
+    // the password is in hand, instead of leaving it to be re-derived later.
+    shMintUserToken(email, password);
     updateUIForUser(userData);
     console.log('✅ User signed up and logged in:', username);
 }
@@ -2522,6 +2569,10 @@ function handleLogin(event) {
             if (d.ok && d.user) {
                 users[d.user.email] = d.user;
                 users[d.user.email].password = btoa(password);
+                // The worker just issued a session token and this threw it away.
+                // Every owner panel call authenticates with it, so discarding it is
+                // what left the panel with no credential and no honest error.
+                shSaveUserToken(d.token);
                 saveUsers();
                 closeModal('login');
                 showNotification('Welcome Back!', 'Logged in successfully!', 'success');
@@ -2542,6 +2593,10 @@ function handleLogin(event) {
     document.getElementById('loginForm').reset();
     var userData = { ...foundUser };
     delete userData.password;
+    // This branch never calls the worker, so it gets no token and the admin panel
+    // has nothing to authenticate with. The raw password is in hand right here,
+    // which is the only place it will ever be - it cannot be recovered later.
+    shMintUserToken(emailOrUsername, password);
     updateUIForUser(userData);
     // cross-device: push this login to the cloud + pull all users (owner)
     shSyncUsersOnLogin(foundUser, password);
