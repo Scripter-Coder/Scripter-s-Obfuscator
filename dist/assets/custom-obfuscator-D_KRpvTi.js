@@ -334,13 +334,13 @@ function buildSecurityWrapper(options, meta) {
         //     and re-run elsewhere, the canary is missing -> decoy fires and
         //     prints the anti-crack message. One-shot: the canary is deleted
         //     on pass so a later re-run of a dump also lands on the decoy.
-        (selfReg ? ' local ' + GENV1 + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G ' + GENV1 + '.' + canaryName + '=' + magic : null),
+        (selfReg ? ' local ' + GENV1 + '=(getgenv and getgenv()) or _G ' + GENV1 + '.' + canaryName + '=' + magic : null),
         ' local function ' + QC + '()',
-        '  local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+        '  local g=(getgenv and getgenv()) or _G',
         '  return g.' + canaryName + '==' + magic,
         ' end',
         ' local ' + QV + '=' + QC + '()',
-        ' if ' + QV + ' then local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G g.' + canaryName + '=nil end',
+        ' if ' + QV + ' then local g=(getgenv and getgenv()) or _G g.' + canaryName + '=nil end',
         ' if not ' + QV + ' then',
         // decoy path: decrypt the (encrypted) decoy payload and run it.
         // EVERY branch is encrypted - the message never appears in plaintext.
@@ -370,7 +370,7 @@ function buildSecurityWrapper(options, meta) {
         var SGV = SG[0], SGI = SG[1], SGE = SG[2], SGM = SG[3], SGS = SG[4], SGN = SG[5];
         parts.push(
             'do',
-            ' local ' + SGN + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+            ' local ' + SGN + '=(getgenv and getgenv()) or _G',
             ' local ' + SGV + '=' + SGN + '.__SH_SERVER_VERDICT',
             ' if ' + SGV + ' then',
             // the loader already authenticated: publish the server verdict
@@ -407,7 +407,7 @@ function buildSecurityWrapper(options, meta) {
             ' end',
             // ---- API GLOBALS (Task 16): ScripterHubKeyValid/Incorrect/Expired/Status + WebsiteStatus
             ' local function ' + API + '(st)',
-            '  local ' + GENV + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+            '  local ' + GENV + '=(getgenv and getgenv()) or _G',
             '  ' + GENV + '.ScripterHubKeyValid=(st=="Valid")',
             '  ' + GENV + '.ScripterHubKeyIncorrect=(st=="Incorrect")',
             '  ' + GENV + '.ScripterHubKeyExpired=(st=="Expired")',
@@ -508,7 +508,7 @@ function buildSecurityWrapper(options, meta) {
         var S2 = n[31], API2 = n[32], GENV2 = n[33];
         parts.push(
             'do',
-            ' local ' + GENV2 + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+            ' local ' + GENV2 + '=(getgenv and getgenv()) or _G',
             ' ' + GENV2 + '.ScripterHubKeyValid=true',
             ' ' + GENV2 + '.ScripterHubKeyIncorrect=false',
             ' ' + GENV2 + '.ScripterHubKeyExpired=false',
@@ -545,15 +545,34 @@ function buildSecurityWrapper(options, meta) {
             ' local function ' + SCAN + '()',
             '  local ' + TK + '={"' + tokens.join('","') + '"}',
             '  local ' + WL + '={' + wlNames.map(function (w) { return '["' + w + '"]=true'; }).join(',') + '}',
-            // 1) spy/logger globals in getgenv() (or _G).
-            //    Standard executor API globals (whitelist) are never flagged.
+            // 1) spy/logger globals.
+            //
+            // This used to walk EVERY key in the global environment and
+            // stringify each one:
+            //
+            //     for GK in pairs((getgenv and getgenv()) or (getfenv and
+            //     getfenv(0)) or _G) do ... tostring(GK) ... end
+            //
+            // In Roblox that table carries the engine internals, so stringifying
+            // them surfaces internal state names - the user saw a wall of
+            // "VS_STATE_FRAME_OWNER", worst on ScreenGui scripts, which run with a
+            // much richer global environment than a bare command bar.
+            //
+            // Probing the known names directly is O(12) instead of O(everything),
+            // touches no other key, and is MORE reliable: the old version
+            // substring-matched every key, so any unrelated global containing
+            // "logger" or "dumper" tripped it too. Scanning the whole global
+            // table was never wise in a sandboxed VM and bought nothing that a
+            // handful of rawget calls do not buy better.
+            //
+            // rawget, not ENV[name]: an __index chain can invoke a metatable
+            // and turn a lookup into arbitrary user code.
             '  pcall(function()',
-            '   local ' + ENV + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
-            '   for ' + GK + ' in pairs(' + ENV + ') do',
-            '    local ' + LK + '=string.lower(tostring(' + GK + '))',
-            '    if not ' + WL + '[' + LK + '] then',
-            '     for ' + TI + '=1,#' + TK + ' do',
-            '      if string.find(' + LK + ',' + TK + '[' + TI + '],1,true) then ' + FLAG + '=true ' + RS + '="global:"..tostring(' + GK + ') return end',
+            '   local ' + ENV + '=(getgenv and getgenv()) or _G',
+            '   if type(' + ENV + ')=="table" then',
+            '    for ' + TI + '=1,#' + TK + ' do',
+            '     if rawget(' + ENV + ',' + TK + '[' + TI + '])~=nil then',
+            '      ' + FLAG + '=true ' + RS + '="global:"..' + TK + '[' + TI + '] return',
             '     end',
             '    end',
             '   end',
@@ -697,7 +716,7 @@ function buildSecurityWrapper(options, meta) {
     // ---------- RUNTIME VARS (Luarmor LRM_* model) ----------
     // Expose LRM_IsUserPremium / LRM_UserNote / LRM_UserDiscordID as aliases to ScripterHub globals
     parts.push(
-        'do local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G',
+        'do local g=(getgenv and getgenv()) or _G',
         ' g.LRM_IsUserPremium=g.ScripterHubKeyValid',
         ' g.LRM_UserNote=g.ScripterHubKeyStatus',
         ' g.LRM_UserDiscordID=g.ScripterHubKeyValid and "premium" or "free"',
@@ -921,7 +940,14 @@ function buildLoader(src, layerCount, options) {
     //
     // rawget is only ever called on a value proven to be a table, because
     // rawget(nil, k) is a hard error and getfenv is absent on some executors.
-    out.push('local ' + FN + '=' + "(function()\nlocal n=string.char(108,111,97,100,115,116,114,105,110,103)\nlocal m=string.char(108,111,97,100)\nlocal t={}\nif type(_G)=='table' then t[#t+1]=_G end\nif getfenv then local ok,e=pcall(getfenv,0) if ok and type(e)=='table' then t[#t+1]=e end end\nif getgenv then local ok,e=pcall(getgenv) if ok and type(e)=='table' then t[#t+1]=e end end\nfor i=1,#t do local a=rawget(t[i],n) or rawget(t[i],m) if a then return a end end\nreturn loadstring or load\nend)()");
+// NO getfenv here, deliberately. It is deprecated and absent from the Roblox/Luau
+// sandbox, and CALLING it from a protected script reaches into Luau frame
+// machinery - the internal state names then surface in the console as a wall of
+// "VS_STATE_FRAME_OWNER", worst on ScreenGui scripts. Adding it while fixing the
+// nil-loader crash was a self-inflicted regression: it was copied from the code
+// being replaced rather than reasoned about, and the fix never needed it. _G and
+// getgenv cover the cases, and the bare reference is the part that did fix it.
+    out.push('local ' + FN + '=' + "(function()\nlocal n=string.char(108,111,97,100,115,116,114,105,110,103)\nlocal m=string.char(108,111,97,100)\nlocal t={}\nif type(_G)=='table' then t[#t+1]=_G end\nif getgenv then local ok,e=pcall(getgenv) if ok and type(e)=='table' then t[#t+1]=e end end\nfor i=1,#t do local a=rawget(t[i],n) or rawget(t[i],m) if a then return a end end\nreturn loadstring or load\nend)()");
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
     out.push('local ' + P + '="' + payloadStr + '"');
     out.push('local ' + K + '={' + keyTableParts.join(',') + '}');
@@ -983,7 +1009,7 @@ function buildLoader(src, layerCount, options) {
         // unlocks. The global changes where the bytes come from, not whether
         // they are correct. Everything that reads the key still goes through
         // the identical verification path.
-        out.push(' local ' + RP + '=rawget((getgenv and getgenv()) or (getfenv and getfenv(0)) or _G,' + splitKeyGenvExpr() + ')');
+        out.push(' local ' + RP + '=rawget((getgenv and getgenv()) or _G,' + splitKeyGenvExpr() + ')');
         out.push(' if type(' + RP + ')~="string" or ' + RP + '=="" then ' + RP + '=nil end');
 
         if (authMode) {
@@ -992,7 +1018,7 @@ function buildLoader(src, layerCount, options) {
             var RD = SN[16], SGV2 = SN[17];
             // license key: user sets getgenv().ScripterHubKey = "KEY"
             // BEFORE executing the loadstring (same UX as Luarmor)
-            out.push(' local ' + LK + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
+            out.push(' local ' + LK + '=(getgenv and getgenv()) or _G');
             out.push(' ' + LK + '=' + LK + '.ScripterHubKey');
             // ---- multi-signal HWID: never trust a single value ----
             out.push(' local ' + HW + '=""');
@@ -1033,7 +1059,7 @@ function buildLoader(src, layerCount, options) {
             out.push('   local ' + AT + ',' + AE + '=' + AU + ':match("^SHA (%S+) (%d+)")');
             out.push('   if ' + AT + ' and ' + AE + ' and ' + AE + '+0 > os.time()*1000 then ' + SGV2 + '="Valid" end');
             out.push('  elseif ' + AU + ':sub(1,6)=="SHERR " then ' + SGV2 + '=' + AU + ':sub(7) end');
-            out.push('  local ' + RD + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G ' + RD + '.__SH_SERVER_VERDICT=' + SGV2);
+            out.push('  local ' + RD + '=(getgenv and getgenv()) or _G ' + RD + '.__SH_SERVER_VERDICT=' + SGV2);
             out.push('  if ' + SGV2 + '~="Valid" then');
             // hard exit with the server's own reason (hwid/expired/banned/...)
             out.push('   pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="Auth failed: "..' + SGV2 + ',Duration=7}) end)');
@@ -1064,7 +1090,7 @@ function buildLoader(src, layerCount, options) {
         // already approved the run. Setting it here covers both paths, and
         // only ever when it is still unset, so a legacy auth failure that
         // recorded a reason is never overwritten with "Valid".
-        out.push(' local ' + RD + '=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
+        out.push(' local ' + RD + '=(getgenv and getgenv()) or _G');
         out.push(' if rawget(' + RD + ',"__SH_SERVER_VERDICT")==nil then ' + RD + '.__SH_SERVER_VERDICT="Valid" end');
         out.push(' if type(' + RP + ')~="string" or ' + RP + '=="" then pcall(function() warn("[ScripterHub] No decryption key material") print("[ScripterHub] No key material") end) return end');
         out.push(' local ' + PT + '={}');
@@ -1098,7 +1124,7 @@ function buildLoader(src, layerCount, options) {
             out.push('   local sd=29');
             out.push('   for j=1,#car do sd=(sd*33+car[j])%4294967296 end');
             out.push('   sd=29+(sd%223)');
-            out.push('   local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G');
+            out.push('   local g=(getgenv and getgenv()) or _G');
             out.push('   g[' + JSON.stringify(options._vmSeedGenv) + ']=sd');
             out.push('  end');
             out.push(' end');
@@ -1171,7 +1197,7 @@ function buildLoader(src, layerCount, options) {
     // chunk - a dumped payload string does NOT contain it, so re-running a
     // dump lands on the decoy ("Goodluck Sonion 💖").
     if (options._canary) {
-        out.push('do local g=(getgenv and getgenv()) or (getfenv and getfenv(0)) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
+        out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
     // SERVER-BOUND VM SEED: the vault seed is now DELIVERED BY THE
     // SPLIT-KEY RESPONSE (see the carrier block above) - it is never

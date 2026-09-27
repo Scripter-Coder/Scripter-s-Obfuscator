@@ -86,8 +86,17 @@ if (/string\.char\(108,111,97,100,115,116,114,105,110,103\)/.test(body)) {
 if (/type\(_G\)==['"]table['"]/.test(body)) ok('_G is type-checked before rawget');
 else no('_G is passed to rawget without a type check - rawget(nil,k) is a hard error');
 
-if (/getfenv/.test(body) && /pcall/.test(body)) ok('getfenv is called under pcall and type-checked');
-else no('getfenv is not guarded');
+// ABSENCE, not a guard. getfenv is deprecated and absent from the Roblox/Luau
+// sandbox; calling it from a protected script reaches into Luau frame machinery
+// and the internal state names surface in the console as "VS_STATE_FRAME_OWNER".
+// It was added to this resolver by mistake while fixing the nil-loader crash - a
+// regression of my own - so its absence is now a requirement, not a nicety.
+if (/getfenv|setfenv/.test(body)) {
+  no('the resolver touches getfenv/setfenv - deprecated in Roblox and a source of');
+  no('     "VS_STATE_FRAME_OWNER" spam on ScreenGui scripts');
+} else {
+  ok('the resolver never touches getfenv or setfenv');
+}
 
 // --- 2. the artifact still runs on an ordinary interpreter ------------
 {
