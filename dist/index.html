@@ -33,7 +33,7 @@
             } catch (e) {}
         }
     </script>
-  <script type="module" crossorigin src="./assets/main-CwCCxVr7.js"></script>
+  <script type="module" crossorigin src="./assets/main-JCNbUFTR.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/main-C1v3JaGc.css">
 </head>
 <body>
@@ -583,6 +583,19 @@
             <div id="adminUserList" style="max-height: 400px; overflow-y: auto;">
                 <div id="userList"></div>
             </div>
+            <!-- Diagnostics: the real state, not a guess -->
+            <div class="announce-panel" style="background:rgba(255,140,0,0.06); border-color:rgba(255,140,0,0.3);">
+                <h3>&#128296; Diagnostics</h3>
+                <p class="sub" style="margin:0 0 12px 0;">Shows what the server actually returned. Copy this into a bug report.</p>
+                <div class="announce-actions" style="margin-bottom:12px;">
+                    <button class="btn btn-primary" onclick="runDiagnostics()">&#128269; Test Connection</button>
+                    <button class="btn btn-close-dropdown" onclick="copyDiagnostics()">Copy Report</button>
+                </div>
+                <pre id="diagOut" style="margin:0 0 12px 0; padding:12px; background:#07070f; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#c8c8e8; font-size:11px; line-height:1.6; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all;">Press Test Connection.</pre>
+                <div class="stat-label" style="margin-bottom:6px;">Recent admin calls</div>
+                <pre id="diagLog" style="margin:0; padding:12px; background:#07070f; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#c8c8e8; font-size:11px; line-height:1.6; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all;">No calls yet.</pre>
+            </div>
+
             <!-- Host Announcement -->
             <div class="announce-panel">
                 <h3>&#128227; Host Announcement</h3>

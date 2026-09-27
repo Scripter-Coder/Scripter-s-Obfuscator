@@ -539,63 +539,163 @@ async function shSyncUsersOnLogin(user, rawPassword) {
 // PHASE 1: this replaced ?ownerProof=<base64 password>, which put a
 // password-equivalent credential in a URL (proxy logs, browser history,
 // Referer). The token goes in a header, so it is not logged as a query param.
+// The last few admin calls, verbatim, for the Diagnostics panel.
+//
+// Every failure of this function used to be a plausible GUESS - "Owner sign-in
+// required", "the users database may be too large" - and each guess was wrong,
+// because the real status and body were discarded. This keeps them.
+var SH_OWNER_LOG = [];
+
+function shLogOwnerCall(entry) {
+    SH_OWNER_LOG.push(Object.assign({ at: new Date().toISOString() }, entry));
+    if (SH_OWNER_LOG.length > 12) SH_OWNER_LOG.shift();
+    var el = document.getElementById('diagLog');
+    if (!el) return;
+    el.textContent = SH_OWNER_LOG.map(function (e) {
+        return e.at + '  ' + e.method + ' ' + e.path + '\n' +
+            '    status ' + e.status + (e.ok ? '  ok' : '  FAILED') + '\n' +
+            '    ' + (e.body || '(empty body)');
+    }).join('\n\n');
+}
+
+// Owner admin call. ONE credential: the owner ACCOUNT session.
+// The access code is no longer used here. It was a second, invisible secret for
+// work the owner can already prove by signing in, and it produced failures whose
+// honest symptom was never the one reported: a stale cached code that could not
+// be replaced, a refusal with no way out but devtools, and - worst - a client that
+// demanded the code BEFORE sending the request, so nothing was sent and no error
+// described anything real.
+//
+// The /sh/login endpoint still exists on the worker for raw.html. Only the
+// dashboard stopped using it.
+// ============ DIAGNOSTICS ============
+// Press Test Connection and read the answer.
+//
+// This exists because the cause of the admin failures was guessed wrong four times
+// in a row - a stale access code, a second sign-in, a missing header, a stack
+// overflow - and every one of those guesses was invented rather than observed,
+// because the client discarded the HTTP status and the response body and replaced
+// them with a sentence. The status and the body are now kept, and shown.
+function shDiagnosticsState() {
+    var u = currentUser ? users[currentUser.email] : null;
+    return [
+        'site            ' + location.origin,
+        'worker          ' + SH_STATS_ENDPOINT,
+        'signed in as    ' + (currentUser ? (currentUser.username || currentUser.email) : 'NOBODY'),
+        'plan            ' + (currentUser ? currentUser.plan : '-'),
+        'owner account   ' + (currentUser && String(currentUser.email).toLowerCase() === 'dubovikstanislav51@gmail.com' ? 'YES' : 'no'),
+        'local users     ' + Object.keys(users).length,
+        'user session    ' + (shGetUserToken() ? 'present' : 'MISSING - sign in again'),
+        'session id      ' + (shGetUserToken() ? String(shGetUserToken()).slice(0, 18) + '...' : '-'),
+        'legacy code tok ' + (shGetRawToken() ? 'present (no longer used)' : 'none')
+    ];
+}
+
+// Four probes, because "it does not work" has several distinct causes and one
+// request cannot tell them apart. Each prints its own real status and body.
+async function runDiagnostics() {
+    var out = document.getElementById('diagOut');
+    if (!out) { showNotification('Diagnostics', 'Open the Admin panel first.', 'warning'); return; }
+    out.textContent = 'Testing...';
+    var lines = shDiagnosticsState();
+    lines.push('');
+
+    async function probe(label, method, path, body) {
+        var tok = shGetUserToken() || '';
+        lines.push('--- ' + label + ' ---');
+        try {
+            var res = await fetch(SH_STATS_ENDPOINT + path, {
+                method: method,
+                headers: { 'Content-Type': 'application/json', 'X-SH-Token': tok },
+                body: body === null || body === undefined
+                    ? undefined
+                    : JSON.stringify(Object.assign({}, body, { userToken: tok }))
+            });
+            var text = '';
+            try { text = await res.text(); } catch (e) { text = ''; }
+            lines.push('  status  ' + res.status + ' ' + (res.ok ? '(ok)' : '(FAILED)'));
+            lines.push('  body    ' + (text ? text.slice(0, 300) : '(empty)'));
+            shLogOwnerCall({ method: method, path: path, status: res.status, ok: res.ok, body: text.slice(0, 300) });
+        } catch (e) {
+            lines.push('  NETWORK  ' + ((e && e.message) || e));
+        }
+        lines.push('');
+    }
+
+    await probe('health (no auth needed)', 'GET', 'sh/health', null);
+    await probe('user-get (is this account on the worker?)', 'POST', 'sh/user-get', { email: currentUser ? currentUser.email : '', password: '' });
+    await probe('users (the call Refresh from Cloud makes)', 'GET', 'sh/users', null);
+    await probe('announcement (the other admin call)', 'GET', 'sh/announcement', null);
+
+    out.textContent = lines.join('\n');
+    showNotification('Diagnostics', 'Finished - read the report above.', 'info', 3000);
+}
+
+// Copies the whole report so it can be pasted into a bug report verbatim.
+function copyDiagnostics() {
+    var out = document.getElementById('diagOut');
+    var log = document.getElementById('diagLog');
+    if (!out) return;
+    var text = '=== DIAGNOSTICS ===\n' + out.textContent +
+        '\n\n=== RECENT CALLS ===\n' + (log ? log.textContent : '(none)');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+            showNotification('Copied', 'Diagnostics copied to the clipboard.', 'success', 2500);
+        }, function () {
+            showNotification('Copy failed', 'Select the text and copy it manually.', 'warning');
+        });
+    } else {
+        showNotification('Copy failed', 'Select the text and copy it manually.', 'warning');
+    }
+}
+
+
 async function shOwnerApi(path, body) {
-    // SEND FIRST, ASK SECOND.
-    //
-    // This used to demand the access code before it made the request at all, so on
-    // a device with no cached code the account session was never sent - the worker
-    // fix that accepts it was unreachable from the client, and the owner was told to
-    // paste a second secret while signed in to the site.
-    //
-    // Both credentials go on every call. The worker accepts either, and checks the
-    // EMAIL on a user token rather than merely that it is valid, so another account
-    // still cannot reach anything.
-    var codeToken = shGetRawToken() || '';
+    var isGet = body === null || body === undefined;
     var userTok = shGetUserToken() || '';
     var payload = Object.assign({}, body || {}, { userToken: userTok });
-    if (codeToken) payload.token = codeToken;
 
-    // Declared OUTSIDE the fetch options on purpose. A previous version put it
-    // inside the object literal, which is not a place a declaration can go.
-    async function send(tok) {
-        var withTok = Object.assign({}, payload);
-        if (tok) withTok.token = tok;
-        var res = await fetch(SH_STATS_ENDPOINT + path, {
-            method: body === null || body === undefined ? 'GET' : 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-SH-Token': tok || codeToken || userTok },
-            body: (body === null || body === undefined) ? undefined : JSON.stringify(withTok)
+    var res;
+    var text = '';
+    try {
+        res = await fetch(SH_STATS_ENDPOINT + path, {
+            method: isGet ? 'GET' : 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-SH-Token': userTok },
+            body: isGet ? undefined : JSON.stringify(payload)
         });
-        var d;
-        // A non-JSON response - an empty 401, a Cloudflare error page, an HTML 502 -
-        // makes res.json() THROW, and the catch turned that into a bare "false" with
-        // no reason at all. Read the text and parse it, so the failure is reportable.
-        var text = '';
+        // read as TEXT, then parse. res.json() throws on an empty body or an HTML
+        // error page, and the throw used to be swallowed into a bare false with no
+        // reason - which is how a Cloudflare page in front of the worker became
+        // indistinguishable from a wrong password.
         try { text = await res.text(); } catch (e) { text = ''; }
-        try { d = text ? JSON.parse(text) : {}; } catch (e) {
-            d = { ok: false, error: 'the server returned a non-JSON response (HTTP ' + res.status + ')' };
-        }
-        if (d && d.ok === undefined) d.ok = false;
-        return d;
+    } catch (e) {
+        var netErr = {
+            ok: false, status: 0,
+            error: 'Could not reach ' + SH_STATS_ENDPOINT + ' - ' + ((e && e.message) || e)
+        };
+        shLogOwnerCall({ method: isGet ? 'GET' : 'POST', path: path, status: 0, ok: false, body: netErr.error });
+        return netErr;
     }
 
-    var result = await send(codeToken || userTok);
-    if (result && result.ok) return result;
+    var d;
+    try { d = text ? JSON.parse(text) : {}; }
+    catch (e) { d = { ok: false, error: 'the server did not return JSON' }; }
+    if (d && d.ok === undefined) d.ok = false;
 
-    // Refused. If an account session was sent, it is the real credential and the
-    // answer is no: report what the server said, not a request for a secret the
-    // owner may not need at all.
-    if (userTok) {
-        return { ok: false, error: (result && result.error) || 'the server refused this account session' };
-    }
+    shLogOwnerCall({ method: isGet ? 'GET' : 'POST', path: path, status: res.status, ok: !!d.ok, body: text.slice(0, 400) });
 
-    // No account session, so the access code is the only way in. Ask for it - and
-    // shLoginRaw clears a code the server rejects, so the prompt can come back
-    // rather than leaving a stale one cached forever.
-    var got = await shLoginRaw();
-    if (!got) {
-        return { ok: false, error: 'Owner sign-in needed. Sign in as the owner account, or paste the access code when prompted.' };
-    }
-    return send(shGetRawToken() || '');
+    if (d && d.ok) return d;
+
+    // Report the REAL answer. The status and the body are both included, because
+    // a bare "not authorised" cannot be acted on and this has been guessed at
+    // enough times already.
+    var why = (d && d.error) || ('the server returned no reason');
+    return {
+        ok: false,
+        status: res.status,
+        error: 'HTTP ' + res.status + ' from ' + path + ': ' + why +
+            (userTok ? '' : '  (no owner session was sent - sign in as the owner account)')
+    };
 }
 
 // owner pull of all cloud users -> { email: user } (no passwords).
@@ -2608,7 +2708,7 @@ async function refreshUsersList() {
         showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total).', 'success', 3000);
     } else {
         var why = (cloudRes && cloudRes.reason) || 'the cloud did not answer';
-        showNotification('Refresh Failed', why, 'error', 9000);
+        showNotification('Refresh Failed', why, 'error', 12000);
     }
 }
 
@@ -5805,3 +5905,5 @@ window.__shUsersRef = function () { return users; };
 // the escape hatch for a stale owner code should be reachable from a test.
 window.shForgetOwnerCode = shForgetOwnerCode;
 window.shOwnerApi = shOwnerApi;
+window.runDiagnostics = runDiagnostics;
+window.copyDiagnostics = copyDiagnostics;
