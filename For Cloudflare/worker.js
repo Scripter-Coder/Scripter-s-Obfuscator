@@ -2671,8 +2671,21 @@ async function loaderId(wantId, env, authedUser) {
     const w = String(wantId || '');
     if (!/^ScripterHub\d{10}$/.test(w)) {
         let d = '';
-        for (let i = 0; i < 10; i++) d += Math.floor(Math.random() * 10);
-        return 'ScripterHub' + d;
+        // A SCRIPT ID IS 10 RANDOM DIGITS FROM A CSPRNG.
+        //
+        // This used to be Math.floor(Math.random() * 10) in a loop. Math.random
+        // is not a CSPRNG and, in a Worker, is per-isolate - so two concurrent
+        // requests could draw the same id and silently overwrite a script, and
+        // an attacker could predict an id by sampling. tools/script_id_test.mjs
+        // only covered main.js, so this sat there passing.
+        //
+        // crypto.getRandomValues is a global in Workers, so this needs no binding
+        // and no import - which also keeps the single-file rule (D21).
+        const ib = new Uint8Array(8);
+        crypto.getRandomValues(ib);
+        let iv = 0n;
+        for (let i = 0; i < ib.length; i++) iv = (iv << 8n) | BigInt(ib[i]);
+        return 'ScripterHub' + (iv % 10000000000n).toString().padStart(10, '0');
     }
     // Not yet taken: nothing to protect.
     const existing = env && env.LOADERS_KV ? await env.LOADERS_KV.get(KV_META_PREFIX + w) : null;
