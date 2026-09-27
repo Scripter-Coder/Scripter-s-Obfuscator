@@ -3569,16 +3569,33 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             const email = String(body.email || '').trim();
             const password = String(body.password || '');
-            if (!email || email.length > MAX_EMAIL_LEN || !password || password.length > 500) return jsonResponse({ ok: false, error: 'bad request' }, 400);
+            // A SESSION TOKEN is accepted as identity, and is what the dashboard
+            // sends. The base64 password the client stores is not a usable proof:
+            // verifyPassword hashes whatever it is given, so a base64 string can
+            // never match a PBKDF2 record - and the worker migrates legacy records
+            // on first login, so that fallback dies the first time an account is
+            // used. The token is the one credential the client can actually
+            // produce after the sign-in moment has passed.
+            const tok = String(body.userToken || body.token || '');
+            let tokenOk = false;
+            if (tok) {
+                try {
+                    const u = await verifyUserToken(tok, env);
+                    // Bound to THIS account. A valid token belonging to somebody
+                    // else must not authorise a write to this record.
+                    tokenOk = !!(u && String(u.email || '').toLowerCase() === email.toLowerCase());
+                } catch (e) { tokenOk = false; }
+            }
+            if (!email || email.length > MAX_EMAIL_LEN || (!tokenOk && (!password || password.length > 500))) return jsonResponse({ ok: false, error: 'bad request' }, 400);
             const map = await loadUsersMap(env);
             const existing = map[email];
             if (existing) {
                 // must prove identity with the real password.
                 // PHASE 1: PBKDF2 (was: b64 comparison). A legacy record is
                 // upgraded in place once the correct password is proven.
-                const v = await verifyPassword(env, existing.password, password);
+                let v = tokenOk ? { ok: true, needsRehash: false } : await verifyPassword(env, existing.password, password);
                 if (!v.ok) {
-                    return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
+                    return jsonResponse({ ok: false, error: 'Not authorized for this account.' }, 401);
                 }
                 if (v.needsRehash) {
                     try {
@@ -3630,6 +3647,33 @@ async function handleRequest(request, env, ctx) {
         // Lets any logged-in device pull its fresh record (plan changes by
         // the owner, profile edits from another device, bans, etc.) after a
         // page refresh. Requires email + password proof (raw or b64).
+// ---------- GET /sh/user-me : the signed-in user's own record ----------
+//
+// Exists because the client cannot re-prove identity with a password. It stores
+// btoa(password) and nothing else, and that value is not a valid proof for a
+// PBKDF2 record - the worker hashes whatever it is given. So the page-load
+// refresh had no working credential, got a 401, and the client read that as
+// "the account was deleted": it deleted the local record and force-logged the
+// user out with "Your account was deleted by admin."
+//
+// A session token IS a working credential, so this uses one. The token is bound
+// to a fingerprint of the password-hash generation, so changing the password
+// invalidates it - which is the correct behaviour and cannot be spoofed.
+//
+// A missing account is a 404 and a DISABLED account is a 403, deliberately
+// distinct: only 403 is a real administrative action, and the client is
+// forbidden from treating anything else as grounds for deleting an account.
+if (url.pathname === '/sh/user-me' && request.method === 'GET') {
+    const tok = url.searchParams.get('userToken') || url.searchParams.get('token') || '';
+    const u = tok ? await verifyUserToken(tok, env) : null;
+    if (!u || !u.email) return jsonResponse({ ok: false, error: 'no valid session' }, 401);
+    const map = await loadUsersMap(env);
+    const rec = map[String(u.email)] || map[String(u.email).toLowerCase()];
+    if (!rec) return jsonResponse({ ok: false, error: 'no such account' }, 404);
+    if (rec.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.', disabled: true }, 403);
+    return jsonResponse({ ok: true, user: publicUser(rec) });
+}
+
         if (url.pathname === '/sh/user-get' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
@@ -3842,41 +3886,11 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true, code: g.code });
         }
 
-        // ---------- HOST ANNOUNCEMENT ----------
-        // A message the owner pushes to every signed-in device, with a text
-        // colour and a background colour.
-        //
-        // The colours are interpolated into a style="color: ...; background:..."
-        // attribute on every client, so they are validated against a strict hex
-        // pattern rather than escaped. A colour field is the kind of thing that
-        // looks harmless and then carries `}</style><script>`; a regex cannot
-        // express that at all, which is the point.
-        const ANNOUNCE_KV_KEY = 'sh_announcement';
-        const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-        const readAnnouncement = async (env) => {
-            if (!env.LOADERS_KV) return null;
-            const raw = await env.LOADERS_KV.get(ANNOUNCE_KV_KEY);
-            if (!raw) return null;
-            let d;
-            try { d = JSON.parse(raw); } catch (e) { return null; }
-            if (!d || typeof d.text !== 'string' || !d.text.trim()) return null;
-            return {
-                text: String(d.text).slice(0, 600),
-                color: HEX_COLOR.test(String(d.color || '')) ? String(d.color) : '#ffffff',
-                bg: HEX_COLOR.test(String(d.bg || '')) ? String(d.bg) : '#6c3bff',
-                at: Number(d.at) || 0
-            };
-        };
-
-        if (url.pathname === '/sh/announcement' && request.method === 'GET') {
-            // Public on purpose: it is a broadcast banner with no account data in
-            // it, and every client has to be able to poll it without holding an
-            // owner token. Rate limited so it cannot be used as a KV read amplifier.
-            const rl = rateLimit('announce-read', rateIdentity(request, url));
-            if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
-            const a = await readAnnouncement(env);
-            return jsonResponse({ ok: true, announcement: a });
-        }
+        // The Host Announcement feature is removed. Its /sh/announcement routes, the
+        // KV key and the hex-validated reader went with it. Any announcement already
+        // stored in KV under 'sh_announcement' is left untouched and simply never
+        // read again - deleting a KV value is not something a deploy should do
+        // silently, and nothing depends on it any more.
 
         // "Is this the owner?" in the sense the DASHBOARD means it.
         //
@@ -3940,35 +3954,6 @@ async function handleRequest(request, env, ctx) {
             return false;
         }
 
-        if (url.pathname === '/sh/announcement' && request.method === 'POST') {
-            let body = {};
-            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            // The owner's own dashboard session is enough; the access-code
-                // prompt is not required. It was, which is why "Announce To All"
-                // did nothing for the person it was built for.
-                if (!(await isOwnerSessionOrAccount(env, null, body, request))) {
-                    return jsonResponse({ ok: false, error: 'Only the owner account can post an announcement.' }, 401);
-                }
-            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'no KV bound' }, 501);
-
-            // An empty text clears the banner, so there is one action for both.
-            const text = String(body.text || '').trim().slice(0, 600);
-            if (!text) {
-                await env.LOADERS_KV.delete(ANNOUNCE_KV_KEY);
-                return jsonResponse({ ok: true, cleared: true });
-            }
-            const rec = {
-                text: text,
-                // Invalid colours fall back to the defaults rather than being
-                // rejected - a typo in a colour should not cost the owner the
-                // message they just typed.
-                color: HEX_COLOR.test(String(body.color || '')) ? String(body.color) : '#ffffff',
-                bg: HEX_COLOR.test(String(body.bg || '')) ? String(body.bg) : '#6c3bff',
-                at: Date.now()
-            };
-            await env.LOADERS_KV.put(ANNOUNCE_KV_KEY, JSON.stringify(rec));
-            return jsonResponse({ ok: true, announcement: rec });
-        }
 
         // ---------- owner auth helper for the users endpoints ----------
         // Two ways to prove "I am the owner (Scripter)":

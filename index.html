@@ -595,32 +595,6 @@
                 <pre id="diagLog" style="margin:0; padding:12px; background:#07070f; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#c8c8e8; font-size:11px; line-height:1.6; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all;">No calls yet.</pre>
             </div>
 
-            <!-- Host Announcement -->
-            <div class="announce-panel">
-                <h3>&#128227; Host Announcement</h3>
-                <p class="sub" style="margin:0 0 12px 0;">Shown as a banner at the top of the site on every device.</p>
-                <div class="announce-current is-empty" id="announceCurrent">No announcement is live.</div>
-                <div class="form-group">
-                    <label>Message</label>
-                    <textarea id="announceText" rows="3" maxlength="600" placeholder="Maintenance tonight at 22:00 UTC..."></textarea>
-                </div>
-                <div class="announce-colors">
-                    <div class="form-group">
-                        <label>Text colour</label>
-                        <input class="sh-input" type="color" id="announceColor" value="#ffffff">
-                    </div>
-                    <div class="form-group">
-                        <label>Background colour</label>
-                        <input class="sh-input" type="color" id="announceBg" value="#6c3bff">
-                    </div>
-                </div>
-                <div class="announce-actions">
-                    <button class="btn btn-close-dropdown" onclick="previewAnnouncement()">&#128065; Test On This Device</button>
-                    <button class="btn btn-primary" data-loading="false" id="announceBtn" onclick="sendAnnouncement()">&#128227; Announce To All</button>
-                    <button class="btn btn-danger" onclick="clearAnnouncement()">Clear</button>
-                </div>
-                <p class="announce-status" id="announceStatus"></p>
-            </div>
             <div style="margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap;">
                 <button class="btn btn-close-dropdown" onclick="closeModal('admin')">Close</button>
             </div>
@@ -660,5 +634,9 @@
          Lives in public/vendor/ so vite copies it into dist/ too. -->
       <script src="public/vendor/luaparse.js" onerror="this.onerror=null;this.src='./vendor/luaparse.js'"></script>
     <script type="module" src="./main.js"></script>
+<!-- Rewards: ad-link checkpoints. A module, because rewards.js ends in an
+     `export { ... }` - so its functions are NOT global and cannot be called from
+     an inline onclick. It puts the handful the markup needs on window itself. -->
+<script type="module" src="./rewards.js"></script>
 </body>
 </html>

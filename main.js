@@ -127,6 +127,10 @@ function shAskForCode() {
 // if a prompt is reachable at all. A stale code in sessionStorage - rotated since
 // it was set, or mistyped in a tab that has since been forgotten - would
 // otherwise leave the owner with no visible way to correct it.
+// The Host Announcement feature is gone. Its saved preview is dropped once, so a
+// browser that previewed a banner is not left holding a value that nothing reads.
+try { localStorage.removeItem('sh_announce_preview'); } catch (e) {}
+
 function shForgetOwnerCode() {
     try {
         sessionStorage.removeItem(SH_CODE_STORAGE_KEY);
@@ -473,6 +477,34 @@ function shApi(endpoint, body) {
     }).then(function(r) { return r.json(); }).catch(function() { return { ok: false, error: 'network' }; });
 }
 
+// A GET with query parameters, and a body read as TEXT.
+//
+// shApi is POST-only, so the token-authenticated /sh/user-me read had nowhere to
+// go. Two details matter. r.json() THROWS on an empty body or an HTML error page,
+// and the throw used to be swallowed into a bare {ok:false, error:"network"}, which
+// made a Cloudflare error page indistinguishable from a rejected password. And the
+// status is kept, because 403 (disabled) and 404 (no such account) mean very
+// different things and only one of them is a decision the server actually made.
+function shApiGet(endpoint, params) {
+    var q = [];
+    for (var k in (params || {})) {
+        if (params[k] === null || params[k] === undefined || params[k] === '') continue;
+        q.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+    var url = SH_STATS_ENDPOINT + endpoint + (q.length ? (endpoint.indexOf("?") < 0 ? "?" : "&") + q.join("&") : "");
+    return fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } })
+        .then(function (r) {
+            return r.text().then(function (t) {
+                var d;
+                try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { ok: false, error: "the server did not return JSON" }; }
+                if (d && d.ok === undefined) d.ok = false;
+                d.status = r.status;
+                return d;
+            });
+        })
+        .catch(function (e) { return { ok: false, status: 0, error: "could not reach the server (" + ((e && e.message) || e) + ")" }; });
+}
+
 // owner proof = b64 password of the owner (Scripter) account - lets the
 // panels sync (plan changes, deletes) without the raw-page access code
 // PHASE 1: ownerProof is GONE from the worker.
@@ -526,7 +558,17 @@ var customBackground = (typeof user.customBackground === 'string' && user.custom
      if (customBackground !== undefined) payload.customBackground = customBackground;
      return shApi('sh/user-sync', {
          email: user.email,
-         password: proof,
+    // The base64 password is still sent for older workers, but it is NOT a valid
+    // proof: verifyPassword hashes whatever it is given, so a base64 string can
+    // never match a PBKDF2 record, and the worker migrates legacy records on
+    // first login. That is why a background or banner upload used to look like it
+    // did nothing - it painted, then failed to save, so it vanished on reload and
+    // never reached another device.
+    //
+    // The session token is the credential that works, and /sh/user-sync accepts it
+    // bound to this exact account.
+    password: proof,
+    userToken: shGetUserToken() || "",
          user: payload
      });
  }
@@ -562,7 +604,7 @@ async function shSyncUsersOnLogin(user, rawPassword) {
                 for (var k in cloud) {
                     var cu = cloud[k];
                     var lu = users[k];
-                    if (!lu) { users[k] = cu; changed = true; }
+                    if (!lu && !shSkipRemoved(cu)) { users[k] = cu; changed = true; }
                     else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
                         // an empty cloud image must never wipe the local one
                         // (KV may predate the image or the worker may have
@@ -683,7 +725,7 @@ async function runDiagnostics() {
     await probe('health (no auth needed)', 'GET', 'sh/health', null);
     await probe('user-get (is this account on the worker?)', 'POST', 'sh/user-get', { email: currentUser ? currentUser.email : '', password: '' });
     await probe('users (the call Refresh from Cloud makes)', 'GET', 'sh/users', null);
-    await probe('announcement (the other admin call)', 'GET', 'sh/announcement', null);
+    // the announcement probe is gone with the feature
 
     out.textContent = lines.join('\n');
     showNotification('Diagnostics', 'Finished - read the report above.', 'info', 3000);
@@ -849,6 +891,79 @@ async function shOwnerApi(path, body) {
 //
 // Returns how many local accounts are not yet on the cloud, so the panel can say
 // that plainly instead of leaving a bare number to be read as a cap.
+// ============ DELETION TOMBSTONES ============
+// Accounts the owner has explicitly removed from this site.
+//
+// Deleting a user only removed the LOCAL record. The cloud delete was
+// fire-and-forget and its errors were swallowed, so whenever the worker
+// refused - which it did whenever the owner call was not authorised - the
+// account survived on the server. Four separate sync loops then re-add any
+// cloud account missing locally, so the next Refresh brought the bot straight
+// back. Deleting could never win against a rule that adds unconditionally.
+//
+// A tombstone inverts that: the removal is recorded somewhere durable and
+// local, and every pull from the cloud skips it. The cloud delete is still
+// attempted and still matters for other devices, but the two are no longer
+// coupled, so a failed cloud delete can no longer resurrect the account.
+const SH_TOMBSTONES_KEY = 'sh_removed_accounts';
+const SH_NEVER_REMOVE = ['dubovikstanislav51@gmail.com', 'admin@example.com'];
+
+function shTombstones() {
+    try {
+        var v = JSON.parse(localStorage.getItem(SH_TOMBSTONES_KEY) || '[]');
+        return Array.isArray(v) ? v : [];
+    } catch (e) { return []; }
+}
+
+// True for an account that must never be tombstoned: the owner, the admin, and
+// the person currently signed in. Checked when writing, not when reading, so a
+// tampered local list cannot be used to lock the owner out of their own site.
+function shIsNeverRemovable(email) {
+    var e = String(email || '').toLowerCase();
+    if (!e) return true;
+    for (var i = 0; i < SH_NEVER_REMOVE.length; i++) {
+        if (SH_NEVER_REMOVE[i].toLowerCase() === e) return true;
+    }
+    if (currentUser && String(currentUser.email || '').toLowerCase() === e) return true;
+    return false;
+}
+
+function shIsRemoved(email) {
+    var e = String(email || '').toLowerCase();
+    if (!e) return false;
+    var t = shTombstones();
+    for (var i = 0; i < t.length; i++) {
+        if (String(t[i]).toLowerCase() === e) return true;
+    }
+    return false;
+}
+
+// Records the removal. Returns false - and writes nothing - for an account that
+// is not allowed to be removed.
+function shTombstone(email) {
+    if (shIsNeverRemovable(email)) return false;
+    var e = String(email || '').toLowerCase();
+    var t = shTombstones();
+    var seen = false;
+    for (var i = 0; i < t.length; i++) { if (String(t[i]).toLowerCase() === e) { seen = true; break; } }
+    if (!seen) t.push(e);
+    try { localStorage.setItem(SH_TOMBSTONES_KEY, JSON.stringify(t)); } catch (err) {}
+    return true;
+}
+
+// Un-remove. Present so a mistaken removal is reversible, because a tombstone
+// with no way back is a foot-gun and not a feature.
+function shUntombstone(email) {
+    var e = String(email || '').toLowerCase();
+    var t = shTombstones().filter(function (x) { return String(x).toLowerCase() !== e; });
+    try { localStorage.setItem(SH_TOMBSTONES_KEY, JSON.stringify(t)); } catch (err) {}
+}
+
+// True when a cloud record must be skipped because it was removed on purpose.
+function shSkipRemoved(rec) {
+    return !!(rec && rec.email && shIsRemoved(rec.email));
+}
+
 function shReconcileWithCloud(cloud) {
     if (!cloud || typeof cloud !== 'object') return 0;
     var changed = false;
@@ -856,7 +971,7 @@ function shReconcileWithCloud(cloud) {
     for (var ck in cloud) {
         var cu = cloud[ck];
         var lu = users[ck];
-        if (!lu) {
+        if (!lu && !shSkipRemoved(cu)) {
             users[ck] = cu;
             if (cu && cu.notOnCloud) delete cu.notOnCloud;
             changed = true;
@@ -2700,7 +2815,15 @@ function handleResetPassword(event) {
     if (!cur || !nw || !cf) { showNotification('Error', 'Fill all fields.', 'error'); return; }
     var rec = users[currentUser.email];
     if (!rec) { showNotification('Error', 'Account not found.', 'error'); return; }
-    if (btoa(cur) !== rec.password) { showNotification('Error', 'Current password is incorrect.', 'error'); return; }
+    // NOT compared against the local record.
+    //
+    // This used to be `btoa(cur) !== rec.password`, refused BEFORE the server was
+    // asked. The server holds the real hash and can verify a password properly;
+    // the local copy is a cache that diverges. It is empty whenever the cloud
+    // returned a record without a password, and stale when the password was
+    // changed on another device - so it rejects CORRECT passwords and can never
+    // catch a wrong one that the server would have rejected anyway.
+    // A local pre-check here can only produce false refusals.
     if (nw.length < 6) { showNotification('Error', 'New password must be at least 6 chars.', 'error'); return; }
     if (nw !== cf) { showNotification('Error', 'New passwords do not match.', 'error'); return; }
     if (btoa(nw) === rec.password) { showNotification('Error', 'New password must be different.', 'error'); return; }
@@ -2775,9 +2898,9 @@ async function shRefreshUsersListFromCloud() {
     for (var k in cloud) {
         var cu = cloud[k];
         var lu = users[k];
-        if (!lu) {
+        if (!lu && !shSkipRemoved(cu)) {
             users[k] = cu; changed = true;
-        } else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
+        } else if (lu && JSON.stringify(lu) !== JSON.stringify(cu)) {
             // keep the local password (cloud responses never include it) and
             // never let an EMPTY cloud image wipe the local one (KV may
             // predate the image or the worker may have trimmed it)
@@ -2830,7 +2953,7 @@ async function refreshUsersList() {
         for (var k in cloud) {
             var cu = cloud[k];
             var lu = users[k];
-            if (!lu) { users[k] = cu; changed = true; }
+            if (!lu && !shSkipRemoved(cu)) { users[k] = cu; changed = true; }
             else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
                 if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
                 if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
@@ -2970,20 +3093,45 @@ function updatePanelButtons() {
 
 function panelDeleteUser() {
     if (!selectedUserEmail) { showNotification('Error', 'Please select a user first.', 'error'); return; }
-    var user = users[selectedUserEmail];
+    var email = selectedUserEmail;
+    var user = users[email];
     if (!user) { showNotification('Error', 'User not found.', 'error'); return; }
     if (user.isScripter) { showNotification('Error', 'Cannot delete the creator account.', 'error'); return; }
-    if (confirm('Are you sure you want to delete ' + user.username + '? This cannot be undone!')) {
-        delete users[selectedUserEmail];
-        saveUsers();
-        // remove from the cloud too so it disappears from every device
-        shDeleteCloudUser(selectedUserEmail);
-        showNotification('Deleted', user.username + ' has been deleted.', 'success');
-        selectedUserEmail = null;
-        renderUsersList();
-        updatePanelButtons();
-        renderAdminUserListFull();
+    if (shIsNeverRemovable(email)) {
+        showNotification('Error', 'That account cannot be removed.', 'error'); return;
     }
+    if (!confirm('Are you sure you want to remove ' + user.username + '?\n\nThis cannot be undone, and it will stay removed on this device even if the server copy cannot be reached.')) return;
+    // Record the removal FIRST. It is the part that must not fail and the part
+    // that decides whether the account comes back, so it happens before anything
+    // that can fail.
+    if (!shTombstone(email)) {
+        showNotification('Error', 'That account cannot be removed.', 'error'); return;
+    }
+    delete users[email];
+    saveUsers();
+    selectedUserEmail = null;
+    renderUsersList();
+    updatePanelButtons();
+    renderAdminUserListFull();
+    // Now try the server, and say what happened. The old code fired this and
+    // ignored the result, so "Deleted" was shown whether or not anything had
+    // actually occurred anywhere.
+    shDeleteCloudUser(email).then(function (d) {
+        if (d && d.ok) {
+            showNotification('Removed', user.username + ' has been removed from this site.', 'success');
+        } else {
+            showNotification('Removed Here Only',
+                user.username + ' is gone from this device and will not come back on refresh.\n' +
+                'The server copy could not be deleted: ' + ((d && d.error) || 'no reason given') +
+                '\nIt may still exist on the server until the worker is updated.',
+                'warning', 11000);
+        }
+    }).catch(function (e) {
+        showNotification('Removed Here Only',
+            user.username + ' is gone from this device and will not come back on refresh.\n' +
+            'The server could not be reached: ' + ((e && e.message) || e),
+            'warning', 11000);
+    });
 }
 
 function panelChangePlan() {
@@ -5696,204 +5844,81 @@ function checkAuth() {
 // Needs the stored b64 password as proof. On success the local users db,
 // the session, and the whole UI get updated. If cloud says Invalid/disabled
 // the account was deleted by admin on another device -> log out here.
+// Pull the logged-in user's fresh cloud record (plan, profile, images).
+//
+// Authenticated with the SESSION TOKEN via GET /sh/user-me.
+//
+// It used to POST /sh/user-get with `localRecord.password`, which is
+// btoa(password). The worker hashes whatever it is given, so a base64 string
+// can never match a PBKDF2 record - the call failed 100% of the time for every
+// account whose hash had been upgraded, which is every account in real use,
+// because the worker migrates legacy records on first login.
+//
+// The 401 that followed was then read as "the account was deleted": the local
+// record was deleted, the user was logged out, and the notification said the
+// account had been removed by an admin. It had not. Nothing had been deleted
+// anywhere; a credential had simply failed.
+//
+// So: a session token is used, and a failed refresh does NOTHING destructive.
+// Not a 401, not a 404, not a network error. The only signal that may act is an
+// explicit `disabled`, which is an administrative decision the server made and
+// said out loud. A stale local profile is cosmetic; deleting the account and
+// signing the user out is not recoverable by the person it happens to.
+// Which fields the cloud OWNS on a refresh, and which it does not.
+// Mixing these up is how a profile edit silently undoes itself on the next load.
+const PLAN_FIELDS = ['plan', 'planExpires', 'credits', 'compensatedUntil',
+    'disabled', 'moderated', 'isScripter', 'admin'];
+const IMAGE_FIELDS = ['profileImage', 'bannerImage', 'customBackground'];
+
 async function shRefreshOwnCloudRecord(localRecord) {
     try {
-        if (!localRecord || !localRecord.email || !localRecord.password) return;
-        const d = await shApi('sh/user-get', { email: localRecord.email, password: localRecord.password });
-        if (!d.ok || !d.user) {
-            // deleted on another device (sh/user-get returns 401 Invalid email or password when map[email] gone)
-            var err = (d && d.error) ? String(d.error) : '';
-            if (/invalid|disabled|not found/i.test(err) && users[localRecord.email]) {
-                delete users[localRecord.email];
-                try { saveUsers(); } catch(e) {}
-                if (currentUser && currentUser.email === localRecord.email) {
-                    showNotification('Account Deleted', 'Your account was deleted by admin. Returning to sign up.', 'warning', 8000);
-                    try { logout(); } catch(e) { clearSession(); location.reload(); }
-                    // also force home page after logout
-                    setTimeout(function(){ try { location.reload(); } catch(e){} }, 1200);
-                } else if (currentUser && currentUser.username === 'Scripter') {
-                    // owner sees the list update
-                    try { renderUsersList(); renderAdminUserListFull(); } catch(e){}
-                }
+        if (!localRecord || !localRecord.email) return;
+        const tok = shGetUserToken() || "";
+        // No token means this device never established a session. That is not a
+        // reason to touch the account - it is a reason to do nothing.
+        if (!tok) return;
+        const d = await shApiGet('sh/user-me', { userToken: tok });
+        // Any failure at all: keep the local record, keep the session, stay quiet.
+        // A worker that has not been redeployed answers 404 here, and that must
+        // not look like anything worse than a feature that is not live yet.
+        if (!d || !d.ok || !d.user) {
+            if (d && d.disabled === true) {
+                showNotification('Account Disabled',
+                    'An administrator disabled this account. Your account and its scripts are still here and can be re-enabled.',
+                    'warning', 9000);
             }
             return;
         }
         const cloud = d.user;
-        const email = cloud.email || localRecord.email;
-        // merge the cloud record into the local users db (keep local password)
-        var changed = false;
-        var lu = users[email];
-        if (!lu) {
-            users[email] = { ...cloud, password: localRecord.password };
-            changed = true;
-        } else {
-            for (var k in cloud) {
-                if (k === 'password') continue;
-                // never let an EMPTY cloud image wipe a local one (the
-                // record in KV may predate the image, or the worker may
-                // have trimmed it - the local copy is what the UI shows)
-                if ((k === 'profileImage' || k === 'bannerImage') && !cloud[k] && lu[k]) continue;
-                if (JSON.stringify(lu[k]) !== JSON.stringify(cloud[k])) { lu[k] = cloud[k]; changed = true; }
+        const email = localRecord.email;
+        const lu = users[email];
+        if (!lu) return;
+        let changed = false;
+        // Plan and administrative flags are the server's to decide, so they are
+        // taken from it. Images are merged the other way: the cloud has not seen
+        // this device's upload yet, and blanking it would undo a save the user
+        // just made and watched succeed.
+        for (const f of PLAN_FIELDS) {
+            if (cloud[f] !== undefined && lu[f] !== cloud[f]) { lu[f] = cloud[f]; changed = true; }
+        }
+        for (const f of IMAGE_FIELDS) {
+            if (cloud[f] && !lu[f]) { lu[f] = cloud[f]; changed = true; }
+        }
+        if (changed) {
+            users[email] = lu;
+            try { saveUsers(); } catch (e) {}
+            if (currentUser && currentUser.email === email) {
+                const shown = { ...lu };
+                delete shown.password;
+                updateUIForUser(shown);
             }
         }
-        if (!changed) return;
-        saveUsers();
-        // refresh the session + UI if this is the logged-in user
-        if (currentUser && currentUser.id === (cloud.id || localRecord.id)) {
-            var userData = { ...users[email] };
-            delete userData.password;
-            saveSession(userData);
-            updateUIForUser(userData);
-            if (cloud.plan && cloud.plan !== localRecord.plan) {
-                showNotification('Plan Updated', 'Your plan is now ' + cloud.plan + '!', 'success', 5000);
-            }
-        }
-    } catch (e) { /* offline: local record stays */ }
-}
-
-// ============ HOST ANNOUNCEMENT ============
-// The owner writes a message plus a text and a background colour; every signed-in
-// device shows it as a banner at the top.
-//
-// Two distinct actions, because "let me see it before everyone does" is a real
-// need: TEST writes the banner into this browser's localStorage only, so it
-// appears here and nowhere else. ANNOUNCE stores it on the worker, and every
-// device picks it up on its next poll. Neither goes through the other, so a
-// test can never be seen by a user and a preview can never be mistaken for a
-// send.
-//
-// The colours come back from the worker already validated against a hex
-// pattern, and are re-validated here before being written into a style
-// attribute. The banner is built with createElement + textContent rather than
-// innerHTML, so the message text cannot become markup even in principle.
-var ANNOUNCE_LOCAL_KEY = 'sh_announce_preview';
-var ANNOUNCE_HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-
-function shAnnounceHex(v, fallback) {
-    v = String(v || '').trim();
-    return ANNOUNCE_HEX.test(v) ? v : fallback;
-}
-
-function renderAnnouncement(a) {
-    var host = document.getElementById('shAnnounceHost');
-    if (!host) {
-        host = document.createElement('div');
-        host.id = 'shAnnounceHost';
-        document.body.insertBefore(host, document.body.firstChild);
+    } catch (e) {
+        // Swallowed on purpose. A refresh is a convenience; it has no business
+        // being able to end a session.
     }
-    host.innerHTML = '';
-    if (!a || !a.text) { host.style.display = 'none'; return; }
-
-    var bar = document.createElement('div');
-    bar.setAttribute('role', 'status');
-    bar.style.cssText = [
-        'position:sticky', 'top:0', 'z-index:9999', 'width:100%',
-        'padding:12px 18px', 'text-align:center', 'font-size:14px', 'font-weight:600',
-        'font-family:inherit', 'line-height:1.45', 'white-space:pre-wrap',
-        'word-break:break-word',
-        'color:' + shAnnounceHex(a.color, '#ffffff'),
-        'background:' + shAnnounceHex(a.bg, '#6c3bff'),
-        'box-shadow:0 2px 12px rgba(0,0,0,0.35)'
-    ].join(';');
-
-    // textContent, never innerHTML - the message is arbitrary text
-    bar.textContent = a.text;
-    host.appendChild(bar);
-    host.style.display = '';
-    shRenderAnnounceCurrent(a);
 }
 
-// Shows what the SERVER currently has, in the owner's chosen colours. Built
-// with textContent and validated hex, like the live banner itself.
-function shRenderAnnounceCurrent(a) {
-    var el = document.getElementById('announceCurrent');
-    if (!el) return;
-    if (!a || !a.text) {
-        el.textContent = 'No announcement is live.';
-        el.className = 'announce-current is-empty';
-        el.style.background = '';
-        return;
-    }
-    el.className = 'announce-current is-live';
-    el.textContent = a.text;
-    el.style.color = shAnnounceHex(a.color, '#ffffff');
-    el.style.background = shAnnounceHex(a.bg, '#6c3bff');
-}
-function shAnnounceStatus(msg) {
-    var el = document.getElementById('announceStatus');
-    if (el) el.textContent = msg || '';
-}
-
-// TEST: this device only.
-function previewAnnouncement() {
-    var box = document.getElementById('announceText');
-    var text = box ? String(box.value || '').trim() : '';
-    if (!text) { showNotification('Nothing to preview', 'Type a message first.', 'warning', 4000); return; }
-    var a = {
-        text: text,
-        color: (document.getElementById('announceColor') || {}).value,
-        bg: (document.getElementById('announceBg') || {}).value
-    };
-    try { localStorage.setItem(ANNOUNCE_LOCAL_KEY, JSON.stringify(a)); } catch (e) {}
-    renderAnnouncement(a);
-    shAnnounceStatus('Preview shown on this device only. Nobody else can see it.');
-}
-
-// ANNOUNCE: stored on the worker, picked up by every device.
-function sendAnnouncement() {
-    var btn = document.getElementById('announceBtn');
-    var box = document.getElementById('announceText');
-    var text = box ? String(box.value || '').trim() : '';
-    if (!text) { showNotification('Nothing to send', 'Type a message first.', 'warning', 4000); return; }
-    if (btn) { btn.disabled = true; btn.setAttribute('data-loading', 'true'); }
-    shApi('/sh/announcement', {
-        token: shOwnerToken(),
-        userToken: shGetUserToken(),
-        text: text,
-        color: (document.getElementById('announceColor') || {}).value,
-        bg: (document.getElementById('announceBg') || {}).value
-    }).then(function(d) {
-        if (btn) { btn.disabled = false; btn.removeAttribute('data-loading'); }
-        if (!d || !d.ok) {
-            shAnnounceStatus('Not sent: ' + ((d && d.error) || 'no reason given'));
-            showNotification('Not Announced', (d && d.error) || 'The worker refused it.', 'error', 7000);
-            return;
-        }
-        // the local preview is now redundant - the real one replaces it
-        try { localStorage.removeItem(ANNOUNCE_LOCAL_KEY); } catch (e) {}
-        renderAnnouncement(d.announcement);
-        shAnnounceStatus('Live on every device. They pick it up within a minute.');
-        showNotification('Announcement Sent', 'Every signed-in device will show it within a minute.', 'success', 5000);
-    }).catch(function(e) {
-        if (btn) { btn.disabled = false; btn.removeAttribute('data-loading'); }
-        shAnnounceStatus('Not sent: ' + ((e && e.message) || e));
-    });
-}
-
-function clearAnnouncement() {
-    try { localStorage.removeItem(ANNOUNCE_LOCAL_KEY); } catch (e) {}
-    renderAnnouncement(null);
-    shApi('/sh/announcement', { token: shOwnerToken(), text: '' }).then(function(d) {
-        if (!d || !d.ok) {
-            shAnnounceStatus('The banner is hidden here, but the server copy is still live: ' + ((d && d.error) || 'unknown'));
-            return;
-        }
-        shAnnounceStatus('Cleared everywhere.');
-        showNotification('Announcement Cleared', 'No device will show it any more.', 'success', 4000);
-    });
-}
-
-// Called on load and on every sync tick. A local preview wins over the server
-// copy so the owner's test is not overwritten by the poll mid-preview.
-function shPollAnnouncement() {
-    var preview = null;
-    try { preview = JSON.parse(localStorage.getItem(ANNOUNCE_LOCAL_KEY) || 'null'); } catch (e) { preview = null; }
-    if (preview && preview.text) { renderAnnouncement(preview); return; }
-    shApi('/sh/announcement', null).then(function(d) {
-        if (!d || !d.ok) return;
-        renderAnnouncement(d.announcement || null);
-    });
-}
 
 // keep the logged-in user's plan/profile in sync: poll the cloud every
 // 60s and whenever the tab regains focus, so plan changes made by the
@@ -5901,13 +5926,12 @@ function shPollAnnouncement() {
 setInterval(function() {
     if (!currentUser || !currentUser.email) return;
     var lu = users[currentUser.email];
-    if (lu && lu.password) shRefreshOwnCloudRecord(lu);
-    shPollAnnouncement();
+    if (lu && lu.email) shRefreshOwnCloudRecord(lu);
 }, 60000);
 document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'visible' && currentUser && currentUser.email) {
         var lu = users[currentUser.email];
-        if (lu && lu.password) shRefreshOwnCloudRecord(lu);
+        if (lu && lu.email) shRefreshOwnCloudRecord(lu);
     }
 });
 
@@ -5919,6 +5943,20 @@ function showHomePage() {
     if (dashboard) dashboard.classList.remove('show');
     dashboard.style.display = 'none';
     if (plansSection) plansSection.style.display = 'block';
+}
+
+// The navbar brand has carried onclick="showPage('home')" since the first commit,
+// and showPage did not exist. Like every inline handler on a <script
+// type="module"> page, it resolved in global scope and threw ReferenceError on
+// each click - a dead link on the most-clicked element in the header.
+//
+// Defined here rather than by editing the markup, so the name the HTML has always
+// used is a real entry point. `home` is the only page there is; anything else
+// falls back to it rather than throwing, because a navigation helper that can
+// throw is worse than one that is boring.
+function showPage(page) {
+showHomePage();
+if (page === 'home' || !page) return;
 }
 
 // ============ EVENT LISTENERS ============
@@ -6056,3 +6094,28 @@ window.shMintUserToken = shMintUserToken;
 window.shSaveUserToken = shSaveUserToken;
 window.shClearUserToken = shClearUserToken;
 window.copyDiagnostics = copyDiagnostics;
+// Reachable from inline onclick/onerror handlers.
+//
+// main.js is a <script type="module">, so its top-level declarations are NOT on
+// window. An inline handler resolves in global scope, so any function named in
+// index.html and not listed here throws ReferenceError and the control does
+// nothing at all - silently, with no request and no error. These were all
+// missing:
+//
+//   showPage                  - a dead navigation button
+//   uploadCustomBackground    - the "background changer does nothing" report
+//   clearCustomBackground     - Remove did nothing either
+//   openCreateRewardUI        - see rewards.js: the file was never loaded, and as
+//                             a module its exports are never global anyway
+//   shImgErr                  - a false alarm: it lives in index.html's own
+//                             inline classic script, so it was always global
+//   shImgErr                  - a broken image threw on every load
+//
+// The announcement handlers were also here and are gone with the feature.
+// tools/inline_handlers_test.mjs diffs every handler in index.html against this
+// list, so the next omission fails the build instead of the UI.
+window.showPage = showPage;
+window.uploadCustomBackground = uploadCustomBackground;
+window.clearCustomBackground = clearCustomBackground;
+window.applyCustomBackground = applyCustomBackground;
+window.applyTheme = applyTheme;

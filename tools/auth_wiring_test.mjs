@@ -41,12 +41,24 @@ function fnBody(name) {
 if (/async function isOwnerSessionOrAccount\(env, url, body, request\) \{/.test(src)) ok('isOwnerSessionOrAccount takes request');
 else no('isOwnerSessionOrAccount does not take request - every GET admin route will throw');
 
-// 2. exactly 13 call sites (not the definition) pass request
+// 2. every CALL site (not the definition) passes request
+//
+// The COUNT is derived, never hard-coded. It was 13, and became 12 when the
+// announcement routes were removed - which is the test working, not breaking. A
+// hard-coded number here would have failed on a legitimate removal and taught
+// everyone to update it without reading why, which is how a real regression gets
+// waved through later.
 {
   const calls = L.filter(l => !l.includes('async function') && /isOwnerSessionOrAccount\(env,/.test(l));
   const withReq = calls.filter(l => /isOwnerSessionOrAccount\(env, [^)]*, request\)/.test(l));
-  if (calls.length === 13 && withReq.length === 13) ok('all 13 call sites pass request');
-  else no('call sites: ' + calls.length + ' total, ' + withReq.length + ' with request');
+  if (calls.length > 0 && withReq.length === calls.length) {
+    ok('all ' + calls.length + ' call sites pass request');
+  } else {
+    no('call sites: ' + calls.length + ' total, ' + withReq.length + ' with request');
+  }
+  // A floor, so removing routes cannot quietly remove the auth check itself.
+  if (calls.length >= 8) ok('the owner surface is still substantial (' + calls.length + ' gated routes)');
+  else no('only ' + calls.length + ' owner-gated routes remain - did a route get removed by accident?');
 }
 
 // 3. isOwnerRequest call sites likewise
@@ -92,7 +104,7 @@ else ok('no module-level request binding (concurrent-request safe)');
       total++;
       if (off[i] < h) before++;
     }
-    if (before === 0 && total === 13) ok('all 13 call sites sit inside handleRequest, where request is a parameter');
+    if (before === 0 && total > 0) ok('all ' + total + ' call sites sit inside handleRequest, where request is a parameter');
     else no(before + ' of ' + total + ' call sites are OUTSIDE handleRequest - request would be undefined there');
     void outside;
   }
