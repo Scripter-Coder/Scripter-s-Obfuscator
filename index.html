@@ -274,6 +274,22 @@
                     </div>
                 </div>
             </div>
+
+            <div class="upload-group">
+                <div class="group-header">
+                    <span class="icon">&#127756;</span>
+                    <label>Custom Background</label>
+                    <span class="file-type">PNG, JPG, WEBP</span>
+                </div>
+                <div class="file-input-wrapper">
+                    <input class="sh-input" type="file" id="customBackgroundInput" accept="image/*">
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <button class="btn btn-primary" onclick="uploadCustomBackground()">&#128228; Upload Background</button>
+                    <button class="btn btn-close-dropdown" onclick="clearCustomBackground()">Remove</button>
+                </div>
+                <div class="file-type" style="margin-top:6px;">A full-page backdrop behind the whole app, separate from your banner. The theme is picked from the image automatically.</div>
+            </div>
             
             <div class="dashboard-header">
                 <div>

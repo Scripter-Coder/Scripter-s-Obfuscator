@@ -1780,6 +1780,18 @@ function sanitizeUserRecord(u) {
     if (typeof out.email === 'string' && out.email.length > MAX_EMAIL_LEN) out.email = out.email.slice(0, MAX_EMAIL_LEN);
     if (typeof out.description === 'string' && out.description.length > MAX_DESC_LEN) out.description = out.description.slice(0, MAX_DESC_LEN);
     if (typeof out.theme === 'string' && out.theme.length > 30) out.theme = 'default';
+    // The three image fields must be STRINGS.
+    //
+    // The allowlist alone is not enough: it decides which KEYS survive, not what
+    // they may contain, so `customBackground: {evil: true}` was being stored
+    // verbatim. That is a shape the client cannot render, it bloats the single
+    // users KV entry, and it is a hole in the field being free-form. Anything
+    // that is not a string becomes '' - a missing background, which is a
+    // recoverable state, rather than a corrupt one.
+    for (const k of ['profileImage', 'bannerImage', 'customBackground']) {
+        if (out[k] !== undefined && typeof out[k] !== 'string') out[k] = '';
+        if (typeof out[k] === 'string' && out[k].length > SH_IMAGE_CAP) out[k] = '';
+    }
     // moderation fields are server-written and expire on their own; a stale one
     // must not keep blocking someone after the penalty window has passed
     if (out.moderatedUntil && Number(out.moderatedUntil) <= Date.now()) {
@@ -3528,7 +3540,18 @@ async function handleRequest(request, env, ctx) {
                 const inc = sanitizeUserRecord(body.user || {});
                 // merge only profile fields - keep server plan/flags/password
                 const rec = { ...existing };
-                for (const k of ['username', 'description', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'createdAt', 'id', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires']) {
+                // customBackground is a DIFFERENT feature from bannerImage and
+                // needs its own slot, not a repurpose of the banner:
+                //   bannerImage - a strip in the profile header
+                //   customBackground - a full-page backdrop behind the whole app
+                //
+                // This list is a SECOND allowlist, separate from the one in
+                // sanitizeUserRecord, and that is the trap: a field can be
+                // accepted by the sanitiser and then silently dropped here, so
+                // it works on the device that set it and never appears on any
+                // other one. There is no error and no warning - it just does not
+                // sync. Any new profile field has to be added in BOTH places.
+                for (const k of ['username', 'description', 'profileImage', 'bannerImage', 'customBackground', 'theme', 'stats', 'disabled', 'createdAt', 'id', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires']) {
                     if (inc[k] !== undefined) rec[k] = inc[k];
                 }
                 map[email] = rec;

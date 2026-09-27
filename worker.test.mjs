@@ -616,4 +616,76 @@ console.log('[W17] RULES: a violation blocks with an expiry and deletes nothing.
     console.log('    OK: swearing blocks 1h, bots 1y, honest words untouched, and no account was deleted');
 }
 
+// ============ CUSTOM BACKGROUND (item 6) ============
+// The trap this pins: customBackground is a NEW profile field, and the worker
+// has TWO separate allowlists for those fields -
+//
+//   sanitizeUserRecord's allowed[]      - decides what may be stored at all
+//   /sh/user-sync's merge list          - decides what a device may UPDATE
+//
+// Miss the second one and nothing errors. The sanitiser accepts the field, the
+// merge drops it, and the feature works on the device that set it while never
+// appearing on any other device. A user would report exactly that as "it doesn't
+// sync", with no error anywhere to point at.
+//
+// So the test does what a second device actually does: sync, then sync again
+// from scratch and require the field to still be there.
+//
+// It is also distinct from bannerImage on purpose - the two are separate
+// features (a full-page backdrop vs a header strip) and the test requires both
+// to survive independently.
+console.log('[W18] CUSTOM BACKGROUND: a new profile field needs BOTH allowlists...');
+{
+    const bgLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const bgToken = bgLogin.token;
+    const EMAIL = 'bg@test.local';
+
+    const made = await j('POST', '/sh/user-signup', {
+        email: EMAIL, username: 'BackdropKid', password: 'password123', description: 'x'
+    });
+    assert.ok(made.ok, 'setup signup must succeed: ' + JSON.stringify(made).slice(0, 160));
+
+    // A short stand-in for a data: URL. The worker does not decode images, and a
+    // real 1.9MB base64 payload would make this test slow for no extra coverage.
+    const BACKGROUND = 'data:image/webp;base64,UklGRiQAAABXRUJQ';
+    const BANNER = 'data:image/webp;base64,UklGRhYAAABXRUJQ';
+
+    const sync = await j('POST', '/sh/user-sync', {
+        email: EMAIL, password: 'password123',
+        user: { id: made.user.id, email: EMAIL, username: 'BackdropKid', plan: 'Basic', theme: 'default', customBackground: BACKGROUND, bannerImage: BANNER }
+    });
+    assert.ok(sync.ok, 'the sync must succeed: ' + JSON.stringify(sync).slice(0, 200));
+    assert.strictEqual(sync.user.customBackground, BACKGROUND,
+        'the merged record must carry the background - if this fails, customBackground is missing from the /sh/user-sync merge list');
+
+    // now read it back the way a SECOND device does
+    const readBack = await j('POST', '/sh/user-sync', {
+        email: EMAIL, password: 'password123',
+        user: { id: made.user.id, email: EMAIL, username: 'BackdropKid', plan: 'Basic' }
+    });
+    assert.ok(readBack.ok, 'the read-back sync must succeed: ' + JSON.stringify(readBack).slice(0, 200));
+    assert.strictEqual(readBack.user.customBackground, BACKGROUND,
+        'the background must SURVIVE a sync from another device - this is the assertion the two allowlists exist for');
+    assert.strictEqual(readBack.user.bannerImage, BANNER,
+        'and the banner must survive independently of it');
+
+    // and a clear must actually clear, not be silently ignored
+    const cleared = await j('POST', '/sh/user-sync', {
+        email: EMAIL, password: 'password123',
+        user: { id: made.user.id, email: EMAIL, username: 'BackdropKid', plan: 'Basic', customBackground: '' }
+    });
+    assert.ok(cleared.ok, 'clearing must succeed');
+    assert.ok(!cleared.user.customBackground, 'a cleared background must not come back, got: ' + JSON.stringify(cleared.user.customBackground));
+
+    // a non-string must not be stored as-is; the sanitiser is the backstop
+    const weird = await j('POST', '/sh/user-sync', {
+        email: EMAIL, password: 'password123',
+        user: { id: made.user.id, email: EMAIL, username: 'BackdropKid', plan: 'Basic', customBackground: { evil: true } }
+    });
+    assert.ok(!weird.user || typeof weird.user.customBackground !== 'object',
+        'an object must never survive as customBackground, got: ' + JSON.stringify(weird.user && weird.user.customBackground));
+
+    console.log('    OK: the background syncs across devices, clears properly, and is separate from the banner');
+}
+
 console.log('\nALL WORKER TESTS PASSED');

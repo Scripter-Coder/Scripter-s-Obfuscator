@@ -426,6 +426,11 @@ function shHasOwnerToken() {
      var SH_IMAGE_CAP = 1900000; // stay under the worker's ~2MB base64 cap
      var profileImage = (typeof user.profileImage === 'string' && user.profileImage.length <= SH_IMAGE_CAP) ? user.profileImage : undefined;
      var bannerImage = (typeof user.bannerImage === 'string' && user.bannerImage.length <= SH_IMAGE_CAP) ? user.bannerImage : undefined;
+// Same cap as the other two. A background is the largest of the three (1920px
+// wide), so it is the one most likely to hit the worker's ~2MB base64 limit -
+// and when it does, it is dropped from the sync rather than failing loudly, so
+// the cap is checked here where the omission is at least visible.
+var customBackground = (typeof user.customBackground === 'string' && user.customBackground.length <= SH_IMAGE_CAP) ? user.customBackground : undefined;
      var payload = {
          id: user.id, email: user.email, username: user.username,
          plan: user.plan, description: user.description || '',
@@ -435,6 +440,7 @@ function shHasOwnerToken() {
      };
      if (profileImage !== undefined) payload.profileImage = profileImage;
      if (bannerImage !== undefined) payload.bannerImage = bannerImage;
+     if (customBackground !== undefined) payload.customBackground = customBackground;
      return shApi('sh/user-sync', {
          email: user.email,
          password: proof,
@@ -1726,6 +1732,13 @@ function updateUIForUser(user) {
         var themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = user.theme;
     }
+    // The custom backdrop is applied on every UI refresh, not just after an
+    // upload, so it survives a page reload and a cross-device sync. The theme is
+    // applied ABOVE it and the two do not interact - the backdrop is a separate
+    // feature, not a repurpose of the banner.
+    applyCustomBackground(
+        (typeof user.customBackground === 'string' && user.customBackground) ? user.customBackground : null
+    );
     var homePage = document.getElementById('homePage');
     var dashboard = document.getElementById('dashboard');
     var plansSection = document.querySelector('.plans-section');
@@ -3320,6 +3333,185 @@ function uploadBannerImage() {
             }
         }
     }).catch(function(error) { showNotification('Error', 'Failed to save banner: ' + error.message, 'error'); });
+}
+
+// ============ CUSTOM BACKGROUND (item 6) ============
+// A full-page backdrop behind the whole app. This is a DIFFERENT feature from
+// the Banner Image, which is a strip in the profile header - they are stored in
+// separate fields and neither touches the other.
+//
+// It lives in users[email].customBackground, and the server knows about it in
+// TWO separate allowlists: sanitizeUserRecord and the /sh/user-sync merge list.
+// Miss the second and it works on the device that set it and never appears
+// anywhere else, with no error anywhere - which is exactly the failure this
+// comment exists to prevent.
+
+var SH_THEME_RGB = {
+    'default': [108, 59, 255],
+    'red': [255, 0, 0],
+    'blue': [0, 68, 255],
+    'green': [0, 204, 68],
+    'purple': [153, 0, 255],
+    'orange': [255, 102, 0],
+    'white': [255, 255, 255],
+    'dark': [34, 34, 34]
+};
+
+// Nearest existing theme to a sampled colour, by squared distance in RGB.
+// Chosen from the image rather than asked for, so the backdrop and the accent
+// colour cannot end up fighting each other.
+function shNearestTheme(rgb) {
+    var best = 'default', bestD = Infinity;
+    for (var name in SH_THEME_RGB) {
+        var c = SH_THEME_RGB[name];
+        var dr = c[0] - rgb[0], dg = c[1] - rgb[1], db = c[2] - rgb[2];
+        var d = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; best = name; }
+    }
+    return best;
+}
+
+// Average the image on a canvas and return the dominant-ish colour.
+//
+// A plain average is not "dominant" - one bright logo pixel in a dark image
+// moves the mean a long way. So pixels are bucketed into a coarse grid and the
+// fullest bucket wins, which is what actually picks the backdrop colour. The
+// average of that bucket is then used, so the result is a colour that is really
+// present in the picture rather than a blend of two things that are not.
+function shSampleImageTheme(src) {
+    return new Promise(function(resolve) {
+        var img = new Image();
+        img.onload = function() {
+            try {
+                var N = 48;
+                var cv = document.createElement('canvas');
+                cv.width = N; cv.height = N;
+                var ctx = cv.getContext('2d', { willReadFrequently: true });
+                if (!ctx) { resolve('default'); return; }
+                ctx.drawImage(img, 0, 0, N, N);
+                var data;
+                try { data = ctx.getImageData(0, 0, N, N).data; }
+                catch (e) { resolve('default'); return; }   // tainted canvas - not expected here, but must not throw
+
+                var buckets = {};
+                for (var i = 0; i < data.length; i += 4) {
+                    var a = data[i + 3];
+                    if (a < 125) continue;                    // ignore transparent pixels
+                    var r = data[i], g = data[i + 1], b = data[i + 2];
+                    // near-transparent pixels dilute the result, so weight them
+                    // down by only counting reasonably solid ones
+                    if (a < 200) continue;
+                    var key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+                    var bk = buckets[key] || (buckets[key] = { n: 0, r: 0, g: 0, b: 0 });
+                    bk.n++; bk.r += r; bk.g += g; bk.b += b;
+                }
+                var top = null;
+                for (var k in buckets) if (!top || buckets[k].n > top.n) top = buckets[k];
+                if (!top || !top.n) { resolve('dark'); return; }   // an all-transparent image: keep it subtle
+                resolve(shNearestTheme([top.r / top.n, top.g / top.n, top.b / top.n]));
+            } catch (e) { resolve('default'); }
+        };
+        img.onerror = function() { resolve('default'); };
+        img.src = src;
+    });
+}
+
+// Paints the backdrop: fixed, behind everything, with the content on top of it.
+//
+// z-index is -1, not 0, and that is not a style choice. Painting order puts
+// positioned elements with z-index auto OR 0 in step 8, AFTER in-flow non-positioned
+// content in step 4 - so a backdrop at z-index 0 is drawn OVER the entire app and
+// the site becomes unusable (and, with pointer-events:none, unclickable-looking
+// while still blocking nothing). -1 puts it in the negative layer, behind
+// in-flow content and above the canvas.
+//
+// The body background is deliberately NOT cleared. A body's background
+// propagates to the canvas when html has none, so the backdrop still shows
+// through it, and clearing it would fight every theme that sets one.
+function applyCustomBackground(dataUrl) {
+    var el = document.getElementById('shCustomBg');
+    if (!dataUrl) { if (el) el.remove(); return; }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'shCustomBg';
+        el.setAttribute('aria-hidden', 'true');
+        document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.style.cssText = [
+        'position:fixed', 'inset:0', 'z-index:-1', 'pointer-events:none',
+        'background-image:url("' + dataUrl + '")',
+        'background-size:cover', 'background-position:center',
+        'background-repeat:no-repeat'
+    ].join(';');
+}
+
+// Removing the backdrop only has to delete the element. The theme is left
+// exactly as it is - clearing a body background here would fight every theme
+// that sets one, and the background and the theme are separate features.
+function clearCustomBackground() {
+    var el = document.getElementById('shCustomBg');
+    if (el) el.remove();
+    for (var key in users) {
+        if (users[key].id === currentUser.id) {
+            users[key].customBackground = '';
+            saveUsers();
+            shPushUser(users[key]);
+            var userData = { ...users[key] };
+            delete userData.password;
+            updateUIForUser(userData);
+            showNotification('Background Removed', 'Your banner and theme are unchanged.', 'success', 4000);
+            var input = document.getElementById('customBackgroundInput');
+            if (input) input.value = '';
+            break;
+        }
+    }
+}
+
+function uploadCustomBackground() {
+    var input = findImageInput('customBackgroundInput');
+    if (!input || !input.files || input.files.length === 0) {
+        showNotification('Error', 'Please select an image file first.', 'error');
+        return;
+    }
+    var file = input.files[0];
+    if (file.size > 10 * 1024 * 1024) { showNotification('Error', 'Background is too large (max 10MB).', 'error'); return; }
+    var validTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!validTypes.includes(file.type)) {
+        showNotification('Error', 'Please upload a PNG, JPG or WEBP file.', 'error');
+        return;
+    }
+    showNotification('Saving', 'Processing background...', 'info', 1500);
+    // Wider and taller than the banner: this one covers the whole viewport.
+    compressImageFile(file, 1920, 0.72).then(function(imageData) {
+        if (typeof imageData === 'string' && imageData.length > SH_IMAGE_CAP) {
+            throw new Error('that image is still too large after compression - try a smaller one');
+        }
+        return shSampleImageTheme(imageData).then(function(theme) {
+            for (var key in users) {
+                if (users[key].id === currentUser.id) {
+                    users[key].customBackground = imageData;
+                    // the theme follows the picture, so the two cannot clash
+                    if (theme && users[key].theme !== theme) {
+                        users[key].theme = theme;
+                        applyTheme(theme);
+                        var sel = document.getElementById('themeSelect');
+                        if (sel) sel.value = theme;
+                    }
+                    saveUsers();
+                    shPushUser(users[key]);   // sync to cloud, all devices
+                    var userData = { ...users[key] };
+                    delete userData.password;
+                    updateUIForUser(userData);
+                    applyCustomBackground(imageData);
+                    showNotification('Success', 'Background updated. Theme set to ' + (theme || 'default') + ' to match it.', 'success', 5000);
+                    input.value = '';
+                    break;
+                }
+            }
+        });
+    }).catch(function(error) {
+        showNotification('Error', 'Failed to save background: ' + (error && error.message ? error.message : error), 'error');
+    });
 }
 
 function changeTheme(themeName) {
