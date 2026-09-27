@@ -403,10 +403,15 @@ console.log('[W15] AEGIS: the proxy holds the key, is owner-only, and handles qu
     const anon = await j('POST', '/sh/aegis', { source: 'print(1)' });
     assert.strictEqual(anon.status, 401, '/sh/aegis must refuse an unauthenticated caller, got ' + anon.status);
 
-    // 2. owner token, but the binding is absent -> a clear 501, not a crash.
+    // 2. owner token, but the secret is absent -> a clear 501 that says WHERE to
+    //    set it. Asserted on the location because "AEGIS_API_KEY is not set" on
+    //    its own sends people to Settings > Bindings, where it cannot be set at
+    //    all - it is a Secret, not a resource binding.
     const noKey = await j('POST', '/sh/aegis', { source: 'print(1)', token: ownerToken });
     assert.strictEqual(noKey.status, 501, 'a missing AEGIS_API_KEY must say so, got ' + noKey.status);
-    assert.ok(/AEGIS_API_KEY/.test(noKey.error || ''), 'the 501 must name the binding: ' + noKey.error);
+    assert.ok(/AEGIS_API_KEY/.test(noKey.error || ''), 'the 501 must name the setting: ' + noKey.error);
+    assert.ok(/Variables and Secrets/.test(noKey.error || ''), 'the 501 must name the dashboard section: ' + noKey.error);
+    assert.ok(/wrangler secret put/.test(noKey.error || ''), 'the 501 must offer the CLI alternative: ' + noKey.error);
 
     // 3. empty source is rejected
     const empty = await j('POST', '/sh/aegis', { source: '', token: ownerToken });

@@ -3672,9 +3672,11 @@ async function handleRequest(request, env, ctx) {
         // every visitor. The dashboard API key is also a 20-min-per-day budget -
         // a public one would be burned by anyone who opened the site.
         //
-        // So the call moves here. The key is a worker binding (AEGIS_API_KEY),
-        // never in the client, and the route is owner-only so the quota cannot be
-        // spent by other accounts.
+        // So the call moves here. The key is a worker SECRET (AEGIS_API_KEY),
+        // set under Settings > Variables and Secrets with type "Secret" - not a
+        // binding, because Bindings is for resources like KV and D1 and this is
+        // just a string. Never in the client, and the route is owner-only so the
+        // quota cannot be spent by other accounts.
         //
         // Sources over 150 KB are queued by Aegis as a background job (202 with a
         // jobId, ready in 1-2 minutes). The browser code did not handle 202 at
@@ -3688,10 +3690,10 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
 
-            // Input is validated BEFORE the binding. Checking the binding first
-            // made every malformed request report "AEGIS_API_KEY is not set"
-            // instead of the actual problem - a misleading error precisely when
-            // the binding genuinely is missing.
+            // Input is validated BEFORE the secret is read. Checking the secret
+            // first made every malformed request report "AEGIS_API_KEY is not
+            // set" instead of the actual problem - a misleading error precisely
+            // when the secret genuinely is missing.
             const source = String(body.source || '');
             const followUp = String(body.job || '').trim();
             if (!source && !followUp) return jsonResponse({ ok: false, error: 'nothing to obfuscate' }, 400);
@@ -3702,7 +3704,17 @@ async function handleRequest(request, env, ctx) {
 
             const aegisKey = String(env.AEGIS_API_KEY || '');
             if (!aegisKey) {
-                return jsonResponse({ ok: false, error: 'AEGIS_API_KEY is not set on this worker, so the Aegis engine is unavailable.' }, 501);
+                // The message has to say WHERE, because "not set" alone sends
+                // people to the Bindings tab - where this cannot be set at all.
+                // It is a Secret, not a binding: Bindings is for resources (KV, D1,
+                // R2), and AEGIS_API_KEY is just a string read off env.
+                return jsonResponse({
+                    ok: false,
+                    error: 'AEGIS_API_KEY is not set, so the Aegis engine is unavailable. '
+                        + 'Add it under Settings > Variables and Secrets, type "Secret" '
+                        + '(NOT Settings > Bindings - that is for KV/D1/R2 resources), '
+                        + 'or run: wrangler secret put AEGIS_API_KEY'
+                }, 501);
             }
             const AEGIS_ORIGIN = 'https://api.aegis-obfuscater.cc.cd';
             const aegisHeaders = { 'Content-Type': 'application/json', 'X-Api-Key': aegisKey };
