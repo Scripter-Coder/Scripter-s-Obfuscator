@@ -597,6 +597,9 @@ async function runDiagnostics() {
     var out = document.getElementById('diagOut');
     if (!out) { showNotification('Diagnostics', 'Open the Admin panel first.', 'warning'); return; }
     out.textContent = 'Testing...';
+    // Report the token state AFTER trying to mint one, so the panel shows what the
+    // admin panel will actually send rather than what happened to be cached.
+    try { await shEnsureUserToken(); } catch (e) {}
     var lines = shDiagnosticsState();
     lines.push('');
 
@@ -656,7 +659,23 @@ function copyDiagnostics() {
 
 async function shOwnerApi(path, body) {
     var isGet = body === null || body === undefined;
+    var isGet = body === null || body === undefined;
+    // Mint the session token if this tab does not have one.
+    //
+    // It used to be read straight out of sessionStorage, which was empty
+    // unless this tab had previously uploaded a script - the only two callers of
+    // shEnsureUserToken were in the upload path. So an owner who signed in and
+    // clicked Refresh sent NO credential, and the worker's 401 "Not authorized."
+    // meant something that had nothing to do with authorisation.
+    //
+    // sessionStorage is per-tab as well, so signing in on one tab and using the
+    // admin panel on another hit the same wall. Doing it here makes an
+    // unauthenticated admin call impossible to construct.
     var userTok = shGetUserToken() || '';
+    if (!userTok) {
+        try { userTok = (await shEnsureUserToken()) || ''; }
+        catch (e) { userTok = ''; }
+    }
 
     // The credential travels in the BODY for a POST and the QUERY STRING for a
     // GET. It used to travel in an X-SH-Token header, and a custom header is
@@ -1976,6 +1995,12 @@ function updateUIForUser(user) {
     currentUser = user;
     window.currentUser = user;
     setCurrentUser(user);
+    // Establish the cloud session token as soon as someone is signed in, rather
+    // than waiting for the first upload. Every owner panel call authenticates
+    // with it, so a missing token reads as a permission problem when it is
+    // really a session that was never started. Fire-and-forget: signing in must
+    // not block on the network.
+    try { shEnsureUserToken(); } catch (e) {}
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');

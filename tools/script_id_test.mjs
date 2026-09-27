@@ -112,9 +112,49 @@ const bad = ids.filter(i => !RE.test(i));
 if (bad.length === 0) ok('all ' + N + ' ids match the worker regex');
 else no(bad.length + ' ids do not match, e.g. ' + bad[0]);
 
-const uniq = new Set(ids).size;
-if (uniq === N) ok('all ' + N + ' ids are unique');
-else no((N - uniq) + ' collisions in ' + N + ' draws');
+// Uniqueness - measured against the size of the space, not asserted as zero.
+//
+// The generator is `v % 10^10`, so the space is M = 10^10. The expected number
+// of collisions in N draws is the birthday approximation N^2 / 2M:
+//
+//     20000^2 / (2 * 10^10) = 0.02
+//
+// So P(at least one collision) is about 2%. This check used to demand ZERO
+// collisions, which made it fail roughly one run in fifty on nothing but
+// arithmetic - a flaky gate that would eventually block a real release and teach
+// everyone to re-run the suite instead of reading it.
+//
+// The property that actually matters is that the space is large enough for
+// collisions to be negligible. That is asserted directly below by measuring the
+// id's own range, which is deterministic, and the collision count is checked
+// against a bound derived from that expected value.
+const DRAWS = 10n ** 10n; // M, from the generator's own modulus
+const expected = (BigInt(N) * BigInt(N)) / (2n * DRAWS); // 0.02
+
+const digits = ids.map(i => BigInt(i.slice('ScripterHub'.length)));
+const lo = digits.reduce((a, b) => (a < b ? a : b), digits[0]);
+const hi = digits.reduce((a, b) => (a > b ? a : b), digits[0]);
+const span = hi - lo;
+if (span > 9n * 10n ** 9n) {
+  ok('the ids span 10 digits (' + lo + ' .. ' + hi + ') - the space is the full 10^10, not truncated');
+} else {
+  no('the ids only span ' + span.toString().length + ' digits - the modulus is smaller than intended');
+}
+
+// leading zeros matter: an id below 10^9 is only representable if the generator
+// pads, which is what keeps small values in the space rather than clamping them.
+if (lo < 10n ** 9n) ok('small ids are representable, so the generator pads rather than truncates');
+else no('no id below 10^9 in ' + N + ' draws - leading zeros are not being produced');
+
+const collisions = BigInt(N) - BigInt(new Set(ids).size);
+// Poisson(lambda) with lambda = 0.02 puts P(>= 4) at about 6e-10, so a bound of
+// 3 is safe against flakiness while still catching a real collapse in entropy
+// (a regression to a timestamp scheme produces a great many more).
+if (collisions <= 3n) {
+  ok((collisions === 0n ? 'no' : collisions + ' rare') + ' collisions in ' + N + ' draws (expected ' + expected + ' from a 10^10 space)');
+} else {
+  no(collisions + ' collisions in ' + N + ' draws - expected ' + expected + ' from a 10^10 space, so entropy has regressed');
+}
 
 // 4. THE ORDERING CHECK - the one that would catch a regression to a timestamp
 let inversions = 0;
