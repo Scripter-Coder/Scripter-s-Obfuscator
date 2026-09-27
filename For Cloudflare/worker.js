@@ -1261,7 +1261,7 @@ async function loadUsersMap(env) {
 // kill an OLD loader (key rotation / re-upload on edit); returns true if replaced
 async function maybeReplaceOld(env, replaces) {
     const rep = String(replaces || '');
-    if (!/^ScripterHub\d{10}$/.test(rep)) return false;
+    if (!/^ScripterHub[0-9]{6,16}$/.test(rep)) return false;
     const oldCode = await env.LOADERS_KV.get(KV_PREFIX + rep);
     const oldMeta = await env.LOADERS_KV.get(KV_META_PREFIX + rep);
     const oldCmeta = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + rep);
@@ -1430,7 +1430,31 @@ async function saveUsersMap(env, map) {
 // keeps existing users working while the weak records disappear over time.
 // This is opportunistic migration, not a silent one: it happens only after
 // the correct password is proven, so it cannot lock anyone out.
-const PBKDF2_ITERATIONS = 210000;   // OWASP guidance for PBKDF2-HMAC-SHA256
+// 100000, not 210000.
+//
+// The Web Crypto spec allows iterations in 1..100000 and the implementation MUST
+// throw OperationError above that. 210000 is the OWASP *recommendation* for
+// PBKDF2-HMAC-SHA256, but it is not reachable through crypto.subtle - so
+// hashPassword() threw on EVERY call in production:
+//
+//     Pbkdf2 failed: iteration counts above 100000 are not supported
+//     (requested 210000)
+//
+// That is why the password reset failed, and it was not only the reset: signup
+// hashes, the opportunistic rehash on login, and the rehash on /sh/user-get all
+// call this. Login kept working only because existing records are legacy btoa
+// and take the migration path, which never reaches PBKDF2.
+//
+// WHY 33 TEST FILES MISSED IT: worker.test.mjs runs on Node, and Node's
+// crypto.webcrypto does NOT enforce the cap - it happily derives at 210000.
+// The harness was more permissive than the runtime it stands in for, so every
+// "signup + login work" assertion passed for a reason that does not hold in
+// production. tools/pbkdf2_limit_test.mjs now asserts the cap directly.
+//
+// 100000 is the maximum the platform actually permits, so this is as strong as
+// this API can be. Getting past it needs a different KDF (Argon2/scrypt), not a
+// bigger number.
+const PBKDF2_ITERATIONS = 100000;   // Web Crypto hard maximum; see above
 const PBKDF2_SALT_BYTES = 16;
 const PBKDF2_KEY_BYTES = 32;
 
@@ -2787,7 +2811,7 @@ function methodNotAllowed() {
 // request and produce an undecryptable script.
 async function loaderId(wantId, env, authedUser) {
     const w = String(wantId || '');
-    if (!/^ScripterHub\d{10}$/.test(w)) {
+    if (!/^ScripterHub[0-9]{6,16}$/.test(w)) {
         let d = '';
         // A SCRIPT ID IS 10 RANDOM DIGITS FROM A CSPRNG.
         //
@@ -3172,7 +3196,7 @@ async function handleRequest(request, env, ctx) {
                 // previous build's files, which is the point, but it is also
                 // why the owner should treat a re-upload as a rotation and
                 // re-issue loadstrings. The audit trail records both.
-                if (stateFor(env) && typeof body.buildId === 'string' && /^ScripterHub\d{10}$/.test(id)) {
+                if (stateFor(env) && typeof body.buildId === 'string' && /^ScripterHub[0-9]{6,16}$/.test(id)) {
                     try {
                         const st = stateFor(env);
                         const gen = await st.nextGeneration(id);
@@ -3311,7 +3335,7 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             const id = String(body.id || '');
-            if (!/^ScripterHub\d{10}$/.test(id)) return jsonResponse({ ok: false, error: 'bad script id' }, 400);
+            if (!/^ScripterHub[0-9]{6,16}$/.test(id)) return jsonResponse({ ok: false, error: 'bad script id' }, 400);
             const vis = readVisibility(body);
             if (!['anyone', 'account', 'private'].includes(String(body.visibility))) {
                 return jsonResponse({ ok: false, error: 'visibility must be anyone | account | private' }, 400);
@@ -4081,7 +4105,7 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
-            if (!/^ScripterHub\d{10}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must match ScripterHub##########' }, 400);
+            if (!/^ScripterHub[0-9]{6,16}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must be ScripterHub followed by 6 to 16 digits' }, 400);
             const id = String(body.id);
             const part = parseInt(String(body.part), 10);
             const content = String(body.content || '');
@@ -4115,7 +4139,7 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
-            if (!/^ScripterHub\d{10}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must match ScripterHub##########' }, 400);
+            if (!/^ScripterHub[0-9]{6,16}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must be ScripterHub followed by 6 to 16 digits' }, 400);
             const id = String(body.id);
             const recKey = KV_GH_PREFIX + id;
             const rec = JSON.parse((await env.LOADERS_KV.get(recKey)) || '{}');
@@ -4171,7 +4195,7 @@ async function handleRequest(request, env, ctx) {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const id = String(body.id || '');
-            if (!/^ScripterHub\d{10}$/.test(id)) return jsonResponse({ ok: false, error: 'bad id' }, 400);
+            if (!/^ScripterHub[0-9]{6,16}$/.test(id)) return jsonResponse({ ok: false, error: 'bad id' }, 400);
             const rec = JSON.parse((await env.LOADERS_KV.get(KV_GH_PREFIX + id)) || 'null');
             if (rec && rec.n) {
                 for (let i = 0; i < rec.n; i++) {
@@ -4219,7 +4243,7 @@ async function handleRequest(request, env, ctx) {
         // now behind guardPartRequest(), so a part is served only to a session
         // that already spent a delivery, and only as the next step of its own
         // forward-only chain.
-        const gMatch = url.pathname.match(/^\/sh\/g\/(ScripterHub\d{10})\/(\d+)$/);
+        const gMatch = url.pathname.match(/^\/sh\/g\/(ScripterHub[0-9]{6,16})\/(\d+)$/);
         if (gMatch) {
             const limited = await guardRate(env, 'part', rateIdentity(request, url));
             if (limited) return limited;
@@ -4259,7 +4283,7 @@ async function handleRequest(request, env, ctx) {
         //   "SHERR invalid|banned|expired|hwid|killswitch|gone"
         // Wire format is plain text (no JSON in executors) and NEVER
         // contains the license key or any payload data.
-        const authMatch = url.pathname.match(/^\/sh\/auth\/(ScripterHub\d{10})$/);
+        const authMatch = url.pathname.match(/^\/sh\/auth\/(ScripterHub[0-9]{6,16})$/);
         if (authMatch) {
             // License-key brute force. The audit measured 40/40 unauthenticated
             // guesses being served before this limit existed.
@@ -4401,7 +4425,7 @@ async function handleRequest(request, env, ctx) {
                         try {
                             await state.audit({
                                 event: 'session.denied', outcome: 'denied',
-                                scriptId: /^ScripterHub\d{10}$/.test(id) ? id : null,
+                                scriptId: /^ScripterHub[0-9]{6,16}$/.test(id) ? id : null,
                                 userRef: userEmail ? await telemetryRef('user', userEmail) : null,
                                 licenseRef: key ? await telemetryRef('lic', key) : null,
                                 reason, transport, ip, ua, at: now
@@ -4424,7 +4448,7 @@ async function handleRequest(request, env, ctx) {
                         + 'See wrangler.toml steps 2-3.');
                     return deny(DENY.NO_STATE);
                 }
-                if (!/^ScripterHub\d{10}$/.test(id)) return deny(DENY.NO_SCRIPT);
+                if (!/^ScripterHub[0-9]{6,16}$/.test(id)) return deny(DENY.NO_SCRIPT);
 
                 const script = await scriptAuthz(env, id);
                 // A missing script must be a REFUSAL, not a crash.
@@ -4556,7 +4580,7 @@ async function handleRequest(request, env, ctx) {
         // failure after the nonce is spent burns the session and forces a
         // re-mint, which can never deliver twice. The reverse order could.
         {
-            const aMatch = url.pathname.match(/^\/sh\/a\/(ScripterHub\d{10})$/);
+            const aMatch = url.pathname.match(/^\/sh\/a\/(ScripterHub[0-9]{6,16})$/);
             if (aMatch && (request.method === 'POST' || request.method === 'GET')) {
                 const limited = await guardRate(env, 'deliver', rateIdentity(request, url));
                 if (limited) return limited;
@@ -4764,7 +4788,7 @@ async function handleRequest(request, env, ctx) {
         //
         // This route is kept so loadstrings already running in the wild keep
         // working. It is NOT how new loaders authenticate: they use /sh/a.
-        const kMatch = url.pathname.match(/^\/sh\/k\/(ScripterHub\d{10})$/);
+        const kMatch = url.pathname.match(/^\/sh\/k\/(ScripterHub[0-9]{6,16})$/);
         if (kMatch) {
             const limited = await guardRate(env, 'key', rateIdentity(request, url));
             if (limited) return limited;
@@ -4949,7 +4973,7 @@ async function handleRequest(request, env, ctx) {
         // artifact from a fixed, guessable path. Now behind
         // guardPartRequest(): the session must have already spent a delivery,
         // and each index is one forward-only step.
-        const cMatch = url.pathname.match(/^\/sh\/c\/(ScripterHub\d{10})\/(\d+)$/);
+        const cMatch = url.pathname.match(/^\/sh\/c\/(ScripterHub[0-9]{6,16})\/(\d+)$/);
         if (cMatch) {
             const limited = await guardRate(env, 'part', rateIdentity(request, url));
             if (limited) return limited;
@@ -5018,7 +5042,7 @@ async function handleRequest(request, env, ctx) {
         // public and permanent, and that is not going to change. What changed
         // is that it carries no authorization value on its own. Anyone can
         // open it. Nobody can extract anything from it.
-        const shMatch = url.pathname.match(/^\/sh\/(ScripterHub\d{10})$/);
+        const shMatch = url.pathname.match(/^\/sh\/(ScripterHub[0-9]{6,16})$/);
         if (shMatch) {
             if (!env.LOADERS_KV) return methodNotAllowed();
             const id = shMatch[1];

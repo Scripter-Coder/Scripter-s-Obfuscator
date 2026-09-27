@@ -93,12 +93,29 @@ async function authorizedFetch(id, ua, lic) {
     return { status: r.status, text: await r.text() };
 }
 
+// One shared owner session token.
+//
+// W20 added its own /sh/login call, which came back 429 - the login bucket
+// allows only a handful per run and every block in this file was already making
+// one. The undefined token then surfaced as a 401 from /sh/upload, which reads
+// as "this id is not allowed" and is not what happened at all. That is a
+// genuinely misleading failure, so the fix is to stop making redundant logins
+// rather than to work around the 429.
+let _ownerToken = null;
+async function sharedOwnerToken() {
+    if (_ownerToken) return _ownerToken;
+    const r = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    assert.ok(r && r.token && r.token.length > 10, 'owner login must issue a token, got: ' + JSON.stringify(r).slice(0, 160));
+    _ownerToken = r.token;
+    return _ownerToken;
+}
+
 // Seed a license through the product's own endpoint (which mirrors it into the
 // table the gate reads), so these tests never bypass the sync path.
 async function seedLicense(key, rec) {
-    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const login = await sharedOwnerToken();
     return j('POST', '/sh/licenses', {
-        token: login.token,
+        token: login,
         licenses: { [key]: Object.assign({ hwid: 'HW', expiresAt: 0, banned: false }, rec || {}) }
     });
 }
@@ -124,9 +141,9 @@ console.log('[W2] owner login (default code) issues a token...');
 console.log('[W3] KEYLESS upload with cipher+plainCode stores webKey meta...');
 let KEYLESS_ID = '';
 {
-    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const login = await sharedOwnerToken();
     const d = await j('POST', '/sh/upload', {
-        token: login.token,
+        token: login,
         name: 'FreeScript',
         user: 'tester',
         keyless: true,
@@ -195,8 +212,8 @@ console.log('[W5] keyless loader: BROWSER gets a metadata page with no cipher...
 // has no web cipher, i.e. the response does not vary with what is stored.
 console.log('[W6] keyless with no cipher: browser still gets the same metadata page...');
 {
-    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    const d = await j('POST', '/sh/upload', { token: login.token, name: 'OldFree', user: 't', keyless: true, plainCode: '-- legacy blob' });
+    const login = await sharedOwnerToken();
+    const d = await j('POST', '/sh/upload', { token: login, name: 'OldFree', user: 't', keyless: true, plainCode: '-- legacy blob' });
     const r = await call('GET', '/sh/' + d.id, null, BROWSER_UA);
     const text = await r.text();
     assert.strictEqual(r.status, 200);
@@ -239,9 +256,12 @@ console.log('[W8] owner signup keeps owner flags usable for owner auth...');
 
 console.log('[W9] PLAN CHANGE by an authenticated owner works...');
 {
-    const owner = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    assert.strictEqual(owner.ok, true, 'owner login must succeed: ' + JSON.stringify(owner));
-    let d = await j('POST', '/sh/users', { token: owner.token, email: USER_EMAIL, user: { plan: 'Pro', stats: { projects: { used: 0, max: 500 }, keys: { used: 0, max: 100000 }, scripts: { used: 0, max: 300 }, fileSize: { used: 0, max: 1024 } } } });
+    const owner = await sharedOwnerToken();
+    // The shared token is a STRING now, so there is no .ok to read. Asserting on
+    // its shape instead, and deliberately NOT printing it: a token in a failure
+    // message is a credential in a log.
+    assert.ok(typeof owner === 'string' && owner.length > 10, 'the shared owner token must be a non-empty string');
+    let d = await j('POST', '/sh/users', { token: owner, email: USER_EMAIL, user: { plan: 'Pro', stats: { projects: { used: 0, max: 500 }, keys: { used: 0, max: 100000 }, scripts: { used: 0, max: 300 }, fileSize: { used: 0, max: 1024 } } } });
     assert.strictEqual(d.ok, true, 'plan change must sync: ' + JSON.stringify(d));
     assert.strictEqual(d.user.plan, 'Pro');
     // the user now pulls their own record -> sees the new plan
@@ -269,10 +289,13 @@ console.log('[W10] plan change without owner authorization is rejected...');
 
 console.log('[W11] owner pulls all users (panel)...');
 {
-    const owner = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    assert.strictEqual(owner.ok, true, 'owner login must succeed: ' + JSON.stringify(owner));
+    const owner = await sharedOwnerToken();
+    // The shared token is a STRING now, so there is no .ok to read. Asserting on
+    // its shape instead, and deliberately NOT printing it: a token in a failure
+    // message is a credential in a log.
+    assert.ok(typeof owner === 'string' && owner.length > 10, 'the shared owner token must be a non-empty string');
     // Prefer the header: a token in a query string lands in access logs.
-    const d = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': owner.token });
+    const d = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': owner });
     assert.strictEqual(d.ok, true, 'owner panel pull must work via the auth header: ' + JSON.stringify(d));
     assert.ok(d.users[USER_EMAIL]);
     assert.strictEqual(d.users[USER_EMAIL].plan, 'Pro');
@@ -303,11 +326,11 @@ console.log('[W12] non-owner user-sync cannot change own plan...');
 console.log('[W13] SPLIT-KEY: /sh/k needs a live session, not just the baked t0...');
 const SPLIT_ID = 'ScripterHub0000000042';
 {
-    const login = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const login = await sharedOwnerToken();
     const t0 = Date.now();
     const padded = [12, 34, 56, 78, 90, 123, 45, 67];
     const up = await j('POST', '/sh/upload', {
-        token: login.token,
+        token: login,
         name: 'SplitTest', user: 'tester',
         cipher: 'U0hPS0Zha2U=', keyHash: 'cafe',
         authRequired: true,
@@ -394,8 +417,8 @@ console.log('[W15] AEGIS: the proxy holds the key, is owner-only, and handles qu
 {
     // There is no shared owner token in this file - each block logs in through
     // the product's own endpoint, deliberately, so no test bypasses real auth.
-    const aegisLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    const ownerToken = aegisLogin.token;
+    const aegisLogin = await sharedOwnerToken();
+    const ownerToken = aegisLogin;
     assert.ok(ownerToken && ownerToken.length > 10, 'owner login must issue a token for the proxy tests');
 
     // 1. no token -> 401. Reaching this response at all means isOwnerRequest
@@ -470,8 +493,8 @@ console.log('[W15] AEGIS: the proxy holds the key, is owner-only, and handles qu
 // precisely why it is a regex and not an escape.
 console.log('[W16] ANNOUNCEMENT: owner-only writes, and colours cannot carry markup...');
 {
-    const annLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    const rulesToken = annLogin.token;
+    const annLogin = await sharedOwnerToken();
+    const rulesToken = annLogin;
 
     // no announcement yet
     const empty = await j('GET', '/sh/announcement');
@@ -543,8 +566,8 @@ console.log('[W17] RULES: a violation blocks with an expiry and deletes nothing.
 {
     // rulesToken is scoped to the W16 block, so this logs in for its own - the
     // same pattern every other block in this file uses.
-    const rulesLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    const rulesToken = rulesLogin.token;
+    const rulesLogin = await sharedOwnerToken();
+    const rulesToken = rulesLogin;
     assert.ok(rulesToken, 'owner login must issue a token for the rules tests');
     const HOUR = 60 * 60 * 1000;
     // One address per signup, from TEST-NET-3 (documentation range, so nothing
@@ -641,8 +664,8 @@ console.log('[W17] RULES: a violation blocks with an expiry and deletes nothing.
 // to survive independently.
 console.log('[W18] CUSTOM BACKGROUND: a new profile field needs BOTH allowlists...');
 {
-    const bgLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
-    const bgToken = bgLogin.token;
+    const bgLogin = await sharedOwnerToken();
+    const bgToken = bgLogin;
     const EMAIL = 'bg@test.local';
 
     const made = await j('POST', '/sh/user-signup', {
@@ -739,6 +762,92 @@ console.log('[W19] REALTIME STATS: the shape the admin dashboard reads...');
     assert.ok(after.executors['Delta'].lastMinute >= 1, 'a just-posted event must be inside the 60s window');
 
     console.log('    OK: totalExecutions/executors/lastMinute/perSecond all present and live');
+}
+
+// ============ LEGACY SCRIPT IDS (the "no longer exists" bug) ============
+// A published loadstring pointed at /sh/ScripterHub7335374723 and reported
+// "this script no longer exists", while the script demonstrably existed:
+//
+//   GET  /sh/ScripterHub7335374723         -> 200, the session loader
+//   POST /sh/session                      -> 200, SHS <sid> <nonce> <t0>
+//   GET  /sh/a/ScripterHub7335374723?s&n  -> "SHERR gone"
+//
+// The id is ScripterHub plus THIRTEEN digits, minted by the oldest scheme
+// ('ScripterHub' + Date.now(), a full 13-digit ms timestamp). Fifteen checks in
+// the worker required exactly /^ScripterHub\d{10}$/, so every script published
+// before the id scheme changed returned NO_SCRIPT. In a browser it still looked
+// fine, because the metadata page is a different route - which is why "I
+// verified it and it exists" and "it does not run" were both true at once.
+//
+// This publishes under the exact id that failed and requires the full
+// session -> gate -> deliver chain to work.
+console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
+{
+    const LEGACY_ID = 'ScripterHub7335374723';
+
+    const token = await sharedOwnerToken();
+    const up = await j('POST', '/sh/upload', {
+        token: token,
+        name: 'LegacyIdScript', user: 'tester',
+        cipher: 'U0hPS0Zha2U=', keyHash: 'cafe', plainCode: 'print(1)',
+        wantId: LEGACY_ID,
+        keyless: true
+    });
+    assert.ok(up.ok, 'a 13-digit id must be accepted at upload: ' + JSON.stringify(up).slice(0, 200));
+
+    // the loader route
+    const boot = await call('GET', '/sh/' + LEGACY_ID, null, EXECUTOR_UA);
+    const bootText = await boot.text();
+    assert.strictEqual(boot.status, 200, 'the loader must be served for a legacy id');
+    assert.ok(bootText.includes('ScripterHub session loader'), 'it must be the session loader, got: ' + bootText.slice(0, 120));
+
+    // the full chain: session, then the gate
+    const got = await authorizedFetch(LEGACY_ID, EXECUTOR_UA, 'TESTLIC');
+    assert.notStrictEqual(got.text.slice(0, 6), 'SHERR',
+        'the gate must NOT refuse a legacy id, got: ' + got.text.slice(0, 80));
+    assert.strictEqual(got.status, 200, 'the gate must deliver: ' + got.text.slice(0, 120));
+    assert.ok(got.text.startsWith('SHL\n') || got.text.startsWith('SHK\n'),
+        'a keyed or keyless delivery must come back, got: ' + got.text.slice(0, 60));
+
+    // A malformed wantId must NOT be honoured.
+    //
+    // The first version of this asserted the upload is REJECTED. It is not, and
+    // that is correct: loaderId() ignores a wantId that does not match and mints
+    // a fresh CSPRNG id instead. Refusing would break any client that sent a
+    // malformed id; ignoring it cannot be abused, because the attacker's string
+    // is simply never used.
+    //
+    // So the property worth pinning is the stronger one: the returned id is a
+    // well-formed id and is NOT the attacker's string. That is what rules out
+    // traversal into a KV key like sh_meta_ScripterHub/../secrets.
+    for (const [bad, why] of [
+        ['ScripterHub/../secrets', 'path traversal'],
+        ['ScripterHub1234/5678', 'a path separator'],
+        ['ScripterHubABCDEF1234', 'letters'],
+        ['notAnId', 'no prefix at all'],
+        ['ScripterHub123', 'too short']
+    ]) {
+        const r = await j('POST', '/sh/upload', {
+            token, name: 'x', user: 'u', cipher: 'U0hPS0Zha2U=',
+            keyHash: 'cafe', plainCode: 'print(1)', wantId: bad, keyless: true
+        });
+        assert.ok(r.ok, bad + ' should still upload (the id is just ignored), got: ' + JSON.stringify(r).slice(0, 140));
+        assert.notStrictEqual(r.id, bad, bad + ' was HONOURED - that is a KV key traversal (' + why + ')');
+        assert.ok(/^ScripterHub[0-9]{6,16}$/.test(String(r.id || '')),
+            bad + ' produced a malformed id ' + JSON.stringify(r.id) + ' (' + why + ')');
+    }
+
+    // 10 digits (current scheme) and 16 digits (random scheme) are both honoured
+    for (const good of ['ScripterHub1234567890', 'ScripterHub1234567890123456']) {
+        const r = await j('POST', '/sh/upload', {
+            token, name: 'x', user: 'u', cipher: 'U0hPS0Zha2U=',
+            keyHash: 'cafe', plainCode: 'print(1)', wantId: good, keyless: true
+        });
+        assert.ok(r.ok, good + ' must be accepted: ' + JSON.stringify(r).slice(0, 120));
+        assert.strictEqual(r.id, good, good + ' is a valid id and must be honoured verbatim, got ' + r.id);
+    }
+
+    console.log('    OK: 13-digit legacy ids publish, load and deliver; malformed ids are ignored, not obeyed');
 }
 
 console.log('\nALL WORKER TESTS PASSED');

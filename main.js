@@ -154,7 +154,7 @@ async function shLoginRaw() {
 // rate limit caps the rate; it cannot un-record what was recorded.
 //
 // The SHAPE is unchanged - still ScripterHub plus exactly ten digits - so
-// every /^ScripterHub\d{10}$/ in the worker keeps matching and every id
+// every /^ScripterHub[0-9]{6,16}$/ in the worker keeps matching and every id
 // already published keeps working. No migration.
 //
 // Entropy is 10^10, about 33 bits: roughly 5.8 years of guessing at the
@@ -4749,7 +4749,7 @@ function generateLoadstring(projectId, scriptId) {
     // generated but script never runs").
     var uploadArg;
     if (script.splitKeyData) {
-        var bakedId = script.loaderId && /^ScripterHub\d{10}$/.test(script.loaderId) ? script.loaderId : '';
+        var bakedId = script.loaderId && /^ScripterHub[0-9]{6,16}$/.test(script.loaderId) ? script.loaderId : '';
         if (!bakedId) {
             // legacy record without the matching loader id: the split-key
             // URL in the file is unknown -> the worker key can never be
@@ -5420,7 +5420,7 @@ function shServerVisibility() {
 // The published loader id for a dashboard script, or '' if it has never been
 // published.
 //
-// Shape-checked against /sh/(ScripterHub\d{10})$ because that is the only
+// Shape-checked against /sh/(ScripterHub[0-9]{6,16})$ because that is the only
 // thing the worker will accept, and a stale value from an older schema (the
 // old default project still carries 'ScripterHubOfficial_...') must be treated
 // as "not published" rather than sent to the API and rejected.
@@ -5432,7 +5432,7 @@ function shLoaderIdFor(projectId, scriptId) {
         for (var j = 0; j < projects[i].scripts.length; j++) {
             if (projects[i].scripts[j].id === scriptId) {
                 var id = projects[i].scripts[j].loaderId || '';
-                return /^ScripterHub\d{10}$/.test(id) ? id : '';
+                return /^ScripterHub[0-9]{6,16}$/.test(id) ? id : '';
             }
         }
     }

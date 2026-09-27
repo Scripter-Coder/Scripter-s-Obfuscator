@@ -35,11 +35,49 @@ console.log('[ID] script ids are random, not a clock reading');
 console.log('-'.repeat(72));
 
 const worker = read('For Cloudflare/worker.js');
-const m = worker.match(/\/\^ScripterHub\\d\{(\d+)\}\$\//);
-if (!m) { console.error('could not read the worker id regex'); process.exit(1); }
-const DIGITS = Number(m[1]);
-const RE = new RegExp('^ScripterHub\\d{' + DIGITS + '}$');
-console.log('  worker accepts ScripterHub + ' + DIGITS + ' digits (read from worker.js)');
+
+// The accepted width is a RANGE now, not a fixed count.
+//
+// It was /^\ScripterHub\d{10}$/, which silently killed every script published by
+// the older 'ScripterHub' + Date.now() scheme: those ids carry THIRTEEN digits,
+// the check demanded ten, and the gate answered "this script no longer exists"
+// for scripts that demonstrably still existed. In a browser the metadata page
+// kept working, so "I checked and it exists" and "it does not run" were both
+// true at once.
+//
+// So the range is read as {min,max} and the lower bound is asserted, because the
+// upper bound is about capacity and the lower bound is about not breaking
+// published loadstrings.
+const range = worker.match(/\/\^ScripterHub\[0-9\]\{(\d+),(\d+)\}\$\//);
+let MIN, MAX;
+if (range) {
+    MIN = Number(range[1]);
+    MAX = Number(range[2]);
+} else {
+    // older single-width form, still readable so this test does not become the
+    // thing that breaks next time the shape changes
+    const single = worker.match(/\/\^ScripterHub\\d\{(\d+)\}\$\//);
+    if (!single) { console.error('could not read the worker id regex'); process.exit(1); }
+    MIN = MAX = Number(single[1]);
+}
+const RE = new RegExp('^ScripterHub[0-9]{' + MIN + ',' + MAX + '}$');
+console.log('  worker accepts ScripterHub + ' + MIN + '..' + MAX + ' digits (read from worker.js)');
+
+// A legacy id must still be accepted, or every pre-migration loadstring is dead
+// again. This is the exact failure that shipped once.
+for (const [legacy, why] of [
+    ['ScripterHub1234567890', 'the 10-digit current scheme'],
+    ['ScripterHub7335374723', 'a 13-digit legacy timestamp - the id that actually failed'],
+    ['ScripterHub1234567890123456', 'a 16-digit random id']
+]) {
+    if (RE.test(legacy)) ok('accepts ' + legacy.slice(13) + ' digits - ' + why);
+    else no('REJECTS ' + legacy + ' - ' + why + ' - published loadstrings for it would be dead');
+}
+// and nothing but digits after the literal, so it cannot walk a KV key
+for (const bad of ['ScripterHub/../secrets', 'ScripterHubABCDEF1234', 'ScripterHub1234/5678']) {
+    if (RE.test(bad)) no('accepts ' + bad + ' - that can traverse a KV key or path segment');
+    else ok('rejects ' + bad);
+}
 
 const src = read('main.js');
 
@@ -89,10 +127,19 @@ if (ratio > 0.4 && ratio < 0.6) {
 }
 
 // 5. the entropy figure, stated rather than asserted
-const space = Math.pow(10, DIGITS);
+//
+// The GENERATED width is 10, and that is what the entropy claim is about. MAX is
+// 16 because the accepted RANGE has to stay wide enough to keep legacy 13-digit
+// ids alive. It is not a statement about how many digits get minted, and using
+// it here would overstate the id space sixteenfold and turn a measured number
+// into a false claim - which is the thing this file exists to prevent.
+const GEN_DIGITS = 10;
+const space = Math.pow(10, GEN_DIGITS);
 const years = space / 30 / 60 / 24 / 365;
-console.log('  ' + (DIGITS * Math.log2(10)).toFixed(1) + ' bits of id space; ~' + years.toFixed(0) +
+console.log('  ' + (GEN_DIGITS * Math.log2(10)).toFixed(1) + ' bits of id space; ~' + years.toFixed(0) +
   ' years to exhaust at 30 guesses/min for ONE script.');
+console.log('  (generated width ' + GEN_DIGITS + ' digits; the worker ACCEPTS ' + MIN + '..' + MAX +
+  ' so legacy ids keep working - the accepted range is not the generated width)');
 
 console.log('-'.repeat(72));
 console.log('ID SCHEME   ' + pass + ' passed, ' + fail + ' failed');
