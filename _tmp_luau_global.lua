@@ -1,9 +1,0 @@
-x=10
-print(x)
-x=20
-print(x)
-_G.y=30
-print(y)
-print(_G.y)
-_G.z=40
-print(z)
