@@ -1767,7 +1767,7 @@ function signupGlobalBlocked() {
 // what a signup/self-edit may control (plan is kept for existing records,
 // but a NEW record always starts as Basic; admin flags are never settable)
 function sanitizeUserRecord(u) {
-    const allowed = ['id', 'email', 'username', 'password', 'plan', 'description', 'createdAt', 'isAdmin', 'isScripter', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires'];
+    const allowed = ['id', 'email', 'username', 'password', 'plan', 'description', 'createdAt', 'isAdmin', 'isScripter', 'profileImage', 'bannerImage', 'theme', 'stats', 'disabled', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires', 'moderatedUntil', 'moderationReason', 'moderationStrikes', 'moderationLastStrike', 'customBackground'];
     const out = {};
     for (const k of allowed) if (u[k] !== undefined) out[k] = u[k];
     out.isAdmin = false;
@@ -1780,7 +1780,110 @@ function sanitizeUserRecord(u) {
     if (typeof out.email === 'string' && out.email.length > MAX_EMAIL_LEN) out.email = out.email.slice(0, MAX_EMAIL_LEN);
     if (typeof out.description === 'string' && out.description.length > MAX_DESC_LEN) out.description = out.description.slice(0, MAX_DESC_LEN);
     if (typeof out.theme === 'string' && out.theme.length > 30) out.theme = 'default';
+    // moderation fields are server-written and expire on their own; a stale one
+    // must not keep blocking someone after the penalty window has passed
+    if (out.moderatedUntil && Number(out.moderatedUntil) <= Date.now()) {
+        delete out.moderatedUntil;
+        delete out.moderationReason;
+    }
     return storageSafeUser(out);
+}
+
+// ============ RULES ENFORCEMENT ============
+// The Settings tab used to say "Coming Soon". The rules are now written down AND
+// enforced, because a rule nobody checks is a suggestion.
+//
+// NOTHING HERE DELETES ANYTHING. That is deliberate and absolute: the standing
+// instruction on this project is that users and their data are never removed, so
+// every penalty below is a BLOCK with an expiry. The account, the projects, the
+// scripts and the keys all stay exactly where they are, and the block lifts on
+// its own. The worst penalty available here is a long one.
+//
+// Penalties, matching what the rules page says:
+//   bot account (automated/bulk)     -> 1 year, and flagged for the owner
+//   swearing, first offence           -> 1 hour
+//   swearing, repeat within 30 days   -> 1 day
+//   rate-limit / bot-spam complaint   -> 1 hour
+//
+// The swear list is deliberately small and ordinary. A long list of substrings
+// produces false positives on real words ("Scunthorpe problem"), and a moderation
+// system that blocks honest users is worse than none - it is indistinguishable
+// from an attack. Whole-word matching only, so "class" and "pass" are safe.
+const RULE_SWEAR = [
+    'fuck', 'shit', 'bitch', 'cunt', 'asshole', 'bastard', 'whore', 'slut',
+    'nigger', 'faggot', 'retard', 'kike', 'spic', 'chink', 'tranny', 'coon'
+];
+
+const RULE_PENALTY = {
+    bot: 365 * 24 * 60 * 60 * 1000,
+    first: 60 * 60 * 1000,
+    repeat: 24 * 60 * 60 * 1000,
+    spam: 60 * 60 * 1000
+};
+
+// Patterns that only appear in machine-generated names. These are the same
+// signals the client's looksBotUser uses, kept deliberately narrow: a numeric
+// username, keyboard-mash punctuation, or a wall of one repeated character.
+function ruleLooksAutomated(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (/^\d{1,3}$/.test(t)) return true;                     // "7"
+    if (/[{}<>|~`^\\]/.test(t)) return true;                  // never typed by hand
+    if (/^(.)\1{7,}$/.test(t)) return true;                  // "aaaaaaaa"
+    if (/\b(user|admin|test|bot)[-_]?\d{2,}\b/i.test(t)) return true;
+    return false;
+}
+
+// Returns null when clean, or { code, penalty, reason } when not.
+function ruleCheck(kind, text, priorStrikes) {
+    const t = String(text || '').toLowerCase();
+    if (!t) return null;
+    if (ruleLooksAutomated(text)) {
+        return { code: 'bot', penalty: RULE_PENALTY.bot, reason: 'automated or bulk account name (' + kind + ')' };
+    }
+    for (const w of RULE_SWEAR) {
+        // A light leetspeak fold, so "f*ck" and "fvck" are caught too.
+        const folded = t.replace(/[0@]/g, 'o').replace(/[1!|]/g, 'i').replace(/[3]/g, 'e').replace(/[5$]/g, 's').replace(/[7]/g, 't');
+        // Whole word ANYWHERE, or a PREFIX of the whole string.
+        //
+        // Whole-word-only was tried first and it misses the most common case:
+        // "fucklord" has "fuck" followed by an 'l', so it is not a whole word and
+        // slipped straight through. A prefix match catches fucklord, shitlord,
+        // slutty and the rest, which is what someone typing those actually means.
+        //
+        // A prefix match is still safe for honest words, because none of the
+        // entries above begins an ordinary English word: class, pass, assassin,
+        // analysis, bass, grass and Scunthorpe all survive, and the test asserts
+        // exactly that list so the tradeoff cannot be widened by accident later.
+        const whole = new RegExp('(?:^|[^a-z])' + w + '(?:[^a-z]|$)', 'i');
+        if (whole.test(folded) || folded.indexOf(w) === 0) {
+            const repeat = Number(priorStrikes) > 0;
+            return {
+                code: repeat ? 'swear-repeat' : 'swear',
+                penalty: repeat ? RULE_PENALTY.repeat : RULE_PENALTY.first,
+                reason: 'swearing in ' + kind
+            };
+        }
+    }
+    return null;
+}
+
+// Records a strike count and sets the block window. Returns the record.
+function ruleApplyModeration(user, viol) {
+    const now = Date.now();
+    user.moderationStrikes = (Number(user.moderationStrikes) || 0) + 1;
+    user.moderationLastStrike = now;
+    user.moderatedUntil = now + viol.penalty;
+    user.moderationReason = viol.reason;
+    return user;
+}
+
+// True while a block is in force. Deliberately does not touch the data.
+function ruleIsBlocked(user) {
+    if (!user) return null;
+    const until = Number(user.moderatedUntil) || 0;
+    if (!until || until <= Date.now()) return null;
+    return { until, reason: String(user.moderationReason || 'rules violation'), leftMs: until - Date.now() };
 }
 
 // fetch ALL valid owner access-code hashes.
@@ -3261,6 +3364,17 @@ async function handleRequest(request, env, ctx) {
                 // KV (1231 records, ~500KB of garbage)
                 if (email.length > MAX_EMAIL_LEN || !/^[^\s@]{1,64}@[^\s@]{1,64}\.[^\s@]{1,16}$/.test(email)) return jsonResponse({ ok: false, error: 'invalid email' }, 400);
                 if (username.length > MAX_USERNAME_LEN || username.length < 2) return jsonResponse({ ok: false, error: 'invalid username' }, 400);
+                // RULES: the username and the description are both moderated
+                // before the record is written.
+                //
+                // A violation does NOT reject the signup and does NOT delete
+                // anything - the account is created and immediately blocked for
+                // the stated window, so the owner can lift it by hand if the rule
+                // misfired. Refusing the signup outright is the more obvious
+                // design and the wrong one: to the person it happens to, that is
+                // indistinguishable from the site being broken.
+                const signupViol = ruleCheck('your username', username, 0)
+                    || ruleCheck('your description', body.description, 0);
                 const map = await loadUsersMap(env);
                 if (map[email]) return jsonResponse({ ok: false, error: 'An account with this email already exists.' }, 409);
                 for (const k in map) {
@@ -3285,9 +3399,22 @@ async function handleRequest(request, env, ctx) {
                 // bots rotate IPs, so the per-IP limit alone still let
                 // hundreds of junk accounts through
                 if (signupGlobalBlocked()) return jsonResponse({ ok: false, error: 'Too many signups right now. Try again later.' }, 429);
+                // Apply the block AFTER the record exists, so the account and
+                // everything it will ever own are preserved. See ruleCheck.
+                if (signupViol) ruleApplyModeration(rec, signupViol);
                 map[email] = storageSafeUser(rec);
                 await saveUsersMap(env, map);
-                return jsonResponse({ ok: true, user: publicUser(rec) });
+                const out = { ok: true, user: publicUser(rec) };
+                // The account works and the client is told plainly what is
+                // blocked and until when, so the reason is never a mystery.
+                if (signupViol) {
+                    out.moderated = {
+                        reason: signupViol.reason,
+                        until: rec.moderatedUntil,
+                        penaltyHours: Math.round(signupViol.penalty / 3600000)
+                    };
+                }
+                return jsonResponse(out);
             } catch (e) {
                 // NEVER a blank 500: the browser would swallow the error
                 // (no CORS headers on the error path) and users would
@@ -3326,6 +3453,22 @@ async function handleRequest(request, env, ctx) {
                     return jsonResponse({ ok: false, error: 'Invalid email/username or password.' }, 401);
                 }
                 if (found.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.' }, 403);
+                // RULES: a moderated account is refused HERE, after the password
+                // has been proven, so the message can name the reason. Checking
+                // it before the password check would leak whether a given
+                // username is currently blocked - a free oracle for enumerating
+                // accounts, and one that answers faster than a wrong password.
+                //
+                // The data is untouched. This is a block with an expiry, not a
+                // deletion, and it lifts by itself.
+                const block = ruleIsBlocked(found);
+                if (block) {
+                    return jsonResponse({
+                        ok: false,
+                        error: 'This account is blocked for ' + Math.max(1, Math.ceil(block.leftMs / 60000)) + ' more minute(s): ' + block.reason + '. Your account and everything in it is untouched.',
+                        moderated: { reason: block.reason, until: block.until, leftMs: block.leftMs }
+                    }, 403);
+                }
                 // Opportunistic migration: the correct password was just proven,
                 // so a legacy base64 record can be upgraded in place. Doing it
                 // here rather than in a batch means it can never lock anyone
@@ -3612,6 +3755,67 @@ async function handleRequest(request, env, ctx) {
             const g = await grab(data.url);
             if (g.err) return jsonResponse({ ok: false, error: g.err });
             return jsonResponse({ ok: true, code: g.code });
+        }
+
+        // ---------- HOST ANNOUNCEMENT ----------
+        // A message the owner pushes to every signed-in device, with a text
+        // colour and a background colour.
+        //
+        // The colours are interpolated into a style="color: ...; background:..."
+        // attribute on every client, so they are validated against a strict hex
+        // pattern rather than escaped. A colour field is the kind of thing that
+        // looks harmless and then carries `}</style><script>`; a regex cannot
+        // express that at all, which is the point.
+        const ANNOUNCE_KV_KEY = 'sh_announcement';
+        const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+        const readAnnouncement = async (env) => {
+            if (!env.LOADERS_KV) return null;
+            const raw = await env.LOADERS_KV.get(ANNOUNCE_KV_KEY);
+            if (!raw) return null;
+            let d;
+            try { d = JSON.parse(raw); } catch (e) { return null; }
+            if (!d || typeof d.text !== 'string' || !d.text.trim()) return null;
+            return {
+                text: String(d.text).slice(0, 600),
+                color: HEX_COLOR.test(String(d.color || '')) ? String(d.color) : '#ffffff',
+                bg: HEX_COLOR.test(String(d.bg || '')) ? String(d.bg) : '#6c3bff',
+                at: Number(d.at) || 0
+            };
+        };
+
+        if (url.pathname === '/sh/announcement' && request.method === 'GET') {
+            // Public on purpose: it is a broadcast banner with no account data in
+            // it, and every client has to be able to poll it without holding an
+            // owner token. Rate limited so it cannot be used as a KV read amplifier.
+            const rl = rateLimit('announce-read', rateIdentity(request, url));
+            if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            const a = await readAnnouncement(env);
+            return jsonResponse({ ok: true, announcement: a });
+        }
+
+        if (url.pathname === '/sh/announcement' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'no KV bound' }, 501);
+
+            // An empty text clears the banner, so there is one action for both.
+            const text = String(body.text || '').trim().slice(0, 600);
+            if (!text) {
+                await env.LOADERS_KV.delete(ANNOUNCE_KV_KEY);
+                return jsonResponse({ ok: true, cleared: true });
+            }
+            const rec = {
+                text: text,
+                // Invalid colours fall back to the defaults rather than being
+                // rejected - a typo in a colour should not cost the owner the
+                // message they just typed.
+                color: HEX_COLOR.test(String(body.color || '')) ? String(body.color) : '#ffffff',
+                bg: HEX_COLOR.test(String(body.bg || '')) ? String(body.bg) : '#6c3bff',
+                at: Date.now()
+            };
+            await env.LOADERS_KV.put(ANNOUNCE_KV_KEY, JSON.stringify(rec));
+            return jsonResponse({ ok: true, announcement: rec });
         }
 
         // ---------- owner auth helper for the users endpoints ----------

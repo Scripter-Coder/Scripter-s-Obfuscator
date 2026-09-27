@@ -750,6 +750,43 @@ function shCloseModal(key) {
     delete __shModals[key];
 }
 
+// ============ RULES CHECK (client mirror) ============
+// The same rules the worker enforces, so the reason is given before the form is
+// submitted. The worker is the authority; this is a courtesy, and it is kept
+// deliberately in step with ruleCheck() in the worker - worker.test.mjs W17
+// asserts the worker's behaviour, and if the two drift the user is told one
+// thing and then blocked for another, which is worse than being told late.
+//
+// Returns a human-readable reason, or '' when the text is clean.
+var SH_RULE_SWEAR = [
+    'fuck', 'shit', 'bitch', 'cunt', 'asshole', 'bastard', 'whore', 'slut',
+    'nigger', 'faggot', 'retard', 'kike', 'spic', 'chink', 'tranny', 'coon'
+];
+
+function shRulesCheck(name, extra) {
+    // automated / bulk names
+    var t = String(name || '').trim();
+    if (t && (/^\d{1,3}$/.test(t) || /[{}<>|~`^\\]/.test(t) || /^(.)\1{7,}$/.test(t) || /\b(user|admin|test|bot)[-_]?\d{2,}\b/i.test(t))) {
+        return 'That looks like an automated or bulk account name, which is not allowed.';
+    }
+    // swearing, matched as a whole word OR as a prefix of the whole string
+    var folded = String(name || '').toLowerCase()
+        .replace(/[0@]/g, 'o').replace(/[1!|]/g, 'i').replace(/[3]/g, 'e')
+        .replace(/[5$]/g, 's').replace(/[7]/g, 't');
+    var ex = String(extra || '').toLowerCase();
+    for (var i = 0; i < SH_RULE_SWEAR.length; i++) {
+        var w = SH_RULE_SWEAR[i];
+        var re = new RegExp('(?:^|[^a-z])' + w + '(?:[^a-z]|$)', 'i');
+        if (re.test(folded) || folded.indexOf(w) === 0) {
+            return 'No swearing, please. Your username contains a blocked word ("' + w + '").';
+        }
+        if (ex && (re.test(ex) || ex.indexOf(w) === 0)) {
+            return 'No swearing, please. Your description contains a blocked word ("' + w + '").';
+        }
+    }
+    return '';
+}
+
 // ============ CLIENT RATE LIMITING ============
 // Nothing guarded these actions. handleLogin, handleSignup, confirmCreateProject
 // and the key creators had no throttle, so a double-click fired one request per
@@ -2293,6 +2330,16 @@ function handleSignup(event) {
             return;
         }
     }
+    // RULES: the same check the worker runs, so the person finds out before the
+    // form is submitted rather than after. The worker is the authority - this is
+    // only here to save a pointless round trip and to say why.
+    // The rules are published in Settings > Rules, and every penalty is a
+    // temporary block; nothing here deletes anything.
+    var shRuleHit = shRulesCheck(username, description);
+    if (shRuleHit) {
+        showNotification('Not allowed', shRuleHit, 'error', 9000);
+        return;
+    }
     if (password.length < 6) {
         showNotification('Error', 'Password must be at least 6 characters.', 'error');
         return;
@@ -2330,6 +2377,18 @@ function handleSignup(event) {
     shApi('sh/user-signup', {
         email: email, username: username, password: password,
         description: description || '', id: user.id, createdAt: user.createdAt
+    }).then(function(d) {
+        // The worker moderates on top of the client check, and it is the
+        // authority. If it blocked the account, say so immediately and keep the
+        // local record - the account exists, it is just not usable for now, and
+        // nothing has been deleted.
+        if (d && d.ok && d.moderated) {
+            var hrs = d.moderated.penaltyHours >= 24
+                ? Math.round(d.moderated.penaltyHours / 24) + ' day(s)'
+                : d.moderated.penaltyHours + ' hour(s)';
+            showNotification('Account Blocked', d.moderated.reason.charAt(0).toUpperCase() + d.moderated.reason.slice(1) +
+                ' - blocked for ' + hrs + '. Your account and everything in it is untouched; the block expires on its own.', 'warning', 14000);
+        }
     }).catch(function() {});
     document.getElementById('signupForm').reset();
     var userData = { ...user };
@@ -5315,6 +5374,132 @@ async function shRefreshOwnCloudRecord(localRecord) {
     } catch (e) { /* offline: local record stays */ }
 }
 
+// ============ HOST ANNOUNCEMENT ============
+// The owner writes a message plus a text and a background colour; every signed-in
+// device shows it as a banner at the top.
+//
+// Two distinct actions, because "let me see it before everyone does" is a real
+// need: TEST writes the banner into this browser's localStorage only, so it
+// appears here and nowhere else. ANNOUNCE stores it on the worker, and every
+// device picks it up on its next poll. Neither goes through the other, so a
+// test can never be seen by a user and a preview can never be mistaken for a
+// send.
+//
+// The colours come back from the worker already validated against a hex
+// pattern, and are re-validated here before being written into a style
+// attribute. The banner is built with createElement + textContent rather than
+// innerHTML, so the message text cannot become markup even in principle.
+var ANNOUNCE_LOCAL_KEY = 'sh_announce_preview';
+var ANNOUNCE_HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+function shAnnounceHex(v, fallback) {
+    v = String(v || '').trim();
+    return ANNOUNCE_HEX.test(v) ? v : fallback;
+}
+
+function renderAnnouncement(a) {
+    var host = document.getElementById('shAnnounceHost');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'shAnnounceHost';
+        document.body.insertBefore(host, document.body.firstChild);
+    }
+    host.innerHTML = '';
+    if (!a || !a.text) { host.style.display = 'none'; return; }
+
+    var bar = document.createElement('div');
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = [
+        'position:sticky', 'top:0', 'z-index:9999', 'width:100%',
+        'padding:12px 18px', 'text-align:center', 'font-size:14px', 'font-weight:600',
+        'font-family:inherit', 'line-height:1.45', 'white-space:pre-wrap',
+        'word-break:break-word',
+        'color:' + shAnnounceHex(a.color, '#ffffff'),
+        'background:' + shAnnounceHex(a.bg, '#6c3bff'),
+        'box-shadow:0 2px 12px rgba(0,0,0,0.35)'
+    ].join(';');
+
+    // textContent, never innerHTML - the message is arbitrary text
+    bar.textContent = a.text;
+    host.appendChild(bar);
+    host.style.display = '';
+}
+
+function shAnnounceStatus(msg) {
+    var el = document.getElementById('announceStatus');
+    if (el) el.textContent = msg || '';
+}
+
+// TEST: this device only.
+function previewAnnouncement() {
+    var box = document.getElementById('announceText');
+    var text = box ? String(box.value || '').trim() : '';
+    if (!text) { showNotification('Nothing to preview', 'Type a message first.', 'warning', 4000); return; }
+    var a = {
+        text: text,
+        color: (document.getElementById('announceColor') || {}).value,
+        bg: (document.getElementById('announceBg') || {}).value
+    };
+    try { localStorage.setItem(ANNOUNCE_LOCAL_KEY, JSON.stringify(a)); } catch (e) {}
+    renderAnnouncement(a);
+    shAnnounceStatus('Preview shown on this device only. Nobody else can see it.');
+}
+
+// ANNOUNCE: stored on the worker, picked up by every device.
+function sendAnnouncement() {
+    var btn = document.getElementById('announceBtn');
+    var box = document.getElementById('announceText');
+    var text = box ? String(box.value || '').trim() : '';
+    if (!text) { showNotification('Nothing to send', 'Type a message first.', 'warning', 4000); return; }
+    if (btn) { btn.disabled = true; btn.setAttribute('data-loading', 'true'); }
+    shApi('/sh/announcement', {
+        token: shOwnerToken(),
+        text: text,
+        color: (document.getElementById('announceColor') || {}).value,
+        bg: (document.getElementById('announceBg') || {}).value
+    }).then(function(d) {
+        if (btn) { btn.disabled = false; btn.removeAttribute('data-loading'); }
+        if (!d || !d.ok) {
+            shAnnounceStatus('Not sent: ' + ((d && d.error) || 'no reason given'));
+            showNotification('Not Announced', (d && d.error) || 'The worker refused it.', 'error', 7000);
+            return;
+        }
+        // the local preview is now redundant - the real one replaces it
+        try { localStorage.removeItem(ANNOUNCE_LOCAL_KEY); } catch (e) {}
+        renderAnnouncement(d.announcement);
+        shAnnounceStatus('Live on every device. They pick it up within a minute.');
+        showNotification('Announcement Sent', 'Every signed-in device will show it within a minute.', 'success', 5000);
+    }).catch(function(e) {
+        if (btn) { btn.disabled = false; btn.removeAttribute('data-loading'); }
+        shAnnounceStatus('Not sent: ' + ((e && e.message) || e));
+    });
+}
+
+function clearAnnouncement() {
+    try { localStorage.removeItem(ANNOUNCE_LOCAL_KEY); } catch (e) {}
+    renderAnnouncement(null);
+    shApi('/sh/announcement', { token: shOwnerToken(), text: '' }).then(function(d) {
+        if (!d || !d.ok) {
+            shAnnounceStatus('The banner is hidden here, but the server copy is still live: ' + ((d && d.error) || 'unknown'));
+            return;
+        }
+        shAnnounceStatus('Cleared everywhere.');
+        showNotification('Announcement Cleared', 'No device will show it any more.', 'success', 4000);
+    });
+}
+
+// Called on load and on every sync tick. A local preview wins over the server
+// copy so the owner's test is not overwritten by the poll mid-preview.
+function shPollAnnouncement() {
+    var preview = null;
+    try { preview = JSON.parse(localStorage.getItem(ANNOUNCE_LOCAL_KEY) || 'null'); } catch (e) { preview = null; }
+    if (preview && preview.text) { renderAnnouncement(preview); return; }
+    shApi('/sh/announcement', null).then(function(d) {
+        if (!d || !d.ok) return;
+        renderAnnouncement(d.announcement || null);
+    });
+}
+
 // keep the logged-in user's plan/profile in sync: poll the cloud every
 // 60s and whenever the tab regains focus, so plan changes made by the
 // owner land on every device WITHOUT a manual page refresh.
@@ -5322,6 +5507,7 @@ setInterval(function() {
     if (!currentUser || !currentUser.email) return;
     var lu = users[currentUser.email];
     if (lu && lu.password) shRefreshOwnCloudRecord(lu);
+    shPollAnnouncement();
 }, 60000);
 document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'visible' && currentUser && currentUser.email) {

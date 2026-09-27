@@ -32,7 +32,7 @@
             } catch (e) {}
         }
     </script>
-  <script type="module" crossorigin src="./assets/main-CRPh24gm.js"></script>
+  <script type="module" crossorigin src="./assets/main-IEB_brkR.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/main-Bcw74wKX.css">
 </head>
 <body>
@@ -497,8 +497,26 @@
                 <button class="btn-settings-danger" onclick="openDeleteAccountUI()">🗑️ Delete Account</button>
             </div>
             <h3 style="color:#fff; margin-top:28px;">📋 Rules</h3>
-            <p style="color:#8888aa;">Coming Soon… we will add it later….</p>
-        </div>
+        <p style="color:#8888aa; font-size:13px; margin:0 0 14px 0;">These are enforced automatically. Every penalty below is a
+            temporary block - your account, projects, scripts and keys are never deleted.</p>
+            <div class="form-group">
+                <label>Usernames, project names, script names, key notes and descriptions</label>
+                <ul style="color:#aaaacc; font-size:13px; line-height:1.7; margin:0; padding-left:20px;">
+                    <li>No swearing. First offence: blocked <strong>1 hour</strong>. A repeat within 30 days: <strong>1 day</strong>.</li>
+                    <li>No automated or bulk account names - numeric-only names, keyboard mashes like <code>{}</code> or <code>&lt;&gt;</code>, or long runs of one repeated character. Blocked <strong>1 year</strong> and flagged for the host.</li>
+                    <li>No spamming the rate-limit message, and no flooding any endpoint. Blocked <strong>1 hour</strong>.</li>
+                </ul>
+            </div>
+            <div class="form-group">
+                <label>Other things that get a block</label>
+                <ul style="color:#aaaacc; font-size:13px; line-height:1.7; margin:0; padding-left:20px;">
+                    <li>Stealing, leaking or reposting other people's source, keys or loader links.</li>
+                    <li>Attacking the site, the worker or the KV, or trying to read another account's data.</li>
+                    <li>Using the loader to run anything that harms other players or breaks the platform.</li>
+                    <li>Sharing your account. One person, one account.</li>
+                </ul>
+            </div>
+        <p style="color:#8888aa; font-size:13px; margin:12px 0 0 0;">A block expires on its own. If you think one was a mistake, ask on Discord.</p>
     </div>
 
     <!-- Signup Modal -->
@@ -564,6 +582,31 @@
             </div>
             <div id="adminUserList" style="max-height: 400px; overflow-y: auto;">
                 <div id="userList"></div>
+            </div>
+            <!-- Host Announcement -->
+            <div style="margin-top:20px; padding:16px; background:rgba(108,59,255,0.07); border:1px solid rgba(108,59,255,0.25); border-radius:14px;">
+                <h3 style="margin:0 0 4px 0; color:#fff; font-size:15px;">&#128227; Host Announcement</h3>
+                <p class="sub" style="margin:0 0 12px 0;">Shown as a banner at the top of the site on every device.</p>
+                <div class="form-group">
+                    <label>Message</label>
+                    <textarea id="announceText" rows="3" maxlength="600" placeholder="Maintenance tonight at 22:00 UTC..."></textarea>
+                </div>
+                <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                    <div class="form-group" style="flex:1; min-width:150px; margin-bottom:0;">
+                        <label>Text colour</label>
+                        <input class="sh-input" type="color" id="announceColor" value="#ffffff" style="height:46px; padding:6px;">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:150px; margin-bottom:0;">
+                        <label>Background colour</label>
+                        <input class="sh-input" type="color" id="announceBg" value="#6c3bff" style="height:46px; padding:6px;">
+                    </div>
+                </div>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <button class="btn btn-close-dropdown" onclick="previewAnnouncement()">&#128065; Test On This Device</button>
+                    <button class="btn btn-primary" data-loading="false" id="announceBtn" onclick="sendAnnouncement()">&#128227; Announce To All</button>
+                    <button class="btn btn-danger" onclick="clearAnnouncement()">Clear</button>
+                </div>
+                <p class="sub" id="announceStatus" style="margin:10px 0 0 0;"></p>
             </div>
             <div style="margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap;">
                 <button class="btn btn-close-dropdown" onclick="closeModal('admin')">Close</button>

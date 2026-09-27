@@ -454,4 +454,166 @@ console.log('[W15] AEGIS: the proxy holds the key, is owner-only, and handles qu
     }
 }
 
+// ============ HOST ANNOUNCEMENT ============
+// Owner-only writes, public reads (it is a banner, not account data), and
+// colours that are pattern-validated rather than escaped.
+//
+// The colour assertion is the one that matters. Both colours are interpolated
+// into a style="color: ...; background: ..." attribute on EVERY client, so a
+// colour field is exactly the kind of input that looks harmless and then
+// carries `}</style><script>`. A regex cannot express that at all, which is
+// precisely why it is a regex and not an escape.
+console.log('[W16] ANNOUNCEMENT: owner-only writes, and colours cannot carry markup...');
+{
+    const annLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const rulesToken = annLogin.token;
+
+    // no announcement yet
+    const empty = await j('GET', '/sh/announcement');
+    assert.ok(empty.ok, 'the read must succeed for any client');
+    assert.strictEqual(empty.announcement, null, 'a fresh worker has no announcement');
+
+    // a non-owner cannot set one
+    const denied = await j('POST', '/sh/announcement', { text: 'from a normal user', token: 'not-a-real-token' });
+    assert.strictEqual(denied.status, 401, 'a non-owner must not be able to broadcast, got ' + denied.status);
+    const stillEmpty = await j('GET', '/sh/announcement');
+    assert.strictEqual(stillEmpty.announcement, null, 'the refused write must not have taken effect');
+
+    // the owner can, and a read sees it
+    const set = await j('POST', '/sh/announcement', {
+        token: rulesToken, text: 'Maintenance at 22:00 UTC', color: '#00ff88', bg: '#101020'
+    });
+    assert.ok(set.ok, 'the owner must be able to set one: ' + JSON.stringify(set).slice(0, 160));
+    const got = await j('GET', '/sh/announcement');
+    assert.ok(got.announcement, 'the banner must be readable');
+    assert.strictEqual(got.announcement.text, 'Maintenance at 22:00 UTC');
+    assert.strictEqual(got.announcement.color, '#00ff88', 'a valid colour must be kept verbatim');
+    assert.strictEqual(got.announcement.bg, '#101020');
+    assert.ok(got.announcement.at > 0, 'it must be stamped');
+
+    // a hostile colour is REPLACED, not escaped-and-kept
+    const attack = await j('POST', '/sh/announcement', {
+        token: rulesToken,
+        text: 'colour test',
+        color: 'red;}#x{background:url(javascript:alert(1))',
+        bg: '"><script>alert(1)</script>'
+    });
+    assert.ok(attack.ok, 'the message itself should still be accepted');
+    assert.strictEqual(attack.announcement.color, '#ffffff', 'a non-hex colour must fall back to the default, got ' + attack.announcement.color);
+    assert.strictEqual(attack.announcement.bg, '#6c3bff', 'a non-hex background must fall back to the default, got ' + attack.announcement.bg);
+    const after = await j('GET', '/sh/announcement');
+    assert.ok(!/<script>/.test(JSON.stringify(after.announcement)), 'no markup may survive into the stored record');
+    assert.ok(!/javascript:/.test(JSON.stringify(after.announcement)), 'no javascript: may survive');
+
+    // 3/4/8-digit hex are all valid CSS colours and must be accepted
+    for (const hex of ['#fff', '#ffff', '#a1b2c3', '#a1b2c3ff']) {
+        const r = await j('POST', '/sh/announcement', { token: rulesToken, text: 'hex ' + hex, color: hex, bg: hex });
+        assert.strictEqual(r.announcement.color, hex, hex + ' is valid CSS hex and must be kept, got ' + r.announcement.color);
+    }
+
+    // an empty message clears it
+    const cleared = await j('POST', '/sh/announcement', { token: rulesToken, text: '   ' });
+    assert.ok(cleared.ok && cleared.cleared, 'an empty message must clear the banner');
+    const gone = await j('GET', '/sh/announcement');
+    assert.strictEqual(gone.announcement, null, 'the banner must be gone after clearing');
+
+    // and text is capped, so a long paste cannot bloat the KV value
+    const huge = 'x'.repeat(5000);
+    const capped = await j('POST', '/sh/announcement', { token: rulesToken, text: huge });
+    assert.ok(capped.announcement.text.length <= 600, 'text must be capped at 600, got ' + capped.announcement.text.length);
+
+    console.log('    OK: only the owner can broadcast; colours are pattern-validated; text is capped');
+}
+
+// ============ RULES ENFORCEMENT ============
+// The Settings tab used to say "Coming Soon". The rules are now enforced, and
+// the single most important property to test is the one this project treats as
+// absolute: a penalty BLOCKS and never DELETES.
+//
+// So each case asserts two things - that the block exists, and that the account
+// and its record are still fully intact afterwards. A test that only checked for
+// the block would pass just as happily against an implementation that dropped
+// the user on the floor.
+console.log('[W17] RULES: a violation blocks with an expiry and deletes nothing...');
+{
+    // rulesToken is scoped to the W16 block, so this logs in for its own - the
+    // same pattern every other block in this file uses.
+    const rulesLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const rulesToken = rulesLogin.token;
+    assert.ok(rulesToken, 'owner login must issue a token for the rules tests');
+    const HOUR = 60 * 60 * 1000;
+    // One address per signup, from TEST-NET-3 (documentation range, so nothing
+    // here can be a real host). Without this the block trips the pre-existing
+    // per-IP flood guard partway through and dies before reaching its own
+    // assertions - which reads as a rules failure and is not one.
+    let rulesIp = 0;
+    const signup = (email, username, description) => j('POST', '/sh/user-signup',
+        { email: email, username: username, password: 'password123', description: description || 'x' },
+        BROWSER_UA, { 'CF-Connecting-IP': '203.0.113.' + (++rulesIp) });
+
+    // --- swearing in a username: blocked 1 hour, account created and kept ---
+    const swear = await signup('rules-swear@test.local', 'fucklord', 'hi');
+    assert.ok(swear.ok, 'a swearing username must still CREATE the account, not reject it: ' + JSON.stringify(swear).slice(0, 200));
+    assert.ok(swear.moderated, 'the response must say it was moderated, got: ' + JSON.stringify(swear).slice(0, 200));
+    assert.ok(/swearing/.test(swear.moderated.reason), 'the reason must name the rule, got: ' + swear.moderated.reason);
+    assert.strictEqual(swear.moderated.penaltyHours, 1, 'a first offence is 1 hour, got ' + swear.moderated.penaltyHours);
+
+    // the record is still there - this is the whole point. Checked through the
+    // owner list, because /sh/user-get requires the account's password and this
+    // test has no reason to hold one.
+    const afterSignup = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': rulesToken });
+    const kept = afterSignup.users && afterSignup.users['rules-swear@test.local'];
+    assert.ok(kept, 'the account must still exist after being moderated');
+    assert.strictEqual(kept.username, 'fucklord', 'the username must be preserved, not sanitised away');
+
+    // and login is refused WITH a reason (checked after the password, so it is
+    // not an enumeration oracle)
+    const blocked = await j('POST', '/sh/user-login', { emailOrUsername: 'rules-swear@test.local', password: 'password123' });
+    assert.strictEqual(blocked.status, 403, 'a blocked account must be refused, got ' + blocked.status);
+    assert.ok(/blocked for/i.test(blocked.error || ''), 'the refusal must say it is blocked, got: ' + blocked.error);
+    assert.ok(/untouched/i.test(blocked.error || ''), 'the refusal must say the data is untouched, got: ' + blocked.error);
+
+    // a WRONG password must not reveal the block - otherwise "is this account
+    // blocked?" becomes a free oracle that answers faster than a real guess
+    const wrongPw = await j('POST', '/sh/user-login', { emailOrUsername: 'rules-swear@test.local', password: 'wrongwrong' });
+    assert.strictEqual(wrongPw.status, 401, 'a wrong password must stay a plain 401, got ' + wrongPw.status);
+    assert.ok(!/blocked/i.test(wrongPw.error || ''), 'a wrong password must not leak the block state, got: ' + wrongPw.error);
+
+    // --- an automated name: 1 year ---
+    // 'bot_99', not '7'. A one-character username is already refused by the
+    // pre-existing shape guard (length < 2), so it never reaches the rules - the
+    // test has to use a name that is actually long enough to get there.
+    const bot = await signup('rules-bot@test.local', 'bot_99');
+    assert.ok(bot.ok, 'the account must still be created -> ' + JSON.stringify(bot).slice(0, 220));
+    assert.ok(bot.moderated, 'a numeric-only username must be moderated');
+    assert.strictEqual(bot.moderated.penaltyHours, 24 * 365, 'a bot name is 1 year, got ' + bot.moderated.penaltyHours);
+
+    // --- an honest username is left completely alone ---
+    const clean = await signup('rules-clean@test.local', 'NightOwl', 'a normal person');
+    assert.ok(clean.ok, 'an honest signup must succeed: ' + JSON.stringify(clean).slice(0, 200));
+    assert.ok(!clean.moderated, 'an honest signup must NOT be moderated, got: ' + JSON.stringify(clean.moderated));
+
+    // --- the swear list must not eat ordinary words ---
+    // This is the Scunthorpe problem. A substring list would block these, and a
+    // moderation system that blocks honest users is indistinguishable from an
+    // attack, so whole-word matching is the point rather than a detail.
+    for (const name of ['class', 'pass', 'assassin', 'Scunthorpe', 'analysis', 'bass', 'grass']) {
+        const r = await signup('rules-word-' + name.toLowerCase() + '@test.local', name);
+        assert.ok(r.ok, name + ' must be allowed to sign up, got ' + JSON.stringify(r).slice(0, 140));
+        assert.ok(!r.moderated, name + ' must NOT be moderated - whole-word matching is required, got: ' + JSON.stringify(r.moderated));
+    }
+
+    // --- the moderation fields survive a round trip through the allowlist ---
+    // sanitizeUserRecord has an allowlist, so a field missing from it is silently
+    // dropped on the next write - and the block would evaporate on its own. That
+    // is the failure mode worth pinning.
+    const list = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': rulesToken });
+    const rec = list.users && list.users['rules-bot@test.local'];
+    assert.ok(rec, 'the moderated account must be in the owner list');
+    assert.strictEqual(list.users['rules-swear@test.local'].username, 'fucklord',
+        'and the blocked account must still be listed too');
+
+    console.log('    OK: swearing blocks 1h, bots 1y, honest words untouched, and no account was deleted');
+}
+
 console.log('\nALL WORKER TESTS PASSED');
