@@ -121,6 +121,22 @@ function shAskForCode() {
         };
     });
 }
+// Forget any cached owner access code and ask again.
+//
+// The automatic recovery on a rejected code is the real fix, but it only helps
+// if a prompt is reachable at all. A stale code in sessionStorage - rotated since
+// it was set, or mistyped in a tab that has since been forgotten - would
+// otherwise leave the owner with no visible way to correct it.
+function shForgetOwnerCode() {
+    try {
+        sessionStorage.removeItem(SH_CODE_STORAGE_KEY);
+        sessionStorage.removeItem('sh_raw_token');
+    } catch (e) {}
+    shCloseModal('shCode');
+    showNotification('Code cleared', 'You will be asked for the owner access code again.', 'info', 4000);
+    shLoginRaw();
+}
+
 async function shLoginRaw() {
     try {
         const code = await shAskForCode();
@@ -131,10 +147,26 @@ async function shLoginRaw() {
             body: JSON.stringify({ code: code })
         });
         const d = await res.json();
-        if (d.ok) { try { sessionStorage.setItem('sh_raw_token', d.token); } catch (e) {} }
-        return d.ok === true;
-    } catch (e) { return false; }
+        if (d.ok) {
+            try { sessionStorage.setItem('sh_raw_token', d.token); } catch (e) {}
+            return true;
+        }
+        // The server refused this code.
+        //
+        // It used to be kept and silently reused, so shAskForCode() kept
+        // short-circuiting on the cached value, the prompt NEVER appeared again,
+        // and the only symptom was "Owner sign-in required". There was no way out
+        // short of devtools or a new tab.
+        //
+        // Cleared here so the prompt can come back. Once - clearing and re-prompting
+        // on every attempt would make a wrong code unescapable.
+        try { sessionStorage.removeItem(SH_CODE_STORAGE_KEY); } catch (e) {}
+        return false;
+    } catch (e) {
+        return false;
+    }
 }
+
 // ---- STORAGE KEEPER (GitHub) big-script upload ----
 // For obfuscated scripts > ~45MB (KV ceiling). Slices the code into
 // 40MB parts, streams each to the worker (which forwards them to the
@@ -2591,6 +2623,7 @@ function createUsersPanel() {
             <div class="panel-status" id="panelStatus"></div>
             <div class="panel-actions">
                 <button class="btn btn-primary" onclick="refreshUsersList()">🔄 Refresh from Cloud</button>
+                <button class="btn btn-close-dropdown" onclick="shForgetOwnerCode()" title="Forget the saved owner access code and ask again">🔑 Re-enter Owner Code</button>
                 <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
                 <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
                 <button class="btn btn-close-dropdown" onclick="closeUsersPanel()">Close</button>
@@ -5752,3 +5785,6 @@ window.recordThreat = recordThreat;
 // test would pass against a map the app is not using.
 window.shReconcileWithCloud = shReconcileWithCloud;
 window.__shUsersRef = function () { return users; };
+// Exported because the users panel's inline onclick= needs a global, and because
+// the escape hatch for a stale owner code should be reachable from a test.
+window.shForgetOwnerCode = shForgetOwnerCode;

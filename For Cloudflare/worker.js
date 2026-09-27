@@ -3712,7 +3712,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/aegis' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
 
             // Input is validated BEFORE the secret is read. Checking the secret
             // first made every malformed request report "AEGIS_API_KEY is not
@@ -3867,10 +3867,36 @@ async function handleRequest(request, env, ctx) {
         // correct for a per-script route like /sh/gh-put, and badly wrong for a
         // broadcast that every signed-in device will render.
         async function isOwnerSessionOrAccount(env, url, body) {
+            // NOTE: this line must call isOwnerRequest, not itself. A bulk find-and-
+            // replace of `await isOwnerRequest(` once rewrote this very line,
+            // producing `if (await isOwnerSessionOrAccount(...)) return true;` - i.e.
+            // the function called itself, and every owner admin route blew the stack
+            // with "Maximum call stack size exceeded". It presented as a server fault
+            // on /sh/users, not as a logic error, so it was not obvious.
             if (await isOwnerRequest(env, url, body)) return true;
-            if (body && body.userToken) {
-                const u = await verifyUserToken(body.userToken, env);
-                if (u && String(u.email || '').toLowerCase() === OWNER_EMAIL) return true;
+            // The SAME credential may be a user session rather than an access-code
+            // session, and a GET has no body to carry it in. The dashboard sends its
+            // owner account token in X-SH-Token for GETs, and isOwnerRequest only
+            // understands the code token - so it returned 401 for an owner who was
+            // plainly signed in, and told them to sign in again.
+            //
+            // It must still be the OWNER's user token. A valid token from any other
+            // account is not enough, and that is what keeps a normal user out of the
+            // entire admin surface.
+            // A POST carries the credential in body.token - which only isOwnerRequest
+            // reads, and only as a CODE token. That is exactly how the dashboard
+            // sends every admin POST, so an owner using their account token was
+            // refused with 401 there too.
+            const cand = (body && body.userToken) ||
+                (body && body.token) ||
+                (request.headers.get('X-SH-Token') || '') ||
+                (request.headers.get('X-SH-User-Token') || '') ||
+                ((url && url.searchParams.get('userToken')) || '');
+            if (cand) {
+                try {
+                    const u = await verifyUserToken(String(cand), env);
+                    if (u && String(u.email || '').toLowerCase() === OWNER_EMAIL) return true;
+                } catch (e) { /* a malformed token is simply not owner proof */ }
             }
             return false;
         }
@@ -3946,7 +3972,7 @@ async function handleRequest(request, env, ctx) {
 
         // ---------- GET /sh/users : owner pull of ALL users ----------
         if (url.pathname === '/sh/users' && request.method === 'GET') {
-            if (!(await isOwnerRequest(env, url, null))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, url, null))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadUsersMap(env);
             const out = {};
             for (const k in map) out[k] = publicUser(map[k]);
@@ -3957,7 +3983,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/users' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!body.email) return jsonResponse({ ok: false, error: 'email required' }, 400);
             const map = await loadUsersMap(env);
             const prev = map[body.email] || {};
@@ -3971,7 +3997,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/users-delete' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadUsersMap(env);
             delete map[String(body.email || '')];
             await saveUsersMap(env, map);
@@ -3982,7 +4008,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/users-clear' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const keep = String(body.keep || '');
             const map = await loadUsersMap(env);
             const kept = {};
@@ -4011,7 +4037,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/licenses' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, url, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, url, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             const incoming = body.licenses;
             if (!incoming || typeof incoming !== 'object') return jsonResponse({ ok: false, error: 'licenses map required' }, 400);
@@ -4048,7 +4074,7 @@ async function handleRequest(request, env, ctx) {
         }
 
         if (url.pathname === '/sh/licenses' && request.method === 'GET') {
-            if (!(await isOwnerRequest(env, url, null))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, url, null))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const ks = await isKillswitchOn(env);
             return jsonResponse({ ok: true, licenses: map, killswitch: ks });
@@ -4057,7 +4083,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/license-delete' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const key = String(body.key || '');
             if (!map[key]) return jsonResponse({ ok: false, error: 'no such key' }, 404);
@@ -4069,7 +4095,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/license-reset' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const key = String(body.key || '');
             const rec = map[key];
@@ -4089,7 +4115,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/license-ban' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const key = String(body.key || '');
             const rec = map[key];
@@ -4221,7 +4247,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/gh-delete' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const id = String(body.id || '');
             if (!/^ScripterHub[0-9]{6,16}$/.test(id)) return jsonResponse({ ok: false, error: 'bad id' }, 400);
             const rec = JSON.parse((await env.LOADERS_KV.get(KV_GH_PREFIX + id)) || 'null');
@@ -4242,7 +4268,7 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/gh-status' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!(await isOwnerSessionOrAccount(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             // list sh_gh_* keys via KV list (paginated)
             let cursor = null, total = 0, scripts = 0, largest = 0;
             do {

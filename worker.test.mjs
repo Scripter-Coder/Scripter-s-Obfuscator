@@ -893,4 +893,72 @@ console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
     console.log('    OK: 13-digit legacy ids publish, load and deliver; malformed ids are ignored, not obeyed');
 }
 
+// ============ OWNER ADMIN WITHOUT A SECOND SIGN-IN ============
+// Reported as: "it says I need the Owner code to refresh, but I am already signed
+// in, and the code prompt never appears".
+//
+// Two separate causes, both fixed:
+//
+//  1. Thirteen admin routes authorised with isOwnerRequest, which accepts ONLY the
+//     raw-page access-code session. So every one of them - Refresh from Cloud,
+//     plan changes, licenses, Storage Keeper - refused the owner while they were
+//     plainly signed in to the site.
+//
+//  2. shAskForCode short-circuits on a cached code, and shLoginRaw used to KEEP a
+//     rejected one. So a rotated or mistyped code left the prompt permanently
+//     unreachable, with "Owner sign-in required" as the only symptom.
+//
+// What is asserted here is the worker half. The access-code routes must stay
+// token-only, and a normal account must still be refused everywhere.
+console.log('[W21] OWNER ADMIN: the account session works, and codes stay protected...');
+{
+    const OWNER_PW = 'ownerpass1';
+    await j('POST', '/sh/user-sync', {
+        email: OWNER_EMAIL, password: OWNER_PW,
+        user: { id: 'user_owner', email: OWNER_EMAIL, username: 'Scripter', plan: 'Basic', isScripter: true, isAdmin: true }
+    });
+    const ownerLogin = await j('POST', '/sh/user-login', { emailOrUsername: OWNER_EMAIL, password: OWNER_PW });
+    assert.ok(ownerLogin.token, 'the owner must be able to sign in: ' + JSON.stringify(ownerLogin).slice(0, 140));
+    const ot = ownerLogin.token;
+
+    // a normal account for the negative case
+    await j('POST', '/sh/user-signup', {
+        email: 'admin-other@test.local', username: 'NotAdmin', password: 'password123', description: 'x'
+    });
+    const otherLogin = await j('POST', '/sh/user-login', { emailOrUsername: 'admin-other@test.local', password: 'password123' });
+    const nt = otherLogin.token;
+    assert.ok(nt, 'the normal account must be able to sign in');
+
+    // 1. GET /sh/users - this is what "Refresh from Cloud" calls
+    const users = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': ot });
+    assert.ok(users.ok, 'the owner ACCOUNT session must be able to pull all users: ' + JSON.stringify(users).slice(0, 180));
+    assert.ok(users.users && typeof users.users === 'object', 'it must actually return the map');
+
+    // 2. and a normal account still cannot
+    const denied = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': nt });
+    assert.strictEqual(denied.status, 401, 'a normal account must NOT reach /sh/users, got ' + denied.status);
+
+    // 3. a plan change is the destructive one, so it matters most
+    const target = 'admin-other@test.local';
+    const promote = await j('POST', '/sh/users', { token: ot, email: target, user: { email: target, plan: 'Pro' } });
+    assert.ok(promote.ok, 'the owner must be able to change a plan with their account session: ' + JSON.stringify(promote).slice(0, 180));
+    const blocked = await j('POST', '/sh/users', { token: nt, email: target, user: { email: target, plan: 'God' } });
+    assert.strictEqual(blocked.status, 401, 'a normal account must NOT be able to change plans, got ' + blocked.status);
+
+    // 4. the access-code routes must stay token-only. A user session that could
+    //    manage codes would be able to lock the owner out permanently.
+    const noSetcode = await j('POST', '/sh/setcode', { userToken: ot, code: 'attacker-chosen' });
+    assert.ok(!noSetcode.ok, 'the owner ACCOUNT session must NOT be able to set the access code, got ok: ' + JSON.stringify(noSetcode).slice(0, 140));
+
+    // 5. the kill switch is deliberately still token-only
+    const noKill = await j('POST', '/sh/killswitch', { userToken: ot, enabled: true });
+    assert.ok(!noKill.ok, 'the owner ACCOUNT session must NOT reach the kill switch, got ok');
+
+    // 6. a garbage token is still refused
+    const junk = await j('GET', '/sh/users', null, BROWSER_UA, { 'X-SH-Token': 'not-a-real-token' });
+    assert.strictEqual(junk.status, 401, 'a garbage token must be refused, got ' + junk.status);
+
+    console.log('    OK: the owner account reaches the admin routes; codes and the kill switch stay token-only');
+}
+
 console.log('\nALL WORKER TESTS PASSED');
