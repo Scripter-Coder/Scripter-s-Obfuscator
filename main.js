@@ -490,11 +490,10 @@ async function shSyncUsersOnLogin(user, rawPassword) {
                     }
                 }
                 // delete locally any user not in cloud (deleted on another device) - keep creator/admin as safety
-                for (var k in users) {
-                    if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
-                        delete users[k]; changed = true;
-                    }
-                }
+                // Was: delete every local account missing from this cloud response. That
+                // destroyed accounts whose cloud signup had failed, with no warning and no
+                // undo. It now only counts and marks them - see shReconcileWithCloud().
+                shReconcileWithCloud(cloud);
                 if (changed) saveUsers();
             }
         }
@@ -552,6 +551,71 @@ async function shOwnerApi(path, body) {
 }
 
 // owner pull of all cloud users -> { email: user } (no passwords).
+// ============ CLOUD RECONCILE (never destructive) ============
+// Merges a cloud map into the local one WITHOUT deleting anything.
+//
+// This replaces three prune loops that read:
+//
+//     for (var k in users) {
+//         if (!cloud.hasOwnProperty(k) && k !== '<owner email>') {
+//             delete users[k];
+//
+// and which destroyed any local account missing from one cloud response. A new
+// account whose cloud signup failed - 429 on the 10/min or 120/hour caps, a 500,
+// or simply being offline - looked real to the user and was then deleted by the
+// next boot or Refresh, with no warning and no undo. Only two hardcoded email
+// addresses were protected, so the owner's own alt account had the same exposure
+// as anyone else's.
+//
+// It could also destroy accounts that WERE on the cloud, because the same
+// condition fires on any partial read - a truncated KV value, a failed write the
+// emergency repair shrank, or a pull that failed partway.
+//
+// So a local account the cloud does not know about is KEPT and MARKED. Deletion
+// stays an explicit owner action, and those buttons already exist. What is lost is
+// automatic propagation of a delete made on another device - the right trade,
+// because an irreversible delete triggered by a network read is worse than a
+// stale row.
+//
+// Returns how many local accounts are not yet on the cloud, so the panel can say
+// that plainly instead of leaving a bare number to be read as a cap.
+function shReconcileWithCloud(cloud) {
+    if (!cloud || typeof cloud !== 'object') return 0;
+    var changed = false;
+    var localOnly = 0;
+    for (var ck in cloud) {
+        var cu = cloud[ck];
+        var lu = users[ck];
+        if (!lu) {
+            users[ck] = cu;
+            if (cu && cu.notOnCloud) delete cu.notOnCloud;
+            changed = true;
+            continue;
+        }
+        // clear the marker: this account IS on the cloud now
+        if (lu.notOnCloud) { delete lu.notOnCloud; changed = true; }
+        if (JSON.stringify(lu) !== JSON.stringify(cu)) {
+            // the cloud never returns a password, and it must never be allowed to
+            // blank an image the cloud has not seen - either would silently undo
+            // local state on every single sync
+            if (lu.password && !cu.password) cu.password = lu.password;
+            if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
+            if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
+            if (!cu.customBackground && lu.customBackground) cu.customBackground = lu.customBackground;
+            users[ck] = cu;
+            changed = true;
+        }
+    }
+    // MARK, never delete
+    for (var k in users) {
+        if (cloud.hasOwnProperty(k)) continue;
+        localOnly++;
+        if (!users[k].notOnCloud) { users[k].notOnCloud = true; changed = true; }
+    }
+    if (changed) saveUsers();
+    return localOnly;
+}
+
 async function shPullCloudUsers() {
     try {
         var d = await shOwnerApi('sh/users', null);
@@ -2161,23 +2225,47 @@ function handleSignup(event) {
     saveUsers();
     closeModal('signup');
     showNotification('Success!', 'Account created successfully! Welcome ' + username, 'success');
-    // mirror the account to the cloud so it shows on every device
-    shApi('sh/user-signup', {
+    // Mirror the account to the cloud so it shows on every device.
+    //
+    // This used to be:
+    //
+    //     shApi('sh/user-signup', {...}).catch(function() {});
+    //
+    // The response was never inspected, so a FAILED cloud signup - 429 on the
+    // 10/minute or 120/hour caps, a 500, or simply being offline - was
+    // indistinguishable from success. The account existed only in this browser,
+    // the user was told it was created, and the old reconcile then DELETED it on
+    // the next boot or Refresh. That whole chain is what made alt accounts vanish.
+    //
+    // Now the result is checked, and a failure is stated rather than swallowed.
+    // The local record is kept either way - it is the only copy there is.
+    var mirrorPayload = {
         email: email, username: username, password: password,
         description: description || '', id: user.id, createdAt: user.createdAt
-    }).then(function(d) {
-        // The worker moderates on top of the client check, and it is the
-        // authority. If it blocked the account, say so immediately and keep the
-        // local record - the account exists, it is just not usable for now, and
-        // nothing has been deleted.
-        if (d && d.ok && d.moderated) {
-            var hrs = d.moderated.penaltyHours >= 24
-                ? Math.round(d.moderated.penaltyHours / 24) + ' day(s)'
-                : d.moderated.penaltyHours + ' hour(s)';
-            showNotification('Account Blocked', d.moderated.reason.charAt(0).toUpperCase() + d.moderated.reason.slice(1) +
-                ' - blocked for ' + hrs + '. Your account and everything in it is untouched; the block expires on its own.', 'warning', 14000);
-        }
-    }).catch(function() {});
+    };
+    function reportMirrorFailure(reason) {
+        showNotification('Saved on this device only',
+            'Your account was created here but NOT on the server: ' + reason +
+                + ' Everything you do will work on this device, but it will not appear on your other devices '
+                + ' Everything you do will work on this device, but it will not appear on your other '
+                + 'devices until it syncs. Retrying automatically in a few seconds - if it still fails, '
+                + 'check your connection and sign in again.', 'warning', 12000);
+    }
+    function pushToCloud() {
+        return shApi('sh/user-signup', mirrorPayload).then(function(d) {
+            if (d && d.ok) return;
+            reportMirrorFailure((d && d.error) || 'the server did not confirm it');
+        }).catch(function(e) {
+            reportMirrorFailure('could not reach the server (' + ((e && e.message) || e) + ')');
+        });
+    }
+    pushToCloud();
+    // One automatic retry, because a transient failure is the common case and a
+    // silent half-created account is not a helpful outcome.
+    setTimeout(function() {
+        if (!users[email] || !users[email].notOnCloud) return;
+        pushToCloud();
+    }, 4000);
     document.getElementById('signupForm').reset();
     var userData = { ...user };
     delete userData.password;
@@ -2407,15 +2495,14 @@ async function shRefreshUsersListFromCloud() {
         if (currentUser && cu.id === currentUser.id) selfChanged = users[k];
     }
     // prune locally users deleted on another device (missing in cloud) - keeps creator/admin
-    for (var k in users) {
-        if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
-            delete users[k]; changed = true;
-        }
-    }
+    // Was: delete every local account missing from this cloud response. That
+    // destroyed accounts whose cloud signup had failed, with no warning and no
+    // undo. It now only counts and marks them - see shReconcileWithCloud().
+    shReconcileWithCloud(cloud);
     if (changed) saveUsers();
     // if current user was deleted on another device (e.g. Jsowjshow on phone), log out to signup/login
     if (currentUser && !users[currentUser.email]) {
-        showNotification('Logged Out', 'Your account was deleted. Returning to home.', 'warning', 8000);
+        showNotification('Logged Out', 'Your account was removed from this device. Returning to home.', 'warning', 8000);
         try { logout(); } catch(e) { clearSession(); location.reload(); }
         return cloud;
     }
@@ -2457,11 +2544,10 @@ async function refreshUsersList() {
             }
         }
         // also fetch old users and prune deleted ones - ensures refresh shows same as cloud on phone/other device
-        for (var k in users) {
-            if (!cloud.hasOwnProperty(k) && k !== 'dubovikstanislav51@gmail.com' && k !== 'admin@example.com') {
-                delete users[k]; changed = true;
-            }
-        }
+        // Was: delete every local account missing from this cloud response. That
+        // destroyed accounts whose cloud signup had failed, with no warning and no
+        // undo. It now only counts and marks them - see shReconcileWithCloud().
+        shReconcileWithCloud(cloud);
         if (changed) saveUsers();
         // if the current account was deleted elsewhere (e.g. phone as Jsowjshow), force logout
         if (currentUser && !users[currentUser.email]) {
@@ -2554,7 +2640,20 @@ function renderUsersList() {
     }
     if (count === 0) { html = '<div style="text-align: center; color: #8888aa; padding: 40px 0;">No users found.</div>'; }
     container.innerHTML = html;
-    if (statusEl) { statusEl.textContent = count + ' users found'; }
+    // Says WHICH count, because a bare "17 users found" reads as a cap and there
+    // is no maximum: the server-side caps are 10 signups/minute per IP and 120 per
+    // hour, both about SIGNUP rate, never about how many accounts may exist.
+    //
+    // Local-only accounts are listed because they are the ones a user cannot
+    // otherwise account for - they exist on this device and not yet on the server.
+    if (statusEl) {
+        var localOnly = 0;
+        for (var lk in users) if (users[lk] && users[lk].notOnCloud) localOnly++;
+        statusEl.textContent = count + (count === 1 ? ' user' : ' users') +
+            ' on the server' +
+            (localOnly ? '  |  ' + localOnly + ' only on this device (not synced yet)' : '') +
+            '  |  no account limit';
+    }
     updatePanelButtons();
 }
 
@@ -5640,3 +5739,16 @@ window.openScriptRaw = openScriptRaw;
 window.generateLoadstring = generateLoadstring;
 window.shUploadLoader = shUploadLoader;
 window.recordThreat = recordThreat;
+// Test hooks for the cloud reconcile.
+//
+// shReconcileWithCloud is the one function in this file that can remove user
+// records, and a destructive rule with no test is precisely what caused this: a
+// prune loop deleted any local account missing from a cloud response, which is how
+// alt accounts disappeared. tools/reconcile_test.mjs asserts that a local-only
+// account now SURVIVES and is marked instead.
+//
+// __shUsersRef returns the LIVE map, not a copy: `users` is reassigned wholesale
+// in a couple of places, so a snapshot taken at load time would go stale and the
+// test would pass against a map the app is not using.
+window.shReconcileWithCloud = shReconcileWithCloud;
+window.__shUsersRef = function () { return users; };
