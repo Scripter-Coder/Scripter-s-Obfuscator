@@ -38,10 +38,19 @@ function getBasePath() {
 
 // ============ PLAN CONFIGURATIONS ============
 const PLAN_CONFIGS = {
-    'Basic': { fileSize: 10, keys: 1000, projects: 10, scripts: 20, visitors: 25000, checkpoints: 12, price: 0, label: 'Basic' },
-    'Advanced': { fileSize: 100, keys: 10000, projects: 50, scripts: 100, visitors: 50000, checkpoints: 25, price: 10, label: 'Advanced' },
-    'Pro': { fileSize: 1024, keys: 100000, projects: 500, scripts: 300, visitors: 100000, checkpoints: 50, price: 30, label: 'Pro' },
-    'God': { fileSize: 102400, keys: Infinity, projects: 10000, scripts: 250000, visitors: Infinity, checkpoints: 100, price: 50, label: 'God' },
+    // fileSize is in MB. Infinity means unlimited.
+    //
+    // PLAN NAMES MUST NOT BE RENAMED. Every user record stores `plan` as a
+    // string, and an unknown name silently falls back to Basic's limits - so
+    // renaming a plan quietly downgrades everyone on it. New plans may be
+    // ADDED; existing keys are permanent.
+    'Basic': { fileSize: 1, keys: 1000, projects: 20, scripts: 20, visitors: 10000, checkpoints: 10, price: 0, label: 'Basic' },
+    'Premium': { fileSize: 5, keys: 5000, projects: 20, scripts: 30, visitors: 16000, checkpoints: 15, price: 5, label: 'Premium' },
+    'Advanced': { fileSize: 10, keys: 10000, projects: 20, scripts: 40, visitors: 25000, checkpoints: 20, price: 10, label: 'Advanced' },
+    'Pro': { fileSize: 100, keys: 100000, projects: 50, scripts: 200, visitors: 50000, checkpoints: 10, price: 30, label: 'Pro' },
+    'God': { fileSize: 1024, keys: Infinity, projects: 200, scripts: 500, visitors: Infinity, checkpoints: 100, price: 50, label: 'God' },
+    'Ultimate': { fileSize: 10240, keys: Infinity, projects: 500, scripts: 1000, visitors: Infinity, checkpoints: Infinity, price: 70, label: 'Ultimate' },
+    'Enterprise': { fileSize: 102400, keys: Infinity, projects: 1000, scripts: 5000, visitors: Infinity, checkpoints: Infinity, price: 100, label: 'Enterprise' },
     'Custom': { fileSize: Infinity, keys: Infinity, projects: Infinity, scripts: Infinity, visitors: Infinity, checkpoints: Infinity, price: 'Custom', label: 'Custom' }
 };
 // expose module-scope values for other modules (rewards.js) and inline handlers
@@ -66,11 +75,20 @@ function shGetRawToken() {
     try { return sessionStorage.getItem('sh_raw_token'); } catch (e) { return null; }
 }
 // ask the owner for the access code (once per session; cached in sessionStorage)
+// ONE modal, ever. A second caller joins the first caller's promise.
+//
+// Each concurrent caller used to build its own overlay, because the code is
+// only cached on Save - so two un-awaited cloud refreshes (opening Users and
+// Admin, or either plus Refresh) both found sessionStorage empty and both
+// appended a z-index:4000 modal. With sessionStorage unavailable it re-opened
+// on every call, forever.
+var __shCodePrompt = null;
 function shAskForCode() {
+    if (__shCodePrompt) return __shCodePrompt;
     var existing = null;
     try { existing = sessionStorage.getItem(SH_CODE_STORAGE_KEY); } catch (e) {}
     if (existing) return Promise.resolve(existing);
-    return new Promise(function(resolve) {
+    __shCodePrompt = new Promise(function(resolve) {
         var overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
         overlay.style.display = 'flex';
@@ -92,10 +110,12 @@ function shAskForCode() {
             if (!val.trim()) return;
             try { sessionStorage.setItem(SH_CODE_STORAGE_KEY, val); } catch (e) {}
             overlay.remove();
+            __shCodePrompt = null;
             resolve(val);
         };
         overlay.querySelector('#shCodeCancelBtn').onclick = function() {
             overlay.remove();
+            __shCodePrompt = null;
             resolve(null);
         };
     });
@@ -2348,14 +2368,41 @@ function handleResetPassword(event) {
     if (nw.length < 6) { showNotification('Error', 'New password must be at least 6 chars.', 'error'); return; }
     if (nw !== cf) { showNotification('Error', 'New passwords do not match.', 'error'); return; }
     if (btoa(nw) === rec.password) { showNotification('Error', 'New password must be different.', 'error'); return; }
-    rec.password = btoa(nw);
-    users[currentUser.email] = rec;
-    saveUsers();
-    shApi('sh/user-password', { email: rec.email, oldPassword: cur, newPassword: nw }).catch(function(){});
-    shPushUser(rec);
-    try { document.getElementById('resetPasswordForm').reset(); } catch(e){}
-    closeModal('resetPassword');
-    showNotification('Password Updated', 'Your password has been changed successfully.', 'success', 6000);
+    // ASK THE SERVER FIRST, AND WAIT FOR IT.
+    //
+    // This used to update the local record, fire sh/user-password and
+    // shPushUser without awaiting either, discard both responses, and then show
+    // an unconditional success. A 401/404/429/500 resolves normally through a
+    // .catch that only catches network errors, so the user was told the password
+    // had changed while the cloud still held the old one - and because the LOCAL
+    // copy had moved, the old password stopped working on this device and the
+    // new one worked nowhere. The account looked broken rather than unchanged.
+    //
+    // Order matters: the server is the authority, and the local record is only
+    // touched once it has confirmed. If they are updated in the other order the
+    // two stores can diverge, and that is the bug.
+    shApi('sh/user-password', { email: rec.email, oldPassword: cur, newPassword: nw })
+        .then(function(d) {
+            if (!d || d.ok !== true) {
+                showNotification('Password Not Changed',
+                    'The server refused the change: ' + ((d && d.error) || 'unknown error') +
+                    '\nYour password is unchanged.', 'error', 9000);
+                return;
+            }
+            // confirmed - now the local copy
+            rec.password = btoa(nw);
+            users[currentUser.email] = rec;
+            saveUsers();
+            try { document.getElementById('resetPasswordForm').reset(); } catch (e) {}
+            closeModal('resetPassword');
+            showNotification('Password Updated', 'Your password has been changed successfully.', 'success', 6000);
+        })
+        .catch(function(e) {
+            showNotification('Password Not Changed',
+                'Could not reach the server: ' + (e && e.message ? e.message : e) +
+                '\nYour password is unchanged.', 'error', 9000);
+        });
+    // (success and failure are now reported from the .then above)
 }
 
 // ============ USERS PANEL ============

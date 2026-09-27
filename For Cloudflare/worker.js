@@ -1216,7 +1216,10 @@ const OWNER_EMAIL = 'dubovikstanislav51@gmail.com'; // the owner (Scripter) acco
 // ---- SIGNUP ABUSE GUARDS (the KV got flooded with 1200+ junk bot
 // accounts, which burned the ENTIRE daily KV write quota and broke every
 // signup/login for real users) ----
-const VALID_PLANS = ['Basic', 'Advanced', 'Pro', 'God', 'Custom']; // anything else = junk -> Basic
+const VALID_PLANS = ['Basic', 'Premium', 'Advanced', 'Pro', 'God', 'Ultimate', 'Enterprise', 'Custom'];
+// MUST stay in sync with PLAN_CONFIGS in main.js. An unknown plan is coerced
+// to Basic by sanitizeUserRecord, so a name missing here silently downgrades
+// that user the next time their client creates or migrates a record. // anything else = junk -> Basic
 const MAX_USERNAME_LEN = 20;    // usernames were 60+ chars of keyboard mash
 const MAX_EMAIL_LEN = 100;
 const MAX_DESC_LEN = 500;       // description/plan fields were weaponized to store 15KB of junk

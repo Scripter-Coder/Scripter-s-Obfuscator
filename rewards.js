@@ -21,7 +21,9 @@ const REWARD_PROVIDERS = [
 function shPlan() {
     var pc = window.PLAN_CONFIGS || {};
     var u = window.currentUser || {};
-    return pc[u.plan] || pc['Basic'] || { visitors: 25000, checkpoints: 12 };
+    // The literal fallback must match Basic in main.js: 10k visitors, 10
+    // checkpoints. It had the old 25k/12, which contradicts the real table.
+    return pc[u.plan] || pc['Basic'] || { visitors: 10000, checkpoints: 10 };
 }
 
 function shNotify(title, msg, type, dur) {
