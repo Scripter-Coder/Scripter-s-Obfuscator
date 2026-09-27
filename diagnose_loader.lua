@@ -25,7 +25,33 @@ say("loadstring", type(loadstring))
 say("getgenv", type(getgenv))
 say("request", type(request))
 say("syn.request", (type(syn) == "table") and type(syn.request) or "no syn")
-say("game.HttpGet", (type(game) == "table") and type(game.HttpGet) or "NO game.HttpGet")
+-- `game` and `game.HttpGet` are THREE separate questions, and the old line
+-- answered only the first while appearing to answer the third.
+--
+-- It read `type(game) == "table"`, and in Roblox/Luau typeof(game) is
+-- "Instance" so type(game) is "userdata". The `and` short-circuited, the
+-- `or` fired, and it printed NO game.HttpGet without ever looking at
+-- game.HttpGet. I read that as "this executor has no HttpGet" and designed
+-- around it. The user tested with other loadstrings: it works. They were
+-- right.
+local HAS_GAME = (game ~= nil)
+local HTTPGET = HAS_GAME and game.HttpGet or nil
+say("typeof(game)", HAS_GAME and (typeof and typeof(game) or "?") or "nil")
+say("type(game)", HAS_GAME and type(game) or "nil")
+say("game.HttpGet exists", HTTPGET and type(HTTPGET) or "NO")
+-- a function can EXIST and still throw, so existence is not the question
+if HTTPGET then
+    local ok, res = pcall(function() return game:HttpGet(BASE .. "/sh/" .. ID, true) end)
+    if ok and type(res) == "string" and res ~= "" then
+        say("game.HttpGet works", "YES - returned " .. #res .. " bytes")
+    elseif ok then
+        say("game.HttpGet works", "called it, got a " .. type(res) .. " back")
+    else
+        say("game.HttpGet works", "NO - it exists but THROWS: " .. tostring(res))
+    end
+else
+    say("game.HttpGet works", "cannot tell - HttpGet is absent")
+end
 
 local G = (getgenv and getgenv()) or _G
 say("license set", (type(G.ScripterHubKey) == "string" and G.ScripterHubKey ~= "") and "yes" or "NO")
@@ -45,7 +71,7 @@ if type(request) == "function" then
     end
 end
 
-if not body and type(game) == "table" and game.HttpGet then
+if not body and HTTPGET then
     local ok, r = pcall(function() return game:HttpGet(url, true) end)
     how = "HttpGet"
     body = (ok and type(r) == "string") and r or nil
@@ -72,7 +98,7 @@ local function get(u)
         local ok, r = pcall(function() return request({ Url = u, Method = "GET" }) end)
         if ok and type(r) == "table" and type(r.Body) == "string" and r.Body ~= "" then return r.Body end
     end
-    if type(game) == "table" and game.HttpGet then
+    if HTTPGET then
         local ok, r = pcall(function() return game:HttpGet(u, true) end)
         if ok and type(r) == "string" and r ~= "" then return r end
     end
