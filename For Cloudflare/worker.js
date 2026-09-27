@@ -3852,10 +3852,38 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true, announcement: a });
         }
 
+        // "Is this the owner?" in the sense the DASHBOARD means it.
+        //
+        // isOwnerRequest accepts ONLY the raw-page session token, which comes
+        // from the access code. So every admin action silently required a second
+        // sign-in that looks like nothing to the person doing it: you are logged
+        // in, the panel is open, the button is right there, and it refuses you
+        // with a message about a sign-in you did not know existed. That is the
+        // reported symptom for BOTH "Refresh from Cloud" and the Host
+        // Announcement.
+        //
+        // This also accepts the owner ACCOUNT's own user session. It is
+        // deliberately NOT isUserOrOwner, which accepts ANY valid user token -
+        // correct for a per-script route like /sh/gh-put, and badly wrong for a
+        // broadcast that every signed-in device will render.
+        async function isOwnerSessionOrAccount(env, url, body) {
+            if (await isOwnerRequest(env, url, body)) return true;
+            if (body && body.userToken) {
+                const u = await verifyUserToken(body.userToken, env);
+                if (u && String(u.email || '').toLowerCase() === OWNER_EMAIL) return true;
+            }
+            return false;
+        }
+
         if (url.pathname === '/sh/announcement' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
-            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            // The owner's own dashboard session is enough; the access-code
+                // prompt is not required. It was, which is why "Announce To All"
+                // did nothing for the person it was built for.
+                if (!(await isOwnerSessionOrAccount(env, null, body))) {
+                    return jsonResponse({ ok: false, error: 'Only the owner account can post an announcement.' }, 401);
+                }
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'no KV bound' }, 501);
 
             // An empty text clears the banner, so there is one action for both.

@@ -38,6 +38,12 @@ function makeD1() {
 // ---- import the worker (it reads globals at import time; atob/btoa/crypto/
 // Response/Request/URL/FormData all exist in Node 18+) ----
 const workerSrc = await import('./For Cloudflare/worker.js');
+// The owner account address, read from the worker rather than hardcoded here.
+// The announcement test posts as the OWNER, so a stale copy of this address
+// would quietly be testing a normal account and the test would pass for the
+// wrong reason.
+const OWNER_EMAIL = (/const OWNER_EMAIL = '([^']+)'/.exec(fs.readFileSync('For Cloudflare/worker.js', 'utf8')) || [])[1];
+if (!OWNER_EMAIL) { console.error('could not read OWNER_EMAIL from worker.js'); process.exit(1); }
 const worker = workerSrc.default;
 
 const KV = makeKV();
@@ -538,6 +544,43 @@ console.log('[W16] ANNOUNCEMENT: owner-only writes, and colours cannot carry mar
         const r = await j('POST', '/sh/announcement', { token: rulesToken, text: 'hex ' + hex, color: hex, bg: hex });
         assert.strictEqual(r.announcement.color, hex, hex + ' is valid CSS hex and must be kept, got ' + r.announcement.color);
     }
+
+    // The owner's own ACCOUNT session is enough - no access code needed.
+    // Idempotent, and the SAME credential W8 seeded the owner with. A signup here
+    // collides with the account that block already created, and then the login
+    // below fails on a password that was never set - which is what happened.
+    const OWNER_PW = 'ownerpass1';
+    const ownerRec = await j('POST', '/sh/user-sync', {
+        email: OWNER_EMAIL,
+        password: OWNER_PW,
+        user: { id: 'user_owner', email: OWNER_EMAIL, username: 'Scripter', plan: 'Basic', isScripter: true, isAdmin: true }
+    });
+    assert.ok(ownerRec.ok, 'the owner account must be usable for this test: ' + JSON.stringify(ownerRec).slice(0, 160));
+    const ownerLogin = await j('POST', '/sh/user-login', { emailOrUsername: OWNER_EMAIL, password: OWNER_PW });
+    assert.ok(ownerLogin.token, 'the owner account must be able to sign in: ' + JSON.stringify(ownerLogin).slice(0, 140));
+
+    const asAccount = await j('POST', '/sh/announcement', {
+        userToken: ownerLogin.token, text: 'posted with the account session', color: '#00ff88', bg: '#101020'
+    });
+    assert.ok(asAccount.ok, 'the owner ACCOUNT session must be able to post, with no access code: ' + JSON.stringify(asAccount).slice(0, 200));
+    assert.strictEqual(asAccount.announcement.text, 'posted with the account session');
+
+    // A NORMAL account must still be refused. This is why isUserOrOwner was not
+    // reused: accepting any valid user token would let any registered user
+    // broadcast a banner to every signed-in device.
+    await j('POST', '/sh/user-signup', {
+        email: 'announce-other@test.local', username: 'SomeUser', password: 'password123', description: 'x'
+    });
+    const otherLogin = await j('POST', '/sh/user-login', { emailOrUsername: 'announce-other@test.local', password: 'password123' });
+    const asOther = await j('POST', '/sh/announcement', { userToken: otherLogin.token, text: 'not allowed' });
+    assert.strictEqual(asOther.status, 401, 'a normal account must NOT be able to broadcast, got ' + asOther.status);
+    const unchanged = await j('GET', '/sh/announcement');
+    assert.strictEqual(unchanged.announcement.text, 'posted with the account session',
+        'the refused post must not have changed the banner');
+
+    // the same path still works with the access-code session, as before
+    const viaCode = await j('POST', '/sh/announcement', { token: rulesToken, text: 'via the access code' });
+    assert.ok(viaCode.ok, 'the access-code session must still work: ' + JSON.stringify(viaCode).slice(0, 160));
 
     // an empty message clears it
     const cleared = await j('POST', '/sh/announcement', { token: rulesToken, text: '   ' });

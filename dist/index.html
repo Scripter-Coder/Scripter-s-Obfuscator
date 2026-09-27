@@ -32,8 +32,8 @@
             } catch (e) {}
         }
     </script>
-  <script type="module" crossorigin src="./assets/main-COJQya5D.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/main-Bcw74wKX.css">
+  <script type="module" crossorigin src="./assets/main-CgqkAY0J.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/main-C1v3JaGc.css">
 </head>
 <body>
     <!-- Animated Background -->
@@ -171,7 +171,7 @@
                     </div>
                     <div class="plan-card">
                         <div class="plan-name">Custom</div>
-                        <div class="plan-price">$'Custom' <span class="period">/ month</span></div>
+                        <div class="plan-price">Custom</div>
                         <ul class="plan-features">
                             <li>Upload File Size Limit: &infin;</li>
                             <li>Keys Limit: &infin;</li>
@@ -371,23 +371,6 @@
                 </div>
             </div>
 
-            <div class="executor-daily-card">
-                <div class="stat-label" style="margin-bottom:10px;">📈 Executor Statistics (live, last 60 seconds)</div>
-                <div id="executorDailyStats"></div>
-            </div>
-
-            <div class="live-chart-card">
-                <div class="live-chart-header">
-                    <div>
-                        <h3 style="margin:0; color:#fff; font-size:16px;">📈 Live Executions Chart</h3>
-                        <div style="color:#555577; font-size:11px; margin-top:3px;">Endpoint: <span id="liveChartEndpoint"></span></div>
-                    </div>
-                    <button class="btn btn-close-dropdown" id="liveChartPauseBtn" onclick="toggleLiveChartPause()">⏸ Pause</button>
-                </div>
-                <canvas id="liveChartCanvas" height="340"></canvas>
-                <div class="live-chart-legend" id="liveChartLegend"></div>
-                <div class="live-chart-tips">💡 Tip = Click legend items to toggle lines. Hover to inspect values. Pause = Stops polling but keeps the chart interactive.</div>
-            </div>
         </div>
         
         <!-- TABS NAVIGATION -->
@@ -600,29 +583,30 @@
                 <div id="userList"></div>
             </div>
             <!-- Host Announcement -->
-            <div style="margin-top:20px; padding:16px; background:rgba(108,59,255,0.07); border:1px solid rgba(108,59,255,0.25); border-radius:14px;">
-                <h3 style="margin:0 0 4px 0; color:#fff; font-size:15px;">&#128227; Host Announcement</h3>
+            <div class="announce-panel">
+                <h3>&#128227; Host Announcement</h3>
                 <p class="sub" style="margin:0 0 12px 0;">Shown as a banner at the top of the site on every device.</p>
+                <div class="announce-current is-empty" id="announceCurrent">No announcement is live.</div>
                 <div class="form-group">
                     <label>Message</label>
                     <textarea id="announceText" rows="3" maxlength="600" placeholder="Maintenance tonight at 22:00 UTC..."></textarea>
                 </div>
-                <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
-                    <div class="form-group" style="flex:1; min-width:150px; margin-bottom:0;">
+                <div class="announce-colors">
+                    <div class="form-group">
                         <label>Text colour</label>
-                        <input class="sh-input" type="color" id="announceColor" value="#ffffff" style="height:46px; padding:6px;">
+                        <input class="sh-input" type="color" id="announceColor" value="#ffffff">
                     </div>
-                    <div class="form-group" style="flex:1; min-width:150px; margin-bottom:0;">
+                    <div class="form-group">
                         <label>Background colour</label>
-                        <input class="sh-input" type="color" id="announceBg" value="#6c3bff" style="height:46px; padding:6px;">
+                        <input class="sh-input" type="color" id="announceBg" value="#6c3bff">
                     </div>
                 </div>
-                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                <div class="announce-actions">
                     <button class="btn btn-close-dropdown" onclick="previewAnnouncement()">&#128065; Test On This Device</button>
                     <button class="btn btn-primary" data-loading="false" id="announceBtn" onclick="sendAnnouncement()">&#128227; Announce To All</button>
                     <button class="btn btn-danger" onclick="clearAnnouncement()">Clear</button>
                 </div>
-                <p class="sub" id="announceStatus" style="margin:10px 0 0 0;"></p>
+                <p class="announce-status" id="announceStatus"></p>
             </div>
             <div style="margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap;">
                 <button class="btn btn-close-dropdown" onclick="closeModal('admin')">Close</button>

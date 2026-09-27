@@ -512,13 +512,23 @@ async function shOwnerApi(path, body) {
     var token = shGetRawToken();
     if (!token) {
         var ok = await shLoginRaw();
-        if (!ok) return { ok: false, error: 'Owner sign-in required.' };
+        if (!ok) return { ok: false, error: 'This needs the OWNER ACCESS CODE, and it was not entered or was cancelled. '
+            + 'Being signed in to the site is not the same thing - the access code is a separate secret. '
+            + 'Paste it when the prompt appears, then try again.' };
         token = shGetRawToken() || '';
     }
+    // The account session goes alongside the access-code one, so the OWNER can use
+    // their own admin panel without a second, invisible sign-in. Other accounts
+    // still fail: the worker checks the EMAIL on this token, not merely that it is
+    // a valid one.
+    //
+    // Declared OUTSIDE the fetch options on purpose. A previous version put it
+    // inside the object literal, which is not a place a declaration can go.
+    var withUser = Object.assign({}, body || {}, { userToken: shGetUserToken() });
     var res = await fetch(SH_STATS_ENDPOINT + path, {
         method: body === null || body === undefined ? 'GET' : 'POST',
         headers: { 'Content-Type': 'application/json', 'X-SH-Token': token },
-        body: (body === null || body === undefined) ? undefined : JSON.stringify(body)
+        body: (body === null || body === undefined) ? undefined : JSON.stringify(withUser)
     });
     var d;
     try { d = await res.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
@@ -526,12 +536,15 @@ async function shOwnerApi(path, body) {
         // token expired mid-session: re-login once, retry
         sessionStorage.removeItem('sh_raw_token');
         var ok2 = await shLoginRaw();
-        if (!ok2) return { ok: false, error: 'Owner sign-in required.' };
+        if (!ok2) return { ok: false, error: 'This needs the OWNER ACCESS CODE, and it was not entered or was cancelled. '
+            + 'Being signed in to the site is not the same thing - the access code is a separate secret. '
+            + 'Paste it when the prompt appears, then try again.' };
         var t2 = shGetRawToken() || '';
         var res2 = await fetch(SH_STATS_ENDPOINT + path, {
             method: body === null || body === undefined ? 'GET' : 'POST',
             headers: { 'Content-Type': 'application/json', 'X-SH-Token': t2 },
-            body: (body === null || body === undefined) ? undefined : JSON.stringify(body)
+            // reuses withUser, which already carries the account session
+            body: (body === null || body === undefined) ? undefined : JSON.stringify(withUser)
         });
         try { d = await res2.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
     }
@@ -714,7 +727,9 @@ function applyTheme(themeName) {
     root.style.setProperty('--card-color', theme.card);
     root.style.setProperty('--text-color', theme.text);
     root.style.setProperty('--accent-color', theme.accent);
-    document.body.style.background = theme.bg;
+    // With a custom backdrop active the body must stay transparent, or this
+            // opaque colour covers it. Without one, this is the normal theme colour.
+            document.body.style.background = SH_CUSTOM_BG_ACTIVE ? 'transparent' : theme.bg;
     if (currentUser) {
         for (var key in users) {
             if (users[key].id === currentUser.id) {
@@ -1778,7 +1793,6 @@ function updateUIForUser(user) {
         dashBanner.style.display = 'none';
     }
     refreshStatsUI();
-    initLiveChart();
     initRewards();
     console.log('✅ Dashboard shown for user:', user.username);
 }
@@ -1881,9 +1895,6 @@ function refreshStatsUI() {
     });
     refreshAnalyticsUI();
 }
-
-// ============ ANALYTICS (executions / obfuscations / threats) ============
-var SH_EXECUTORS = ['Delta', 'Volt', 'Arceus X', 'Hydrogen', 'Wave', 'Synapse Z', 'Krnl', 'Fluxus'];
 var analyticsState = { execRange: 'all', obfRange: 'all' };
 
 function loadAnalytics() {
@@ -1969,302 +1980,12 @@ function refreshAnalyticsUI() {
     setAnalyticsValue('totalExecutions', countSince(a.executions, analyticsState.execRange));
     setAnalyticsValue('totalObfuscations', countSince(a.obfuscations, analyticsState.obfRange));
     setAnalyticsValue('totalThreats', a.threats.length + localThreats);
-    renderExecutorDailyStats(a);
-    var ep = document.getElementById('liveChartEndpoint');
     if (ep && !ep.textContent) ep.textContent = SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT + '/v3/realtime_stats' : 'local simulation (deploy For Cloudflare/worker.js and set SH_STATS_ENDPOINT in main.js)';
-}
-
-// ============ EXECUTOR STATISTICS ============
-// Reads the WORKER, not a localStorage table that nothing ever writes.
-//
-// It used to read a.daily, which is populated only by recordExecution() - and
-// recordExecution is never called from anywhere. The obfuscated payload posts to
-// the worker's /track, not back to the site, so a.daily was permanently {} and
-// this panel permanently rendered five rows of "-" and 0. It looked like data
-// and was decorative.
-//
-// The worker keeps a 60-SECOND rolling window of events, so this shows live
-// per-executor rates. The panel title used to claim "daily, last 10 days",
-// which the server has never kept - the title is corrected to match the data
-// rather than leaving a claim on screen that nothing backs up.
-//
-// liveChart.last is set by the chart's own poll, so this is the same single
-// request rather than a second one every five seconds.
-function renderExecutorDailyStats(a) {
-    var containers = document.querySelectorAll('#executorDailyStats');
-    if (!containers.length) return;
-    if (!currentUser || currentUser.username !== 'Scripter') return;
-
-    var fromWorker = liveChart && liveChart.last && liveChart.last.executors ? liveChart.last.executors : null;
-
-    if (!fromWorker) {
-        // The worker has not answered yet (or is not deployed). Say so rather
-        // than drawing five zeroes that look like "nothing is running".
-        containers.forEach(function(c) {
-            c.innerHTML = '<div style="padding:8px 0; font-size:12px; color:#8888aa;">Waiting for the first reading from the worker...</div>';
-        });
-        return;
-    }
-
-    var names = Object.keys(fromWorker).sort(function(x, y) {
-        return (fromWorker[y].lastMinute || 0) - (fromWorker[x].lastMinute || 0);
-    }).slice(0, 5);
-    while (names.length < 5) names.push(null);
-
-    var html = '';
-    for (var i = 0; i < names.length; i++) {
-        var name = names[i];
-        var n1 = name ? (fromWorker[name].lastMinute || 0) : 0;
-        var ps = name ? (fromWorker[name].perSecond || 0) : 0;
-        // one dot per 10s of activity in the last minute, so the row reads as a
-        // bar rather than a second chart
-        var dots = '';
-        var lit = Math.min(6, Math.ceil(n1 / 10));
-        for (var j = 0; j < 6; j++) {
-            dots += j < lit
-                ? '<span class="spark-dot' + (ps >= 1 ? ' hot' : (ps > 0 ? ' warm' : '')) + '" title="' + (j + 1) + '0s+"></span>'
-                : '<span class="spark-gap"></span>';
-            dots += '<span class="spark-sep"></span>';
-        }
-        html += '<div class="executor-row">' +
-            '<span class="executor-name">' + (name ? escapeHtml(name) : '&mdash;') + '</span>' +
-            '<span class="executor-count">' + n1 + ' /min</span>' +
-            '<span class="spark-line">' + dots + '</span></div>';
-    }
-    containers.forEach(function(c) { c.innerHTML = html; });
-}
-
-// ============ LIVE EXECUTIONS CHART ============
-var liveChart = { paused: false, timer: null, history: {}, visible: {}, hover: null, canvas: null, ctx: null };
-
-function initLiveChart() {
-    // ADMIN ONLY.
-    //
-    // /v3/realtime_stats returns SITE-WIDE totals - totalExecutions,
-    // threatsBlocked, totalVisitors and a per-script top-N - and every logged-in
-    // user was polling it, so any registered Basic account could watch every
-    // other user's activity in real time. Every other admin surface in this file
-    // checks the owner username; these two panels checked nothing.
-    if (!currentUser || currentUser.username !== 'Scripter') {
-        var cards = document.querySelectorAll('.live-chart-card, .executor-daily-card');
-        for (var ci = 0; ci < cards.length; ci++) cards[ci].style.display = 'none';
-        if (liveChart.timer) { clearInterval(liveChart.timer); liveChart.timer = null; }
-        return;
-    }
-    var canvas = document.getElementById('liveChartCanvas') || document.querySelector('#dashboard #liveChartCanvas') || document.querySelector('#tab-dashboard #liveChartCanvas');
-    if (!canvas) return;
-    // allow re-init after dashboard becomes visible (was hidden at first call)
-    var needsInit = !liveChart.canvas || liveChart.canvas !== canvas || !liveChart.ctx || !liveChart.history || Object.keys(liveChart.history).length === 0;
-    if (!needsInit) {
-        // canvas already initted but may have 0 width while hidden — force redraw
-        drawLiveChart();
-        if (!liveChart.timer) startLiveChartPolling();
-        return;
-    }
-    liveChart.canvas = canvas;
-    liveChart.ctx = canvas.getContext('2d');
-    liveChart.history = {};
-    liveChart.visible = {};
-    var series = SH_EXECUTORS.concat(['Other']);
-    series.forEach(function(e) { liveChart.visible[e] = true; liveChart.history[e] = []; for (var i = 0; i < 30; i++) liveChart.history[e].push(0); });
-    renderLiveChartLegend();
-    // show endpoint for debugging (user says Request URL works)
-    var ep = document.getElementById('liveChartEndpoint');
-    if (ep) ep.textContent = (SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT.replace(/\/$/, '') + '/v3/realtime_stats' : 'local simulation');
-    drawLiveChart();
-    canvas.onmousemove = function(ev) { liveChart.hover = getChartHover(ev, canvas); drawLiveChart(); };
-    canvas.onmouseleave = function() { liveChart.hover = null; drawLiveChart(); };
-    window.addEventListener('resize', drawLiveChart);
-    startLiveChartPolling();
-}
-
-function startLiveChartPolling() {
-    if (liveChart.timer) clearInterval(liveChart.timer);
-    var poll = function() {
-        if (liveChart.paused || !liveChart.canvas) return;
-        if (SH_STATS_ENDPOINT) {
-            // REAL data from your Cloudflare Worker (see For Cloudflare/worker.js) — user says Request URL works, so keep fetch robust
-            var url = (SH_STATS_ENDPOINT.replace(/\/$/, '')) + '/v3/realtime_stats';
-            fetch(url, { method: 'GET', mode: 'cors', cache: 'no-cache' })
-                .then(function(r) {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.json();
-                })
-                .then(function(data) {
-                    if (!data) return;
-                    // Kept for the Executor Statistics panel, which reads the same
-                    // response instead of issuing a second request every 5s.
-                    liveChart.last = data;
-                    renderExecutorDailyStats();
-                    var exec = data.executors || {};
-                    var series = SH_EXECUTORS.concat(['Other']);
-                    series.forEach(function(e) {
-                        var v = e === 'Other' ? 0 : (exec[e] && typeof exec[e].perSecond === 'number' ? exec[e].perSecond : 0);
-                        liveChart.history[e].push(v);
-                        if (liveChart.history[e].length > 60) liveChart.history[e].shift();
-                    });
-                    // unknown executors from the worker merge into 'Other'
-                    var other = 0;
-                    for (var k in exec) {
-                        if (SH_EXECUTORS.indexOf(k) === -1 && typeof exec[k].perSecond === 'number') other += exec[k].perSecond;
-                    }
-                    var oh = liveChart.history['Other'];
-                    if (oh) { oh[oh.length - 1] = other; }
-                    drawLiveChart();
-                    if (typeof data.totalExecutions === 'number') setAnalyticsValue('totalExecutions', data.totalExecutions);
-                    if (typeof data.threatsBlocked === 'number') setAnalyticsValue('totalThreats', data.threatsBlocked);
-                    // keep endpoint visible for debugging
-                    var ep = document.getElementById('liveChartEndpoint');
-                    if (ep) ep.textContent = url;
-                })
-                .catch(function(err) {
-                    console.warn('[LiveChart] fetch failed:', err && err.message ? err.message : err);
-                    // still push 0 to keep chart moving and show no-data hint instead of frozen
-                    var series = SH_EXECUTORS.concat(['Other']);
-                    series.forEach(function(e) {
-                        if (!liveChart.history[e]) liveChart.history[e] = [];
-                        liveChart.history[e].push(0);
-                        if (liveChart.history[e].length > 60) liveChart.history[e].shift();
-                    });
-                    drawLiveChart();
-                });
-        } else {
-            // local simulation fallback (no worker configured yet)
-            var a = loadAnalytics();
-            var perExec = {};
-            SH_EXECUTORS.forEach(function(e) { perExec[e] = 0; });
-            var now = Date.now();
-            for (var i = 0; i < a.executions.length; i++) {
-                if (now - a.executions[i].t < 30000) perExec[a.executions[i].executor] = (perExec[a.executions[i].executor] || 0) + 1;
-            }
-            var series = SH_EXECUTORS.concat(['Other']);
-            series.forEach(function(e) {
-                var base = { 'Delta': 1.2, 'Volt': 0.8, 'Arceus X': 1.0, 'Hydrogen': 0.6, 'Wave': 0.4, 'Synapse Z': 0.3, 'Krnl': 0.2, 'Fluxus': 0.3, 'Other': 0.1 }[e] || 0.2;
-                var recent = perExec[e] || 0;
-                var eps = Math.max(0, base + recent * 0.5 + (Math.random() - 0.5) * base * 0.6);
-                liveChart.history[e].push(eps);
-                if (liveChart.history[e].length > 60) liveChart.history[e].shift();
-            });
-            drawLiveChart();
-        }
-    };
-    poll();
-    liveChart.timer = setInterval(poll, 5000);
-}
-
-function toggleLiveChartPause() {
-    liveChart.paused = !liveChart.paused;
-    var btn = document.getElementById('liveChartPauseBtn');
-    if (btn) btn.textContent = liveChart.paused ? '▶ Resume' : '⏸ Pause';
-}
-
-function toggleLiveChartSeries(name) {
-    liveChart.visible[name] = !liveChart.visible[name];
-    renderLiveChartLegend();
-    drawLiveChart();
-}
-
-function renderLiveChartLegend() {
-    var legend = document.querySelector('#tab-dashboard #liveChartLegend') || document.getElementById('liveChartLegend');
-    if (!legend) return;
-    var html = '';
-    SH_EXECUTORS.concat(['Other']).forEach(function(e, i) {
-        var col = executorColor(i);
-        html += '<button class="legend-item' + (liveChart.visible[e] ? '' : ' off') + '" onclick="toggleLiveChartSeries(\'' + e + '\')">' +
-            '<span class="legend-swatch" style="background:' + col + '"></span>' + e + '</button>';
-    });
-    legend.innerHTML = html;
 }
 
 function executorColor(i) {
     var cols = ['#6c3bff', '#00bfff', '#66ff66', '#ff66cc', '#ffd700', '#ff8844', '#00ccaa', '#ff4444'];
     return cols[i % cols.length];
-}
-
-function getChartHover(ev, canvas) {
-    var rect = canvas.getBoundingClientRect();
-    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-}
-
-function drawLiveChart() {
-    var canvas = liveChart.canvas;
-    if (!canvas || !liveChart.ctx) return;
-    var dpr = window.devicePixelRatio || 1;
-    var w = canvas.parentElement.clientWidth - 4;
-    var h = 340;
-    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; canvas.style.width = w + 'px'; canvas.style.height = h + 'px'; }
-    var ctx = liveChart.ctx;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    var padL = 40, padR = 10, padT = 14, padB = 24;
-    var cw = w - padL - padR, ch = h - padT - padB;
-    // grid + y axis (eps)
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillStyle = '#555577';
-    ctx.font = '10px Segoe UI';
-    ctx.lineWidth = 1;
-    var maxV = 0.5;
-    SH_EXECUTORS.concat(['Other']).forEach(function(e) { var m = Math.max.apply(null, liveChart.history[e] || [0]); if (m > maxV) maxV = m; });
-    maxV = Math.ceil(maxV * 1.2 * 10) / 10;
-    for (var g = 0; g <= 4; g++) {
-        var y = padT + ch - (ch * g / 4);
-        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
-        ctx.fillText((maxV * g / 4).toFixed(1), 6, y + 3);
-    }
-    // x labels (last 60 samples = last 5 min)
-    ctx.fillText('-5m', padL, h - 8);
-    ctx.fillText('now', w - padR - 22, h - 8);
-    // lines
-    var seriesList = SH_EXECUTORS.concat(['Other']);
-    seriesList.forEach(function(e, idx) {
-        if (!liveChart.visible[e]) return;
-        var data = liveChart.history[e] || [];
-        var col = executorColor(idx);
-        ctx.strokeStyle = col;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (var i = 0; i < data.length; i++) {
-            var x = padL + (cw * i / 59);
-            var y = padT + ch - (ch * Math.min(data[i], maxV) / maxV);
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-    });
-    // no-data hint: every series flat zero = no executions polled recently
-    var chartAllZero = true;
-    seriesList.forEach(function(e) {
-        var h = liveChart.history[e] || [];
-        for (var i = 0; i < h.length; i++) { if (h[i] > 0) { chartAllZero = false; break; } }
-    });
-    if (chartAllZero) {
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = '12px Segoe UI';
-        ctx.textAlign = 'center';
-        ctx.fillText('No executions in the last 5 minutes — the chart fills live as users run your scripts', padL + cw / 2, padT + ch / 2);
-        ctx.textAlign = 'left';
-    }
-    // hover inspect
-    if (liveChart.hover) {
-        var hx = liveChart.hover.x;
-        if (hx >= padL && hx <= w - padR) {
-            var idx2 = Math.round((hx - padL) / cw * 59);
-            var x = padL + (cw * idx2 / 59);
-            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-            ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ch); ctx.stroke();
-            var yBase = padT + 6;
-            ctx.fillStyle = 'rgba(10,10,20,0.92)';
-            ctx.fillRect(x + 8, yBase, 160, 14 + seriesList.length * 14);
-            seriesList.forEach(function(e, i2) {
-                var v = (liveChart.history[e] || [])[idx2];
-                if (v === undefined) return;
-                ctx.fillStyle = executorColor(i2);
-                ctx.fillRect(x + 14, yBase + 8 + i2 * 14, 8, 8);
-                ctx.fillStyle = '#fff';
-                ctx.font = '11px Segoe UI';
-                ctx.fillText(e + ': ' + v.toFixed(2) + '/s', x + 27, yBase + 16 + i2 * 14);
-            });
-        }
-    }
 }
 
 function updateDashboardTab(user) {
@@ -3451,56 +3172,72 @@ function shSampleImageTheme(src) {
         img.src = src;
     });
 }
+// True while a custom backdrop is painted. applyTheme() reads it, because
+// applyTheme is what sets the OPAQUE body background that would otherwise hide
+// the backdrop - so changing the theme must not silently switch it off.
+var SH_CUSTOM_BG_ACTIVE = false;
 
-// Paints the backdrop: fixed, behind everything, with the content on top of it.
+// Paints the backdrop on the ROOT element, not as a separate fixed div.
 //
-// z-index is -1, not 0, and that is not a style choice. Painting order puts
-// positioned elements with z-index auto OR 0 in step 8, AFTER in-flow non-positioned
-// content in step 4 - so a backdrop at z-index 0 is drawn OVER the entire app and
-// the site becomes unusable (and, with pointer-events:none, unclickable-looking
-// while still blocking nothing). -1 puts it in the negative layer, behind
-// in-flow content and above the canvas.
-//
-// The body background is deliberately NOT cleared. A body's background
-// propagates to the canvas when html has none, so the backdrop still shows
-// through it, and clearing it would fight every theme that sets one.
+// The root element's background is used for the canvas by definition, so it is
+// always behind all content and always visible - no dependence on z-index and
+// none on whether some wrapper happens to be opaque.
 function applyCustomBackground(dataUrl) {
-    var el = document.getElementById('shCustomBg');
-    if (!dataUrl) { if (el) el.remove(); return; }
-    if (!el) {
-        el = document.createElement('div');
-        el.id = 'shCustomBg';
-        el.setAttribute('aria-hidden', 'true');
-        document.body.insertBefore(el, document.body.firstChild);
-    }
-    el.style.cssText = [
-        'position:fixed', 'inset:0', 'z-index:-1', 'pointer-events:none',
-        'background-image:url("' + dataUrl + '")',
-        'background-size:cover', 'background-position:center',
-        'background-repeat:no-repeat'
-    ].join(';');
+    if (!dataUrl) { clearCustomBackground(); return; }
+    var root = document.documentElement;
+    var old = document.getElementById('shCustomBg');
+    if (old) old.remove();
+    var mark = document.createElement('div');
+    mark.id = 'shCustomBg';
+    // A 1px marker, and the diagnostic: with no custom background this element
+    // is absent, so its PRESENCE is proof the feature actually ran. That is what
+    // makes "does nothing" distinguishable from "did not run".
+    mark.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(mark);
+    root.style.backgroundImage = 'linear-gradient(rgba(8,8,18,0.74), rgba(8,8,18,0.74)), url("' + dataUrl + '")';
+    root.style.backgroundSize = 'cover';
+    root.style.backgroundPosition = 'center top';
+    root.style.backgroundRepeat = 'no-repeat';
+    root.style.backgroundAttachment = 'fixed';
+    // the opaque body background from applyTheme is what hid the backdrop
+    document.body.style.background = 'transparent';
+    SH_CUSTOM_BG_ACTIVE = true;
 }
 
-// Removing the backdrop only has to delete the element. The theme is left
-// exactly as it is - clearing a body background here would fight every theme
-// that sets one, and the background and the theme are separate features.
+// Removing the backdrop restores the theme by RE-APPLYING it rather than
+// writing a background colour back by hand. applyTheme owns that value, and a
+// second copy of it here is how the two drift apart.
 function clearCustomBackground() {
-    var el = document.getElementById('shCustomBg');
-    if (el) el.remove();
-    for (var key in users) {
-        if (users[key].id === currentUser.id) {
-            users[key].customBackground = '';
-            saveUsers();
-            shPushUser(users[key]);
-            var userData = { ...users[key] };
-            delete userData.password;
-            updateUIForUser(userData);
-            showNotification('Background Removed', 'Your banner and theme are unchanged.', 'success', 4000);
-            var input = document.getElementById('customBackgroundInput');
-            if (input) input.value = '';
-            break;
+    var old = document.getElementById('shCustomBg');
+    if (old) old.remove();
+    var root = document.documentElement;
+    root.style.backgroundImage = '';
+    root.style.backgroundSize = '';
+    root.style.backgroundPosition = '';
+    root.style.backgroundRepeat = '';
+    root.style.backgroundAttachment = '';
+    SH_CUSTOM_BG_ACTIVE = false;
+    try { applyTheme((currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'); } catch (e) {}
+
+    // Forget the stored value too, or it comes straight back on the next
+    // refresh and on every other device - the user presses Remove, reloads, and
+    // it is there again with no explanation. Painted state and saved state are
+    // two different things and both have to be undone.
+    try {
+        for (var key in users) {
+            if (users[key].id === currentUser.id && users[key].customBackground) {
+                users[key].customBackground = '';
+                saveUsers();
+                shPushUser(users[key]);
+                var cleanUser = { ...users[key] };
+                delete cleanUser.password;
+                updateUIForUser(cleanUser);
+                break;
+            }
         }
-    }
+    } catch (e) {}
+    var bgInput = document.getElementById('customBackgroundInput');
+    if (bgInput) bgInput.value = '';
 }
 
 function uploadCustomBackground() {
@@ -3661,7 +3398,7 @@ function switchTab(tabName) {
     for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     var target = document.getElementById('tab-' + tabName);
     if (target) { target.style.display = 'block'; }
-    if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); initLiveChart(); } }
+    if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); } }
     if (tabName === 'scripts') { renderProjects(); }
     if (tabName === 'keys') { renderKeys(); }
     if (tabName === 'rewards') { renderRewardsTab(); }
@@ -5651,8 +5388,25 @@ function renderAnnouncement(a) {
     bar.textContent = a.text;
     host.appendChild(bar);
     host.style.display = '';
+    shRenderAnnounceCurrent(a);
 }
 
+// Shows what the SERVER currently has, in the owner's chosen colours. Built
+// with textContent and validated hex, like the live banner itself.
+function shRenderAnnounceCurrent(a) {
+    var el = document.getElementById('announceCurrent');
+    if (!el) return;
+    if (!a || !a.text) {
+        el.textContent = 'No announcement is live.';
+        el.className = 'announce-current is-empty';
+        el.style.background = '';
+        return;
+    }
+    el.className = 'announce-current is-live';
+    el.textContent = a.text;
+    el.style.color = shAnnounceHex(a.color, '#ffffff');
+    el.style.background = shAnnounceHex(a.bg, '#6c3bff');
+}
 function shAnnounceStatus(msg) {
     var el = document.getElementById('announceStatus');
     if (el) el.textContent = msg || '';
@@ -5682,6 +5436,7 @@ function sendAnnouncement() {
     if (btn) { btn.disabled = true; btn.setAttribute('data-loading', 'true'); }
     shApi('/sh/announcement', {
         token: shOwnerToken(),
+        userToken: shGetUserToken(),
         text: text,
         color: (document.getElementById('announceColor') || {}).value,
         bg: (document.getElementById('announceBg') || {}).value
@@ -5840,8 +5595,6 @@ window.toggleCreditMore = toggleCreditMore;
 window.refreshStatsUI = refreshStatsUI;
 window.setExecRange = setExecRange;
 window.setObfRange = setObfRange;
-window.toggleLiveChartPause = toggleLiveChartPause;
-window.toggleLiveChartSeries = toggleLiveChartSeries;
 window.userKeysDoSearch = userKeysDoSearch;
 window.userKeysPage = userKeysPage;
 window.toggleUserKeysList = toggleUserKeysList;
