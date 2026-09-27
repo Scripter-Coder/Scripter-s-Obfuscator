@@ -3991,7 +3991,12 @@ function confirmCreateScript(projectId) {
         silentMode: silentMode,
         scriptName: name,
         scriptId: 'script_' + Date.now(),
-        owner: currentUser ? currentUser.username : 'unknown'
+        owner: currentUser ? currentUser.username : 'unknown',
+    // WITHOUT THIS, options.keyless is undefined inside obfuscateScriptCode,
+    // shServerKeyOpts treats undefined as falsy, and a FREE script ships
+    // with the /sh/k fetch baked in - which then fails at runtime with
+    // "Key response too short" and the script silently does nothing.
+    keyless: isKeyless,
     };
     // async: obfuscation of huge scripts takes a while - show progress on
     // the button for BOTH engines (the tab used to look frozen on 100k+
@@ -4215,7 +4220,8 @@ function generateLoadstring(projectId, scriptId) {
             statsEndpoint: SH_STATS_ENDPOINT || null,
             scriptName: script.name,
             scriptId: script.id,
-            owner: currentUser ? currentUser.username : 'unknown'
+            owner: currentUser ? currentUser.username : 'unknown',
+            keyless: !!script.keyless || !!script.freeForEveryone
         }).then(function(result) {
             script.code = (result && typeof result === 'object') ? result.code : result;
             if (result && typeof result === 'object' && result.splitKey) script.splitKeyData = result.splitKey;
@@ -4258,7 +4264,8 @@ function generateLoadstring(projectId, scriptId) {
                 statsEndpoint: SH_STATS_ENDPOINT || null,
                 scriptName: script.name,
                 scriptId: script.id,
-                owner: currentUser ? currentUser.username : 'unknown'
+                owner: currentUser ? currentUser.username : 'unknown',
+                keyless: !!script.keyless || !!script.freeForEveryone
             }).then(function(fresh) {
                 var freshCode = (fresh && typeof fresh === 'object') ? fresh.code : fresh;
                 var projectsX = loadProjects();
@@ -4633,7 +4640,12 @@ function confirmEditScript(projectId, scriptId) {
         silentMode: silentMode,
         scriptName: name,
         scriptId: scriptId,
-        owner: currentUser ? currentUser.username : 'unknown'
+        owner: currentUser ? currentUser.username : 'unknown',
+    // WITHOUT THIS, options.keyless is undefined inside obfuscateScriptCode,
+    // shServerKeyOpts treats undefined as falsy, and a FREE script ships
+    // with the /sh/k fetch baked in - which then fails at runtime with
+    // "Key response too short" and the script silently does nothing.
+    keyless: isKeyless,
     };
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl) {
