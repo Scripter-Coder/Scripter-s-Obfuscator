@@ -26,6 +26,7 @@
                 var wrap = img.parentElement;
                 if (wrap) {
                     var fb = 'S';
+                    if (who.indexOf('Don') === 0 || who.indexOf('Kuro') === 0) fb = 'DQ';
                    
                     else if (who.indexOf('Don') === 0 || who.indexOf('Kuro') === 0) fb = 'DQ';
                     wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';

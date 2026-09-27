@@ -1980,7 +1980,25 @@ function refreshAnalyticsUI() {
     setAnalyticsValue('totalExecutions', countSince(a.executions, analyticsState.execRange));
     setAnalyticsValue('totalObfuscations', countSince(a.obfuscations, analyticsState.obfRange));
     setAnalyticsValue('totalThreats', a.threats.length + localThreats);
-    if (ep && !ep.textContent) ep.textContent = SH_STATS_ENDPOINT ? SH_STATS_ENDPOINT + '/v3/realtime_stats' : 'local simulation (deploy For Cloudflare/worker.js and set SH_STATS_ENDPOINT in main.js)';
+    // The endpoint label that used to live here is gone with the Live
+        // Executions Chart. This comment is load-bearing: the previous line was
+        //
+        //     if (ep && !ep.textContent) ep.textContent = ...
+        //
+        // and its DECLARATION (`var ep = document.getElementById(...)`) had been
+        // deleted with the chart while the USE was left behind. `ep` was therefore an
+        // undeclared identifier and this function threw a ReferenceError on every
+        // call.
+        //
+        // That is much worse than a broken label. updateUIForUser() calls this, and
+        // handleSignup() calls updateUIForUser() BEFORE mirroring the new account to
+        // the cloud - so the throw propagated out, the mirror never ran, the account
+        // was never created server-side, no user token was ever issued, and nothing
+        // could be uploaded. Reported as "people cannot do anything". The existing
+        // account was unaffected, which is why it read as a new-user problem.
+        //
+        // tools/bundle_smoke_test.mjs now executes the built bundle so a reference
+        // with no declaration cannot pass unnoticed again.
 }
 
 function executorColor(i) {
