@@ -61,6 +61,30 @@ window.showNotification = showNotification;
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
 const SH_STATS_ENDPOINT = 'https://scripterhub-stats.dubovikstanislav51.workers.dev/';
+// The largest base64 image payload the site will store or sync.
+//
+// Cloudflare KV rejects a value past roughly 2MB, and an image over the cap is
+// DROPPED from the sync rather than failing loudly - the local copy keeps working,
+// so the user sees a background that saved and then quietly vanished on the next
+// device. Checking the size where the omission is at least visible beats finding
+// it out later.
+//
+// This used to be declared as `var SH_IMAGE_CAP = 1900000;` INSIDE shPushUser.
+// `var` is function-scoped, so uploadCustomBackground - which needs the same limit
+// and sits thousands of lines away - resolved the name to nothing at all and threw
+//
+//     ReferenceError: SH_IMAGE_CAP is not defined
+//
+// which rejected the promise chain one line before the save, so the background
+// painted, compression succeeded, and the result was thrown away. The user saw
+// "Failed to save background: SH_IMAGE_CAP is not defined" and a background that
+// vanished on reload. Stacked on top of the dead button, the feature had two
+// independent faults and fixing either one changed nothing observable.
+//
+// One constant, read by every user. A limit that lives inside whichever function
+// happens to use it most is a limit that drifts.
+const SH_IMAGE_CAP = 1900000;
+
 window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
 
 // ============ HIDDEN RAW PAGE (Loadstring Creator) ============
@@ -538,7 +562,6 @@ function shHasOwnerToken() {
      if (!user || !user.email) return Promise.resolve({ ok: false });
      var u = users[user.email];
      var proof = (u && u.password) ? u.password : ''; // b64 password
-     var SH_IMAGE_CAP = 1900000; // stay under the worker's ~2MB base64 cap
      var profileImage = (typeof user.profileImage === 'string' && user.profileImage.length <= SH_IMAGE_CAP) ? user.profileImage : undefined;
      var bannerImage = (typeof user.bannerImage === 'string' && user.bannerImage.length <= SH_IMAGE_CAP) ? user.bannerImage : undefined;
 // Same cap as the other two. A background is the largest of the three (1920px
