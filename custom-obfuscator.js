@@ -896,7 +896,32 @@ function buildLoader(src, layerCount, options) {
     out.push(' :: This file is protected. Any modification breaks it. ::');
     out.push(' ' + hex(60) + ']]');
     // hide alias: rawget(getfenv(), string.char(...)) not loadstring or load literal
-    out.push('local ' + FN + '=(function() local g=_G; return rawget(g, string.char(108,111,97,100,115,116,114,105,110,103)) or rawget(g, string.char(108,111,97,100)) end)()');
+    // Resolve loadstring/load.
+    //
+    // This used to look the name up ONLY through _G:
+    //
+    //     local g=_G; return rawget(g, <"loadstring">) or rawget(g, <"load">)
+    //
+    // while the bootstrap uses a bare reference (`local LS=loadstring or load`).
+    // In an executor whose chunk environment is not the same table as _G -
+    // common in Roblox/Luau-based and sandboxed executors - the bare reference
+    // resolves and rawget(_G,...) returns nil. The artifact then died on its own
+    // line 96 with "attempt to call a nil value", on the same machine where the
+    // bootstrap had used that very function milliseconds earlier.
+    //
+    // The char-code names are kept and probed across every environment table
+    // first, so the identifier still never appears literally. The bare reference
+    // is the last resort and is always safe.
+    //
+    // Giving up the rawget trick costs the one property it provided, and that
+    // property was worth nothing: the payload is ENCRYPTED, and the whole
+    // anti-peeler guarantee is that a scraper cannot read the code without
+    // running this decoder. Anyone who runs it has the payload anyway, so hiding
+    // one identifier protected nothing while breaking the artifact.
+    //
+    // rawget is only ever called on a value proven to be a table, because
+    // rawget(nil, k) is a hard error and getfenv is absent on some executors.
+    out.push('local ' + FN + '=' + "(function()\nlocal n=string.char(108,111,97,100,115,116,114,105,110,103)\nlocal m=string.char(108,111,97,100)\nlocal t={}\nif type(_G)=='table' then t[#t+1]=_G end\nif getfenv then local ok,e=pcall(getfenv,0) if ok and type(e)=='table' then t[#t+1]=e end end\nif getgenv then local ok,e=pcall(getgenv) if ok and type(e)=='table' then t[#t+1]=e end end\nfor i=1,#t do local a=rawget(t[i],n) or rawget(t[i],m) if a then return a end end\nreturn loadstring or load\nend)()");
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
     out.push('local ' + P + '="' + payloadStr + '"');
     out.push('local ' + K + '={' + keyTableParts.join(',') + '}');
