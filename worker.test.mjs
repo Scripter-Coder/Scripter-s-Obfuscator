@@ -373,4 +373,85 @@ console.log('[W14] SPLIT-KEY: the loader + the gate work together...');
     console.log('    OK: artifact arrives only through the gate');
 }
 
+// ============ AEGIS PROXY ============
+// The site used to POST to api.aegis-obfuscater.cc.cd from the browser with only
+// a Content-Type header. Aegis is API v4 and every programmatic call needs an
+// admin-issued X-Api-Key, so the option returned 401 on every publish. The call
+// now goes through /sh/aegis, which holds the key.
+//
+// These assert the GENERATED worker, not the source shape - which is the only
+// thing that settles the two things that actually matter here:
+//
+//   1. The route runs at all. /sh/aegis calls isOwnerRequest roughly 130 lines
+//      ABOVE that function's declaration. A function declaration hoists within
+//      its enclosing function body, so this works - but if the route ever ended
+//      up in a nested block it would throw a ReferenceError on every call, and
+//      no source-shape assertion would notice. A 401 proves the call resolved.
+//   2. The key is sent on the outbound request, and the 202 queued-job path -
+//      which the old client code read as if it were a file, producing a
+//      "script" that was a JSON job object - is actually handled.
+console.log('[W15] AEGIS: the proxy holds the key, is owner-only, and handles queued jobs...');
+{
+    // There is no shared owner token in this file - each block logs in through
+    // the product's own endpoint, deliberately, so no test bypasses real auth.
+    const aegisLogin = await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN });
+    const ownerToken = aegisLogin.token;
+    assert.ok(ownerToken && ownerToken.length > 10, 'owner login must issue a token for the proxy tests');
+
+    // 1. no token -> 401. Reaching this response at all means isOwnerRequest
+    //    resolved; a ReferenceError would have surfaced as a 500.
+    const anon = await j('POST', '/sh/aegis', { source: 'print(1)' });
+    assert.strictEqual(anon.status, 401, '/sh/aegis must refuse an unauthenticated caller, got ' + anon.status);
+
+    // 2. owner token, but the binding is absent -> a clear 501, not a crash.
+    const noKey = await j('POST', '/sh/aegis', { source: 'print(1)', token: ownerToken });
+    assert.strictEqual(noKey.status, 501, 'a missing AEGIS_API_KEY must say so, got ' + noKey.status);
+    assert.ok(/AEGIS_API_KEY/.test(noKey.error || ''), 'the 501 must name the binding: ' + noKey.error);
+
+    // 3. empty source is rejected
+    const empty = await j('POST', '/sh/aegis', { source: '', token: ownerToken });
+    assert.strictEqual(empty.status, 400, 'an empty source must be a 400, got ' + empty.status);
+
+    // 4. with the binding set, the outbound request must carry X-Api-Key, and a
+    //    202 queued job must be polled rather than downloaded as if it were a
+    //    file. fetch is stubbed, so the real service is never contacted.
+    const realFetch = globalThis.fetch;
+    const seen = [];
+    let pollCount = 0;
+    globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        seen.push({ url: url, headers: (init && init.headers) || {} });
+        if (url.indexOf('/api/obfuscate') >= 0) {
+            return new Response(JSON.stringify({ queued: true, jobId: 'JOB123' }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.indexOf('/api/job/JOB123') >= 0) {
+            pollCount++;
+            // not ready on the first two polls, ready on the third
+            if (pollCount < 3) return new Response(JSON.stringify({ status: 'running' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            return new Response(JSON.stringify({ status: 'done', url: '/files/FILE1/ATT1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.indexOf('/files/FILE1/ATT1') >= 0) {
+            return new Response('-- obfuscated by aegis\nprint(1)', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+        }
+        throw new Error('unexpected outbound URL: ' + url);
+    };
+    try {
+        env.AEGIS_API_KEY = 'ak_test_key_123';
+        const res = await j('POST', '/sh/aegis', { source: 'print(1)', name: 'demo', token: ownerToken });
+        assert.ok(res.ok, 'the queued path must resolve to ok, got ' + JSON.stringify(res).slice(0, 200));
+        assert.ok(/obfuscated by aegis/.test(res.code || ''), 'the finished file text must come back, got: ' + String(res.code).slice(0, 80));
+        assert.ok(pollCount >= 3, 'a queued job must be polled until it is done (polls: ' + pollCount + ')');
+
+        // the key must be on the outbound header, and must never be echoed back
+        const submit = seen.filter(s => s.url.indexOf('/api/obfuscate') >= 0)[0];
+        assert.ok(submit, 'the proxy must call the Aegis API');
+        assert.strictEqual(submit.headers['X-Api-Key'], 'ak_test_key_123', 'the outbound call must carry X-Api-Key');
+        assert.ok(!(res._text || '').includes('ak_test_key_123'), 'the key must never appear in the response');
+        console.log('    OK: key is server-side, queued jobs are polled, non-owners are refused');
+    } finally {
+        globalThis.fetch = realFetch;
+        delete env.AEGIS_API_KEY;
+    }
+}
+
 console.log('\nALL WORKER TESTS PASSED');

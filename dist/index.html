@@ -32,8 +32,8 @@
             } catch (e) {}
         }
     </script>
-  <script type="module" crossorigin src="./assets/main-BJ_WJzox.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/main-BZuGcI10.css">
+  <script type="module" crossorigin src="./assets/main-CRPh24gm.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/main-Bcw74wKX.css">
 </head>
 <body>
     <!-- Animated Background -->
@@ -230,7 +230,7 @@
                         <span class="file-type">PNG, JPG, WEBP</span>
                     </div>
                     <div class="file-input-wrapper">
-                        <input type="file" id="profileImageInput" accept="image/*">
+                        <input class="sh-input" type="file" id="profileImageInput" accept="image/*">
                     </div>
                     <button class="btn btn-primary" onclick="uploadProfileImage()">⬆ Upload Profile</button>
                 </div>
@@ -242,7 +242,7 @@
                         <span class="file-type">PNG, JPG, WEBP, GIF</span>
                     </div>
                     <div class="file-input-wrapper">
-                        <input type="file" id="bannerImageInput" accept="image/*">
+                        <input class="sh-input" type="file" id="bannerImageInput" accept="image/*">
                     </div>
                     <button class="btn btn-primary" onclick="uploadBannerImage()">⬆ Upload Banner</button>
                 </div>
@@ -253,7 +253,7 @@
                         <label>Theme</label>
                         <span class="file-type">Click to change</span>
                     </div>
-                    <select id="themeSelect" onchange="changeTheme(this.value)">
+                    <select class="sh-input" id="themeSelect" onchange="changeTheme(this.value)">
                         <option value="default">Default (Purple)</option>
                         <option value="red">🔥 Red</option>
                         <option value="blue">💙 Blue</option>
@@ -412,7 +412,7 @@
     </div>
     <div class="keys-toolbar">
         <div class="keys-search">
-            <input type="text" id="userKeysSearch" placeholder="Search keys, notes, discord ids...">
+            <input class="sh-input" type="text" id="userKeysSearch" placeholder="Search keys, notes, discord ids...">
             <button class="btn btn-primary" onclick="userKeysDoSearch()">Search</button>
         </div>
         <div class="keys-range">

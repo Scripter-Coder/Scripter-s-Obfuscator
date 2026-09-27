@@ -3490,6 +3490,130 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse({ ok: true });
         }
 
+        // ---------- POST /sh/aegis : Aegis obfuscator proxy ----------
+        //
+        // The site used to call Aegis straight from the browser:
+        //
+        //     fetch('https://api.aegis-obfuscater.cc.cd/api/obfuscate', {
+        //         headers: { 'Content-Type': 'application/json' }, ...
+        //
+        // Aegis is API v4. Every programmatic call now requires an admin-issued
+        // X-Api-Key ("API key: required for programmatic access - ask the admin
+        // to issue one"). The browser sent none, so every Aegis publish came back
+        // 401 and the option was simply broken. Adding the header in the browser
+        // would have been the obvious fix and the wrong one: the bundle is
+        // downloaded, minified and readable, so the key would be published to
+        // every visitor. The dashboard API key is also a 20-min-per-day budget -
+        // a public one would be burned by anyone who opened the site.
+        //
+        // So the call moves here. The key is a worker binding (AEGIS_API_KEY),
+        // never in the client, and the route is owner-only so the quota cannot be
+        // spent by other accounts.
+        //
+        // Sources over 150 KB are queued by Aegis as a background job (202 with a
+        // jobId, ready in 1-2 minutes). The browser code did not handle 202 at
+        // all - it read data.url unconditionally, which for a 202 is the JOB
+        // endpoint, and then downloaded JSON as if it were the script. So large
+        // sources produced a script that was a JSON object. Polled here, and if
+        // the job outlives the worker budget the jobId comes back so the client
+        // can ask again.
+        if (url.pathname === '/sh/aegis' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerRequest(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+
+            // Input is validated BEFORE the binding. Checking the binding first
+            // made every malformed request report "AEGIS_API_KEY is not set"
+            // instead of the actual problem - a misleading error precisely when
+            // the binding genuinely is missing.
+            const source = String(body.source || '');
+            const followUp = String(body.job || '').trim();
+            if (!source && !followUp) return jsonResponse({ ok: false, error: 'nothing to obfuscate' }, 400);
+            if (source.length > 1000 * 1000) {
+                return jsonResponse({ ok: false, error: 'Source is over Aegis\' 1 MB limit (' + source.length + ' bytes). Use the Default engine.' }, 413);
+            }
+            if (followUp && !/^[A-Za-z0-9_-]{4,64}$/.test(followUp)) return jsonResponse({ ok: false, error: 'bad job id' }, 400);
+
+            const aegisKey = String(env.AEGIS_API_KEY || '');
+            if (!aegisKey) {
+                return jsonResponse({ ok: false, error: 'AEGIS_API_KEY is not set on this worker, so the Aegis engine is unavailable.' }, 501);
+            }
+            const AEGIS_ORIGIN = 'https://api.aegis-obfuscater.cc.cd';
+            const aegisHeaders = { 'Content-Type': 'application/json', 'X-Api-Key': aegisKey };
+
+            // --- download a finished file, or poll a queued job ---
+            const grab = async (fileUrl) => {
+                const f = await fetch(AEGIS_ORIGIN + fileUrl, { headers: aegisHeaders });
+                if (!f.ok) {
+                    return { err: f.status === 410
+                        ? 'the Aegis download link expired (they live 5 minutes)'
+                        : ('Aegis download failed (' + f.status + ')') };
+                }
+                return { code: await f.text() };
+            };
+
+            // Called repeatedly for a queued job. Bounded: a worker request must
+            // return, and a job normally finishes in 1-2 minutes.
+            const waitForJob = async (jobId) => {
+                for (let attempt = 0; attempt < 10; attempt++) {
+                    const j = await fetch(AEGIS_ORIGIN + '/api/job/' + jobId, { headers: aegisHeaders });
+                    if (!j.ok) return { err: 'Aegis job lookup failed (' + j.status + ')' };
+                    const d = await j.json();
+                    if (d.status === 'done') return { url: d.url };
+                    if (d.status === 'failed') return { err: 'Aegis could not obfuscate this source (usually a syntax error, or the input is already an Aegis output)' };
+                    await new Promise((res) => setTimeout(res, 3000));
+                }
+                return { stillQueued: true };
+            };
+
+            // A follow-up poll for a job the previous request did not wait out.
+            if (body.job) {
+                const jobId = followUp;
+                const r = await waitForJob(jobId);
+                if (r.err) return jsonResponse({ ok: false, error: r.err });
+                if (r.stillQueued) return jsonResponse({ ok: true, queued: true, job: jobId });
+                const g = await grab(r.url);
+                if (g.err) return jsonResponse({ ok: false, error: g.err });
+                return jsonResponse({ ok: true, code: g.code });
+            }
+
+            // --- submit ---
+            {
+                // Aegis allows 6 requests/minute per key and one large job in
+                // flight. Proxied through here, every visitor's traffic shares the
+                // owner's key, so the bucket has to be applied on our side too.
+                const rl = rateLimit('aegis', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
+            const res = await fetch(AEGIS_ORIGIN + '/api/obfuscate', {
+                method: 'POST',
+                headers: aegisHeaders,
+                body: JSON.stringify({ source, name: String(body.name || 'script') })
+            });
+            if (!res.ok) {
+                let msg = 'Aegis API error ' + res.status;
+                if (res.status === 401) msg = 'Aegis rejected the API key (X-Api-Key) - ask the Aegis admin to issue a valid one';
+                else if (res.status === 422) msg = 'Aegis could not parse this source - check for a syntax error, or for it already being an Aegis output';
+                else if (res.status === 429) msg = 'Aegis rate limit reached (6 requests/minute)';
+                else if (res.status === 503) msg = 'the Aegis large-job queue is full - try again shortly';
+                try { const e = await res.json(); if (e && (e.error || e.message)) msg += ' - ' + (e.error || e.message); } catch (e) {}
+                return jsonResponse({ ok: false, error: msg }, res.status);
+            }
+            const data = await res.json();
+            // 202: queued. data.url is the JOB endpoint here, not a file.
+            if (data.queued || res.status === 202) {
+                const r = await waitForJob(String(data.jobId || ''));
+                if (r.err) return jsonResponse({ ok: false, error: r.err });
+                if (r.stillQueued) return jsonResponse({ ok: true, queued: true, job: String(data.jobId || '') });
+                const g = await grab(r.url);
+                if (g.err) return jsonResponse({ ok: false, error: g.err });
+                return jsonResponse({ ok: true, code: g.code });
+            }
+            const g = await grab(data.url);
+            if (g.err) return jsonResponse({ ok: false, error: g.err });
+            return jsonResponse({ ok: true, code: g.code });
+        }
+
         // ---------- owner auth helper for the users endpoints ----------
         // Two ways to prove "I am the owner (Scripter)":
         //   1. token     - raw-page session token (sh/login)

@@ -1302,10 +1302,10 @@ function openUserKeysSettingsUI() {
                 <h3>📦 Mass Generate Keys</h3>
                 <div class="field-hint">You can bulk generate keys at once</div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-                    <input type="number" id="massGenAmount" min="1" max="1000" placeholder="Amount (1-1000)" style="flex:1; min-width:120px;">
-                    <input type="number" id="massGenDays" min="0" placeholder="Days (Optional)" style="flex:1; min-width:120px;">
+                    <input class="sh-input" type="number" id="massGenAmount" min="1" max="1000" placeholder="Amount (1-1000)" style="flex:1; min-width:120px;">
+                    <input class="sh-input" type="number" id="massGenDays" min="0" placeholder="Days (Optional)" style="flex:1; min-width:120px;">
                 </div>
-                <input type="text" id="massGenNote" placeholder="Note (Optional)" style="width:100%; margin-top:8px;">
+                <input class="sh-input" type="text" id="massGenNote" placeholder="Note (Optional)" style="width:100%; margin-top:8px;">
                 <button onclick="massGenerateKeys()" class="btn btn-primary" style="margin-top:10px; width:100%;">⚡ Generate</button>
             </div>
             <div class="settings-block">
@@ -1329,7 +1329,7 @@ function openUserKeysSettingsUI() {
                 <h3>💗 Mass compensate / Mass resethwid</h3>
                 <div class="field-hint">Mass compensate days for all of your users - useful if your script was unusable for some time. Mass reset HWID is useful when there's a new executor out.</div>
                 <div style="display:flex; gap:8px; margin-top:10px;">
-                    <input type="number" id="massCompDays" min="1" placeholder="Days" style="flex:1; min-width:80px;">
+                    <input class="sh-input" type="number" id="massCompDays" min="1" placeholder="Days" style="flex:1; min-width:80px;">
                     <button onclick="massCompensateDays()" class="btn btn-close-dropdown" style="flex:1;">➕ Add Days</button>
                     <button onclick="resetAllHwids()" class="btn btn-danger" style="flex:1;">🔄 Reset All HWIDS</button>
                 </div>
@@ -1555,7 +1555,7 @@ function openKeySettingsUI(keyId) {
             <div class="form-group"><label>Expiry (date + time, empty = never)</label>
                 <div style="display:flex; gap:8px;">
                     <input type="date" id="keyExpiryDate" value="${dateVal}" style="flex:1;">
-                    <input type="time" id="keyExpiryTime" value="${timeVal}" style="flex:1;">
+                    <input class="sh-input" type="time" id="keyExpiryTime" value="${timeVal}" style="flex:1;">
                 </div>
             </div>
             <div class="form-group"><label>Note</label><input type="text" id="keyNote" value="${(k.note || '').replace(/"/g, '&quot;')}" placeholder="Just a plain text (optional)"></div>
@@ -2652,7 +2652,7 @@ function createUsersPanel() {
                     <option value="username">Search by Username</option>
                     <option value="email">Search by Gmail</option>
                 </select>
-                <input type="text" id="panelSearchQuery" placeholder="Search users..." oninput="renderUsersList()">
+                <input class="sh-input" type="text" id="panelSearchQuery" placeholder="Search users..." oninput="renderUsersList()">
             </div>
             <div class="panel-list" id="panelUserList"></div>
             <div class="panel-status" id="panelStatus"></div>
@@ -4284,6 +4284,42 @@ function confirmCreateScript(projectId) {
     }
 }
 
+// ============ AEGIS (via the worker proxy) ============
+// Resolves with the obfuscated Luau source, or rejects with a message worth
+// reading.
+//
+// Large sources come back QUEUED rather than finished: Aegis runs anything over
+// 150 KB as a background job, and the job takes 1-2 minutes. The worker waits
+// about 30 seconds for it and hands the jobId back if it is not done, so this
+// loops rather than reporting a failure the user cannot act on. Each round trip
+// is one worker request, which also means a queued script survives a page reload
+// in the sense that the loop keeps running until the server answers.
+function shAegis(source, name) {
+    var token = shOwnerToken ? shOwnerToken() : '';
+    var attempt = 0;
+    function send(job) {
+        return shApi('/sh/aegis', {
+            token: token,
+            source: source,
+            name: name,
+            job: job || ''
+        });
+    }
+    function step(job) {
+        return send(job).then(function(d) {
+            if (!d) throw new Error('Aegis: the worker did not answer');
+            if (d.ok && d.code) return d.code;
+            if (d.ok && d.queued) {
+                attempt++;
+                if (attempt > 40) throw new Error('Aegis is still working on this source after 40 checks. It is a large script - try again in a minute, or use the Default engine.');
+                return new Promise(function(res) { setTimeout(res, 3000); }).then(function() { return step(d.job); });
+            }
+            throw new Error('Aegis: ' + ((d && d.error) || 'no reason given'));
+        });
+    }
+    return step('');
+}
+
 // ============ OBFUSCATE (Default engine or Aegis API) ============
 // Resolves with either a plain string (legacy) or an object
 // { code, splitKey } when the server-key-split mode is used.
@@ -4295,19 +4331,20 @@ function obfuscateScriptCode(code, engine, options) {
             if (engine === 'aegis') {
                 // Aegis obfuscates the wrapped payload (key gate + protections + source)
                 var payload = buildWrappedPayload(code, options, null);
-                fetch('https://api.aegis-obfuscater.cc.cd/api/obfuscate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ source: payload, name: (options.scriptName || 'script') })
-                }).then(function(res) {
-                    if (!res.ok) throw new Error('Aegis API error ' + res.status + (res.status === 429 ? ' (rate limited - max 6/min)' : ''));
-                    return res.json();
-                }).then(function(data) {
-                    return fetch('https://api.aegis-obfuscater.cc.cd' + data.url).then(function(f) {
-                        if (!f.ok) throw new Error('Aegis download failed (' + f.status + ') - link expires after 5 minutes');
-                        return f.text();
-                    });
-                }).then(function(txt) {
+                // Through OUR worker, not straight to Aegis.
+                //
+                // This used to fetch api.aegis-obfuscater.cc.cd from the browser
+                // with only a Content-Type header. Aegis is API v4 and every
+                // programmatic call needs an admin-issued X-Api-Key, so the option
+                // returned 401 every time - "Aegis fails". Putting the key in the
+                // bundle would publish it to every visitor, and the key carries a
+                // 20-minute-per-day processing budget.
+                //
+                // The worker holds the key, spends it only for owner requests, and
+                // also handles the 202 queued-job path that the old code read as if
+                // it were a file - which is why sources over 150 KB used to produce
+                // a "script" that was really a JSON job object.
+                shAegis(payload, options.scriptName || 'script').then(function(txt) {
                     resolve('-- Obfuscated with Aegis Obfuscator via ScripterHub | ' + new Date().toISOString() + ' | DO NOT EDIT\n' + txt);
                 }).catch(function(err) { reject(err); });
             } else {
