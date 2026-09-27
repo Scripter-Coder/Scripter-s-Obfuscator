@@ -540,46 +540,62 @@ async function shSyncUsersOnLogin(user, rawPassword) {
 // password-equivalent credential in a URL (proxy logs, browser history,
 // Referer). The token goes in a header, so it is not logged as a query param.
 async function shOwnerApi(path, body) {
-    var token = shGetRawToken();
-    if (!token) {
-        var ok = await shLoginRaw();
-        if (!ok) return { ok: false, error: 'This needs the OWNER ACCESS CODE, and it was not entered or was cancelled. '
-            + 'Being signed in to the site is not the same thing - the access code is a separate secret. '
-            + 'Paste it when the prompt appears, then try again.' };
-        token = shGetRawToken() || '';
-    }
-    // The account session goes alongside the access-code one, so the OWNER can use
-    // their own admin panel without a second, invisible sign-in. Other accounts
-    // still fail: the worker checks the EMAIL on this token, not merely that it is
-    // a valid one.
+    // SEND FIRST, ASK SECOND.
     //
+    // This used to demand the access code before it made the request at all, so on
+    // a device with no cached code the account session was never sent - the worker
+    // fix that accepts it was unreachable from the client, and the owner was told to
+    // paste a second secret while signed in to the site.
+    //
+    // Both credentials go on every call. The worker accepts either, and checks the
+    // EMAIL on a user token rather than merely that it is valid, so another account
+    // still cannot reach anything.
+    var codeToken = shGetRawToken() || '';
+    var userTok = shGetUserToken() || '';
+    var payload = Object.assign({}, body || {}, { userToken: userTok });
+    if (codeToken) payload.token = codeToken;
+
     // Declared OUTSIDE the fetch options on purpose. A previous version put it
     // inside the object literal, which is not a place a declaration can go.
-    var withUser = Object.assign({}, body || {}, { userToken: shGetUserToken() });
-    var res = await fetch(SH_STATS_ENDPOINT + path, {
-        method: body === null || body === undefined ? 'GET' : 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-SH-Token': token },
-        body: (body === null || body === undefined) ? undefined : JSON.stringify(withUser)
-    });
-    var d;
-    try { d = await res.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
-    if (!d.ok && /author/i.test(d.error || '')) {
-        // token expired mid-session: re-login once, retry
-        sessionStorage.removeItem('sh_raw_token');
-        var ok2 = await shLoginRaw();
-        if (!ok2) return { ok: false, error: 'This needs the OWNER ACCESS CODE, and it was not entered or was cancelled. '
-            + 'Being signed in to the site is not the same thing - the access code is a separate secret. '
-            + 'Paste it when the prompt appears, then try again.' };
-        var t2 = shGetRawToken() || '';
-        var res2 = await fetch(SH_STATS_ENDPOINT + path, {
+    async function send(tok) {
+        var withTok = Object.assign({}, payload);
+        if (tok) withTok.token = tok;
+        var res = await fetch(SH_STATS_ENDPOINT + path, {
             method: body === null || body === undefined ? 'GET' : 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-SH-Token': t2 },
-            // reuses withUser, which already carries the account session
-            body: (body === null || body === undefined) ? undefined : JSON.stringify(withUser)
+            headers: { 'Content-Type': 'application/json', 'X-SH-Token': tok || codeToken || userTok },
+            body: (body === null || body === undefined) ? undefined : JSON.stringify(withTok)
         });
-        try { d = await res2.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
+        var d;
+        // A non-JSON response - an empty 401, a Cloudflare error page, an HTML 502 -
+        // makes res.json() THROW, and the catch turned that into a bare "false" with
+        // no reason at all. Read the text and parse it, so the failure is reportable.
+        var text = '';
+        try { text = await res.text(); } catch (e) { text = ''; }
+        try { d = text ? JSON.parse(text) : {}; } catch (e) {
+            d = { ok: false, error: 'the server returned a non-JSON response (HTTP ' + res.status + ')' };
+        }
+        if (d && d.ok === undefined) d.ok = false;
+        return d;
     }
-    return d;
+
+    var result = await send(codeToken || userTok);
+    if (result && result.ok) return result;
+
+    // Refused. If an account session was sent, it is the real credential and the
+    // answer is no: report what the server said, not a request for a secret the
+    // owner may not need at all.
+    if (userTok) {
+        return { ok: false, error: (result && result.error) || 'the server refused this account session' };
+    }
+
+    // No account session, so the access code is the only way in. Ask for it - and
+    // shLoginRaw clears a code the server rejects, so the prompt can come back
+    // rather than leaving a stale one cached forever.
+    var got = await shLoginRaw();
+    if (!got) {
+        return { ok: false, error: 'Owner sign-in needed. Sign in as the owner account, or paste the access code when prompted.' };
+    }
+    return send(shGetRawToken() || '');
 }
 
 // owner pull of all cloud users -> { email: user } (no passwords).
@@ -5788,3 +5804,4 @@ window.__shUsersRef = function () { return users; };
 // Exported because the users panel's inline onclick= needs a global, and because
 // the escape hatch for a stale owner code should be reachable from a test.
 window.shForgetOwnerCode = shForgetOwnerCode;
+window.shOwnerApi = shOwnerApi;
