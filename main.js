@@ -303,11 +303,22 @@ function shClearUserToken() {
 }
 async function shMintUserToken(emailOrUsername, rawPassword) {
     if (!emailOrUsername || !rawPassword) return null;
-    try {
-        var d = await shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: rawPassword });
-        if (d && d.ok && d.token) return shSaveUserToken(d.token);
-    } catch (e) {}
-    return null;
+    async function attempt() {
+        try {
+            var d = await shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: rawPassword });
+            if (d && d.ok && d.token) return shSaveUserToken(d.token);
+        } catch (e) {}
+        return null;
+    }
+    var tok = await attempt();
+    if (tok) return tok;
+    // KV is eventually consistent. A signup that /sh/user-signup has already
+    // confirmed can still be invisible to /sh/user-login for a moment, so one
+    // retry. Without it a new account silently ends up with no session, and the
+    // admin panel then reports a permission problem for an account that was
+    // created seconds earlier.
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    return await attempt();
 }
 // LAST RESORT ONLY. Prefer the token saved at login.
 //
@@ -2540,7 +2551,10 @@ function handleSignup(event) {
     // A new account is signed in immediately, and the admin panel, the users list
     // and the cloud sync all authenticate with a session token. Start it now, while
     // the password is in hand, instead of leaving it to be re-derived later.
-    shMintUserToken(email, password);
+    // Chained off the mirror, NOT fired alongside it. /sh/user-login cannot
+    // authenticate an account /sh/user-signup has not finished writing, so
+    // minting here raced the mirror and lost every time.
+    pushToCloud().then(function () { shMintUserToken(email, password); });
     updateUIForUser(userData);
     console.log('✅ User signed up and logged in:', username);
 }
@@ -6038,4 +6052,7 @@ window.__shUsersRef = function () { return users; };
 window.shForgetOwnerCode = shForgetOwnerCode;
 window.shOwnerApi = shOwnerApi;
 window.runDiagnostics = runDiagnostics;
+window.shMintUserToken = shMintUserToken;
+window.shSaveUserToken = shSaveUserToken;
+window.shClearUserToken = shClearUserToken;
 window.copyDiagnostics = copyDiagnostics;
