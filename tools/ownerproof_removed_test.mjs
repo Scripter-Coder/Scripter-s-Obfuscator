@@ -80,8 +80,25 @@ check('main.js: shOwnerProof() is gone and unused', () => {
     assert.ok(!/shOwnerProof\(\)/.test(mainCode), 'shOwnerProof is still called');
 });
 
-check('main.js: no owner credential is put in a query string', () => {
+check('main.js: no PASSWORD-equivalent credential is put in a query string', () => {
     assert.ok(!/ownerProof=/.test(mainCode), 'main.js still appends ownerProof= to a URL');
+
+    // A note on what is now in a URL, because "no credential in the query string"
+    // is no longer literally true and pretending otherwise would be worse than
+    // saying it.
+    //
+    // A GET has no body, and the owner credential has to reach the worker without
+    // a custom header (a custom header is what the CORS preflight rejects). So it
+    // goes in the query as ?userToken=.
+    //
+    // That is a deliberate trade, and a much smaller one than ownerProof was:
+    // ownerProof was the base64 of the owner's PASSWORD - a credential that
+    // grants access on its own, forever, and would be replayable by anyone who
+    // ever saw a log line. A user session token expires, is scoped to one
+    // account, and is useless to anyone who is not that account. It still does
+    // land in Cloudflare's request log for a GET, which is a real cost and is
+    // why the POST path - which uses the body - is preferred wherever the worker
+    // accepts one.
 });
 
 check('main.js: no live ownerProof reference remains anywhere', () => {
@@ -92,9 +109,27 @@ check('main.js: no live ownerProof reference remains anywhere', () => {
         'live ownerProof references remain at lines: ' + hits.map(([n]) => n).join(', '));
 });
 
-check('main.js: owner admin calls go through shOwnerApi with a header', () => {
+check('main.js: owner admin calls go through shOwnerApi, with NO custom header', () => {
     assert.ok(/function shOwnerApi/.test(main), 'shOwnerApi helper is missing');
-    assert.ok(/'X-SH-Token':/.test(main), 'the owner token is not sent as a header');
+
+    // The credential travels in the body (POST) or the query string (GET), and
+    // NOT in a header.
+    //
+    // This assertion used to require the opposite. A custom request header is
+    // precisely what a browser preflight can reject, and the worker's
+    // Allow-Headers listed Content-Type only - so the preflight failed and the
+    // browser deleted every owner request before it left the page. From inside
+    // the app that was `TypeError: Failed to fetch`, which the client then
+    // reported as "Owner sign-in required". Four rounds of chasing that were
+    // four rounds of chasing the wrong thing.
+    //
+    // Body and query strings need no preflight beyond Content-Type, so they work
+    // against the worker that is deployed today as well as the fixed one.
+    assert.ok(!/'X-SH-Token'\s*:/.test(main),
+        "main.js still sends an X-SH-Token header - a browser preflight can reject it, which is the bug that broke every owner call");
+    assert.ok(/userToken=/.test(main),
+        'the owner credential is not placed in the query string for GET requests');
+
     // every owner route that used ownerProof must now use shOwnerApi
     for (const route of ['sh/users', 'sh/users-delete', 'sh/users-clear', 'sh/licenses', 'sh/killswitch', 'sh/license-reset', 'sh/license-ban']) {
         assert.ok(new RegExp('shOwnerApi\\(\\s*[\'"]' + route).test(main),

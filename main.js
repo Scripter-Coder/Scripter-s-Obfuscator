@@ -604,9 +604,13 @@ async function runDiagnostics() {
         var tok = shGetUserToken() || '';
         lines.push('--- ' + label + ' ---');
         try {
-            var res = await fetch(SH_STATS_ENDPOINT + path, {
+            // Same credential placement as shOwnerApi: body for POST, query for
+            // GET. A probe that authenticates differently from the code it is
+            // probing would report on a path the app never takes.
+            var full = SH_STATS_ENDPOINT + path + (body ? '' : (tok ? ('?userToken=' + encodeURIComponent(tok)) : ''));
+            var res = await fetch(full, {
                 method: method,
-                headers: { 'Content-Type': 'application/json', 'X-SH-Token': tok },
+                headers: { 'Content-Type': 'application/json' },
                 body: body === null || body === undefined
                     ? undefined
                     : JSON.stringify(Object.assign({}, body, { userToken: tok }))
@@ -653,14 +657,39 @@ function copyDiagnostics() {
 async function shOwnerApi(path, body) {
     var isGet = body === null || body === undefined;
     var userTok = shGetUserToken() || '';
+
+    // The credential travels in the BODY for a POST and the QUERY STRING for a
+    // GET. It used to travel in an X-SH-Token header, and a custom header is
+    // exactly what a browser preflight can reject: the worker's Allow-Headers
+    // listed Content-Type only, so the preflight failed and the browser deleted
+    // the request before it left the page.
+    //
+    // From inside the app that appeared as `TypeError: Failed to fetch` - which is
+    // not a 401, not a wrong password and not an auth problem - and the old code
+    // rendered it as "Owner sign-in required". Four rounds of chasing that were
+    // four rounds of chasing the wrong thing, because the real error was only
+    // ever visible in the browser console:
+    //
+    //     Request header field x-sh-token is not allowed by
+    //     Access-Control-Allow-Headers in preflight response.
+    //
+    // Body and query need no preflight beyond Content-Type, so the request
+    // survives on the worker that is deployed RIGHT NOW and keeps working once the
+    // header is allowed there too. That matters practically: the worker has to be
+    // pasted into Cloudflare by hand, and this page should not sit broken until
+    // somebody does.
+    var url = SH_STATS_ENDPOINT + path;
+    if (isGet && userTok) {
+        url += (url.indexOf('?') < 0 ? '?' : '&') + 'userToken=' + encodeURIComponent(userTok);
+    }
     var payload = Object.assign({}, body || {}, { userToken: userTok });
 
     var res;
     var text = '';
     try {
-        res = await fetch(SH_STATS_ENDPOINT + path, {
+        res = await fetch(url, {
             method: isGet ? 'GET' : 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-SH-Token': userTok },
+            headers: { 'Content-Type': 'application/json' },
             body: isGet ? undefined : JSON.stringify(payload)
         });
         // read as TEXT, then parse. res.json() throws on an empty body or an HTML
@@ -669,9 +698,17 @@ async function shOwnerApi(path, body) {
         // indistinguishable from a wrong password.
         try { text = await res.text(); } catch (e) { text = ''; }
     } catch (e) {
+        // A fetch that throws with no status never reached the worker. The one
+        // cause that actually happens here is a rejected CORS preflight, so it is
+        // named rather than left as "Failed to fetch".
         var netErr = {
-            ok: false, status: 0,
-            error: 'Could not reach ' + SH_STATS_ENDPOINT + ' - ' + ((e && e.message) || e)
+            ok: false,
+            status: 0,
+            error: 'The browser blocked the request before it reached ' + SH_STATS_ENDPOINT +
+                ' (' + ((e && e.message) || e) + ').' +
+                ' That is almost always a CORS preflight: the worker must list every' +
+                ' header this page sends in Access-Control-Allow-Headers. Open the' +
+                ' browser console - the exact reason is there.'
         };
         shLogOwnerCall({ method: isGet ? 'GET' : 'POST', path: path, status: 0, ok: false, body: netErr.error });
         return netErr;
@@ -686,15 +723,30 @@ async function shOwnerApi(path, body) {
 
     if (d && d.ok) return d;
 
-    // Report the REAL answer. The status and the body are both included, because
-    // a bare "not authorised" cannot be acted on and this has been guessed at
-    // enough times already.
+    // Report the REAL answer: status, path, and the server's own words. A bare
+    // "not authorised" cannot be acted on and this has been guessed at enough
+    // times already.
     var why = (d && d.error) || ('the server returned no reason');
+    var extra = '';
+    if (res.status >= 500) {
+        // A 5xx on an admin route is the signature of a worker that predates the
+        // auth-argument fix, where the GET credential path threw
+        // ReferenceError: request is not defined. Worth naming, because the fix
+        // is a redeploy and not anything the user can do from the page.
+        extra = '  The worker looks OLDER than this page. Its owner routes need the' +
+            ' current worker.js pasted into Cloudflare and redeployed.';
+    } else if (res.status === 401 || res.status === 403) {
+        extra = userTok
+            ? '  The account session was sent but the worker did not accept it as' +
+              ' the owner. Sign in as the owner account on THIS tab.'
+            : '  No account session was sent. Sign in as the owner account first.';
+    } else if (!userTok) {
+        extra = '  (no account session was sent - sign in as the owner account)';
+    }
     return {
         ok: false,
         status: res.status,
-        error: 'HTTP ' + res.status + ' from ' + path + ': ' + why +
-            (userTok ? '' : '  (no owner session was sent - sign in as the owner account)')
+        error: 'HTTP ' + res.status + ' from ' + path + ': ' + why + extra
     };
 }
 
