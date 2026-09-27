@@ -90,6 +90,7 @@ function shAskForCode() {
     if (existing) return Promise.resolve(existing);
     __shCodePrompt = new Promise(function(resolve) {
         var overlay = document.createElement('div');
+        shRegisterModal('shCode', overlay);
         overlay.className = 'modal-overlay';
         overlay.style.display = 'flex';
         overlay.style.zIndex = '4000';
@@ -276,6 +277,7 @@ async function shEnsureUserToken() {
 // supply the key to view the code. That makes free scripts much harder to
 // rip from the website while keeping them free to execute in-game.
 async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth) {
+    if (shRateGuard('upload', SH_RATE.upload.max, SH_RATE.upload.window, 'Too Many Uploads')) return;
     try {
         const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
         const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
@@ -459,7 +461,11 @@ async function shSyncUsersOnLogin(user, rawPassword) {
             });
         }
         if (currentUser && currentUser.username === 'Scripter') {
-            var cloud = await shPullCloudUsers();
+            var cloudRes = await shPullCloudUsers();
+        // shPullCloudUsers now returns {ok, users, reason}. Unwrap it here so
+        // the three call sites keep working on a plain map - `for (var k in
+        // cloud)` over the envelope would otherwise iterate "ok" and "users".
+        var cloud = cloudRes && cloudRes.ok ? cloudRes.users : null;
             if (cloud) {
                 // merge cloud into local: cloud is source of truth including deletes
                 // also fetch old users - cloud already returns ALL users, so prune locals missing in cloud
@@ -536,10 +542,17 @@ async function shPullCloudUsers() {
             for (var k in d.users) {
                 if (users[k] && users[k].password) d.users[k].password = users[k].password;
             }
-            return d.users;
+            return { ok: true, users: d.users };
         }
-        return null;
-    } catch (e) { return null; }
+        // An HTTP error still RESOLVES, so it arrives here as data rather than
+        // as a throw. Returning null on both paths is what let the caller render
+        // a hardcoded "503, the users database may be too large" for any failure
+        // at all - an owner token that has not loaded, a worker that is not
+        // deployed, an offline client, a 401. The reason is carried through now.
+        return { ok: false, reason: (d && d.error) || 'the cloud returned no users and no error' };
+    } catch (e) {
+        return { ok: false, reason: 'could not reach the cloud: ' + ((e && e.message) || e) };
+    }
 }
 
 // owner upsert/delete of cloud user records (plan changes, deletes)
@@ -720,6 +733,81 @@ function applyTheme(themeName) {
     }
 }
 
+// ============ MODAL REGISTRY ============
+// Modals used to be found by their z-index:
+//
+//     document.querySelector('.modal-overlay[style*="z-index: 4000"]')
+//
+// which returns the FIRST match in document order, not the modal the caller
+// opened. confirmDeleteAllBots() did the worst thing with that - see the comment
+// on it. Z-index is presentation; it must never be identity.
+var __shModals = {};
+function shRegisterModal(key, el) { __shModals[key] = el; return el; }
+function shGetModal(key) { return __shModals[key] || null; }
+function shCloseModal(key) {
+    var el = __shModals[key];
+    if (el && el.parentNode) el.remove();
+    delete __shModals[key];
+}
+
+// ============ CLIENT RATE LIMITING ============
+// Nothing guarded these actions. handleLogin, handleSignup, confirmCreateProject
+// and the key creators had no throttle, so a double-click fired one request per
+// event. The server does have buckets, but hitting one yields a 429 that most of
+// these paths discard - shApi resolves, the response is never read, and the user
+// sees nothing happen. A client-side limit makes the refusal legible BEFORE the
+// request goes out.
+//
+// The window lives in localStorage, not a variable, so reopening the tab does not
+// hand back a fresh budget.
+var SH_RATE_KEY = 'sh_rate_limits';
+function shRateLoad() {
+    try { return JSON.parse(localStorage.getItem(SH_RATE_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function shRateSave(m) {
+    try { localStorage.setItem(SH_RATE_KEY, JSON.stringify(m)); } catch (e) {}
+}
+// "12 Seconds" / "3 Minutes" / "2 Hours" - whichever reads best for the wait.
+function shRateHuman(ms) {
+    var s = Math.ceil(ms / 1000);
+    if (s < 60) return s + ' Second' + (s === 1 ? '' : 's');
+    var mnt = Math.ceil(s / 60);
+    if (mnt < 60) return mnt + ' Minute' + (mnt === 1 ? '' : 's');
+    var h = Math.ceil(mnt / 60);
+    return h + ' Hour' + (h === 1 ? '' : 's');
+}
+// null when allowed, or the message to show when it is not.
+function shRateLimit(action, max, windowMs) {
+    var now = Date.now();
+    var all = shRateLoad();
+    var hits = (all[action] || []).filter(function (x) { return now - x < windowMs; });
+    if (hits.length >= max) {
+        var waitMs = windowMs - (now - hits[0]);
+        return 'You are rate limited. Please wait ' + shRateHuman(waitMs) + ' before retrying.';
+    }
+    hits.push(now);
+    all[action] = hits;
+    shRateSave(all);
+    return null;
+}
+function shRateGuard(action, max, windowMs, title) {
+    var msg = shRateLimit(action, max, windowMs);
+    if (!msg) return false;
+    showNotification(title || 'Slow Down', msg, 'error', 7000);
+    return true;
+}
+var SH_RATE = {
+    signup:   { max: 5, window: 10 * 60 * 1000 },
+    login:    { max: 8, window: 5 * 60 * 1000 },
+    project:  { max: 6, window: 60 * 1000 },
+    script:   { max: 6, window: 60 * 1000 },
+    key:      { max: 8, window: 60 * 1000 },
+    keymass:  { max: 3, window: 60 * 1000 },
+    useradd:  { max: 5, window: 10 * 60 * 1000 },
+    upload:   { max: 8, window: 60 * 1000 },
+    password: { max: 4, window: 10 * 60 * 1000 }
+};
+
 // ============ NOTIFICATION SYSTEM ============
 function showNotification(title, message, type, duration) {
     type = type || 'info';
@@ -881,6 +969,7 @@ function saveKeys(keyData) {
 }
 
 function createKey(scriptId, keyType, expiresDays) {
+    if (shRateGuard('key', SH_RATE.key.max, SH_RATE.key.window, 'Too Many Keys')) return;
     var limitErr = checkPlanLimit('keys');
     if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return null; }
     var keyData = loadKeys();
@@ -1144,6 +1233,7 @@ function toggleUserKeysList() {
 
 // ---- Add User ----
 function openAddUserUI() {
+    if (shRateGuard('useradd', SH_RATE.useradd.max, SH_RATE.useradd.window, 'Too Many Users')) return;
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
@@ -1281,6 +1371,7 @@ function toggleKillswitch(btn) {
 window.toggleKillswitch = toggleKillswitch;
 
 function massGenerateKeys() {
+    if (shRateGuard('keymass', SH_RATE.keymass.max, SH_RATE.keymass.window, 'Too Many Key Batches')) return;
     var amount = parseInt(document.getElementById('massGenAmount').value, 10);
     var daysRaw = document.getElementById('massGenDays').value.trim();
     var note = document.getElementById('massGenNote').value.trim();
@@ -1865,6 +1956,19 @@ function renderExecutorDailyStats(a) {
 var liveChart = { paused: false, timer: null, history: {}, visible: {}, hover: null, canvas: null, ctx: null };
 
 function initLiveChart() {
+    // ADMIN ONLY.
+    //
+    // /v3/realtime_stats returns SITE-WIDE totals - totalExecutions,
+    // threatsBlocked, totalVisitors and a per-script top-N - and every logged-in
+    // user was polling it, so any registered Basic account could watch every
+    // other user's activity in real time. Every other admin surface in this file
+    // checks the owner username; these two panels checked nothing.
+    if (!currentUser || currentUser.username !== 'Scripter') {
+        var cards = document.querySelectorAll('.live-chart-card, .executor-daily-card');
+        for (var ci = 0; ci < cards.length; ci++) cards[ci].style.display = 'none';
+        if (liveChart.timer) { clearInterval(liveChart.timer); liveChart.timer = null; }
+        return;
+    }
     var canvas = document.getElementById('liveChartCanvas') || document.querySelector('#dashboard #liveChartCanvas') || document.querySelector('#tab-dashboard #liveChartCanvas');
     if (!canvas) return;
     // allow re-init after dashboard becomes visible (was hidden at first call)
@@ -2166,6 +2270,7 @@ function logout() {
 }
 
 function handleSignup(event) {
+    if (shRateGuard('signup', SH_RATE.signup.max, SH_RATE.signup.window, 'Too Many Signup Attempts')) return;
     event.preventDefault();
     var email = document.getElementById('signupEmail').value.trim();
     var username = document.getElementById('signupUsername').value.trim();
@@ -2234,6 +2339,7 @@ function handleSignup(event) {
 }
 
 function handleLogin(event) {
+    if (shRateGuard('login', SH_RATE.login.max, SH_RATE.login.window, 'Too Many Login Attempts')) return;
     event.preventDefault();
     var emailOrUsername = document.getElementById('loginEmail').value.trim();
     var password = document.getElementById('loginPassword').value;
@@ -2356,6 +2462,7 @@ function openResetPasswordUI() {
     setTimeout(function(){ var el=document.getElementById('resetCurrentPassword'); if(el) el.focus(); }, 100);
 }
 function handleResetPassword(event) {
+    if (shRateGuard('password', SH_RATE.password.max, SH_RATE.password.window, 'Too Many Password Changes')) return;
     event.preventDefault();
     if (!currentUser) return;
     var cur = document.getElementById('resetCurrentPassword').value;
@@ -2428,7 +2535,11 @@ function openUsersPanel() {
 // pull cloud users and re-render the open panels with the merged list
 // also fetches old users (cloud returns ALL) and prunes deleted ones so deletes sync across devices
 async function shRefreshUsersListFromCloud() {
-    var cloud = await shPullCloudUsers();
+    var cloudRes = await shPullCloudUsers();
+    // shPullCloudUsers returns {ok, users, reason} now. Unwrapped so the merge
+    // below still works on a plain map of user records - `for (var k in cloud)`
+    // over the envelope would iterate "ok" and "users".
+    var cloud = cloudRes && cloudRes.ok ? cloudRes.users : null;
     if (!cloud) return null;
     var changed = false;
     var selfChanged = null;
@@ -2480,7 +2591,12 @@ async function shRefreshUsersListFromCloud() {
 async function refreshUsersList() {
     if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can refresh the users list.', 'error'); return; }
     showNotification('Refreshing', 'Fetching the latest users from the cloud...', 'info', 3000);
-    var cloud = await shPullCloudUsers();
+    var cloudRes = await shPullCloudUsers();
+    // shPullCloudUsers returns {ok, users, reason} so a failure can say what
+    // actually went wrong. Unwrapped here so the merge below still works on a
+    // plain map - `for (var k in cloud)` over the envelope would iterate "ok"
+    // and "users" instead of the user records.
+    var cloud = cloudRes && cloudRes.ok ? cloudRes.users : null;
     if (cloud) {
         var changed = false;
         for (var k in cloud) {
@@ -2510,7 +2626,8 @@ async function refreshUsersList() {
         renderAdminUserListFull();
         showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total).', 'success', 3000);
     } else {
-        showNotification('Refresh Failed', 'The cloud did not respond (503). Try again in a minute - the users database may be too large. Use "Delete All Bot Users" to shrink it.', 'error', 9000);
+        var why = (cloudRes && cloudRes.reason) || 'the cloud did not answer';
+        showNotification('Refresh Failed', why, 'error', 9000);
     }
 }
 
@@ -2769,6 +2886,8 @@ function looksBotUser(email, u) {
 
 function deleteAllBotUsers() {
     if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete bot users.', 'error'); return; }
+    // Registered so confirmDeleteAllBots() can resolve THIS modal by name. It
+    // used to hunt for z-index 4000, which the access-code dialog also uses.
     buildBotExempt();
     var keep = {}, bots = [];
     for (var key in users) {
@@ -2804,8 +2923,18 @@ function deleteAllBotUsers() {
 }
 
 function confirmDeleteAllBots() {
-    var overlay = document.querySelector('.modal-overlay[style*="z-index: 4000"]');
-    if (!overlay) return;
+    // Resolved BY NAME, not by z-index.
+    //
+    // It used to do querySelector('.modal-overlay[style*="z-index: 4000"]'),
+    // and shAskForCode uses the same 4000. querySelector returns the FIRST match
+    // in document order, not the modal that was opened - so with the access-code
+    // dialog on screen this grabbed THAT. overlay.__keep was undefined, so
+    // keep = {}, and the next lines ran `users = {}; saveUsers()`.
+    //
+    // That deleted every account on the device, and it only needed the code
+    // dialog to be open first.
+    var overlay = shGetModal('deleteAllBots');
+    if (!overlay) { showNotification('Error', 'That dialog is no longer open.', 'error'); return; }
     var keep = overlay.__keep || {};
     var bots = overlay.__bots || [];
     overlay.remove();
@@ -3286,6 +3415,7 @@ function openCreateProject() {
 }
 
 function confirmCreateProject() {
+    if (shRateGuard('project', SH_RATE.project.max, SH_RATE.project.window, 'Too Many Projects')) return;
     var name = document.getElementById('projectName').value.trim();
     var description = document.getElementById('projectDescription').value.trim();
     var logsWebhook = document.getElementById('projectLogsWebhook').value.trim();
@@ -3916,6 +4046,7 @@ function renderGamePreview(info) {
 
 // ============ CONFIRM CREATE SCRIPT ============
 function confirmCreateScript(projectId) {
+    if (shRateGuard('script', SH_RATE.script.max, SH_RATE.script.window, 'Too Many Scripts')) return;
     var name = document.getElementById('scriptName').value.trim();
     var specialKey = document.getElementById('scriptSpecialKey') ? document.getElementById('scriptSpecialKey').value : '';
     var description = document.getElementById('scriptDescription').value.trim();

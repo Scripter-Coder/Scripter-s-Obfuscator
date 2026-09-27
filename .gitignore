@@ -51,3 +51,7 @@ server.cjs
 # _attrib.mjs, _fix*.mjs and friends do not exist any more. One-off scripts were
 # deleted as they were finished rather than ignored, because a file that is
 # ignored forever is a file nobody ever looks at again.
+
+# one-off patch scripts (see the commit messages - kept out of the tree)
+_apply.mjs
+_stepwise.mjs
