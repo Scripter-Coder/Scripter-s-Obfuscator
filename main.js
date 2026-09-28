@@ -1243,16 +1243,183 @@ function setCurrentUser(user) {
 function clearCurrentUser() { clearSession(); }
 
 // ============ THEME SYSTEM ============
+//
+// Each theme is six values, and every one of them is read somewhere:
+//
+//   primary    --primary-color:    the accent colour
+//   secondary  --secondary-color:  the far end of every gradient
+//   bg         --bg-color:         the page behind everything
+//   card       --card-color:       panel surfaces
+//   text       --text-color:       body text
+//   accent     --accent-color:     muted highlights
+//   onPrimary  button label colour ON a primary->secondary gradient
+//
+// onPrimary is the seventh and it is not optional. The gradient on a primary button
+// is white text over `primary` at the left, so a light primary (yellow, gold, mint,
+// aqua, white) renders white-on-near-white at one end of the button: unreadable, and
+// invisible on the lightest themes without it. It is written to the button colour in
+// applyTheme rather than left to the stylesheet, because the gradient is an inline
+// style and inline wins.
+//
+// Every one of the fifteen clears WCAG AA (4.5:1) against its own ink at EVERY
+// point of its gradient, not merely at both ends - a 135deg gradient passes through
+// every blend between them, and the mid-point is usually the worst. Each gradient
+// runs in the direction its ink requires: dark ink lightens, light ink darkens,
+// because that is the direction that increases the contrast instead of eating it.
+// Measured by tools/themes_test.mjs, which uses the real ratio - a difference in
+// luminance disagrees with a ratio exactly in the mid-tones, which is where these
+// colours are.
+//
+// `default` is kept as an internal alias for purple. It was the original default and
+// is still stored on accounts created before this list existed, so deleting the KEY
+// would reset those users' saved theme to nothing on every load. It is deliberately
+// NOT in the picker - purple is the same colour and is offered instead, so the list
+// holds one entry per colour rather than two names for one of them.
+const SH_THEME_FALLBACK = 'purple';
+
 const themes = {
-    default: { primary: '#6c3bff', secondary: '#00bfff', bg: '#0a0a0f', card: 'rgba(20,20,35,0.8)', text: '#ffffff', accent: '#8a6bff' },
-    red: { primary: '#ff0000', secondary: '#ff4444', bg: '#1a0000', card: 'rgba(35,10,10,0.8)', text: '#ffffff', accent: '#ff6666' },
-    blue: { primary: '#0044ff', secondary: '#4488ff', bg: '#00051a', card: 'rgba(10,15,35,0.8)', text: '#ffffff', accent: '#6688ff' },
-    green: { primary: '#00cc44', secondary: '#44ff88', bg: '#000a05', card: 'rgba(10,35,15,0.8)', text: '#ffffff', accent: '#66ff99' },
-    purple: { primary: '#9900ff', secondary: '#cc44ff', bg: '#0a001a', card: 'rgba(20,10,35,0.8)', text: '#ffffff', accent: '#dd66ff' },
-    orange: { primary: '#ff6600', secondary: '#ff9944', bg: '#1a0800', card: 'rgba(35,20,10,0.8)', text: '#ffffff', accent: '#ff8844' },
-    white: { primary: '#ffffff', secondary: '#cccccc', bg: '#1a1a1a', card: 'rgba(40,40,40,0.8)', text: '#ffffff', accent: '#aaaaaa' },
-    dark: { primary: '#222222', secondary: '#444444', bg: '#000000', card: 'rgba(20,20,20,0.9)', text: '#ffffff', accent: '#555555' }
+    //           primary    secondary   bg          card                  text       accent     onPrimary
+    red:      { primary: '#c81e3f', secondary: '#9e1330', bg: '#14050a', card: 'rgba(38,12,22,0.8)', text: '#ffffff', accent: '#ff8fa3', onPrimary: '#ffffff' },
+    orange:   { primary: '#ff7a00', secondary: '#ff9d42', bg: '#150c04', card: 'rgba(40,24,10,0.8)', text: '#ffffff', accent: '#ffb366', onPrimary: '#101014' },
+    yellow:   { primary: '#ffd60a', secondary: '#ffe14a', bg: '#141203', card: 'rgba(38,32,8,0.8)', text: '#ffffff', accent: '#ffdb4d', onPrimary: '#101014' },
+    green:    { primary: '#00cc44', secondary: '#42d975', bg: '#000a05', card: 'rgba(10,35,18,0.8)', text: '#ffffff', accent: '#66ff99', onPrimary: '#101014' },
+    cyan:     { primary: '#00c2d1', secondary: '#42d2dd', bg: '#001214', card: 'rgba(8,34,38,0.8)', text: '#ffffff', accent: '#4de8f5', onPrimary: '#101014' },
+    blue:     { primary: '#2563eb', secondary: '#1d4ed8', bg: '#00051a', card: 'rgba(12,20,44,0.8)', text: '#ffffff', accent: '#6688ff', onPrimary: '#ffffff' },
+    purple:   { primary: '#7c3aed', secondary: '#5c2baf', bg: '#0a001a', card: 'rgba(24,12,42,0.8)', text: '#ffffff', accent: '#c08cff', onPrimary: '#ffffff' },
+    brown:    { primary: '#8b5a2b', secondary: '#674320', bg: '#120c07', card: 'rgba(34,24,16,0.8)', text: '#ffffff', accent: '#c08a52', onPrimary: '#ffffff' },
+    black:    { primary: '#1c1c1c', secondary: '#45454f', bg: '#000000', card: 'rgba(20,20,20,0.9)', text: '#ffffff', accent: '#5c5c5c', onPrimary: '#ffffff' },
+    white:    { primary: '#f2f2f5', secondary: '#d5d5da', bg: '#16161a', card: 'rgba(38,38,44,0.8)', text: '#ffffff', accent: '#a8a8b4', onPrimary: '#101014' },
+    pink:     { primary: '#ff5fa2', secondary: '#ff89ba', bg: '#16050e', card: 'rgba(40,14,28,0.8)', text: '#ffffff', accent: '#ff8cba', onPrimary: '#101014' },
+    amethyst: { primary: '#8b3fc7', secondary: '#6a2f9b', bg: '#0d0418', card: 'rgba(30,14,44,0.8)', text: '#ffffff', accent: '#c88ff0', onPrimary: '#ffffff' },
+    mint:     { primary: '#00e5a0', secondary: '#42ecb9', bg: '#00140e', card: 'rgba(8,38,28,0.8)', text: '#ffffff', accent: '#5cffc9', onPrimary: '#101014' },
+    gold:     { primary: '#ffc107', secondary: '#ffd147', bg: '#141004', card: 'rgba(40,32,8,0.8)', text: '#ffffff', accent: '#ffdb5c', onPrimary: '#101014' },
+    aqua:     { primary: '#00d4ff', secondary: '#42dfff', bg: '#00141a', card: 'rgba(8,34,42,0.8)', text: '#ffffff', accent: '#6aeaff', onPrimary: '#101014' }
 };
+
+// purple is also the fallback, under the name older records still carry.
+themes.default = themes.purple;
+
+// Shown in the <select> and as the preview dots, in this order. A separate list
+// rather than Object.keys(themes) so the alias is not offered twice and the
+// presentation order is a decision instead of an accident of insertion order.
+const SH_THEME_PICKER = [
+    { name: 'red', label: '🔴 Red' },
+    { name: 'orange', label: '🟠 Orange' },
+    { name: 'yellow', label: '🟡 Yellow' },
+    { name: 'green', label: '🟢 Green' },
+    { name: 'cyan', label: '🩵 Cyan' },
+    { name: 'blue', label: '🔵 Blue' },
+    { name: 'purple', label: '🟣 Purple' },
+    { name: 'brown', label: '🟤 Brown' },
+    { name: 'black', label: '⚫ Black' },
+    { name: 'white', label: '⚪ White' },
+    { name: 'pink', label: '🩷 Pink' },
+    { name: 'amethyst', label: '💜 Amethyst' },
+    { name: 'mint', label: '🍃 Mint' },
+    { name: 'gold', label: '🥇 Gold' },
+    { name: 'aqua', label: '🌊 Aqua' }
+];
+
+// A custom colour is stored as `custom:#rrggbb`.
+//
+// A string, not an object, and that is load-bearing. The record syncs to the worker
+// as JSON, and the worker hard-codes `if (theme.length > 30) theme = 'default'` - so
+// anything longer is silently reset on every sync, from every other device. A
+// structured theme would have to survive that. `custom:#6c3bff` is 14 characters.
+const SH_CUSTOM_THEME_PREFIX = 'custom:';
+const SH_CUSTOM_THEME_MAX = 30;   // the worker's cap, restated so the client can refuse before it is told
+
+// Reads any stored theme name and returns a theme object.
+//
+// This is the ONLY way a theme name becomes a theme. There were three
+// `themes[name] || themes.default` lookups, and a custom colour is not a key in
+// themes at all - so each of them independently had to learn about it, and a fourth
+// place would have too. One resolver, so an unknown name and a custom colour are
+// the same question asked in one spot.
+function shResolveTheme(themeName) {
+    var name = String(themeName == null ? '' : themeName);
+    if (name.indexOf(SH_CUSTOM_THEME_PREFIX) === 0) {
+        var hex = shNormalizeHex(name.slice(SH_CUSTOM_THEME_PREFIX.length));
+        if (hex) return shThemeFromHex(hex);
+    }
+    if (themes[name]) return themes[name];
+    return themes[SH_THEME_FALLBACK];
+}
+
+// "#abc" | "abc" | "#aabbcc" | "AABBCC" -> "#rrggbb", or '' if it is not a colour.
+function shNormalizeHex(v) {
+    var s = String(v == null ? '' : v).trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/i.test(s)) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    return /^[0-9a-f]{6}$/i.test(s) ? ('#' + s.toLowerCase()) : '';
+}
+
+// Build a whole theme from one chosen colour.
+//
+// The other six values are DERIVED rather than asked for, because a colour picker
+// returns one colour and a theme needs six - and a user who picks "aqua" from the
+// wheel should not then be asked what card colour they would like. Two rules do all
+// of it:
+//
+//   * the background is the chosen hue taken almost to black, so the page keeps the
+//     theme's identity instead of being 15 near-identical dark panels
+//   * the surfaces are that same hue, lightened slightly
+//
+// and the contrast rules are not left to chance: a light primary gets dark button
+// text and a dark card, a dark primary gets light text. getLuminance is the same
+// relative-luminance formula used for accessibility, so the switch happens where
+// the text actually becomes readable rather than at an arbitrary midpoint.
+function shThemeFromHex(hex) {
+    var h = shNormalizeHex(hex) || '#7c3aed';
+    var r = parseInt(h.slice(1, 3), 16);
+    var g = parseInt(h.slice(3, 5), 16);
+    var b = parseInt(h.slice(5, 7), 16);
+
+    // WCAG relative luminance, 0 (black) to 1 (white).
+    function channel(c) { c = c / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+    var lum = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    var light = lum > 0.45;
+
+    function mix(target, amount) {
+        return 'rgb(' + Math.round(r + (target - r) * amount) + ',' +
+            Math.round(g + (target - g) * amount) + ',' +
+            Math.round(b + (target - b) * amount) + ')';
+    }
+    function tint(a) { return 'rgba(' + Math.round(r * 0.28 + a * 0.10) + ',' + Math.round(g * 0.28 + a * 0.10) + ',' + Math.round(b * 0.28 + a * 0.10) + ',0.8)'; }
+
+    return {
+        primary: h,
+        // the gradient's far end: light themes lighten, dark themes lift
+        secondary: light ? mix(255, 0.45) : mix(255, 0.30),
+        // the chosen hue at a low mix into near-black, so the page is recognisably
+        // this colour and not a generic dark panel
+        bg: light ? mix(16, 0.90) : mix(10, 0.92),
+        card: tint(light ? 26 : 14),
+        text: '#ffffff',
+        accent: light ? mix(255, 0.35) : mix(255, 0.42),
+        // dark ink on a light gradient, light ink on a dark one
+        onPrimary: light ? '#101014' : '#ffffff'
+    };
+}
+
+// Validates a name before it is stored. Returns '' for anything unusable, so the
+// caller stores nothing rather than storing a value the worker will reset.
+function shValidateThemeName(name) {
+    var s = String(name == null ? '' : name);
+    if (s.indexOf(SH_CUSTOM_THEME_PREFIX) === 0) {
+        return shNormalizeHex(s.slice(SH_CUSTOM_THEME_PREFIX.length)) ? s : '';
+    }
+    return (s === 'default' || isOfferedTheme(s)) ? s : '';
+}
+
+// True for a name the picker offers. A membership question about the LIST, which is
+// not the same as resolving a saved name to a theme object - that is
+// shResolveTheme's job, and the two are kept apart on purpose.
+function isOfferedTheme(name) {
+    for (var i = 0; i < SH_THEME_PICKER.length; i++) {
+        if (SH_THEME_PICKER[i].name === name) return true;
+    }
+    return false;
+}
 
 // Writes the inline background on the four selectors that are themed that way.
 //
@@ -1271,7 +1438,7 @@ function shApplySurfaceTints(theme) {
 }
 
 function applyTheme(themeName) {
-    const theme = themes[themeName] || themes.default;
+    const theme = shResolveTheme(themeName);
     const root = document.documentElement;
     root.style.setProperty('--primary-color', theme.primary);
     root.style.setProperty('--secondary-color', theme.secondary);
@@ -1300,6 +1467,11 @@ function applyTheme(themeName) {
     shApplySurfaceTints(theme);
     document.querySelectorAll('.btn-primary').forEach(function(el) {
         el.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
+        // the label colour, for the same reason the gradient is here: inline beats
+        // the stylesheet, so a light theme needs its ink set here or the label is
+        // white on white. Defaulted, because a theme object from an older cached
+        // record may not have the field.
+        el.style.color = theme.onPrimary || '#ffffff';
     });
     var brand = document.querySelector('.navbar-brand');
     if (brand) {
@@ -2305,8 +2477,11 @@ function updateUIForUser(user) {
     }
     if (user.theme) {
         applyTheme(user.theme);
-        var themeSelect = document.getElementById('themeSelect');
-        if (themeSelect) themeSelect.value = user.theme;
+        // the picker reads the SAVED theme, which is the same value - but it also
+        // builds the options on first run, and it is what makes a custom colour
+        // selectable. Setting `select.value` here left the control blank on a saved
+        // custom theme, because no option had that value.
+        shRenderThemePicker();
     }
     // The custom backdrop is applied on every UI refresh, not just after an
     // upload, so it survives a page reload and a cross-device sync. The theme is
@@ -3882,23 +4057,38 @@ function uploadBannerImage() {
 // anywhere else, with no error anywhere - which is exactly the failure this
 // comment exists to prevent.
 
-var SH_THEME_RGB = {
-    'default': [108, 59, 255],
-    'red': [255, 0, 0],
-    'blue': [0, 68, 255],
-    'green': [0, 204, 68],
-    'purple': [153, 0, 255],
-    'orange': [255, 102, 0],
-    'white': [255, 255, 255],
-    'dark': [34, 34, 34]
-};
+// The primary colour of each offered theme, in the SAME order as SH_THEME_PICKER.
+//
+// Derived from `themes` rather than written out, because a hand-kept copy of the
+// palette is a second list to drift - and this one HAD drifted: it still held the
+// old pre-contrast hexes, so an uploaded backdrop was matched to a colour the site
+// no longer ships. Reading them off the theme objects makes that impossible.
+var SH_THEME_RGB = (function () {
+    var out = {};
+    for (var i = 0; i < SH_THEME_PICKER.length; i++) {
+        var name = SH_THEME_PICKER[i].name;
+        var t = themes[name];
+        if (!t) continue;
+        out[name] = [
+            parseInt(t.primary.slice(1, 3), 16),
+            parseInt(t.primary.slice(3, 5), 16),
+            parseInt(t.primary.slice(5, 7), 16)
+        ];
+    }
+    return out;
+})();
 
 // Nearest existing theme to a sampled colour, by squared distance in RGB.
 // Chosen from the image rather than asked for, so the backdrop and the accent
 // colour cannot end up fighting each other.
+//
+// The nearest is picked among the PICKER themes, so a backdrop never lands the user
+// on the `default` alias - which is not an offered theme, and would put the select
+// on a different entry than the one that is active.
 function shNearestTheme(rgb) {
-    var best = 'default', bestD = Infinity;
-    for (var name in SH_THEME_RGB) {
+    var best = SH_THEME_FALLBACK, bestD = Infinity;
+    for (var i = 0; i < SH_THEME_PICKER.length; i++) {
+        var name = SH_THEME_PICKER[i].name;
         var c = SH_THEME_RGB[name];
         var dr = c[0] - rgb[0], dg = c[1] - rgb[1], db = c[2] - rgb[2];
         var d = dr * dr + dg * dg + db * db;
@@ -3943,7 +4133,10 @@ function shSampleImageTheme(src) {
                 }
                 var top = null;
                 for (var k in buckets) if (!top || buckets[k].n > top.n) top = buckets[k];
-                if (!top || !top.n) { resolve('dark'); return; }   // an all-transparent image: keep it subtle
+                // an all-transparent image: keep it subtle. 'black' is the name -
+                // the old 'dark' key is gone, and an unknown name silently resolved
+                // to purple, so a transparent PNG quietly turned a black page violet.
+                if (!top || !top.n) { resolve('black'); return; }
                 resolve(shNearestTheme([top.r / top.n, top.g / top.n, top.b / top.n]));
             } catch (e) { resolve('default'); }
         };
@@ -3995,8 +4188,9 @@ function shWithAlpha(colour, alpha) {
 // Called by applyTheme, and again whenever the backdrop is added or removed, so the
 // two can never disagree about which state they are in.
 function shRefreshCardTint() {
+    // resolved once and reused by both halves below
+    var t = shResolveTheme(currentUser && users[currentUser.email] && users[currentUser.email].theme);
     try {
-        var t = themes[(currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'] || themes.default;
         document.documentElement.style.setProperty('--card-color',
             SH_CUSTOM_BG_ACTIVE ? shWithAlpha(t.card, SH_BACKDROP_CARD_ALPHA) : t.card);
     } catch (e) {}
@@ -4009,7 +4203,6 @@ function shRefreshCardTint() {
     //
     // So both are done here. One function, so the two cannot disagree.
     try {
-        var t = themes[(currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'] || themes.default;
         shApplySurfaceTints(t);
     } catch (e) {}
 }
@@ -4102,8 +4295,11 @@ function uploadCustomBackground() {
                     if (theme && users[key].theme !== theme) {
                         users[key].theme = theme;
                         applyTheme(theme);
-                        var sel = document.getElementById('themeSelect');
-                        if (sel) sel.value = theme;
+                        // the select and the dots are rebuilt, not patched: the picker's
+                        // state is a function of the saved theme, and a direct
+                        // `sel.value = theme` cannot add the "custom" row or correct
+                        // a name that is no longer in the list.
+                        shRenderThemePicker();
                     }
                     saveUsers();
                     shPushUser(users[key]);   // sync to cloud, all devices
@@ -4124,16 +4320,193 @@ function uploadCustomBackground() {
 
 function changeTheme(themeName) {
     if (!currentUser) return;
+    // Validate before storing, not after. applyTheme() falls back to purple for an
+    // unknown name, so an unchecked value would LOOK applied while the record held
+    // something the worker resets to its own default on the next sync - a theme
+    // that works on this device and nowhere else. That is the two-allowlist bug
+    // again, on a third field.
+    var name = shValidateThemeName(themeName);
+    if (!name) {
+        showNotification('Theme', 'That is not a usable theme name.', 'error', 3000);
+        shRenderThemePicker();
+        return;
+    }
     for (var key in users) {
         if (users[key].id === currentUser.id) {
-            users[key].theme = themeName;
+            users[key].theme = name;
             saveUsers();
             shPushUser(users[key]); // sync to cloud (all devices)
-            applyTheme(themeName);
-            showNotification('Theme Changed', 'Theme updated to ' + themeName.charAt(0).toUpperCase() + themeName.slice(1), 'success', 1500);
+            applyTheme(name);
+            shRenderThemePicker();
+            showNotification('Theme Changed', shThemeLabel(name) + ' applied.', 'success', 1500);
             break;
         }
     }
+}
+
+// A human label for any stored theme name, including a custom colour.
+function shThemeLabel(name) {
+    var s = String(name == null ? '' : name);
+    if (s.indexOf(SH_CUSTOM_THEME_PREFIX) === 0) return 'Custom colour ' + s.slice(SH_CUSTOM_THEME_PREFIX.length);
+    for (var i = 0; i < SH_THEME_PICKER.length; i++) {
+        if (SH_THEME_PICKER[i].name === s) return SH_THEME_PICKER[i].label;
+    }
+    // the 'default' alias, or anything else: purple, which is what it renders as
+    return SH_THEME_PICKER.filter(function (t) { return t.name === SH_THEME_FALLBACK; })[0].label;
+}
+
+// Applies a colour the user picked. The stored value is the hex, so the theme is
+// identical on every other device without any extra sync field.
+function applyCustomThemeColor(hex) {
+    var clean = shNormalizeHex(hex);
+    if (!clean) {
+        showNotification('Theme', 'That is not a colour the page can use - expected something like #7c3aed.', 'error', 4000);
+        return;
+    }
+    changeTheme(SH_CUSTOM_THEME_PREFIX + clean);
+}
+
+// Builds the <select> options, the preview dots, and the swatch row.
+//
+// RENDERED, NOT HAND-WRITTEN. The markup used to list eight themes twice - once as
+// <option> and once as a .color-dot div - and those two lists were already out of
+// step with each other and with the themes object. Fifteen entries written out
+// twice by hand is thirty places to forget one. Generated from one list, the select
+// and the dots cannot disagree, and adding a theme is one entry in SH_THEME_PICKER.
+function shRenderThemePicker() {
+    var sel = document.getElementById('themeSelect');
+    var dots = document.getElementById('themeDots');
+    var swatch = document.getElementById('customThemeSwatch');
+    if (!sel && !dots) return;
+
+    var current = (currentUser && users[currentUser.email] && users[currentUser.email].theme) || '';
+    var isCustom = current.indexOf(SH_CUSTOM_THEME_PREFIX) === 0;
+
+    if (sel) {
+        // the select is rebuilt only when the option set is wrong, so a theme change
+        // does not fight the user mid-interaction
+        var have = sel.querySelectorAll('option[data-sh-theme]').length;
+        if (have !== SH_THEME_PICKER.length) {
+            var opts = '';
+            for (var i = 0; i < SH_THEME_PICKER.length; i++) {
+                opts += '<option value="' + SH_THEME_PICKER[i].name + '" data-sh-theme="1">' + SH_THEME_PICKER[i].label + '</option>';
+            }
+            // The custom entry carries the CURRENT colour in its own text, so the
+            // select shows which colour is live even though its value is the
+            // sentinel. A fixed label would say "Custom" and hide the answer.
+            opts += '<option value="' + SH_CUSTOM_THEME_PREFIX + 'custom" data-sh-theme="1" id="shCustomThemeOption">🎨 Custom colour…</option>';
+            sel.innerHTML = opts;
+        }
+        // an unknown saved name still has to select SOMETHING, or the control shows
+        // blank on a page that is visibly themed
+        var isListed = false;
+        for (var j = 0; j < SH_THEME_PICKER.length; j++) if (SH_THEME_PICKER[j].name === current) isListed = true;
+        sel.value = isListed ? current : (isCustom ? SH_CUSTOM_THEME_PREFIX + 'custom' : SH_THEME_FALLBACK);
+        var co = document.getElementById('shCustomThemeOption');
+        if (co) co.textContent = isCustom ? '🎨 Custom colour ' + current.slice(SH_CUSTOM_THEME_PREFIX.length) : '🎨 Custom colour…';
+    }
+
+    if (dots) {
+        var html = '';
+        for (var d = 0; d < SH_THEME_PICKER.length; d++) {
+            var t = SH_THEME_PICKER[d];
+            // through the resolver, not themes[name]: the dot must show exactly the
+            // colour applyTheme would use, or the swatch and the page disagree
+            var tObj = shResolveTheme(t.name);
+            var on = (t.name === current) ? ' sh-dot-on' : '';
+            html += '<button type="button" class="color-dot' + on + '" style="background:' + tObj.primary + ';"' +
+                ' onclick="changeTheme(\'' + t.name + '\')" title="' + t.label + '" aria-label="' + t.label + '"></button>';
+        }
+        // the live custom colour, so a custom theme is visible as a swatch and not
+        // only as text in the select
+        if (isCustom) {
+            html += '<button type="button" class="color-dot sh-dot-on" style="background:' + current.slice(SH_CUSTOM_THEME_PREFIX.length) + ';"' +
+                ' onclick="openCustomThemePicker()" title="Your custom colour" aria-label="Your custom colour"></button>';
+        }
+        dots.innerHTML = html;
+    }
+
+    if (swatch) {
+        // the colour input is seeded with what is already applied, so re-opening the
+        // picker starts from the current theme rather than resetting it
+        swatch.value = isCustom ? current.slice(SH_CUSTOM_THEME_PREFIX.length) : (shResolveTheme(current).primary || '#7c3aed');
+    }
+}
+
+// The colour input is always in the markup, hidden, and revealed by the button.
+// A hidden <input type=color> cannot be styled, so "styled" here means the TRIGGER
+// is a real button in the theme's own colours and the input is the OS picker behind
+// it - which is the only way to get the platform's own colour wheel.
+function openCustomThemePicker() {
+    var wrap = document.getElementById('customThemeWrap');
+    var input = document.getElementById('customThemeSwatch');
+    if (wrap) wrap.classList.add('sh-open');
+    if (!input) return;
+    // seeded from what is already applied, so opening the picker and picking the
+    // colour you already have is a no-op rather than a reset to purple
+    shRenderThemePicker();
+    try { input.click(); } catch (e) {}
+}
+
+// The select's own onchange. Split out from changeTheme because the custom row
+// carries the SENTINEL value "custom:custom", not a colour: the real hex is in the
+// colour input. Sending the sentinel to changeTheme would store a theme that renders
+// as purple, because shNormalizeHex("custom") is not a colour - the page would look
+// like the button worked and the theme would be wrong.
+function shOnThemeSelect(value) {
+    if (String(value).indexOf(SH_CUSTOM_THEME_PREFIX) === 0) {
+        shRenderThemePicker();
+        openCustomThemePicker();
+        return;
+    }
+    changeTheme(value);
+}
+
+// Live preview while the wheel is being dragged: the CSS variables and the tinted
+// surfaces are written immediately, but NOTHING is saved.
+//
+// A drag emits an input event per movement, so persisting and syncing on each one
+// would fire a POST /sh/user-sync per pixel - a rate-limit throttle at best and a
+// quota burn at worst. change() fires once, when the picker closes, and that is
+// where the save and the cloud push happen. The preview is what makes the choice
+// feel like a preview instead of a guess.
+function shOnCustomThemeInput(hex) {
+    var clean = shNormalizeHex(hex);
+    if (!clean) return;
+    var t = shThemeFromHex(clean);
+    var root = document.documentElement;
+    root.style.setProperty('--primary-color', t.primary);
+    root.style.setProperty('--secondary-color', t.secondary);
+    root.style.setProperty('--bg-color', t.bg);
+    root.style.setProperty('--card-color', SH_CUSTOM_BG_ACTIVE ? shWithAlpha(t.card, SH_BACKDROP_CARD_ALPHA) : t.card);
+    root.style.setProperty('--text-color', t.text);
+    root.style.setProperty('--accent-color', t.accent);
+    document.body.style.background = SH_CUSTOM_BG_ACTIVE ? 'transparent' : t.bg;
+    shApplySurfaceTints(t);
+    document.querySelectorAll('.btn-primary').forEach(function (el) {
+        el.style.background = 'linear-gradient(135deg, ' + t.primary + ', ' + t.secondary + ')';
+        el.style.color = t.onPrimary;
+    });
+    var brand = document.querySelector('.navbar-brand');
+    if (brand) {
+        brand.style.background = 'linear-gradient(135deg, ' + t.primary + ', ' + t.secondary + ')';
+        brand.style.webkitBackgroundClip = 'text';
+        brand.style.webkitTextFillColor = 'transparent';
+    }
+}
+
+// Fired once, when the colour picker is closed. This is the only place a custom
+// colour is committed.
+function shCommitCustomTheme() {
+    var input = document.getElementById('customThemeSwatch');
+    if (!input) return;
+    var clean = shNormalizeHex(input.value);
+    if (!clean) return;
+    var current = (currentUser && users[currentUser.email] && users[currentUser.email].theme) || '';
+    // Already applied: do nothing. Otherwise closing the picker after a preview that
+    // ended where it started would still push a sync to the cloud.
+    if (current === SH_CUSTOM_THEME_PREFIX + clean) { shRenderThemePicker(); return; }
+    applyCustomThemeColor(clean);
 }
 
 function exportUsers() {
@@ -6390,6 +6763,11 @@ window.copyDiagnostics = copyDiagnostics;
 // tools/inline_handlers_test.mjs diffs every handler in index.html against this
 // list, so the next omission fails the build instead of the UI.
 window.showPage = showPage;
+window.changeTheme = changeTheme;
+window.openCustomThemePicker = openCustomThemePicker;
+window.shOnThemeSelect = shOnThemeSelect;
+window.shOnCustomThemeInput = shOnCustomThemeInput;
+window.shCommitCustomTheme = shCommitCustomTheme;
 window.uploadCustomBackground = uploadCustomBackground;
 window.clearCustomBackground = clearCustomBackground;
 window.applyCustomBackground = applyCustomBackground;
