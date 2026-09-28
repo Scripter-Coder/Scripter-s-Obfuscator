@@ -60,8 +60,20 @@ for (const [n, re] of [
   else {
     let unguarded = 0;
     for (const b of branches) {
+      // Two equivalent guard shapes are accepted, and both are correct:
+      //
+      //   if (!lu && !shSkipRemoved(cu)) { users[k] = cu; ... }   // combined
+      //   if (!lu) { if (shSkipRemoved(cu)) return false;          // early return
+      //              users[k] = cu; ... }
+      //
+      // The second is what the four merge loops were collapsed into
+      // (shMergeCloudUser). It is the same rule, so a checker that only knows the
+      // first shape reports a correctly-guarded branch as a resurrection path - and
+      // a false positive here trains the reader to ignore the test that exists to
+      // stop deleted accounts coming back.
       const guarded = /!lu && !shSkipRemoved\(/.test(b.text) ||
-                      /if \(!lu\) return/.test(b.text);
+                      /if \(!lu\) return/.test(b.text) ||
+                      (/if \(!lu\)/.test(b.text) && /if \(shSkipRemoved\(.*\)\) return/.test(b.text));
       if (!guarded) { unguarded++; console.log('         unguarded at line ' + b.line + ': ' + b.text.split('\n')[0].trim()); }
     }
     if (unguarded === 0) ok('all ' + branches.length + ' cloud re-add branches skip removed accounts');

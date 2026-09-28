@@ -359,6 +359,46 @@ See D15.
 | `GET /sh/c/<id>/<i>` | KV chunk, chain-gated, forward-only |
 | `GET /sh/g/<id>/<i>` | GitHub part, chain-gated, forward-only |
 | `GET /sh/health` | Reports `stateLayer` and `delivery` |
+| `GET /sh/users` | Owner listing. Metadata only — see below |
+| `GET /sh/user-images` | Owner. The pictures, `?offset=&limit=` a page at a time |
+
+### `GET /sh/users` does not return images
+
+The owner listing returns **metadata only** — no `profileImage`, `bannerImage`
+or `customBackground`. `?images=1` restores the old full shape.
+
+The reason is that the whole users table is a single KV entry. A user record
+carries up to three base64 images, and `customBackground` is a full-page backdrop
+that is routinely 1–2 MB of base64. The listing response was therefore the sum of
+every image on the site, and no row could be drawn until all of it had arrived and
+been parsed. On a small table that was invisible; once real users with real images
+existed, "Refresh from Cloud" became an unbounded download with no progress and no
+timeout.
+
+The admin panel needs the picture on each row, so the images are not gone — they
+are a separate paged request:
+
+```
+GET /sh/user-images?offset=0&limit=8
+  -> { ok, total, offset, limit, users: { email: { profileImage, bannerImage, customBackground } } }
+```
+
+`limit` is clamped server-side to 50. The client renders the panel from the listing
+and fills each avatar in as its page lands, so the first row appears in one round
+trip and a failed page costs one batch of avatars rather than the whole refresh.
+
+Two related changes came with it:
+
+- **`customBackground` is now capped like the other two images.** The cap was
+  written out three times, field by field, and the third copy missed it —
+  `sanitizeUserRecord` capped all three, `publicUser` and `storageSafeUser` capped
+  two. The largest field on the record was the only uncapped one. It is now one
+  list, `SH_IMAGE_FIELDS`, read by all three.
+- **A plan change can no longer erase a user's avatar.** `POST /sh/users` took the
+  client's whole local record, so a plan change from a device that had never
+  received a user's image wrote an empty one over the server's copy — silently, with
+  no error on either side. Image fields now come from the stored record; only
+  `/sh/user-sync`, from the user's own device, can change them.
 
 ### Auth / license (owner, unless noted)
 

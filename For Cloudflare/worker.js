@@ -1325,21 +1325,41 @@ async function maybeReplaceOld(env, replaces) {
 // bigger is dropped from CLOUD SYNC (it stays in the user's own
 // browser localStorage where the UI reads it anyway).
 const SH_IMAGE_CAP = 2_000_000; // ~2MB of base64 per image field (increased from 200KB to accommodate normal images)
+// EVERY base64 image field a user record can carry.
+//
+// This was spelled out field-by-field at each of the three places that enforce the
+// cap, and they had already drifted. sanitizeUserRecord capped profileImage,
+// bannerImage AND customBackground; publicUser and storageSafeUser capped only the
+// first two. So a record that reached the map by any route other than the sanitiser
+// - and the owner POST /sh/users upsert is a bare spread with no sanitiser at all -
+// kept an unbounded customBackground.
+//
+// customBackground is a FULL-PAGE BACKDROP. One of those is several MB of base64,
+// every user record lives in ONE KV entry, and GET /sh/users ships the whole map to
+// every admin device. So one uncapped field is enough to make "Refresh from Cloud"
+// a multi-minute download that never appears to finish.
+//
+// One list, read by all three, is the only way a field can be added to the
+// sanitiser and forgotten everywhere else. This is the same lesson as the worker's
+// two user-field allowlists (W18) and the client's four merge loops.
+const SH_IMAGE_FIELDS = ['profileImage', 'bannerImage', 'customBackground'];
+function capImageFields(rec) {
+    if (!rec || typeof rec !== 'object') return rec;
+    for (const k of SH_IMAGE_FIELDS) {
+        if (typeof rec[k] === 'string' && rec[k].length > SH_IMAGE_CAP) rec[k] = '';
+    }
+    return rec;
+}
 function publicUser(u) {
     const c = { ...u };
     delete c.password;
-    if (typeof c.profileImage === 'string' && c.profileImage.length > SH_IMAGE_CAP) c.profileImage = '';
-    if (typeof c.bannerImage === 'string' && c.bannerImage.length > SH_IMAGE_CAP) c.bannerImage = '';
-    return c;
+    return capImageFields(c);
 }
 // full record for STORAGE: trim oversized images too (they would kill
 // the next KV put), keep everything else intact
 function storageSafeUser(u) {
     if (!u || typeof u !== 'object') return u;
-    const c = { ...u };
-    if (typeof c.profileImage === 'string' && c.profileImage.length > SH_IMAGE_CAP) c.profileImage = '';
-    if (typeof c.bannerImage === 'string' && c.bannerImage.length > SH_IMAGE_CAP) c.bannerImage = '';
-    return c;
+    return capImageFields({ ...u });
 }
 // save the users map WITHOUT ever throwing a blank 500: oversized maps
 // are repaired by dropping image payloads (in size order) until the
@@ -1402,20 +1422,34 @@ async function syncUsersToD1(env, map) {
 async function saveUsersMap(env, map) {
     let json = JSON.stringify(map);
     if (json.length > KV_MAX_VALUE - 1000) {
-        // emergency repair: strip ALL images, then retry
+        // Step 1: bring every image back under the per-field cap.
         for (const email of Object.keys(map)) map[email] = storageSafeUser(map[email]);
         json = JSON.stringify(map);
     }
     if (json.length > KV_MAX_VALUE - 1000) {
-        // still too big: drop the largest non-essential fields
+        // Step 2: drop the images entirely.
+        //
+        // This step did not exist. The second pass was a byte-for-byte repeat of
+        // the first - same two fields, same comparison - so on a map whose images
+        // were all already UNDER the cap but numerous enough to add up, it changed
+        // nothing, `json` was unchanged, and the PUT went out oversized and threw.
+        // The one escape hatch a "the value is too big" error needs is the one that
+        // actually makes it smaller.
+        //
+        // It costs an avatar. That is the right trade against losing every account:
+        // the local copy is what the UI renders, so the device that set the image
+        // keeps showing it, and the owner can re-upload it.
         for (const email of Object.keys(map)) {
             const u = map[email];
-            if (u && typeof u === 'object') {
-                if (typeof u.profileImage === 'string' && u.profileImage.length > SH_IMAGE_CAP) u.profileImage = '';
-                if (typeof u.bannerImage === 'string' && u.bannerImage.length > SH_IMAGE_CAP) u.bannerImage = '';
+            if (!u || typeof u !== 'object') continue;
+            for (const k of SH_IMAGE_FIELDS) {
+                if (typeof u[k] === 'string' && u[k]) u[k] = '';
             }
         }
         json = JSON.stringify(map);
+        console.warn('[ScripterHub] users map was ' + JSON.stringify(map).length +
+            ' bytes of records; image payloads were dropped to fit the ' + KV_MAX_VALUE +
+            ' byte KV limit. Avatars on the server were cleared - re-upload them from a device that still has them.');
     }
     await env.LOADERS_KV.put(USERS_KV_KEY, json);
     // Authoritative write for the gate's live account check. Wrapped so a D1
@@ -4016,12 +4050,86 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         }
 
         // ---------- GET /sh/users : owner pull of ALL users ----------
+        //
+        // WHY THE IMAGE FIELDS ARE NOT IN THE DEFAULT RESPONSE
+        //
+        // This route sent every user record with its base64 images attached. A
+        // record carries up to three of them - profile, banner, and a full-page
+        // customBackground that is routinely 1-2MB of base64 - and there is no
+        // per-user KV entry to fetch them from: the whole table is ONE value. So
+        // the response size is the sum of every image on the site, and the client
+        // cannot render a single row until all of it has arrived and parsed.
+        //
+        // That is what "Refresh from Cloud" actually was: a multi-megabyte
+        // download behind a 3-second "Refreshing..." toast, on a page with no
+        // progress and no timeout. On a small table it was invisible. Once the
+        // table held real users with real images it stopped being a refresh and
+        // became a wait, and the client had no way to tell those two apart.
+        //
+        // The admin list does not need the image bytes to draw a row: it shows a
+        // name, an email, a plan and a role, and the client already re-attaches the
+        // local copy of any image the cloud did not send. So the listing is metadata
+        // and the pixels are a separate, paged request the client makes only for
+        // what it is missing - see /sh/user-images below.
         if (url.pathname === '/sh/users' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadUsersMap(env);
+            // ?images=1 restores the old shape. Kept so the owner, a script, or
+            // cleanup-bots.mjs can still ask for everything in one call - and so the
+            // default is a choice that can be undone, not a removal.
+            const wantImages = ((url && url.searchParams.get('images')) || '') === '1';
             const out = {};
-            for (const k in map) out[k] = publicUser(map[k]);
-            return jsonResponse({ ok: true, users: out });
+            for (const k in map) {
+                const rec = publicUser(map[k]);
+                if (!wantImages) {
+                    // Absent, not ''. A missing key and an empty value mean the
+                    // same thing to the client here, and omitting them is what makes
+                    // a 58-user listing tens of kilobytes instead of tens of
+                    // megabytes.
+                    delete rec.profileImage;
+                    delete rec.bannerImage;
+                    delete rec.customBackground;
+                }
+                out[k] = rec;
+            }
+            return jsonResponse({ ok: true, users: out, count: Object.keys(out).length, images: wantImages });
+        }
+
+        // ---------- GET /sh/user-images : owner, the pictures, a page at a time ----------
+        //
+        // The counterpart to the listing above. The admin panel draws a row per
+        // user, and it wants the avatar on each one, so metadata-only would have
+        // meant every avatar silently became an initial letter - a quiet regression
+        // traded for speed.
+        //
+        // So the images are still available, but in bounded pages:
+        //
+        //   ?offset=0&limit=8   ->  { ok, total, offset, users: { email: {images} } }
+        //
+        // The client renders the panel from the listing immediately and fills each
+        // avatar in as its page lands. Every response is small, the first row appears
+        // in one round trip, and a page that fails costs one batch of avatars rather
+        // than the whole refresh. Owner-gated by exactly the same check as the
+        // listing - this is the same data, so it gets the same gate.
+        if (url.pathname === '/sh/user-images' && request.method === 'GET') {
+            if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const map = await loadUsersMap(env);
+            const keys = Object.keys(map).sort();
+            // Clamped, not merely defaulted. An unbounded ?limit= is a request for
+            // the entire image table, which is the exact response this route
+            // exists to stop being.
+            const limit = Math.min(50, Math.max(1, parseInt((url && url.searchParams.get('limit')) || '8', 10) || 8));
+            const offset = Math.max(0, parseInt((url && url.searchParams.get('offset')) || '0', 10) || 0);
+            const page = {};
+            for (let i = offset; i < Math.min(keys.length, offset + limit); i++) {
+                const rec = publicUser(map[keys[i]]);
+                page[keys[i]] = {
+                    profileImage: rec.profileImage || '',
+                    bannerImage: rec.bannerImage || '',
+                    customBackground: rec.customBackground || ''
+                };
+            }
+            return jsonResponse({ ok: true, total: keys.length, offset: offset, limit: limit, users: page });
         }
 
         // ---------- POST /sh/users : owner upsert one user (PLAN CHANGES) ----------
@@ -4032,10 +4140,30 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!body.email) return jsonResponse({ ok: false, error: 'email required' }, 400);
             const map = await loadUsersMap(env);
             const prev = map[body.email] || {};
-            // full owner-controlled upsert (plan, admin flags, everything)
-            map[body.email] = { ...prev, ...(body.user || {}), email: body.email };
+            // Owner-controlled upsert: plan, admin flags, disable, everything.
+            //
+            // The IMAGE fields are excluded on purpose. This route is reached from
+            // exactly one place - a plan change, which sends the owner's own local
+            // copy of the user record - and that copy carries whatever images THIS
+            // device happens to hold. A device that never received a user's avatar
+            // sends an empty one, and the bare spread wrote it straight over the
+            // server's copy. Nothing errors, no plan change reports a problem, and
+            // the user's avatar is gone from every device. The owner destroys user
+            // data as a side effect of doing their job.
+            //
+            // Images are the user's own data and are changed only through
+            // /sh/user-sync, from the user's own device. That is an ownership
+            // boundary, not a limitation: it is what makes a plan change incapable
+            // of touching them.
+            const patch = (body.user && typeof body.user === 'object') ? body.user : {};
+            const next = storageSafeUser({ ...prev, ...patch, email: body.email });
+            for (const k of SH_IMAGE_FIELDS) {
+                if (typeof next[k] !== 'string') next[k] = '';
+                next[k] = (typeof prev[k] === 'string') ? prev[k] : '';
+            }
+            map[body.email] = next;
             await saveUsersMap(env, map);
-            return jsonResponse({ ok: true, user: publicUser(map[body.email]) });
+            return jsonResponse({ ok: true, user: publicUser(next) });
         }
 
         // ---------- POST /sh/users-delete : owner delete one user ----------

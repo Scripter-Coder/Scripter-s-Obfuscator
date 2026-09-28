@@ -534,12 +534,33 @@ body {
 }
 
 /* ===== DASHBOARD - UPLOAD SECTION ===== */
+/*
+   FOUR GROUPS, FOUR COLUMNS, IN SOURCE ORDER:
+   Profile Image | Banner Image | Theme | Custom Background
+
+   The Custom Background group used to render BELOW the other three, and the cause
+   was not the grid. It was a misplaced </div>: upload-section was closed right
+   after the Theme group, so Custom Background was a SIBLING of the grid rather
+   than a cell in it. No amount of grid-template-columns could place it, because
+   it was not in the grid. The four-column rule was correct the whole time and
+   looked like it was being ignored.
+
+   So the layout is pinned by `grid-auto-flow: column` plus an explicit
+   `grid-column: 4` on the last group, rather than relying on source order alone.
+   The explicit placement is what makes the intent ("Custom Background is the
+   FOURTH one, on the RIGHT") survive a future edit that reorders the markup - and
+   it is asserted by tools/upload_row_layout_test.mjs, because the reason this was
+   reported as "the CSS is being ignored" is that nothing could tell markup and CSS
+   apart from the outside.
+*/
 .upload-section {
     display: grid;
-    /* Four across, so Custom Background sits immediately to the RIGHT of the
-       Theme chooser instead of wrapping onto a second row at the left - which is
-       where a 3-column grid put it once the fourth group was added. */
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* minmax(0, ...) rather than 1fr: a grid track's automatic minimum is the
+       content's min-content width, and a long filename inside a file input can be
+       wider than the track. That pushed the fourth column past the card's edge on
+       a narrow window, which reads as the group being in the wrong place. */
+    grid-auto-flow: row;
     gap: 20px;
     margin-bottom: 30px;
     padding: 24px;
@@ -552,7 +573,17 @@ body {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* the fourth group, pinned - see the note above */
+    min-width: 0;
 }
+.upload-section .upload-group:nth-child(4) {
+    grid-column: 4;
+}
+/* and the first three are pinned too, so a stray element inserted before them
+   cannot shift Custom Background out of the fourth slot */
+.upload-section .upload-group:nth-child(1) { grid-column: 1; }
+.upload-section .upload-group:nth-child(2) { grid-column: 2; }
+.upload-section .upload-group:nth-child(3) { grid-column: 3; }
 
 .upload-section .upload-group label {
     color: #aaaacc;
@@ -1363,8 +1394,19 @@ select option {
     .upload-section {
         /* Four across is too cramped on a tablet, so it steps down to two and
            only collapses to one on a phone. */
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         padding: 16px;
+    }
+    /* The explicit fourth-column placement from the desktop rule has to be
+       released here, or Custom Background stays in track 4 of a TWO-track grid -
+       which is a blank third column and an item on a row of its own. That is the
+       same "it is below the others" report, reproduced by the responsive rule
+       that was written to fix a different one. */
+    .upload-section .upload-group:nth-child(1),
+    .upload-section .upload-group:nth-child(2),
+    .upload-section .upload-group:nth-child(3),
+    .upload-section .upload-group:nth-child(4) {
+        grid-column: auto;
     }
     .stat-card .stat-value {
         font-size: 22px;

@@ -60,6 +60,16 @@ window.showNotification = showNotification;
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
+// How long an owner call is given before it is called a failure.
+//
+// There was no limit at all, and a bare await fetch with no timeout is how "Refreshing..."
+// becomes an infinite spinner with no error and no way to tell a slow call from a
+// broken one. Measured on the live worker, warm: /sh/health 367ms, /sh/user-login 2147ms,
+// /sh/user-sync 6035ms. So 45s is roughly seven times the slowest healthy call -
+// generous enough never to fire on a good day, short enough that nobody is left
+// wondering whether it is still working.
+const SH_OWNER_TIMEOUT_MS = 45000;
+
 const SH_STATS_ENDPOINT = 'https://scripterhub-stats.dubovikstanislav51.workers.dev/';
 // The largest base64 image payload the site will store or sync.
 //
@@ -627,19 +637,7 @@ async function shSyncUsersOnLogin(user, rawPassword) {
                 // merge cloud into local: cloud is source of truth including deletes
                 // also fetch old users - cloud already returns ALL users, so prune locals missing in cloud
                 var changed = false;
-                for (var k in cloud) {
-                    var cu = cloud[k];
-                    var lu = users[k];
-                    if (!lu && !shSkipRemoved(cu)) { users[k] = cu; changed = true; }
-                    else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
-                        // an empty cloud image must never wipe the local one
-                        // (KV may predate the image or the worker may have
-                        // trimmed it - the local copy is what the UI shows)
-                        if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
-                        if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
-                        users[k] = cu; changed = true;
-                    }
-                }
+                for (var k in cloud) { if (shMergeCloudUser(k, cloud[k])) changed = true; }
                 // delete locally any user not in cloud (deleted on another device) - keep creator/admin as safety
                 // Was: delete every local account missing from this cloud response. That
                 // destroyed accounts whose cloud signup had failed, with no warning and no
@@ -778,7 +776,6 @@ function copyDiagnostics() {
 
 async function shOwnerApi(path, body) {
     var isGet = body === null || body === undefined;
-    var isGet = body === null || body === undefined;
     // Mint the session token if this tab does not have one.
     //
     // It used to be read straight out of sessionStorage, which was empty
@@ -825,28 +822,55 @@ async function shOwnerApi(path, body) {
     var res;
     var text = '';
     try {
-        res = await fetch(url, {
+        // Aborted, not merely abandoned, so the request stops costing anything and the
+        // failure is a real one the caller can report rather than a silent hang.
+        var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timer = setTimeout(function () { if (ctl) ctl.abort(); }, SH_OWNER_TIMEOUT_MS);
+        var opts = {
             method: isGet ? 'GET' : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: isGet ? undefined : JSON.stringify(payload)
-        });
+        };
+        if (ctl) opts.signal = ctl.signal;
+        res = await fetch(url, opts);
         // read as TEXT, then parse. res.json() throws on an empty body or an HTML
         // error page, and the throw used to be swallowed into a bare false with no
         // reason - which is how a Cloudflare page in front of the worker became
         // indistinguishable from a wrong password.
+        //
+        // ONCE. A Response body is a stream and it can be read exactly one time, so
+        // this block appeared here twice and the second read threw
+        //
+        //     TypeError: Failed to execute 'text' on 'Response':
+        //               body stream already read
+        //
+        // The throw was caught by the very try/catch that was meant to be defensive,
+        // which set text back to '' - so a perfectly good 200 with a full users map
+        // in it was parsed as an empty body and reported as a failure. Every owner
+        // call went through that, which is the whole admin surface.
+        //
+        // The symptom was "Refreshing..." and then nothing, which is exactly what a
+        // hang looks like and the opposite of what was happening. A defensive catch
+        // that swallows its own bug is worse than no catch: it converts a loud
+        // TypeError into a silent wrong answer.
         try { text = await res.text(); } catch (e) { text = ''; }
+        // Cleared only on a completed read. clearTimeout used to sit between the
+        // two copies, so after this fix there is exactly one place it belongs, and
+        // an aborted request no longer leaves a timer armed against nothing.
+        clearTimeout(timer);
     } catch (e) {
         // A fetch that throws with no status never reached the worker. The one
         // cause that actually happens here is a rejected CORS preflight, so it is
         // named rather than left as "Failed to fetch".
+        // Cleared here as well as on the success path, or the timer survives to fire
+        // against a request that already failed.
+        try { clearTimeout(timer); } catch (e2) {}
         var netErr = {
             ok: false,
             status: 0,
-            error: 'The browser blocked the request before it reached ' + SH_STATS_ENDPOINT +
-                ' (' + ((e && e.message) || e) + ').' +
-                ' That is almost always a CORS preflight: the worker must list every' +
-                ' header this page sends in Access-Control-Allow-Headers. Open the' +
-                ' browser console - the exact reason is there.'
+            error: ((e && e.name === 'AbortError') || /abort/i.test((e && e.message) || ''))
+                ? 'No answer from the cloud within ' + Math.round(SH_OWNER_TIMEOUT_MS / 1000) + ' seconds, so the request was cancelled. That is a SLOW cloud, not a blocked one - the worker is reachable, it just did not reply in time.'
+                : 'The browser blocked the request before it reached ' + SH_STATS_ENDPOINT + ' (' + ((e && e.message) || e) + '). That is almost always a CORS preflight: the worker must list every header this page sends in Access-Control-Allow-Headers. The exact reason is in the browser console.'
         };
         shLogOwnerCall({ method: isGet ? 'GET' : 'POST', path: path, status: 0, ok: false, body: netErr.error });
         return netErr;
@@ -990,31 +1014,54 @@ function shSkipRemoved(rec) {
     return !!(rec && rec.email && shIsRemoved(rec.email));
 }
 
+// Merge ONE cloud record into users[key]. Returns true if the local record
+// changed. This is the ONLY place that does it - there used to be four separate
+// hand-written merge loops (boot, reconcile, panel refresh, manual refresh) and
+// they had drifted: three of the four restored profileImage and bannerImage but
+// NOT customBackground.
+//
+// That is the same defect the worker has a whole test written about (W18): a field
+// accepted on one path and silently dropped on another. It fails quietly and
+// completely - the feature works on the device that set it and never appears on
+// any other one, with no error anywhere to point at.
+//
+// It became load-bearing rather than theoretical when the listing started
+// omitting image fields to keep the response small. A record that arrives with no
+// customBackground is no longer a rare edge case, it is EVERY record, every
+// refresh - and a loop that forgets the field deletes the user's background on
+// this device and reports "Users list is up to date".
+//
+// One function, one field list, four call sites that cannot disagree.
+function shMergeCloudUser(key, cloudRec) {
+    var cu = cloudRec;
+    var lu = users[key];
+    if (!lu) {
+        if (shSkipRemoved(cu)) return false;
+        users[key] = cu;
+        return true;
+    }
+    if (JSON.stringify(lu) === JSON.stringify(cu)) return false;
+    // the cloud never returns a password, and it must never be allowed to blank an
+    // image the cloud has not seen - either would silently undo local state on
+    // every single sync
+    if (lu.password && !cu.password) cu.password = lu.password;
+    if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
+    if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
+    if (!cu.customBackground && lu.customBackground) cu.customBackground = lu.customBackground;
+    users[key] = cu;
+    return true;
+}
+
 function shReconcileWithCloud(cloud) {
     if (!cloud || typeof cloud !== 'object') return 0;
     var changed = false;
     var localOnly = 0;
     for (var ck in cloud) {
-        var cu = cloud[ck];
-        var lu = users[ck];
-        if (!lu && !shSkipRemoved(cu)) {
-            users[ck] = cu;
-            if (cu && cu.notOnCloud) delete cu.notOnCloud;
-            changed = true;
-            continue;
-        }
         // clear the marker: this account IS on the cloud now
-        if (lu.notOnCloud) { delete lu.notOnCloud; changed = true; }
-        if (JSON.stringify(lu) !== JSON.stringify(cu)) {
-            // the cloud never returns a password, and it must never be allowed to
-            // blank an image the cloud has not seen - either would silently undo
-            // local state on every single sync
-            if (lu.password && !cu.password) cu.password = lu.password;
-            if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
-            if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
-            if (!cu.customBackground && lu.customBackground) cu.customBackground = lu.customBackground;
-            users[ck] = cu;
+        if (users[ck] && users[ck].notOnCloud) { delete users[ck].notOnCloud; changed = true; }
+        if (shMergeCloudUser(ck, cloud[ck])) {
             changed = true;
+            if (users[ck].notOnCloud) delete users[ck].notOnCloud;
         }
     }
     // MARK, never delete
@@ -1036,7 +1083,21 @@ async function shPullCloudUsers() {
             for (var k in d.users) {
                 if (users[k] && users[k].password) d.users[k].password = users[k].password;
             }
-            return { ok: true, users: d.users };
+            // The image fields are ABSENT from the listing, not empty, and that is
+            // deliberate (see the worker). A record that arrives without them must
+            // not be written over the local one: users[k] is the copy the whole UI
+            // renders, so letting the listing's blank version win here is how an
+            // avatar or a full-page background disappears from the dashboard on the
+            // device that has it.
+            for (var k2 in d.users) {
+                if (users[k2]) {
+                    var lu = users[k2];
+                    if (!d.users[k2].profileImage && lu.profileImage) d.users[k2].profileImage = lu.profileImage;
+                    if (!d.users[k2].bannerImage && lu.bannerImage) d.users[k2].bannerImage = lu.bannerImage;
+                    if (!d.users[k2].customBackground && lu.customBackground) d.users[k2].customBackground = lu.customBackground;
+                }
+            }
+            return { ok: true, users: d.users, count: (typeof d.count === 'number' ? d.count : Object.keys(d.users).length) };
         }
         // An HTTP error still RESOLVES, so it arrives here as data rather than
         // as a throw. Returning null on both paths is what let the caller render
@@ -2986,18 +3047,7 @@ async function shRefreshUsersListFromCloud() {
     var selfChanged = null;
     for (var k in cloud) {
         var cu = cloud[k];
-        var lu = users[k];
-        if (!lu && !shSkipRemoved(cu)) {
-            users[k] = cu; changed = true;
-        } else if (lu && JSON.stringify(lu) !== JSON.stringify(cu)) {
-            // keep the local password (cloud responses never include it) and
-            // never let an EMPTY cloud image wipe the local one (KV may
-            // predate the image or the worker may have trimmed it)
-            cu.password = lu.password;
-            if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
-            if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
-            users[k] = cu; changed = true;
-        }
+        if (shMergeCloudUser(k, cu)) changed = true;
         if (currentUser && cu.id === currentUser.id) selfChanged = users[k];
     }
     // prune locally users deleted on another device (missing in cloud) - keeps creator/admin
@@ -3022,7 +3072,87 @@ async function shRefreshUsersListFromCloud() {
     }
     renderUsersList();
     renderAdminUserListFull();
+    // Same split as the manual button: the list is on screen, the images follow in
+    // pages. Opening the panel used to wait on the entire users table plus every
+    // image on the site before drawing anything.
+    shPullCloudImages();
     return cloud;
+}
+
+// The avatars and backgrounds the cloud is holding, fetched a page at a time.
+//
+// WHY THIS IS SEPARATE FROM THE LISTING
+//
+// GET /sh/users used to return every user WITH their base64 images inline. A
+// record carries up to three - profile, banner, and a full-page customBackground
+// that is routinely 1-2MB of base64 - and the whole users table is a single KV
+// entry, so there is nowhere to fetch one image from on its own. The response was
+// therefore the sum of every image on the site, and the page could not draw a
+// single row until all of it had arrived and been parsed.
+//
+// The listing is now metadata only, which is fast, and this puts the pixels back
+// in bounded pages. The panel is already rendered when this runs, so each avatar
+// appears as its page lands instead of the panel waiting on all of them.
+//
+// A failed page is not fatal and is not retried. The rows are already on screen
+// with their names, emails and plans - the only loss is that batch's avatars,
+// which fall back to the initial letter. Retrying a failed page would re-arm the
+// exact "spins and never finishes" behaviour this was written to remove.
+var shImagePageBusy = false;
+async function shPullCloudImages() {
+    if (shImagePageBusy) return;
+    shImagePageBusy = true;
+    try {
+        var PAGE = 8;
+        var offset = 0;
+        var total = Infinity;
+        var painted = 0;
+        var selfPainted = false;
+        while (offset < total) {
+            var d = await shOwnerApi('sh/user-images?offset=' + offset + '&limit=' + PAGE, null);
+            if (!d || !d.ok || !d.users) break;
+            total = (typeof d.total === 'number') ? d.total : offset;
+            for (var k in d.users) {
+                var rec = d.users[k];
+                if (!users[k]) continue;
+                var touched = false;
+                if (rec.profileImage && !users[k].profileImage) { users[k].profileImage = rec.profileImage; touched = true; }
+                if (rec.bannerImage && !users[k].bannerImage) { users[k].bannerImage = rec.bannerImage; touched = true; }
+                if (rec.customBackground && !users[k].customBackground) { users[k].customBackground = rec.customBackground; touched = true; }
+                if (touched) painted++;
+                if (touched && currentUser && k === currentUser.email) selfPainted = true;
+            }
+            offset += PAGE;
+            if (d.users && Object.keys(d.users).length === 0) break;
+        }
+        if (painted) {
+            saveUsers();
+            renderUsersList();
+            renderAdminUserListFull();
+            // The signed-in user's own backdrop is applied by updateUIForUser, not
+            // by the list render, so if THEIR background is what just arrived it
+            // has to go back through that path or it stays invisible until the next
+            // page load.
+            if (selfPainted && currentUser && users[currentUser.email]) {
+                var me = { ...users[currentUser.email] };
+                delete me.password;
+                updateUIForUser(me);
+            }
+        }
+    } catch (e) {
+        // Deliberately silent, and that is a decision rather than an omission.
+        // Everything above the list is already correct: names, emails, plans, roles
+        // and deletes have all been applied and rendered. This phase only adds
+        // pictures. A toast here would report a refresh failure that did not happen,
+        // which is the one thing worse than a missing avatar - it would train the
+        // owner to ignore the refresh result.
+        //
+        // The rows keep working: renderUsersList falls back to the initial letter for
+        // any record with no image, so a dead image page costs pictures and nothing
+        // else.
+    } finally {
+        shImagePageBusy = false;
+    }
 }
 
 // manual refresh of the cloud users list (admin). Useful when the first
@@ -3031,7 +3161,12 @@ async function shRefreshUsersListFromCloud() {
 async function refreshUsersList() {
     if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can refresh the users list.', 'error'); return; }
     showNotification('Refreshing', 'Fetching the latest users from the cloud...', 'info', 3000);
+    // Timed, so the success message can say HOW LONG it took. "Refreshing..."
+    // followed by silence is indistinguishable from a hang, and the one thing that
+    // makes a slow call diagnosable is knowing whether it was slow or stuck.
+    var startedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     var cloudRes = await shPullCloudUsers();
+    var elapsed = Math.max(0, Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - startedAt));
     // shPullCloudUsers returns {ok, users, reason} so a failure can say what
     // actually went wrong. Unwrapped here so the merge below still works on a
     // plain map - `for (var k in cloud)` over the envelope would iterate "ok"
@@ -3039,16 +3174,7 @@ async function refreshUsersList() {
     var cloud = cloudRes && cloudRes.ok ? cloudRes.users : null;
     if (cloud) {
         var changed = false;
-        for (var k in cloud) {
-            var cu = cloud[k];
-            var lu = users[k];
-            if (!lu && !shSkipRemoved(cu)) { users[k] = cu; changed = true; }
-            else if (JSON.stringify(lu) !== JSON.stringify(cu)) {
-                if (!cu.profileImage && lu.profileImage) cu.profileImage = lu.profileImage;
-                if (!cu.bannerImage && lu.bannerImage) cu.bannerImage = lu.bannerImage;
-                users[k] = cu; changed = true;
-            }
-        }
+        for (var k in cloud) { if (shMergeCloudUser(k, cloud[k])) changed = true; }
         // also fetch old users and prune deleted ones - ensures refresh shows same as cloud on phone/other device
         // Was: delete every local account missing from this cloud response. That
         // destroyed accounts whose cloud signup had failed, with no warning and no
@@ -3063,10 +3189,14 @@ async function refreshUsersList() {
         }
         renderUsersList();
         renderAdminUserListFull();
-        showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total).', 'success', 3000);
+        // The list is on screen. The images come after, in pages, so this reports
+        // success for what actually finished instead of waiting on the largest
+        // response the site makes.
+        shPullCloudImages();
+        showNotification('Refreshed', 'Users list is up to date (' + Object.keys(users).length + ' total, ' + elapsed + ' ms).', 'success', 3000);
     } else {
         var why = (cloudRes && cloudRes.reason) || 'the cloud did not answer';
-        showNotification('Refresh Failed', why, 'error', 12000);
+        showNotification('Refresh Failed', why + '  (' + elapsed + ' ms)', 'error', 12000);
     }
 }
 
