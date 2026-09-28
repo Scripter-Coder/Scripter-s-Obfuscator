@@ -87,28 +87,20 @@ else no('the card alpha is not 0.62');
   else console.log('       no rule hard-codes the card colour');
 }
 
-// ---- 4. the inline write agrees with the variable ----
-{
-  const t = main.slice(main.indexOf('function applyTheme('), main.indexOf('function applyTheme(') + 4000);
-  const at = t.indexOf("querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal')");
-  if (at < 0) { no('the inline surface loop is gone'); }
-  else {
-    const seg = t.slice(at, at + 900);
-    if (/el\.style\.background = theme\.card;/.test(seg)) {
-      no('applyTheme still writes an opaque INLINE background, which overrides the variable and the stylesheet');
-    } else {
-      ok('the inline surface write honours the tint');
-    }
-  }
-  // and the two mechanisms must use the same expression, or one will win again
-  // The capture stops at the call's OWN closing paren. `[^;]+` ran to the `;` and
-  // swallowed it, so the variable read as "... : theme.card)" with a stray paren
-  // and looked different from the inline write even though the two are identical.
-  const a = /root\.style\.setProperty\('--card-color',\s*(.+?)\);/.exec(t);
-  const b = /el\.style\.background = ([^;]+);/.exec(t.slice(at, at + 900));
-  if (a && b && a[1].trim() === b[1].trim()) ok('the variable and the inline write use the identical expression');
-  else no('the variable and the inline write differ:\n         var: ' + (a ? a[1].trim() : '?') + '\n         inline: ' + (b ? b[1].trim() : '?'));
-}
+// ---- 4. the inline surface write is covered elsewhere ----
+//
+// It used to be asserted HERE, by reaching into applyTheme and comparing the write
+// with the --card-color assignment. It has since been extracted into
+// shApplySurfaceTints - which is the fix, not a move for its own sake - so this
+// check reported "the loop is gone" and a difference that was not one.
+//
+// tools/surface_tints_test.mjs covers the wiring properly: one writer, called from
+// both applyTheme and shRefreshCardTint, using the tint expression, with no other
+// function theming those selectors inline. Two tests asserting one property in two
+// places means one of them is stale the next time it moves.
+const applyThemeSrc = main.slice(main.indexOf('function applyTheme('), main.indexOf('function applyTheme(') + 4000);
+if (/shApplySurfaceTints/.test(applyThemeSrc)) ok('the inline surface write is delegated - see tools/surface_tints_test.mjs');
+else no('the inline surface writer is not called from applyTheme');
 
 // ---- 5. the chrome is excluded on purpose, and that must stay deliberate ----
 {

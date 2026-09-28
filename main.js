@@ -1193,6 +1193,22 @@ const themes = {
     dark: { primary: '#222222', secondary: '#444444', bg: '#000000', card: 'rgba(20,20,20,0.9)', text: '#ffffff', accent: '#555555' }
 };
 
+// Writes the inline background on the four selectors that are themed that way.
+//
+// INLINE on purpose - that is how these elements have always been themed, and
+// changing the mechanism is a larger change than it needs to be. The important
+// part is that there is exactly ONE function doing it, called from both
+// applyTheme and shRefreshCardTint, so a change to the surface colour cannot
+// land in one path and not the other.
+function shApplySurfaceTints(theme) {
+    document.querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal').forEach(function (el) {
+        el.style.background = SH_CUSTOM_BG_ACTIVE
+            ? shWithAlpha(theme.card, SH_BACKDROP_CARD_ALPHA)
+            : theme.card;
+        el.style.borderColor = theme.primary + '40';
+    });
+}
+
 function applyTheme(themeName) {
     const theme = themes[themeName] || themes.default;
     const root = document.documentElement;
@@ -1217,14 +1233,10 @@ function applyTheme(themeName) {
             }
         }
     }
-    document.querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal').forEach(function(el) {
-        // The same tint the --card-color variable gets. This is an INLINE style, so it
-        // overrides both the variable and the stylesheet - which is why the backdrop
-        // looked correct in devtools and opaque on screen. Two mechanisms were
-        // setting the same thing, and the inline one always won, silently.
-        el.style.background = SH_CUSTOM_BG_ACTIVE ? shWithAlpha(theme.card, SH_BACKDROP_CARD_ALPHA) : theme.card;
-        el.style.borderColor = theme.primary + '40';
-    });
+    // Extracted so the backdrop can re-apply it. The inline write is stale the
+    // moment applyTheme finishes, because the variable and the stylesheet are set
+    // here but the inline style on each element is not - and inline wins.
+    shApplySurfaceTints(theme);
     document.querySelectorAll('.btn-primary').forEach(function(el) {
         el.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
     });
@@ -3857,6 +3869,18 @@ function shRefreshCardTint() {
         var t = themes[(currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'] || themes.default;
         document.documentElement.style.setProperty('--card-color',
             SH_CUSTOM_BG_ACTIVE ? shWithAlpha(t.card, SH_BACKDROP_CARD_ALPHA) : t.card);
+    } catch (e) {}
+    // The variable is not the only thing that has to be refreshed.
+    //
+    // These four selectors are written with an INLINE style, which beats the
+    // variable and the stylesheet alike. Set at signup with no backdrop up, they
+    // stayed opaque when one was added - which is why --card-color read 0.62 while
+    // .stat-card still computed to 0.8, and the dashboard looked unmoved.
+    //
+    // So both are done here. One function, so the two cannot disagree.
+    try {
+        var t = themes[(currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'] || themes.default;
+        shApplySurfaceTints(t);
     } catch (e) {}
 }
 
