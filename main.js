@@ -1218,7 +1218,11 @@ function applyTheme(themeName) {
         }
     }
     document.querySelectorAll('.plan-card, .stat-card, .dashboard-header, .modal').forEach(function(el) {
-        el.style.background = theme.card;
+        // The same tint the --card-color variable gets. This is an INLINE style, so it
+        // overrides both the variable and the stylesheet - which is why the backdrop
+        // looked correct in devtools and opaque on screen. Two mechanisms were
+        // setting the same thing, and the inline one always won, silently.
+        el.style.background = SH_CUSTOM_BG_ACTIVE ? shWithAlpha(theme.card, SH_BACKDROP_CARD_ALPHA) : theme.card;
         el.style.borderColor = theme.primary + '40';
     });
     document.querySelectorAll('.btn-primary').forEach(function(el) {
