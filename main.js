@@ -345,7 +345,10 @@ async function shMintUserToken(emailOrUsername, rawPassword) {
     // retry. Without it a new account silently ends up with no session, and the
     // admin panel then reports a permission problem for an account that was
     // created seconds earlier.
-    await new Promise(function (r) { setTimeout(r, 1200); });
+    // 250ms, not 1200. The 1200 was a guess; being early costs a wasted request,
+    // whereas being late costs the user a second of staring at a spinner. The retry
+    return await attempt();
+    await new Promise(function (r) { setTimeout(r, 250); });
     return await attempt();
 }
 // LAST RESORT ONLY. Prefer the token saved at login.
@@ -1196,7 +1199,10 @@ function applyTheme(themeName) {
     root.style.setProperty('--primary-color', theme.primary);
     root.style.setProperty('--secondary-color', theme.secondary);
     root.style.setProperty('--bg-color', theme.bg);
-    root.style.setProperty('--card-color', theme.card);
+    // A backdrop in play needs translucent surfaces, so this is not a constant. See
+    // shRefreshCardTint, which also explains why it cannot be done in CSS: this is
+    // an inline style and would beat any rule.
+    root.style.setProperty('--card-color', SH_CUSTOM_BG_ACTIVE ? shWithAlpha(theme.card, SH_BACKDROP_CARD_ALPHA) : theme.card);
     root.style.setProperty('--text-color', theme.text);
     root.style.setProperty('--accent-color', theme.accent);
     // With a custom backdrop active the body must stay transparent, or this
@@ -2670,7 +2676,10 @@ function handleSignup(event) {
     }
     function pushToCloud() {
         return shApi('sh/user-signup', mirrorPayload).then(function(d) {
-            if (d && d.ok) return;
+    // The RESPONSE is returned, not just a verdict. /sh/user-signup issues a
+    // session token, and the caller needs it - fetching one separately costs a
+    // second PBKDF2 over the same password.
+    if (d && d.ok) return d;
             reportMirrorFailure((d && d.error) || 'the server did not confirm it');
         }).catch(function(e) {
             reportMirrorFailure('could not reach the server (' + ((e && e.message) || e) + ')');
@@ -2692,7 +2701,13 @@ function handleSignup(event) {
     // Chained off the mirror, NOT fired alongside it. /sh/user-login cannot
     // authenticate an account /sh/user-signup has not finished writing, so
     // minting here raced the mirror and lost every time.
-    pushToCloud().then(function () { shMintUserToken(email, password); });
+    pushToCloud().then(function (d) {
+        // The worker signs a token during signup, so this is normally free. Against
+        // an older worker there is no token in the response and the login call is
+        // still needed - so the fallback stays, and is only ever paid once.
+        if (d && d.token) { shSaveUserToken(d.token); return; }
+        shMintUserToken(email, password);
+    });
     updateUIForUser(userData);
     console.log('✅ User signed up and logged in:', username);
 }
@@ -2740,20 +2755,55 @@ function handleLogin(event) {
         });
         return;
     }
+    // The password matched what THIS DEVICE has stored. The old code signed them
+    // straight in and made no server call at all.
+    //
+    // That is how a device ends up holding a password the server disagrees with: the
+    // local copy is a cache, it goes stale after a change on another device, and the
+    // old reset wrote it first and fired the server call without awaiting it - so a
+    // refused change left the local copy moved and the server unmoved. From then on
+    // you are signed in with a credential the server never accepted, every protected
+    // action fails, and a password change is refused with "Current password is
+    // incorrect" - which is the server correctly saying "that is not the password I
+    // have", and unfixable, because the device is holding the wrong one.
+    //
+    // So confirm it with the server. Offline still works: a NETWORK failure is not a
+    // rejection, and only a real 401 refuses the sign-in.
+    shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: password })
+        .then(function (d) {
+            if (d && d.ok === false && d.status === 401) {
+                showNotification('Sign-in Failed',
+                    'That is not the password this account has. If you are certain it is right, this device is holding an older copy - sign out and sign in again, or try a different browser.',
+                    'error', 10000);
+                return;
+            }
+            // Keep a token if the worker issued one, so nothing has to mint a second.
+            if (d && d.token) shSaveUserToken(d.token);
+            shFinishLocalLogin(foundUser, password);
+        })
+        .catch(function () {
+            // Unreachable server. Sign in locally rather than locking the user out of
+            // an account that demonstrably exists on this device.
+            shFinishLocalLogin(foundUser, password);
+        });
+    return;
+}
+
+// The sign-in steps, shared by the confirmed path and the offline path, so there is
+// one copy of them rather than two that can drift.
+function shFinishLocalLogin(foundUser, password) {
     closeModal('login');
     showNotification('Welcome Back!', 'Logged in successfully!', 'success');
     document.getElementById('loginForm').reset();
     var userData = { ...foundUser };
     delete userData.password;
-    // This branch never calls the worker, so it gets no token and the admin panel
-    // has nothing to authenticate with. The raw password is in hand right here,
-    // which is the only place it will ever be - it cannot be recovered later.
-    shMintUserToken(emailOrUsername, password);
     updateUIForUser(userData);
     // cross-device: push this login to the cloud + pull all users (owner)
     shSyncUsersOnLogin(foundUser, password);
     console.log('✅ User logged in:', userData.username);
 }
+
+
 
 // ============ ACCOUNT SETTINGS (disable / enable / delete) ============
 function disableAccount() {
@@ -3765,6 +3815,47 @@ var SH_CUSTOM_BG_ACTIVE = false;
 // The root element's background is used for the canvas by definition, so it is
 // always behind all content and always visible - no dependence on z-index and
 // none on whether some wrapper happens to be opaque.
+// How much backdrop is left visible once the dim and the cards are on top of it.
+//
+// At 0.74 and 0.8 the product is 0.26 x 0.20 = about 5% of the image, visible only
+// in the gaps between cards - which reads as a stray band in the wrong place, not
+// as a background. These two values are the whole difference between a backdrop
+// and a border.
+const SH_BACKDROP_DIM = 0.42;   // was 0.74
+const SH_BACKDROP_CARD_ALPHA = 0.62;  // was 0.8
+
+// Rewrites a theme card colour to a chosen alpha.
+//
+// The theme values are all rgba(R,G,B,A), so the alpha is the last component and
+// a regex can do it without pulling in a colour parser. Anything unrecognised is
+// returned untouched rather than mangled - a wrong colour here would be a blank
+// panel, which is a far worse outcome than a slightly too opaque one.
+function shWithAlpha(colour, alpha) {
+    var c = String(colour || '').trim();
+    var m = /^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*[\d.]+\s*)?\)$/i.exec(c);
+    if (m) return 'rgba(' + m[1] + ',' + m[2] + ',' + m[3] + ',' + alpha + ')';
+    if (/^#[0-9a-f]{6}$/i.test(c)) {
+        return 'rgba(' + parseInt(c.slice(1, 3), 16) + ',' + parseInt(c.slice(3, 5), 16) + ',' +
+            parseInt(c.slice(5, 7), 16) + ',' + alpha + ')';
+    }
+    if (/^#[0-9a-f]{3}$/i.test(c)) {
+        return 'rgba(' + parseInt(c[1] + c[1], 16) + ',' + parseInt(c[2] + c[2], 16) + ',' +
+            parseInt(c[3] + c[3], 16) + ',' + alpha + ')';
+    }
+    return c;
+}
+
+// Re-applies --card-color for the current theme, translucent when a backdrop is up.
+// Called by applyTheme, and again whenever the backdrop is added or removed, so the
+// two can never disagree about which state they are in.
+function shRefreshCardTint() {
+    try {
+        var t = themes[(currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'] || themes.default;
+        document.documentElement.style.setProperty('--card-color',
+            SH_CUSTOM_BG_ACTIVE ? shWithAlpha(t.card, SH_BACKDROP_CARD_ALPHA) : t.card);
+    } catch (e) {}
+}
+
 function applyCustomBackground(dataUrl) {
     if (!dataUrl) { clearCustomBackground(); return; }
     var root = document.documentElement;
@@ -3777,7 +3868,8 @@ function applyCustomBackground(dataUrl) {
     // makes "does nothing" distinguishable from "did not run".
     mark.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
     document.body.appendChild(mark);
-    root.style.backgroundImage = 'linear-gradient(rgba(8,8,18,0.74), rgba(8,8,18,0.74)), url("' + dataUrl + '")';
+    var dim = 'rgba(8,8,18,' + SH_BACKDROP_DIM + ')';
+    root.style.backgroundImage = 'linear-gradient(' + dim + ', ' + dim + '), url("' + dataUrl + '")';
     root.style.backgroundSize = 'cover';
     root.style.backgroundPosition = 'center top';
     root.style.backgroundRepeat = 'no-repeat';
@@ -3785,6 +3877,7 @@ function applyCustomBackground(dataUrl) {
     // the opaque body background from applyTheme is what hid the backdrop
     document.body.style.background = 'transparent';
     SH_CUSTOM_BG_ACTIVE = true;
+    shRefreshCardTint();
 }
 
 // Removing the backdrop restores the theme by RE-APPLYING it rather than
@@ -3800,6 +3893,7 @@ function clearCustomBackground() {
     root.style.backgroundRepeat = '';
     root.style.backgroundAttachment = '';
     SH_CUSTOM_BG_ACTIVE = false;
+    shRefreshCardTint();
     try { applyTheme((currentUser && users[currentUser.email] && users[currentUser.email].theme) || 'default'); } catch (e) {}
 
     // Forget the stored value too, or it comes straight back on the next

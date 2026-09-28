@@ -51,11 +51,23 @@ for (const [n, re] of [
     no('the cloud login still discards d.token - the panel will have no credential');
   }
 
-  // the local-only branch makes no server call, so it must mint one
-  if (/var userData = \{ \.\.\.foundUser \};[\s\S]{0,400}?shMintUserToken\(emailOrUsername, password\)/.test(main)) {
-    ok('the local-only login path mints a token - that path never called the worker');
+  // The local-only login path DOES call the worker now, and that is the fix, not a
+  // detail.
+  //
+  // It used to sign in on a local match alone, with no server call. That is how a
+  // device came to hold a password the server disagreed with: the local copy is a
+  // cache, it goes stale after a change on another device, and the old reset wrote
+  // it first without awaiting the server. From there every protected action failed,
+  // and a password change was refused with "Current password is incorrect" for a
+  // password the user was certain was right.
+  //
+  // So that path confirms the password and keeps the token the call returns, rather
+  // than minting a second one. Keeping the old assertion would be requiring the bug
+  // back - which is why it is inverted rather than deleted.
+  if (/shApi\('sh\/user-login', \{ emailOrUsername: emailOrUsername, password: password \}\)[\s\S]{0,900}?shSaveUserToken\(d\.token\)/.test(main)) {
+    ok('the local-only login path confirms with the server and keeps the token it returns');
   } else {
-    no('the local-only login path makes no server call and never mints a token');
+    no('the local-only login path no longer keeps a server token, or never had one');
   }
 
   // signup

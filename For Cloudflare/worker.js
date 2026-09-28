@@ -3466,7 +3466,28 @@ async function handleRequest(request, env, ctx) {
                 if (signupViol) ruleApplyModeration(rec, signupViol);
                 map[email] = storageSafeUser(rec);
                 await saveUsersMap(env, map);
-                const out = { ok: true, user: publicUser(rec) };
+    // A session token is issued HERE, at signup, rather than being fetched with a
+    // second /sh/user-login call the client used to make purely to obtain one.
+    //
+    // That second call re-ran PBKDF2 over the same password - ~1.3s of duplicated
+    // work, measured - and the token it produced was discarded when the tab closed
+    // anyway. The password has just been proven and the record just written, so
+    // there is nothing left to check.
+    //
+    // Same payload /sh/user-login issues, including the credential fingerprint, so
+    // changing the password later still invalidates these tokens.
+    let signupToken = null;
+    try {
+        signupToken = await signSessionToken(env, {
+            kind: 'user',
+            sub: email,
+            e: email,
+            pwd: await credentialFingerprint(env, String(rec.password || '')),
+            t: Date.now()
+        });
+    } catch (e) { /* a token is a convenience here; the account still exists */ }
+    const out = { ok: true, user: publicUser(rec) };
+    if (signupToken) out.token = signupToken;
                 // The account works and the client is told plainly what is
                 // blocked and until when, so the reason is never a mystery.
                 if (signupViol) {
