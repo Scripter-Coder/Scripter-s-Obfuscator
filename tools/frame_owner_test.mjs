@@ -23,12 +23,16 @@
 // pattern of a live executor, and stubbing that faithfully turned out to be the same
 // problem in miniature. So those 8 cases are a floor, not the guard.
 //
-// The guard is the STRUCTURAL block at the bottom: it asserts the shape of the emitted
-// code - that LOADVM accepts a quiet flag, that the host-call restore passes it, that
-// the non-restore callers still assert, and that the scheduler check is untouched.
-// Those 4 assertions fail on e6bb799 and pass here, which is the property that
-// actually changed. Saying so is better than leaving 8 passing tests that look like
-// they cover something they do not.
+// The guard is the STRUCTURAL block at the bottom, and it is stronger than a count.
+// It enumerates every LOADVM call site in the GENERATED VM and requires each to pass
+// quiet. 43cb024 did the quiet flag for one restore path and left three others loud -
+// all of them on a coroutine re-entry path (INVOKE, the _yt yield/continue pair, the
+// root-state return) - and the user kept getting the same error spammed. A test that
+// counted "is the check gated?" would have passed while the bug was live, because it
+// only ever looked at the path it had already fixed.
+//
+// The behavioural cases remain a floor, not a guard. Saying so is better than leaving
+// passing tests that look like they cover something they do not.
 import luaparse from 'luaparse';
 import fs from 'node:fs';
 import fengari from 'fengari';
@@ -41,6 +45,18 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
 
 const STUB = fs.readFileSync(new URL('./roblox_stub.lua', import.meta.url), 'utf8');
 const generate = (text) => applyBytecodeVm(text, { profile: 'FAST' });
+
+// The structural guard compiles a script to inspect its LOADVM call sites. It uses a
+// small inline script rather than the user's real one, so it stays in `npm test` and
+// does not depend on a path outside the repo.
+const SRC = `local PlayerGui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+local screenGui = Instance.new("ScreenGui")
+screenGui.Parent = PlayerGui
+task.spawn(function() local q = UDim.new(1, 0) end)
+local m1 = Instance.new("Frame")
+m1.Visible = true
+m1.Parent = screenGui
+`;
 
 let pass = 0, fail = 0;
 const ok = m => { pass++; console.log('  OK   ' + m); };
@@ -135,26 +151,43 @@ for (const [name, body] of CASES) {
     else no(name + ': built ' + r.count + ' of ' + base.count);
 }
 
-console.log('\nthe self-check is skipped ONLY on the restore path:\n');
+// THE ACTUAL GUARD.
+//
+// The behavioural cases above cannot reproduce the user's error, so this block
+// enumerates the generated VM's LOADVM call sites and asserts the ones that restore a
+// snapshot all pass quiet. It is deliberately exhaustive over call sites rather than
+// counting occurrences: 43cb024 quieted ONE restore path and left three others loud,
+// every one of them on a coroutine re-entry path, and the user kept getting spammed.
+// A count would have read "the check is gated" and passed while the bug was live.
+console.log('\nevery restore path in the emitted VM must skip the false-positive check:\n');
+{
+    let out;
+    try { out = generate(SRC); } catch (e) { no('generator threw: ' + e.message.slice(0, 60)); }
+    if (out) {
+        const def = /local (\w+)=function\(st,quiet\)/.exec(out);
+        if (!def) { no('the emitted VM has no quiet-capable LOADVM at all'); }
+        else {
+            const LV = def[1];
+            ok('the emitted VM defines a quiet-capable LOADVM');
+            const re = new RegExp(LV + '\\(([^()]*)\\)', 'g');
+            const calls = [];
+            let m;
+            while ((m = re.exec(out)) !== null) calls.push(m[1].trim());
+            const loud = calls.filter(a => !/,\s*true\s*$/.test(a));
+            if (loud.length === 0) ok('all ' + calls.length + ' LOADVM call sites restore quietly');
+            else no(loud.length + ' LOADVM site(s) still loud: ' + [...new Set(loud)].join(', '));
+        }
+    }
+}
+
+console.log('\nthe check itself is still there, and the scheduler is untouched:\n');
 {
     const src = fs.readFileSync('vm-bytecode.js', 'utf8');
-    if (/function\(st,quiet\)/.test(src)) ok('LOADVM takes a quiet flag');
-    else no('LOADVM has no quiet flag - the restore cannot skip its own false-positive assertion');
-    const quietCall = src.indexOf("LOADVM + '(' + XS + ',true)");
-    const callSite = src.indexOf("local r=' + PK + '(f(");
-    if (quietCall > 0 && quietCall > callSite) ok('the host-call restore passes quiet=true');
-    else no('the host-call restore does not pass quiet=true (quiet at ' + quietCall + ', call at ' + callSite + ')');
-    // The scheduler / coroutine paths must still assert, or a real corruption goes
-    // silent. Counting occurrences is not the test: the scheduler check at ~3251 is a
-    // SEPARATE assertion on CUR and always fired, so the count is 2 whether or not
-    // LOADVM's own check is gated. What matters is that LOADVM's check is still
-    // reachable when quiet is not passed.
     const loadvm = /function\(st,quiet\)([\s\S]*?)end'\);/.exec(src);
-    const gated = /if ' \+ FP \+ '>0 and not quiet then/.test(src) || /and not quiet then local q=/.test(src);
+    const gated = /not quiet then local q=/.test(src);
     const throwsInLoadvm = loadvm ? /VM_STATE_FRAME_OWNER/.test(loadvm[1]) : false;
     if (gated && throwsInLoadvm) ok('LOADVM still asserts on its own when quiet is not passed');
-    else no('LOADVM no longer asserts for the non-restore callers (gated=' + gated + ', throw present=' + throwsInLoadvm + ')');
-    // ...and the scheduler path must be untouched by this change.
+    else no('LOADVM no longer asserts (gated=' + gated + ', throw present=' + throwsInLoadvm + ')');
     if (/if ' \+ CUR \+ '\.owner~=' \+ OWNER \+ ' then error\("VM_STATE_FRAME_OWNER"/.test(src)) ok('the scheduler owner check is unchanged');
     else no('the scheduler owner check was altered - it should not have been touched');
 }

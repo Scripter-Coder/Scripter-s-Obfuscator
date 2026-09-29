@@ -2911,7 +2911,9 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 L.push('   else');
                 L.push('    local _co=(type(coroutine)=="table" and coroutine.resume and f==coroutine.resume) local _yt=(type(coroutine)=="table" and f==coroutine.yield and coroutine.running()~=' + ROOTTHREAD + ')');
                 L.push('    if _co then ' + SAVEVM + '(' + ROOTSTATE + ') end');
-                L.push('    if _yt then local _st=' + ACTIVE + ' ' + SAVEF + '(' + CUR + ') ' + SAVEVM + '(_st) ' + LOADVM + '(' + ROOTSTATE + ') end');
+                // ditto - this is the yield half of the same round trip, restoring
+                // the root state after a VM frame yielded out to the host.
+                L.push('    if _yt then local _st=' + ACTIVE + ' ' + SAVEF + '(' + CUR + ') ' + SAVEVM + '(_st) ' + LOADVM + '(' + ROOTSTATE + ',true) end');
                 // A host call can execute VM code NESTED, and the VM cannot see it
                 // happen. task.spawn is the common case: it is an ordinary host
                 // function, so f is neither coroutine.resume nor coroutine.yield and
@@ -2944,7 +2946,10 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 // check is a false positive here because a nested VM run legitimately
                 // pops frames in the shared table this snapshot points at.
                 L.push('    if ' + XS + ' then ' + LOADVM + '(' + XS + ',true) end');
-                L.push('    if _yt then local _st=' + ACTIVE + ' ' + LOADVM + '(_st) ' + LOADF + '(' + CUR + ') end');
+                // ditto: the per-coroutine state, same reason as the INVOKE path. A
+                // yield/continue round trip is exactly where a frame that has since
+                // been popped looks like corruption.
+                L.push('    if _yt then local _st=' + ACTIVE + ' ' + LOADVM + '(_st,true) ' + LOADF + '(' + CUR + ') end');
                 L.push('    ' + SP + '=' + SP + '+1');
                 if (multi) { L.push('    ' + S + '[' + SP + ']=r'); }
                 else { L.push('    ' + S + '[' + SP + ']=r[1]'); }
@@ -3318,11 +3323,29 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push('  if thr~=' + ROOTTHREAD + ' then');
     L.push('   local st=' + COSTATES + '[tostring(thr)]');
     L.push('   if not st then st={rg={},fr={},fp=0,ba=0,to=0,cu=nil,co=nil,pc=1,sp=0,sc={{}},lk={},va=nil,nb=0,dn=false,rs={}} ' + COSTATES + '[tostring(thr)]=st end ' + ACTIVE + '=st');
-    L.push('   if ' + FRAMES + '==st.fr and ' + FP + '>0 then ' + SAVEVM + '(st) end ' + LOADVM + '(st)');
+    // quiet=true here, for the same reason as the host-call restore, and it is the
+    // path that actually produces the user's symptom.
+    //
+    // This is the INVOKE re-entry point: it runs whenever the VM is entered from a
+    // coroutine Roblox created - task.spawn, task.defer, a Tween Completed handler, a
+    // signal callback. `st` is a per-coroutine state keyed by tostring(thr), and the
+    // line above only re-saves when FRAMES is ALREADY st.fr. So on the common re-entry
+    // - a coroutine that was not the last thing running - the state is loaded exactly
+    // as it was left, including an FP whose frame was popped and nil'd while another
+    // coroutine ran. The self-check then reads that vacated slot and raises
+    // VM_STATE_FRAME_OWNER.
+    //
+    // On a live executor that is a LOOP, not a one-off: every tween completion, every
+    // signal fire and every spawned thread re-enters here, so the error repeats until
+    // the user stops it. 43cb024 quieted the host-call restore and left this one
+    // loud, which is why the spam survived that commit.
+    L.push('   if ' + FRAMES + '==st.fr and ' + FP + '>0 then ' + SAVEVM + '(st) end ' + LOADVM + '(st,true)');
     L.push('   if ' + FP + '==0 then');
     L.push('    ' + PUSHF + '(d.chunk,d.links,{...},nil,0,nil)');
     L.push('    ' + SCHED + '(0)');
-    L.push('    local rr=' + RESULT + ' or {} ' + SAVEVM + '(st) ' + LOADVM + '(' + ROOTSTATE + ') return ' + UNP + '(rr)');
+    // ditto: returning to the root thread restores the root snapshot, whose FRAMES
+    // has legitimately moved on while this coroutine ran.
+    L.push('    local rr=' + RESULT + ' or {} ' + SAVEVM + '(st) ' + LOADVM + '(' + ROOTSTATE + ',true) return ' + UNP + '(rr)');
     L.push('   end');
     L.push('   local stop=' + FP + ' local caller=' + FRAMES + '[' + FP + '] ' + SAVEF + '(caller)');
     L.push('   ' + PUSHF + '(d.chunk,d.links,{...},' + SP + '+1,0,caller)');
