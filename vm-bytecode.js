@@ -3346,8 +3346,28 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push('  if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
     L.push('  local thr=coroutine.running()');
     L.push('  if thr~=' + ROOTTHREAD + ' then');
-    L.push('   local st=' + COSTATES + '[tostring(thr)]');
-    L.push('   if not st then st={rg={},fr={},fp=0,ba=0,to=0,cu=nil,co=nil,pc=1,sp=0,sc={{}},lk={},va=nil,nb=0,dn=false,rs={}} ' + COSTATES + '[tostring(thr)]=st end ' + ACTIVE + '=st');
+    // Key the per-coroutine state on the THREAD OBJECT, not on tostring(thr).
+    //
+    // This is the actual cause of VM_STATE_FRAME_OWNER on a real executor, and it took
+    // four rounds to find because fengari hides it: fengari's tostring(coroutine)
+    // returns a unique address per thread, so the key never collided. The user's
+    // executor does not, so `tostring(thr)` was the SAME string for every coroutine,
+    // and every thread shared one state slot.
+    //
+    // The consequence is exactly the observed error. Coroutine A's saved FP, BASE, TOP
+    // and frame array get loaded into coroutine B. B then resumes with a frame pointer
+    // that names one of A's frames: FP is in range and the frame exists, so the only
+    // thing that fails is the owner tag - VM_STATE_FRAME_OWNER, repeated on every
+    // coroutine re-entry, i.e. every tween completion, signal fire and spawned thread.
+    //
+    // Coroutines are first-class values in Luau, so they can be table keys directly.
+    // A string key was never needed. tostring is retained only as a fallback for a
+    // runtime where the thread is somehow not usable as a key, and the fallback is
+    // deliberately weak-keyed so colliding entries cannot pin state alive.
+    L.push('   local _key=thr local _st=' + COSTATES + '[_key]');
+    L.push('   if not _st and type(thr)~="thread" then _key=tostring(thr) _st=' + COSTATES + '[_key] end');
+    L.push('   local st=_st');
+    L.push('   if not st then st={rg={},fr={},fp=0,ba=0,to=0,cu=nil,co=nil,pc=1,sp=0,sc={{}},lk={},va=nil,nb=0,dn=false,rs={}} ' + COSTATES + '[_key]=st end ' + ACTIVE + '=st');
     // quiet=true here, for the same reason as the host-call restore, and it is the
     // path that actually produces the user's symptom.
     //
