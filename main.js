@@ -5108,7 +5108,11 @@ function openCreateScript(projectId) {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> 🛡️ Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> 🔒 Anti Skidding</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="scriptBytecodeVM" checked onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
                 <label style="margin:0; cursor:pointer;${project.type === 'key' ? '' : ' display:none;'}"><input type="checkbox" id="scriptRequireKey"> 🔑 Require Key</label>
+            </div>
+            <div class="form-group" id="scriptBytecodeVMInfo" style="display:none; margin-top:-4px; font-size:11px; color:#ffaa44; line-height:1.5;">
+                ⚠️ <strong>Bytecode VM is OFF — this script ships essentially UNOBFUSCATED.</strong> Every protection layer (string encryption, control flow, number obfuscation) runs inside the VM, so unticking it does not select a lighter protection, it selects none: your source goes out in readable form. Leave it on unless you are diagnosing a script that will not run — if a script works with this unticked and fails with it ticked, the VM is the cause.
             </div>
             <div class="form-group" id="scriptKeyGateInfo" style="display:none;">
                 <div style="padding:10px 14px; background:rgba(108,59,255,0.1); border:1px solid rgba(108,59,255,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
@@ -5285,6 +5289,9 @@ function confirmCreateScript(projectId) {
     var antiTamper = document.getElementById('scriptAntiTamper').checked;
     var antiSkid = document.getElementById('scriptAntiSkid').checked;
     var envLogging = document.getElementById('scriptEnvLogging') ? document.getElementById('scriptEnvLogging').checked : false;
+    // default TRUE: the VM has always been on, and silently turning it off would
+    // change what every existing publish produces.
+    var vmPass = document.getElementById('scriptBytecodeVM') ? document.getElementById('scriptBytecodeVM').checked : true;
     var webhookUrl = document.getElementById('scriptWebhookUrl') ? document.getElementById('scriptWebhookUrl').value.trim() : '';
     var requireKey = document.getElementById('scriptRequireKey') ? document.getElementById('scriptRequireKey').checked : false;
     var keyMode = document.getElementById('scriptKeyMode') ? document.getElementById('scriptKeyMode').value : 'default';
@@ -5392,6 +5399,7 @@ function confirmCreateScript(projectId) {
         intensity: obfuscationIntensity,
         ultra: true,
         antiTamper: antiTamper,
+        vmPass: vmPass,
         antiSkid: antiSkid,
         hwidLock: true,
         envLogging: envLogging,
@@ -5437,6 +5445,7 @@ function confirmCreateScript(projectId) {
             name: name,
             description: description,
             antiTamper: antiTamper,
+            vmPass: vmPass,
             antiSkid: antiSkid,
         hwidLock: true,
             envLogging: envLogging,
@@ -5557,6 +5566,14 @@ function shAegis(source, name) {
 // { code, splitKey } when the server-key-split mode is used.
 // splitKey = the padded final-layer key the worker must hold; the file
 // itself ships without it, so static peelers always stop one layer short.
+// Shows/hides the "Bytecode VM is OFF" warning. It is a function rather than an
+// inline handler body so both modals can call the same one.
+function shBytecodeVMNote() {
+    var info = document.getElementById("scriptBytecodeVMInfo");
+    var box = document.getElementById("scriptBytecodeVM") || document.getElementById("editScriptBytecodeVM");
+    if (info && box) info.style.display = box.checked ? "none" : "block";
+}
+
 function obfuscateScriptCode(code, engine, options) {
     return new Promise(function(resolve, reject) {
         try {
@@ -5660,6 +5677,12 @@ function generateLoadstring(projectId, scriptId) {
         obfuscateScriptCode(script.originalCode, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
             intensity: script.obfuscationIntensity || 10,
             antiTamper: script.antiTamper !== false,
+            // read from the stored record, NOT the create-modal local: this function
+            // re-obfuscates a script that was saved earlier, and there is no modal
+            // open. `vmPass: vmPass` here is a ReferenceError, because the only
+            // `var vmPass` declarations live in confirmCreateScript and
+            // confirmEditScript.
+            vmPass: script.vmPass !== false,
             antiSkid: script.antiSkid !== false,
             envLogging: !!script.envLogging,
             webhookUrl: script.webhookUrl || '',
@@ -5704,6 +5727,8 @@ function generateLoadstring(projectId, scriptId) {
             obfuscateScriptCode(script.originalCode || script.code, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
                 intensity: script.obfuscationIntensity || 10,
                 antiTamper: script.antiTamper !== false,
+                // from the stored record - see the note on the sibling call above
+                vmPass: script.vmPass !== false,
                 antiSkid: script.antiSkid !== false,
                 envLogging: !!script.envLogging,
                 webhookUrl: script.webhookUrl || '',
@@ -5900,6 +5925,7 @@ function editScript(projectId, scriptId) {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidding</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="editScriptBytecodeVM" ${script.vmPass === false ? '' : 'checked'} onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
                 <label style="margin:0; cursor:pointer;${isKeyProject ? '' : ' display:none;'}"><input type="checkbox" id="editScriptRequireKey" ${script.requireKey ? 'checked' : ''}> 🔑 Require Key</label>
             </div>
             <div class="form-group" id="editScriptKeyGateInfo" style="display:${script.requireKey && isKeyProject ? 'block' : 'none'};">
@@ -6001,6 +6027,7 @@ function confirmEditScript(projectId, scriptId) {
     var antiTamper = document.getElementById('editScriptAntiTamper').checked;
     var antiSkid = document.getElementById('editScriptAntiSkid').checked;
     var envLogging = document.getElementById('editScriptEnvLogging') ? document.getElementById('editScriptEnvLogging').checked : false;
+    var vmPass = document.getElementById('editScriptBytecodeVM') ? document.getElementById('editScriptBytecodeVM').checked : true;
     var webhookUrl = document.getElementById('editScriptWebhookUrl') ? document.getElementById('editScriptWebhookUrl').value.trim() : '';
     var requireKey = document.getElementById('editScriptRequireKey') ? document.getElementById('editScriptRequireKey').checked : false;
     var keyMode = document.getElementById('editScriptKeyMode') ? document.getElementById('editScriptKeyMode').value : 'default';
@@ -6078,6 +6105,7 @@ function confirmEditScript(projectId, scriptId) {
         intensity: obfuscationIntensity,
         ultra: true,
         antiTamper: antiTamper,
+        vmPass: vmPass,
         antiSkid: antiSkid,
         hwidLock: true,
         envLogging: envLogging,
@@ -6650,6 +6678,7 @@ window.filterUsers = filterUsers;
 window.uploadProfileImage = uploadProfileImage;
 window.uploadBannerImage = uploadBannerImage;
 window.changeTheme = changeTheme;
+window.shBytecodeVMNote = shBytecodeVMNote;
 window.exportUsers = exportUsers;
 window.changeUserPlan = changeUserPlan;
 window.changeOwnPlan = changeOwnPlan;

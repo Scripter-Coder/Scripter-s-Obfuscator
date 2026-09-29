@@ -519,8 +519,11 @@ function buildSecurityWrapper(options, meta) {
     }
 
     // ---------- ANTI-LOGGER / ANTI-SPY / ANTI-TAMPER-LOG ----------
-    // Detects environment loggers, HTTP spies and tamper/hook loggers.
-    // On detection: game:Shutdown() + kick + hard abort of the payload.
+    // Detects environment loggers, HTTP spies and tamper/hook loggers by the
+    // FUNCTIONS they leave in the executor's global table.
+    //
+    // On detection: game:Shutdown() + hard abort of the payload. There is no
+    // Kick() - see the KILL function for why.
     if (antiLogger) {
         // tokens that only exist when a spy/logger/decompiler SCRIPT is loaded.
         // NOTE: 'decompil' REMOVED - executors ship their own legit `decompile`
@@ -529,7 +532,12 @@ function buildSecurityWrapper(options, meta) {
         // exact-name whitelist of standard executor API globals (never flagged)
         var wlNames = ['decompile', 'identifyexecutor', 'hookfunction', 'hookmetamethod', 'request', 'http_request', 'getgenv', 'getsenv', 'getrenv', 'getreg', 'getgc', 'getconnections', 'getcallingscript', 'getloadedmodules', 'getnilinstances', 'gethui', 'getrawmetatable', 'setreadonly', 'cloneref', 'checkcaller', 'writefile', 'readfile', 'appendfile', 'isfile', 'isfolder', 'makefolder', 'listfiles', 'delfile', 'delfolder', 'setclipboard', 'gethwid', 'fireclickdetector', 'firetouchinterest', 'firesignal', 'loadstring', 'syn', 'http', 'websocket', 'isexecutorclosure'];
         var FLAG = n[15], KILL = n[16], SCAN = n[17], TK = n[18], ENV = n[19];
-        var GK = n[20], LK = n[21], TI = n[22], LS = n[23], PG = n[24], CH = n[25], LN = n[26];
+        // n[20]..n[26] (GK, LK, LS, PG, CH, LN) were the removed PlayerGui/global
+        // scan's locals. They are NOT reused: the name table is positional and
+        // shared with every other block, so renumbering would silently rename
+        // identifiers in code that has nothing to do with this one. An unused Lua
+        // local costs one register.
+        var TI = n[22];
         var RS = n[27], WL = n[28];
         parts.push(
             'do',
@@ -538,8 +546,25 @@ function buildSecurityWrapper(options, meta) {
             ' local function ' + KILL + '()',
             // ALWAYS print why - so any trigger is diagnosable in the console
             '  pcall(function() print("[ScripterHub] logger/spy detected: "..' + RS + ') end)',
+            // Shutdown, NOT Kick. This is the whole point of the response, so it is
+            // worth being explicit about why a kick is not enough:
+            //
+            //   Kick only disconnects the account. The client is still running, the
+            //   executor is still attached, and a person who read this source knows
+            //   exactly what happened. They call ClearError, re-execute their
+            //   logger, and carry on - now inside a session that is visibly
+            //   "just a kick", so it reads as ordinary server behaviour rather than
+            //   as detection.
+            //
+            //   game:Shutdown() takes the client down. It is the only response here
+            //   that cannot be cleared from inside the client that was targeted,
+            //   because the thing that would clear it is no longer running.
+            //
+            // The error() after it is not the deterrent, it is the abort: it stops
+            // THIS execution from continuing into the user's script. Shutdown alone
+            // is best-effort, since game:Shutdown is a no-op stub on some
+            // executors, so the payload must not rely on it having worked.
             '  pcall(function() game:Shutdown() end)',
-            '  pcall(function() game:GetService("Players").LocalPlayer:Kick(" ") end)',
             '  error("x",0)',
             ' end',
             ' local function ' + SCAN + '()',
@@ -578,21 +603,47 @@ function buildSecurityWrapper(options, meta) {
             '   end',
             '  end)',
             '  if ' + FLAG + ' then return end',
-            // 2) spy GUIs installed in PlayerGui (HTTP Spy tools create named GUIs)
-            '  pcall(function()',
-            '   local ' + PG + '=game:GetService("Players")',
-            '   ' + PG + '=' + PG + ' and ' + PG + '.LocalPlayer and ' + PG + '.LocalPlayer:FindFirstChild("PlayerGui") or nil',
-            '   if ' + PG + ' then',
-            '    for _,' + CH + ' in ipairs(' + PG + ':GetChildren()) do',
-            '     local ' + LN + '=string.lower(tostring(' + CH + '.Name))',
-            '     for ' + TI + '=1,#' + TK + ' do',
-            '      if string.find(' + LN + ',' + TK + '[' + TI + '],1,true) then ' + FLAG + '=true ' + RS + '="gui:"..tostring(' + CH + '.Name) return end',
-            '     end',
-            '    end',
-            '   end',
-            '  end)',
-            // NOTE: loadstring hook check REMOVED - many executors legitimately
-            // implement loadstring as a Lua wrapper, which false-killed them.
+            // 2) THE PlayerGui NAME SCAN IS GONE. Removed deliberately.
+            //
+            // It was: lowercase every child name of PlayerGui and substring-match
+            // the tokens against it. A plain `string.find(name, token, 1, true)` -
+            // so "logger" matched ANY name CONTAINING "logger", and a GUI the
+            // script itself had just parented was indistinguishable from a spy
+            // tool's GUI, because the scan worked on names and held no reference
+            // to the instance it created.
+            //
+            // Two separate failures came out of that, and both are silent:
+            //
+            //   a) FALSE POSITIVE ON AN UNRELATED SCRIPT. Anything the user had
+            //      ever run that left a GUI with a matching fragment killed this
+            //      one. The user sees a script die for no visible reason and has
+            //      no way to correlate it with a window they closed ten minutes
+            //      ago.
+            //
+            //   b) SELF-DESTRUCTION. The 3-8s watcher below re-runs this scan
+            //      AFTER the original script has run and parented its own ScreenGui
+            //      to PlayerGui. A script whose GUI is named e.g. "LoggerPanel",
+            //      "SpyMenu" or "Dumper" found ITSELF and killed itself a few
+            //      seconds in - which presents as "the GUI appears and then
+            //      disappears, with no error", because every part of the failure
+            //      is silent: print is not an error, game:Shutdown and a blank
+            //      Kick are no-ops on many executors, and error("x",0) is level 0.
+            //
+            // It is also the weakest of the two detectors. Every real spy toolkit
+            // (HTTP spy, hook spy, env logger, unluac/luadec) exports FUNCTIONS -
+            // that is check 1, and it is an exact rawget on a known name, with no
+            // substring and no relationship to anybody's GUI. A GUI named after a
+            // tool is a weaker signal than the tool's own API being present.
+            //
+            // The cost of removing it, stated plainly: a spy that is PURELY a
+            // ScreenGui with no exported functions would no longer be caught here.
+            // That is the accepted trade - a wrong kill punishes an honest user for
+            // someone else's tooling, and the function scan already covers the
+            // actual tools.
+            //
+            // NOTE: loadstring hook check REMOVED earlier - many executors
+            // legitimately implement loadstring as a Lua wrapper, which
+            // false-killed them.
             ' end',
             ' ' + SCAN + '()',
             ' if ' + FLAG + ' then ' + KILL + '() end',

@@ -2093,6 +2093,10 @@ function emitVM(build) {
     var OWNER = nm('ow'), CUR = nm('cu'), NEXTBASE = nm('nb'), VMFN = nm('vf'), VMFUN = nm('vfm'), INVOKE = nm('ivk'), SCHED = nm('sch'), PUSHF = nm('pf'), POPF = nm('xf'), STACK_CTX = nm('sx'), STACK_BRIDGE = nm('sb'), NATIVE_STACK_META = nm('nm');
     var ROOTTHREAD='__vms_root_thread', ROOTSTATE='__vms_root_state', COSTATES='__vms_cor_states', ACTIVE='__vms_active_state', SAVEVM='__vms_save_state', LOADVM='__vms_load_state';
     var SAVEF = nm('sf'), LOADF = nm('lf'), FINISH = nm('rt'), DONE = nm('dn'), RESULT = nm('rs'), POISON = nm('pz'), HOST_ERROR = 'HOST_ERROR';
+    // XS: per-call scratch state for the unguarded host-call path. Named separately
+    // from SAVEF/ACTIVE because those hold a different thing (a frame vs the whole
+    // register set) and reusing either would corrupt the other path.
+    var XS = nm('xs');
     var X = nm('x'), Y = nm('z');
 
     // ---- per-build VAULT cipher params ----
@@ -2893,8 +2897,35 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 L.push('    local _co=(type(coroutine)=="table" and coroutine.resume and f==coroutine.resume) local _yt=(type(coroutine)=="table" and f==coroutine.yield and coroutine.running()~=' + ROOTTHREAD + ')');
                 L.push('    if _co then ' + SAVEVM + '(' + ROOTSTATE + ') end');
                 L.push('    if _yt then local _st=' + ACTIVE + ' ' + SAVEF + '(' + CUR + ') ' + SAVEVM + '(_st) ' + LOADVM + '(' + ROOTSTATE + ') end');
+                // A host call can execute VM code NESTED, and the VM cannot see it
+                // happen. task.spawn is the common case: it is an ordinary host
+                // function, so f is neither coroutine.resume nor coroutine.yield and
+                // neither _co nor _yt is set - but its body calls coroutine.resume on
+                // a coroutine that is running VM code, and that nested run leaves
+                // PC, SP, FP, BASE, CUR and the operand registers pointing at the
+                // spawned frame. Nothing here put them back, so the caller carried on
+                // from a stale program counter and the remainder of the chunk silently
+                // never ran.
+                //
+                // Observed effect, on a 44KB Roblox GUI script: a bare
+                // `task.spawn(function() end)` near the top stopped the build after
+                // ONE object instead of 63. The loading overlay was created, its own
+                // teardown tween then destroyed it on schedule, and what the player
+                // saw was a GUI blink and vanish, leaving an empty ScreenGui and no
+                // error anywhere.
+                //
+                // The save/restore below is UNCONDITIONAL for the unguarded path,
+                // because a host function resuming VM code is unobservable from here.
+                // SAVEVM/LOADVM are shallow reference copies of the interpreter
+                // registers - fourteen field assignments - so the cost is one small
+                // table per host call, which is far cheaper than the silent wrong
+                // answer it replaces. A fresh table per call is required: sharing one
+                // scratch slot would lose the outer save when host calls nest.
+                L.push('    local ' + XS + '=nil if not _co and not _yt then ' + XS + '={} ' + SAVEVM + '(' + XS + ') end');
                 L.push('    local r=' + PK + '(f(' + UNP + '(a,1,la)))');
-                 L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
+                L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
+                // restore BEFORE the result is stored, so SP is the caller's again
+                L.push('    if ' + XS + ' then ' + LOADVM + '(' + XS + ') end');
                 L.push('    if _yt then local _st=' + ACTIVE + ' ' + LOADVM + '(_st) ' + LOADF + '(' + CUR + ') end');
                 L.push('    ' + SP + '=' + SP + '+1');
                 if (multi) { L.push('    ' + S + '[' + SP + ']=r'); }
@@ -2916,9 +2947,15 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 L.push('    local cc=' + CH + '[nf.chunk] local ps=cc.p for i=1,#ps do nf.sc[1][ps[i]]={a[i]} end if cc.v then local t={n=0} t[' + MARK + ']=true for i=#ps+1,#a do t.n=t.n+1 t[t.n]=a[i] end nf.va=t end');
                 L.push('    ' + FRAMES + '[' + FP + ']=nf ' + LOADF + '(nf)');
                 L.push('   else');
+                // Same hazard as the CALL path: a host function here can resume VM
+                // code internally (`return task.spawn(...)`) and leave the registers
+                // pointing at the spawned frame. There is no _co/_yt branch on this
+                // path at all, so the save/restore is unconditional.
+                L.push('    local ' + XS + '={} ' + SAVEVM + '(' + XS + ')');
                 L.push('    local r=' + PK + '(f(' + UNP + '(a,1,la)))');
-                 L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
-                 L.push('    ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=r ' + FINISH + '(0,true)');
+                L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
+                L.push('    ' + LOADVM + '(' + XS + ')');
+                L.push('    ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=r ' + FINISH + '(0,true)');
                 L.push('   end');
                 break;
             }
