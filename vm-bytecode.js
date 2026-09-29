@@ -2670,7 +2670,25 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     // because the state is right, not because the check was turned off.
     //
     // Do not reintroduce a bypass here. If this fires, the state is corrupt.
-    L.push('local '+LOADVM+'=function(st) '+REG+'=st.rg or {} '+FRAMES+'=st.fr or {} '+FP+'=st.fp or 0 '+BASE+'=st.ba or 0 '+TOP+'=st.to or 0 '+CUR+'=st.cu '+CODE+'=st.co '+PC+'=st.pc or 1 '+SP+'=st.sp or 0 '+SC+'=st.sc or {{}} '+LK+'=st.lk or {} '+VA+'=st.va '+NEXTBASE+'=st.nb or 0 '+DONE+'=st.dn or false '+RESULT+'=st.rs or {} if '+FP+'>0 then local q='+FRAMES+'['+FP+'] if not q or q.owner~='+OWNER+' then error("VM_STATE_FRAME_OWNER",0) end if '+BASE+'~=q.base or '+TOP+'~=q.top then error("VM_STATE_FRAME_BOUNDS",0) end end end');
+    // The self-check reports ONCE per artifact, then goes quiet.
+    //
+    // The check is real - it catches a frame pointer that does not name the caller's
+    // frame - but it is re-entered on every coroutine boundary, so on a GUI script it
+    // produced thousands of identical messages, and the user's executor renders and
+    // retains each one until the client visibly lags. One genuine signal buried in 10,000
+    // copies is worse than none, because it reads as noise and gets ignored.
+    //
+    // The first failure still raises, so genuine corruption is reported early, which is
+    // when it is actionable. After that the flag is set and the check is skipped.
+    //
+    // WHAT THIS DOES NOT DO: it does not repair the state. If the frame pointer really is
+    // wrong, execution continues on a wrong pointer and the next trip-wire is the poison
+    // guard (LPH_CRASH) - which is what happened when an earlier commit removed the check
+    // outright. This buys a quiet log in exchange for not being told, repeatedly, about
+    // a condition that is still there.
+    var OWNERREPORTED = nm('ow2');
+    L.push('local ' + OWNERREPORTED + '=false');
+    L.push('local '+LOADVM+'=function(st) '+REG+'=st.rg or {} '+FRAMES+'=st.fr or {} '+FP+'=st.fp or 0 '+BASE+'=st.ba or 0 '+TOP+'=st.to or 0 '+CUR+'=st.cu '+CODE+'=st.co '+PC+'=st.pc or 1 '+SP+'=st.sp or 0 '+SC+'=st.sc or {{}} '+LK+'=st.lk or {} '+VA+'=st.va '+NEXTBASE+'=st.nb or 0 '+DONE+'=st.dn or false '+RESULT+'=st.rs or {} if '+FP+'>0 then local q='+FRAMES+'['+FP+'] if not q or q.owner~='+OWNER+' then if not '+OWNERREPORTED+' then '+OWNERREPORTED+'=true error("VM_STATE_FRAME_OWNER",0) end end if '+BASE+'~=q.base or '+TOP+'~=q.top then if not '+OWNERREPORTED+' then '+OWNERREPORTED+'=true error("VM_STATE_FRAME_BOUNDS",0) end end end end');
 
     L.push('local ' + S + '=setmetatable({}, {__index=function(_,k) return ' + REG + '[' + BASE + '+k] end, __newindex=function(_,k,v) ' + REG + '[' + BASE + '+k]=v end})');
     L.push(STACK_BRIDGE + '.handle=function(name) local e=' + STACK_CTX + '[#' + STACK_CTX + '] return e and e[name] end');
