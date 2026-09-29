@@ -8,7 +8,24 @@
 --   * `Parent` records the child in the parent's _kids, so the tree can be walked.
 readfile = function(p) return nil end
 isfile = function(p) return false end
-Enum = setmetatable({}, {__index = function(t,k) return setmetatable({}, {__index = function(t2,k2) return {__e=k.."."..k2} end}) end})
+-- Enum values are MEMOIZED, so `Enum.UserInputType.MouseButton1 == input.UserInputType`
+-- can ever be true. The previous stub built a fresh table on every access, so every
+-- enum comparison silently returned false - which made a drag demo that works perfectly
+-- look like it did nothing, and nearly registered as a VM failure.
+local _ENUM_CACHE = {}
+Enum = setmetatable({}, {__index = function(t, k)
+  local grp = _ENUM_CACHE[k]
+  if not grp then
+    grp = {}
+    _ENUM_CACHE[k] = grp
+    setmetatable(grp, {__index = function(g, k2)
+      local v = { __e = k .. "." .. k2, Name = k2 }
+      rawset(g, k2, v)
+      return v
+    end})
+  end
+  return grp
+end})
 UDim2 = { new = function(a,b,c,d) return {X={Scale=a,Offset=b}, Y={Scale=c,Offset=d}} end }
 UDim  = { new = function(s,o) return {Scale=s, Offset=o} end }
 Color3 = { fromRGB = function(r,g,b) return {R=r,G=g,B=b} end }
@@ -137,7 +154,22 @@ TweenInfo = { new = function(...) return { __tweeninfo = true, args = { ... } } 
 NumberSequence = { new = function(...) return { __numseq = true } end }
 ColorSequence = { new = function(...) return { __colseq = true } end }
 Random = { new = function() return { NextInteger = function() return 1 end, NextNumber = function() return 0 end } end }
-Vector2 = { new = function(x, y) return { X = x, Y = y } end, zero = { X = 0, Y = 0 } }
+-- Vector2/Vector3 support ARITHMETIC. A plain table cannot be subtracted from another
+-- plain table, so `input.Position - dragStart` threw inside a pcall-wrapped signal
+-- handler and the frame silently never moved - which reads exactly like a VM failure
+-- when the script is the user's own and works perfectly outside it.
+local _V2 = {}
+_V2.__index = _V2
+function _V2.__sub(a, b) return Vector2.new(a.X - b.X, a.Y - b.Y) end
+function _V2.__add(a, b) return Vector2.new(a.X + b.X, a.Y + b.Y) end
+function _V2.__unm(a) return Vector2.new(-a.X, -a.Y) end
+function _V2.__eq(a, b) return a.X == b.X and a.Y == b.Y end
+function _V2.__tostring(a) return "(" .. tostring(a.X) .. ", " .. tostring(a.Y) .. ")" end
+Vector2 = setmetatable({ new = function(x, y) return setmetatable({ X = x or 0, Y = y or 0 }, _V2) end }, {
+  __call = function(_, x, y) return setmetatable({ X = x or 0, Y = y or 0 }, _V2) end,
+})
+Vector2.zero = Vector2.new(0, 0)
+Vector2.one = Vector2.new(1, 1)
 Vector3 = { new = function(x, y, z) return { X = x, Y = y, Z = z } end, zero = { X = 0, Y = 0, Z = 0 } }
 CFrame = { new = function(x, y, z) return { X = x or 0, Y = y or 0, Z = z or 0 } end }
 Ray = { new = function() return {} end }
