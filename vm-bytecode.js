@@ -586,6 +586,18 @@ function compile(src, opts) {
         }
         return { kind: 'global', name: name };
     }
+    // Return the VM mode of the function scope that owns a lexical binding.
+    // This matters for VM(NONE): a native function already has real Lua
+    // lexical captures. Bridging one of those captures through the VM cell
+    // accessor is incorrect because no VM cell exists for the native local.
+    // Keep the distinction explicit so a native nested callback remains a
+    // normal Lua closure instead of becoming VM_NATIVE_UPVALUE_UNBOUND.
+    function lexicalOwnerVmMode(id) {
+        for (var i = lex.length - 1; i >= 0; i--) {
+            if (lex[i].ids.has(id)) return lex[i].fn ? String(lex[i].vmMode || '').toUpperCase() : null;
+        }
+        return null;
+    }
     function isStackLocalId(id) {
         for (var i = lex.length - 1; i >= 0; i--) {
             var sc = lex[i];
@@ -682,7 +694,13 @@ function compile(src, opts) {
                 // loader-level function, so rewriting it to a cell accessor
                 // would read the wrong thing. Sibling references are emitted as
                 // forward-declared locals instead (see nativeForwardDecls).
-                if (r.kind === 'upval' && !isVmNoneSiblingName(node.name) && !stackAllocIds.has(r.id) && !captures.has(node.name)) captures.set(node.name, r.id);
+                // If the defining function is VM(NONE), this is already a
+                // genuine Lua lexical upvalue. There is no VM cell to bridge,
+                // so leave it alone. This is the important case for native
+                // GUI callbacks such as dragStart: the callback can safely
+                // capture the native parent's local directly.
+                var ownerMode = lexicalOwnerVmMode(r.id);
+                if (r.kind === 'upval' && ownerMode !== 'NONE' && !isVmNoneSiblingName(node.name) && !stackAllocIds.has(r.id) && !captures.has(node.name)) captures.set(node.name, r.id);
             }
             for (var k in node) {
                 var v = node[k];
@@ -1762,6 +1780,10 @@ function compile(src, opts) {
         var fnMeta = currentFuncMeta() || {};
         var defaultVmMode = String(architecture === 'ONYX' ? 'ONYX' : 'OPAL').toUpperCase();
         var vmMode = String(fnMeta.VM || defaultVmMode).toUpperCase();
+        // Record the owning mode on the lexical function scope before capture
+        // analysis of nested functions. Native (VM/NONE) parents must keep
+        // native Lua upvalues native; virtual parents still use the VM bridge.
+        lex[lex.length - 1].vmMode = vmMode;
         var fnTransforms = fnMeta.TRANSFORM == null ? [] : (Array.isArray(fnMeta.TRANSFORM) ? fnMeta.TRANSFORM : [fnMeta.TRANSFORM]);
         var transformName = (item) => typeof item === 'string' ? item : (item && item.name) || '';
         // Renders a source range with every recorded edit/insert of the given
@@ -3347,8 +3369,13 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push('     local ef=' + FRAMES + '[ei] local meta=ef and ef.prot');
     L.push('     if meta then');
     L.push('      for k=' + FP + ',ei+1,-1 do local z=' + FRAMES + '[k] if z then for j=z.base,z.top do ' + REG + '[j]=nil end if z.sanext and z.sanext>z.base+256 then for j=z.base+256,z.sanext-1 do ' + REG + '[j]=nil end end end ' + FRAMES + '[k]=nil end');
-    L.push('      ' + FP + '=ei ' + LOADF + '(' + FRAMES + '[' + FP + '])');
-    L.push('      local bad=' + FRAMES + '[' + FP + '] local caller=meta.caller ' + FRAMES + '[' + FP + ']=nil ' + FP + '=' + FP + '-1');
+    L.push('      ' + FP + '=ei ' + LOADF + '(ef)');
+    // `ef` is the frame proven to contain the protection metadata. Use that
+    // object directly during unwinding; looking it up again through FRAMES[FP]
+    // made a concurrent/re-entrant callback turn the real error into
+    // `attempt to index nil with 'base'`.
+    L.push('      local bad=ef local caller=meta.caller ' + FRAMES + '[' + FP + ']=nil ' + FP + '=' + FP + '-1');
+    L.push('      if not caller then error(_err,0) end');
     L.push('      for j=bad.base,bad.top do ' + REG + '[j]=nil end if bad.sanext and bad.sanext>bad.base+256 then for j=bad.base+256,bad.sanext-1 do ' + REG + '[j]=nil end end');
     L.push('      if meta.kind=="xpcall" then ' + LOADF + '(caller) local hf=' + VMFUN + '[meta.handler] if hf then local hm={kind="xhandler",caller=caller,dest=meta.dest} ' + PUSHF + '(hf.chunk,hf.links,{_err},meta.dest,-3,caller,hm) else local okh,hr=pcall(meta.handler,_err); if not okh then error(hr,0) end local q={n=2} q[' + MARK + ']=true q[1]=false q[2]=hr ' + SP + '=meta.dest ' + S + '[' + SP + ']=q end else ' + LOADF + '(caller) local q={n=2} q[' + MARK + ']=true q[1]=false q[2]=_err ' + SP + '=meta.dest ' + S + '[' + SP + ']=q end');
     L.push('      handled=true break');
@@ -3411,9 +3438,15 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push('    local rr=' + RESULT + ' or {} ' + SAVEVM + '(st) ' + LOADVM + '(' + ROOTSTATE + ') return ' + UNP + '(rr)');
     L.push('   end');
     L.push('   local stop=' + FP + ' local caller=' + FRAMES + '[' + FP + '] ' + SAVEF + '(caller)');
+    L.push('   if not caller then error("VM_STATE_CALLER_MISSING",0) end');
     L.push('   ' + PUSHF + '(d.chunk,d.links,{...},' + SP + '+1,0,caller)');
     L.push('   ' + SCHED + '(stop)');
-    L.push('   local cf=' + FRAMES + '[' + FP + '] ' + LOADF + '(cf) local rr=cf.lastResult or {} cf.lastResult=nil return ' + UNP + '(rr)');
+    // The stop frame is the caller and must survive the nested invocation. A
+    // re-entrant host callback can otherwise leave the array slot empty even
+    // though the caller object itself was saved immediately above. Restore the
+    // saved caller instead of dereferencing a nil frame (which used to surface
+    // as the misleading "attempt to index nil with 'base'" in LOADF).
+    L.push('   local cf=' + FRAMES + '[' + FP + '] or caller if not ' + FRAMES + '[' + FP + '] then ' + FRAMES + '[' + FP + ']=cf end if not cf then error("VM_STATE_CALLER_MISSING",0) end ' + LOADF + '(cf) local rr=cf.lastResult or {} cf.lastResult=nil return ' + UNP + '(rr)');
     L.push('  end');
     // A native function can call a VM function synchronously while the outer
     // VM is active. Isolate that nested invocation so its FRAMES/REG cannot
