@@ -137,7 +137,7 @@ function run(code) {
     const st = lauxlib.luaL_dostring(L, to_luastring(code));
     const e = lua.lua_tostring(L, -1);
     const str = (g) => { lua.lua_getglobal(L, to_luastring(g)); const r = lua.lua_tostring(L, -1); return r ? to_jsstring(r) : ''; };
-    return { ok: st === lua.LUA_OK, err: e ? to_jsstring(e) : '', errTail: e ? to_jsstring(e).split('\n')[0].slice(0, 110) : '', moved: str('DRAGRESULT'), after: str('DRAGAFTER') };
+    return { ok: st === lua.LUA_OK, err: e ? to_jsstring(e) : '', errTail: e ? to_jsstring(e).split('\n')[0].slice(0, 110) : '', moved: str('DRAGRESULT'), after: str('DRAGAFTER'), erro: str('CYCLE_ERRS'), cycle: str('CYCLE_LAST') };
 }
 
 console.log('dragging must move the frame, and must stop when the button is released.\n');
@@ -161,6 +161,55 @@ else {
 
         if (obf.after === plain.after) ok('release stops the drag in both (' + obf.after + ')');
         else no('after release the obfuscated frame moved to ' + obf.after + ' but plain stayed at ' + plain.after);
+    }
+}
+
+console.log('\nrepeated drags must not degrade or raise:\n');
+{
+    // The user reported the error repeating on EVERY mouse move while dragging, and
+    // never stopping even after release. A single drag may pass while the third fails,
+    // because the imbalance only shows once the stack has unwound more than once - which
+    // is why the original single-drag check was not enough to catch it.
+    const CYCLES = `
+local function mkInput(kind, x, y, st)
+  local i = { Position = Vector2.new(x, y), UserInputType = kind, UserInputState = st or "None", Changed = { Conn = {} } }
+  i.Changed.Connect = function(self, f) table.insert(self.Conn, f) return {Disconnect=function() end} end
+  i.Changed.Fire = function(self) for _, f in ipairs(self.Conn) do pcall(f) end end
+  return i
+end
+local errs = 0
+local real_pcall = pcall
+pcall = function(f, ...)
+  local ok, e = real_pcall(f, ...)
+  if not ok and type(e) == "string" and (e:find("nil with 'base'", 1, true) or e:find("VM_", 1, true)) then errs = errs + 1 end
+  return ok, e
+end
+local last = DRAGFRAME.Position.X.Offset
+for c = 1, 6 do
+  local down = mkInput(Enum.UserInputType.MouseButton1, 0, 0)
+  DRAGTITLE.InputBegan:Fire(down)
+  for m = 1, 4 do
+    DRAGTITLE.InputChanged:Fire(mkInput(Enum.UserInputType.MouseMovement, c * 10 + m, m))
+  end
+  down.UserInputState = Enum.UserInputState.End
+  down.Changed:Fire()
+  DRAGTITLE.InputChanged:Fire(mkInput(Enum.UserInputType.MouseMovement, 999, 999))
+  last = DRAGFRAME.Position.X.Offset
+end
+CYCLE_ERRS = tostring(errs)
+CYCLE_LAST = tostring(last)
+`;
+    const p2 = run(DEMO + '\n' + CYCLES);
+    const g2 = generate(DEMO);
+    const o2 = run(canary(g2) + g2 + '\n' + CYCLES);
+    console.log('  plain      : errors=' + p2.erro + '  final X=' + p2.cycle);
+    if (p2.ok && p2.erro === '0') ok('the plain demo survives 6 drag cycles with no state error');
+    else if (p2) no('the plain demo itself raised (' + p2.erro + ') - the harness is not measuring the VM');
+    if (o2.ok && o2.erro === '0') ok('the obfuscated build survives 6 drag cycles with no state error');
+    else if (o2) no('the obfuscated build raised ' + o2.erro + ' state errors across 6 drag cycles');
+    if (p2.cycle && o2.cycle) {
+        if (p2.cycle === o2.cycle) ok('both end at the same position after 6 cycles (' + o2.cycle + ')');
+        else no('after 6 cycles plain ended at ' + p2.cycle + ' but obfuscated at ' + o2.cycle);
     }
 }
 
