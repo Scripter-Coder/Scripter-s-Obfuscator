@@ -160,6 +160,34 @@ function RESETMISSING() MISSING = {} end
 
 getgenv = function() return _G end
 PENDING = {}
+-- game:HttpGet. Real scripts use it at the very top to pull a second stage, and a stub
+-- without it fails on line 2 - which means a script used as a CONTROL never runs, and
+-- every comparison against it is meaningless. The Clone Kingdom Tycoon script does
+-- exactly this, and it is the script that works on the executor.
+-- loadstring, as an executor provides it. A script that pulls a second stage with
+-- `loadstring(game:HttpGet(...))()` cannot even be READ by a stub that lacks it, so the
+-- Clone Kingdom Tycoon script - the one that works on the executor, and therefore the
+-- only control this investigation has - could not run at all.
+-- `load` here is the real Lua loader, captured before this line rebinds loadstring.
+local _real_load = load
+loadstring = function(src, chunkname)
+  if type(src) ~= "string" then return nil, "bad argument #1 to 'loadstring' (string expected)" end
+  return _real_load(src, chunkname and (chunkname:gsub("^[=@]", "") or chunkname) or "stage2")
+end
+game.HttpGet = function(self, url, binary)
+  if type(self) ~= "table" and self ~= game then
+    -- called as game:HttpGet(url) -> self is game
+  end
+  return ""
+end
+HttpService = services.HttpService
+function services.HttpService:GenerateGUID(w) return "00000000-0000-0000-0000-000000000000" end
+function services.HttpService:Get(t) return { StatusCode = 200, Body = "{}", Headers = {} } end
+function services.HttpService:PostAsync(t) return { Success = true, StatusCode = 200, Body = "{}" } end
+function services.HttpService:RequestAsync(t) return { Success = true, StatusCode = 200, Body = "{}" } end
+function services.HttpService:JSONEncode(t) return "{}" end
+function services.HttpService:JSONDecode(t) return {} end
+
 task = {}
 task.wait = function() coroutine.yield() end
 -- A failing coroutine is RECORDED, not swallowed. `coroutine.resume` returns false
@@ -177,7 +205,20 @@ local function step(co)
   end
   return ok
 end
-task.spawn = function(f) local co = coroutine.create(f); PENDING[#PENDING + 1] = co; step(co) end
+-- Arguments are FORWARDED, as Roblox does. The previous stub took only `f` and
+-- dropped the rest, so task.spawn(fn, arg) was never actually tested here.
+--
+-- The unpack helper is selected with an if, not `table.unpack and ... or ...`:
+-- table.unpack(t, 1, 0) returns NO values, so the `or` branch is taken, and `unpack`
+-- does not exist in 5.3. Every zero-argument spawn then died with "attempt to call a
+-- nil value" - which reads as a VM failure in any test that only checks the outcome.
+local _unpack = table.unpack or unpack
+task.spawn = function(f, ...)
+  local a = table.pack and table.pack(...) or { n = select("#", ...), ... }
+  local co = coroutine.create(function() return f(_unpack(a, 1, a.n)) end)
+  PENDING[#PENDING + 1] = co
+  step(co)
+end
 task.defer = task.spawn
 function PUMP(n) for _, co in ipairs(PENDING) do for _ = 1, n do step(co) end end end
 function SPAWNERRORS() return table.concat(SPAWN_ERRORS, " || ") end
