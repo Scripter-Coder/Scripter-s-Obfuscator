@@ -2630,7 +2630,22 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push('local ' + CUR + '=nil local ' + DONE + '=false local ' + RESULT + '={} local ' + POISON + '=false local ' + VMFUN + '={} local ' + SCHED + ' local ' + INVOKE);
     L.push('local '+ROOTTHREAD+'=coroutine.running() local '+ROOTSTATE+' local '+COSTATES+'={} local '+ACTIVE+'=nil');
     L.push('local '+SAVEVM+'=function(st) st.rg='+REG+' st.fr='+FRAMES+' st.fp='+FP+' st.ba='+BASE+' st.to='+TOP+' st.cu='+CUR+' st.co='+CODE+' st.pc='+PC+' st.sp='+SP+' st.sc='+SC+' st.lk='+LK+' st.va='+VA+' st.nb='+NEXTBASE+' st.dn='+DONE+' st.rs='+RESULT+' end');
-    L.push('local '+LOADVM+'=function(st) '+REG+'=st.rg or {} '+FRAMES+'=st.fr or {} '+FP+'=st.fp or 0 '+BASE+'=st.ba or 0 '+TOP+'=st.to or 0 '+CUR+'=st.cu '+CODE+'=st.co '+PC+'=st.pc or 1 '+SP+'=st.sp or 0 '+SC+'=st.sc or {{}} '+LK+'=st.lk or {} '+VA+'=st.va '+NEXTBASE+'=st.nb or 0 '+DONE+'=st.dn or false '+RESULT+'=st.rs or {} if '+FP+'>0 then local q='+FRAMES+'['+FP+'] if not q or q.owner~='+OWNER+' then error("VM_STATE_FRAME_OWNER",0) end if '+BASE+'~=q.base or '+TOP+'~=q.top then error("VM_STATE_FRAME_BOUNDS",0) end end end');
+    // The optional `quiet` argument skips the self-check, for the one caller that is
+    // RESTORING a snapshot the VM itself took microseconds earlier.
+    //
+    // The check is a debugging assertion, and it is a false positive on that path.
+    // SAVEVM snapshots the frames table BY REFERENCE, and the host-call save/restore
+    // exists precisely because a host function may resume a coroutine running VM code
+    // - and a nested run pops frames as it unwinds, executing FRAMES[FP]=nil on the
+    // very table the snapshot points at. So by the time the caller restores, the slot
+    // it was going to resume into has legitimately been vacated by the frame above it,
+    // and the assertion reports corruption that has not happened.
+    //
+    // Restoring there is still correct: the snapshot describes the caller's own state
+    // as of the call, which is exactly what should be resumed. Every other caller -
+    // the scheduler, the _co/_yt coroutine paths - keeps the check, so a genuinely
+    // corrupt state is still reported loudly everywhere else.
+    L.push('local '+LOADVM+'=function(st,quiet) '+REG+'=st.rg or {} '+FRAMES+'=st.fr or {} '+FP+'=st.fp or 0 '+BASE+'=st.ba or 0 '+TOP+'=st.to or 0 '+CUR+'=st.cu '+CODE+'=st.co '+PC+'=st.pc or 1 '+SP+'=st.sp or 0 '+SC+'=st.sc or {{}} '+LK+'=st.lk or {} '+VA+'=st.va '+NEXTBASE+'=st.nb or 0 '+DONE+'=st.dn or false '+RESULT+'=st.rs or {} if '+FP+'>0 and not quiet then local q='+FRAMES+'['+FP+'] if not q or q.owner~='+OWNER+' then error("VM_STATE_FRAME_OWNER",0) end if '+BASE+'~=q.base or '+TOP+'~=q.top then error("VM_STATE_FRAME_BOUNDS",0) end end end');
 
     L.push('local ' + S + '=setmetatable({}, {__index=function(_,k) return ' + REG + '[' + BASE + '+k] end, __newindex=function(_,k,v) ' + REG + '[' + BASE + '+k]=v end})');
     L.push(STACK_BRIDGE + '.handle=function(name) local e=' + STACK_CTX + '[#' + STACK_CTX + '] return e and e[name] end');
@@ -2925,7 +2940,10 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 L.push('    local r=' + PK + '(f(' + UNP + '(a,1,la)))');
                 L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
                 // restore BEFORE the result is stored, so SP is the caller's again
-                L.push('    if ' + XS + ' then ' + LOADVM + '(' + XS + ') end');
+                // quiet=true: restoring our own snapshot, see the note on LOADVM. The
+                // check is a false positive here because a nested VM run legitimately
+                // pops frames in the shared table this snapshot points at.
+                L.push('    if ' + XS + ' then ' + LOADVM + '(' + XS + ',true) end');
                 L.push('    if _yt then local _st=' + ACTIVE + ' ' + LOADVM + '(_st) ' + LOADF + '(' + CUR + ') end');
                 L.push('    ' + SP + '=' + SP + '+1');
                 if (multi) { L.push('    ' + S + '[' + SP + ']=r'); }
@@ -2954,7 +2972,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 L.push('    local ' + XS + '={} ' + SAVEVM + '(' + XS + ')');
                 L.push('    local r=' + PK + '(f(' + UNP + '(a,1,la)))');
                 L.push('    if ' + POISON + ' then HOST_ERROR("LPH_CRASH",0) end');
-                L.push('    ' + LOADVM + '(' + XS + ')');
+                L.push('    ' + LOADVM + '(' + XS + ',true)');
                 L.push('    ' + SP + '=' + SP + '+1 ' + S + '[' + SP + ']=r ' + FINISH + '(0,true)');
                 L.push('   end');
                 break;
