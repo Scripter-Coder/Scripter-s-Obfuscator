@@ -151,43 +151,57 @@ for (const [name, body] of CASES) {
     else no(name + ': built ' + r.count + ' of ' + base.count);
 }
 
-// THE ACTUAL GUARD.
+// THE ACTUAL GUARD: the snapshot must be a COPY, and the self-check must stay loud.
 //
-// The behavioural cases above cannot reproduce the user's error, so this block
-// enumerates the generated VM's LOADVM call sites and asserts the ones that restore a
-// snapshot all pass quiet. It is deliberately exhaustive over call sites rather than
-// counting occurrences: 43cb024 quieted ONE restore path and left three others loud,
-// every one of them on a coroutine re-entry path, and the user kept getting spammed.
-// A count would have read "the check is gated" and passed while the bug was live.
-console.log('\nevery restore path in the emitted VM must skip the false-positive check:\n');
-{
-    let out;
-    try { out = generate(SRC); } catch (e) { no('generator threw: ' + e.message.slice(0, 60)); }
-    if (out) {
-        const def = /local (\w+)=function\(st,quiet\)/.exec(out);
-        if (!def) { no('the emitted VM has no quiet-capable LOADVM at all'); }
-        else {
-            const LV = def[1];
-            ok('the emitted VM defines a quiet-capable LOADVM');
-            const re = new RegExp(LV + '\\(([^()]*)\\)', 'g');
-            const calls = [];
-            let m;
-            while ((m = re.exec(out)) !== null) calls.push(m[1].trim());
-            const loud = calls.filter(a => !/,\s*true\s*$/.test(a));
-            if (loud.length === 0) ok('all ' + calls.length + ' LOADVM call sites restore quietly');
-            else no(loud.length + ' LOADVM site(s) still loud: ' + [...new Set(loud)].join(', '));
-        }
-    }
-}
-
-console.log('\nthe check itself is still there, and the scheduler is untouched:\n');
+// The two earlier commits both tried to silence VM_STATE_FRAME_OWNER with a `quiet`
+// flag on LOADVM. That was backwards twice over. The error was correct - SAVEVM aliased
+// the frames array, so a nested run's `FRAMES[FP]=nil` wrote through and destroyed the
+// snapshot. Quieting the check left the VM resuming with a frame pointer that named the
+// wrong frame, and it reached the poison guard (LPH_CRASH): a worse failure than the
+// honest error, because the interpreter was left genuinely corrupt rather than merely
+// noisy.
+//
+// So this asserts the two properties that make the check pass legitimately:
+//   1. SAVEVM copies the frames array and the registers instead of aliasing them.
+//   2. LOADVM has no bypass. Every call site asserts.
+//
+// Property 2 is deliberately a "there is no `quiet`" check. A previous version asserted
+// the opposite - that all sites were quiet - and it passed while the bug was live.
+console.log('\nthe snapshot must be a copy, and the state check must stay loud:\n');
 {
     const src = fs.readFileSync('vm-bytecode.js', 'utf8');
-    const loadvm = /function\(st,quiet\)([\s\S]*?)end'\);/.exec(src);
-    const gated = /not quiet then local q=/.test(src);
-    const throwsInLoadvm = loadvm ? /VM_STATE_FRAME_OWNER/.test(loadvm[1]) : false;
-    if (gated && throwsInLoadvm) ok('LOADVM still asserts on its own when quiet is not passed');
-    else no('LOADVM no longer asserts (gated=' + gated + ', throw present=' + throwsInLoadvm + ')');
+
+    // 1. SAVEVM must not alias FRAMES or REG.
+    const savevm = /SAVEVM\+?'?=function\(st\)([\s\S]*?)L\.push\('end'\)/.exec(src);
+    if (!savevm) {
+        no('could not locate SAVEVM in the emitter');
+    } else {
+        const body = savevm[1];
+        const aliasesFrames = /st\.fr\s*=\s*'\s*\+\s*FRAMES\s*\+\s*'/.test(body) || /st\.fr=FRAMES\b/.test(body);
+        const aliasesReg = /st\.rg\s*=\s*'\s*\+\s*REG\s*\+\s*'/.test(body) || /st\.rg=REG\b/.test(body);
+        if (aliasesFrames || aliasesReg) {
+            no('SAVEVM still aliases the interpreter state (fr=' + aliasesFrames + ', rg=' + aliasesReg + ') - a nested run can destroy the snapshot through it');
+        } else {
+            ok('SAVEVM copies the frames array and registers rather than aliasing them');
+        }
+        if (/for _i=1,' \+ FP \+ ' do _f\[_i\]=/.test(body)) ok('the frames array is copied element by element, so a pop cannot write through');
+        else no('no per-element copy of the frames array found');
+    }
+
+    // 2. No bypass on LOADVM, and the assertion is present and unconditional.
+    if (/function\(st,quiet\)/.test(src) || /LOADVM \+ '\([^']*,true\)/.test(src)) {
+        no('LOADVM still has a bypass (quiet argument or a quiet call site) - do not silence a correct check');
+    } else {
+        ok('LOADVM has no quiet bypass: every restore path asserts');
+    }
+    const loadvm = /LOADVM\+?'?=function\(st\)([\s\S]*?)end'\);/.exec(src);
+    if (loadvm && /VM_STATE_FRAME_OWNER/.test(loadvm[1]) && !/not quiet/.test(loadvm[1])) {
+        ok('the owner check is present and unconditional inside LOADVM');
+    } else {
+        no('the owner check is missing or conditional inside LOADVM');
+    }
+
+    // 3. The scheduler's own check is a separate guard and must be untouched.
     if (/if ' \+ CUR \+ '\.owner~=' \+ OWNER \+ ' then error\("VM_STATE_FRAME_OWNER"/.test(src)) ok('the scheduler owner check is unchanged');
     else no('the scheduler owner check was altered - it should not have been touched');
 }
