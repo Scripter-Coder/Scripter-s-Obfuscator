@@ -601,7 +601,11 @@ console.log('[B9] a SHERR refusal is reported as a refusal, not as a bad respons
 {
   const cases = [
     ['hidden', /private/i],
-    ['gone', /no longer exists/i],
+    // `gone` is the ONE refusal that covers every way a script can be unavailable:
+    // never published, deleted, or expired on the storage service. The wording is
+    // fixed by requirement - "Script cannot be loaded, doesnt exist or expired." -
+    // so this asserts the exact sentence rather than a loose fragment of it.
+    ['gone', /Script cannot be loaded, doesnt exist or expired\./],
     ['expired', /expired/i],
     ['banned', /banned/i],
     ['killswitch', /disabled/i],

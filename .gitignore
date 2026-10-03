@@ -67,3 +67,12 @@ _m28.txt
 _m29.txt
 _m30.txt
 _m31.txt
+# Storage Keeper runtime data. This is the user's actual storage: obfuscated
+# scripts, their loaders, and the SQLite index. It is deliberately NOT tracked -
+# committing it would put every published script's bytes into the git history,
+# where they stay even after a deletion. The directory is recreated on first run.
+Storage Keeper/data/
+# Python bytecode. Regenerated on every run, and a stale .pyc next to an edited
+# .py is a genuinely confusing thing to find in a diff.
+__pycache__/
+*.pyc

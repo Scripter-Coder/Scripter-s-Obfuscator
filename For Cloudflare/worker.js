@@ -2482,6 +2482,135 @@ const KV_CMETA_PREFIX = 'sh_cmeta_';
 //
 // `len` in the manifest stays the PLAINTEXT length, because that is what the
 // integrity check compares against after decryption.
+// ---------------------------------------------------------------------------
+// LOCAL STORAGE KEEPER BACKEND (opt-in).
+//
+// When SH_STORE_URL and SH_STORE_TOKEN are bound, script BYTES go to the owner's
+// Windows PC through the Storage Keeper service and Cloudflare KV keeps only
+// metadata. When they are not bound, every function below reports "not configured"
+// and the caller falls through to the existing KV path unchanged.
+//
+// That conditional is the whole design. This is opt-in rather than a replacement
+// because KV still holds sh_meta_<id>, which is the record the delivery gate
+// authorizes against - moving bytes must not mean moving identity. It also means
+// the existing worker tests, which bind no such variables, keep testing exactly
+// what they tested before.
+// ---------------------------------------------------------------------------
+
+function storeConfigured(env) {
+    return !!(env && env.SH_STORE_URL && env.SH_STORE_TOKEN);
+}
+
+// The only thing a caller ever names is an id. There is deliberately no path-shaped
+// parameter anywhere in this interface, and no way for a client to supply one.
+const STORE_ID_RE = /^ScripterHub[0-9]{6,16}$/;
+
+function storeUrl(env, suffix) {
+    return String(env.SH_STORE_URL).replace(/\/+$/, '') + suffix;
+}
+
+async function storeFetch(env, suffix, init) {
+    const t0 = Date.now();
+    let res;
+    try {
+        res = await fetch(storeUrl(env, suffix), {
+            ...init,
+            headers: {
+                'Authorization': 'Bearer ' + String(env.SH_STORE_TOKEN),
+                ...(init && init.headers ? init.headers : {}),
+            },
+        });
+    } catch (e) {
+        // A storage outage is never allowed to look like "the script does not exist":
+        // that would tell a user their script is gone when it is merely unreachable.
+        console.error('[ScripterHub] storage keeper unreachable (' + (Date.now() - t0) + 'ms): ' + (e && e.message));
+        return { ok: false, unreachable: true, status: 0 };
+    }
+    return { ok: res.ok, status: res.status, unreachable: false, res };
+}
+
+// Returns true on success, false on a definite refusal, null when unreachable.
+async function storePut(env, id, kind, text, expiresAt) {
+    if (!STORE_ID_RE.test(String(id))) return null;
+    if (typeof text !== 'string' || !text.length) return null;
+    let suffix = '/v1/objects/' + id + '?kind=' + encodeURIComponent(kind);
+    if (expiresAt) suffix += '&expires_at=' + encodeURIComponent(String(expiresAt));
+    const out = await storeFetch(env, suffix, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new TextEncoder().encode(text),
+    });
+    if (out.unreachable) return null;
+    if (!out.ok) {
+        console.error('[ScripterHub] storage keeper refused a put: HTTP ' + out.status);
+        return false;
+    }
+    return true;
+}
+
+// null means "not there" (missing OR expired - the service does not distinguish, and
+// neither may we). unreachable means the service could not be asked.
+async function storeGet(env, id, kind) {
+    if (!STORE_ID_RE.test(String(id))) return { value: null, unreachable: false };
+    const out = await storeFetch(env, '/v1/objects/' + id + '?kind=' + encodeURIComponent(kind), { method: 'GET' });
+    if (out.unreachable) return { value: null, unreachable: true };
+    if (!out.ok) return { value: null, unreachable: false };
+    try {
+        return { value: new TextDecoder().decode(await out.res.arrayBuffer()), unreachable: false };
+    } catch (e) {
+        console.error('[ScripterHub] storage keeper returned an unreadable body');
+        return { value: null, unreachable: false };
+    }
+}
+
+async function storeMeta(env, id, kind) {
+    if (!STORE_ID_RE.test(String(id))) return null;
+    const out = await storeFetch(env, '/v1/objects/' + id + '/meta?kind=' + encodeURIComponent(kind), { method: 'GET' });
+    if (out.unreachable || !out.ok) return null;
+    try { return JSON.parse(await out.res.text()); } catch (e) { return null; }
+}
+
+// The expiry an upload should be stored with.
+//
+// UNIT: unix SECONDS on the wire. The service compares against time.time(), and a
+// milliseconds value is larger than any sane second-count, so it gets clamped to the
+// one-year cap - which makes a 30-second timer silently become a one-year one. The
+// conversion happens here, once, rather than being left to each caller to remember.
+//
+// Absent means NO TIMER, which is the deliberate default: creating a script does not
+// impose a lifetime the owner did not ask for. The service still applies the one-year
+// hard cap on its own, so "no timer" means "up to a year", not "forever".
+//
+// A requested timer is clamped to one year from the script's ORIGINAL creation, not from
+// this upload - otherwise a month-by-month re-publish would walk a script past the cap.
+const STORE_HARD_CAP_MS = 365 * 24 * 60 * 60 * 1000;
+
+async function expiresAtForUpload(env, body, id) {
+    const requested = Number(body && body.expiresAt);
+    if (!Number.isFinite(requested) || requested <= 0) return null;
+
+    let anchor = Date.now();
+    try {
+        // sh_meta_<id>.at is written once and, like the service's created_at, is the
+        // script's true age. Falling back to now() is the weaker but safe answer: it
+        // can only shorten a requested lifetime, never lengthen it past the cap.
+        const metaRaw = await env.LOADERS_KV.get(KV_META_PREFIX + id);
+        if (metaRaw) {
+            const at = Number(JSON.parse(metaRaw).at);
+            if (Number.isFinite(at) && at > 0 && at < anchor) anchor = at;
+        }
+    } catch (e) { /* use now() */ }
+    return Math.floor(Math.min(requested, anchor + STORE_HARD_CAP_MS) / 1000);
+}
+
+async function storeDelete(env, id, kind) {
+    if (!STORE_ID_RE.test(String(id))) return false;
+    const q = kind ? '?kind=' + encodeURIComponent(kind) : '';
+    const out = await storeFetch(env, '/v1/objects/' + id + q, { method: 'DELETE' });
+    if (out.unreachable) return false;
+    return !!out.ok;
+}
+
 async function putBlob(env, id, prefix, text) {
     const s = String(text);
     const enc = !!kekConfigured(env);
@@ -3308,8 +3437,23 @@ async function handleRequest(request, env, ctx) {
                 if (!plainCode) return jsonResponse({ ok: false, error: 'plainCode is required for keyless scripts (the obfuscated code)' }, 400);
                 if (plainCode.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare: KV values cap at 25MB and request bodies at ~100MB). Reduce the script or split it into modules.' }, 413);
                 // executor blob (no key needed in-game) - chunked if large
+                //
+                // When the Storage Keeper backend is bound the bytes go to the owner's PC
+                // and KV is skipped entirely for them. A definite refusal from the
+                // service fails the upload rather than silently publishing a script whose
+                // body was never stored - the alternative is a loadstring that 404s later,
+                // which is the exact "works until someone runs it" class of bug.
                 try {
-                    await putBlob(env, id, KV_PREFIX, plainCode);
+                    if (storeConfigured(env)) {
+                        // await matters: expiresAtForUpload is async, and without the await
+                        // the promise is stringified into the query string as
+                        // expires_at=[object Promise], which the service correctly refuses.
+                        const put = await storePut(env, id, 'artifact', plainCode, await expiresAtForUpload(env, body, id));
+                        if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
+                        if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
+                    } else {
+                        await putBlob(env, id, KV_PREFIX, plainCode);
+                    }
                 } catch (e) {
                     return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
                 }
@@ -3327,7 +3471,10 @@ async function handleRequest(request, env, ctx) {
                 if (cipher) {
                     if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
                     try {
-                        await putBlob(env, id, KV_WEB_PREFIX, cipher);
+                        // 'web' is a separate object from 'artifact'. Sharing a slot would
+                        // let the browser preview replace the executor's copy.
+                        if (storeConfigured(env)) await storePut(env, id, 'web', cipher, await expiresAtForUpload(env, body, id));
+                        else await putBlob(env, id, KV_WEB_PREFIX, cipher);
                     } catch (e) {
                         return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
                     }
@@ -3347,7 +3494,13 @@ async function handleRequest(request, env, ctx) {
             if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare: KV values cap at 25MB and request bodies at ~100MB). Reduce the script or split it into modules.' }, 413);
             const keyHash = String(body.keyHash || ''); // optional SHA-256 hex
             try {
-                await putBlob(env, id, KV_PREFIX, cipher);
+                if (storeConfigured(env)) {
+                    const put = await storePut(env, id, 'artifact', cipher, await expiresAtForUpload(env, body, id));
+                    if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
+                    if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
+                } else {
+                    await putBlob(env, id, KV_PREFIX, cipher);
+                }
             } catch (e) {
                 return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
             }
@@ -4885,6 +5038,20 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const isChunked = cmetaRaw !== null;
                 let inlineBlob = '';
                 if (!isGithub && !isChunked) {
+                    if (storeConfigured(env)) {
+                        // The bytes live on the owner's PC. The service is the authority
+                        // on whether they still exist AND whether they have expired - it
+                        // refuses to serve an expired object, so a browser countdown
+                        // lying about a script changes nothing here.
+                        const got = await storeGet(env, id, 'artifact');
+                        if (got.unreachable) {
+                            // Distinct from "gone". Reporting gone would tell every user
+                            // their script had expired when the owner's PC was simply off.
+                            console.error('[ScripterHub] delivery deferred: storage keeper unreachable');
+                            return refuse(DENY.NO_STATE);
+                        }
+                        if (got.value !== null) inlineBlob = got.value;
+                    } else {
                     const rawInline = await env.LOADERS_KV.get(KV_PREFIX + id);
                     if (rawInline !== null) {
                         if (isEncrypted(rawInline)) {
@@ -4902,6 +5069,14 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                             inlineBlob = rawInline;
                         }
                     }
+                    }
+                }
+
+                // A script whose metadata exists but whose body cannot be produced is not
+                // a script anybody can run. Refuse with the one controlled answer rather
+                // than returning an empty SHL body, which the loader would try to compile.
+                if (!isGithub && !isChunked && !inlineBlob) {
+                    return refuse(DENY.NO_SCRIPT);
                 }
 
                 const needsChain = isGithub || isChunked;
@@ -5531,7 +5706,7 @@ function luaSessionBootstrap(id, base, keyless) {
         // quote collapses to a bare quote and closes the Lua string early. The
         // first version shipped exactly that and every case failed to compile.
         + ' if r=="hidden" then return "This script is private. Only the author can run it." end\n'
-        + ' if r=="gone" then return "This script no longer exists, or was replaced by a newer build." end\n'
+        + ' if r=="gone" then return "Script cannot be loaded, doesnt exist or expired." end\n'
         + ' if r=="invalid" then return "That license key is not valid." end\n'
         + ' if r=="expired" then return "That license has expired." end\n'
         + ' if r=="banned" then return "That license has been banned." end\n'

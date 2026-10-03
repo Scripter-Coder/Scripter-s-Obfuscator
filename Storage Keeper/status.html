@@ -2,90 +2,295 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Storage Keeper Status</title>
+<meta name="robots" content="noindex,nofollow">
+<title>Storage Keeper - script lifetime</title>
 <style>
-    * { box-sizing: border-box; }
-    body { background:#0a0a0f; color:#fff; font-family:'Segoe UI',Tahoma,sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; }
-    .box { background:rgba(20,20,35,0.85); border:1px solid rgba(108,59,255,0.35); border-radius:16px; padding:36px; max-width:560px; width:92%; }
-    h1 { font-size:22px; margin:0 0 4px; }
-    .sub { color:#8888aa; font-size:13px; margin:0 0 22px; }
-    label { display:block; font-size:13px; color:#ccd; margin:14px 0 6px; }
-    input { width:100%; background:#0a0a15; border:1px solid rgba(255,255,255,0.1); border-radius:10px; color:#fff; padding:12px; font-size:13px; font-family:monospace; }
-    .btn { display:inline-block; border:none; border-radius:10px; cursor:pointer; font-weight:600; font-size:14px; padding:12px 20px; color:#fff; background:linear-gradient(135deg,#6c3bff,#00bfff); margin-top:16px; }
-    .err { color:#ff6666; font-size:13px; margin-top:10px; }
-    table { width:100%; margin-top:18px; border-collapse:collapse; font-size:13px; }
-    td { padding:8px 6px; border-bottom:1px solid rgba(255,255,255,0.06); }
-    td:last-child { text-align:right; color:#66ff66; font-family:monospace; }
-    .ok-badge { display:inline-block; padding:4px 12px; border-radius:99px; font-size:12px; font-weight:700; }
-    .on  { background:rgba(0,204,68,0.15); color:#66ff66; border:1px solid rgba(0,204,68,0.4); }
-    .off { background:rgba(255,68,68,0.15); color:#ff6666; border:1px solid rgba(255,68,68,0.4); }
-    .hint { color:#555577; font-size:11px; margin-top:16px; }
+  :root {
+    --bg: #0a0a0f; --panel: #12121a; --line: #262633;
+    --text: #e8e8f0; --dim: #8b8ba0; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --dead: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 28px 20px;
+    font-family: "Segoe UI", Tahoma, sans-serif; font-size: 14px; line-height: 1.5;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); margin: 0 0 22px; font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+  input {
+    width: 100%; padding: 9px 11px; background: #0d0d14; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; font-size: 13px;
+    font-family: Consolas, monospace;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .field { flex: 1 1 260px; margin-bottom: 12px; }
+  button {
+    padding: 9px 18px; background: var(--accent); color: #06121f; border: 0;
+    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  td.num { font-family: Consolas, monospace; text-align: right; }
+  .id { font-family: Consolas, monospace; font-size: 12px; }
+  /* The bar is the countdown. It is a DISPLAY of what the server already decided -
+     it never decides anything, and the note under it says so. */
+  .bar { position: relative; height: 7px; background: #1e1e2a; border-radius: 4px; overflow: hidden; min-width: 130px; }
+  .fill { height: 100%; background: var(--ok); border-radius: 4px; transition: width 1s linear; }
+  .fill.soon { background: var(--warn); }
+  .fill.dead { background: var(--dead); }
+  .when { color: var(--dim); font-size: 11px; margin-top: 3px; font-family: Consolas, monospace; }
+  .tag { font-size: 10px; padding: 2px 6px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; }
+  .tag.live { background: rgba(74,222,128,.14); color: var(--ok); }
+  .tag.expired { background: rgba(248,113,113,.14); color: var(--dead); }
+  .note {
+    background: rgba(110,168,254,.07); border-left: 3px solid var(--accent);
+    padding: 10px 13px; border-radius: 0 6px 6px 0; color: var(--dim); font-size: 12.5px; margin: 0;
+  }
+  .note b { color: var(--text); }
+  .err { color: var(--dead); font-size: 13px; margin-top: 10px; min-height: 18px; }
+  .stats { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 4px; }
+  .stat .n { font-size: 22px; font-weight: 600; font-family: Consolas, monospace; }
+  .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  code { font-family: Consolas, monospace; color: var(--accent); }
 </style>
 </head>
 <body>
-<div class="box">
-    <h1>🗄️ Storage Keeper Status</h1>
-    <p class="sub">Big-script storage (up to ~10 GB each) backed by your private GitHub repo.</p>
+<div class="wrap">
+  <h1>Storage Keeper</h1>
+  <p class="sub">Generated scripts stored on this PC, and how long each one has left.</p>
 
-    <label>Worker URL</label>
-    <input id="workerUrl" placeholder="https://scripterhub-stats.dubovikstanislav51.workers.dev" spellcheck="false">
-    <label>Access code (raw-page code, e.g. ScripterHub)</label>
-    <input id="accessCode" placeholder="ScripterHub" spellcheck="false">
-    <button class="btn" id="checkBtn" onclick="doCheck()">🔍 Check Storage Keeper</button>
-    <div class="err" id="err"></div>
-
-    <div id="results" style="display:none;">
-        <table id="statTable"></table>
-        <p class="hint">Setup instructions: see the "Storage Keeper/README.md" in the website repo. The worker secrets SH_GH_TOKEN + SH_GH_REPO must be set and the storage repo needs at least one commit on main.</p>
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label for="url">Service address</label>
+        <input id="url" placeholder="http://127.0.0.1:8787">
+      </div>
+      <div class="field">
+        <label for="token">Bearer token</label>
+        <input id="token" type="password" placeholder="the SH_STORE_TOKEN value">
+      </div>
     </div>
+    <button id="refresh">Refresh</button>
+    <button class="ghost" id="sweep">Run cleanup now</button>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card" id="summary" style="display:none">
+    <div class="stats">
+      <div class="stat"><div class="n" id="sLive">0</div><div class="l">live objects</div></div>
+      <div class="stat"><div class="n" id="sBytes">0</div><div class="l">bytes stored</div></div>
+      <div class="stat"><div class="n" id="sNext">-</div><div class="l">next expiry</div></div>
+      <div class="stat"><div class="n" id="sMigrated">0</div><div class="l">migrated in</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0">
+    <table>
+      <thead><tr>
+        <th style="width:34%">Script</th><th style="width:12%">Kind</th>
+        <th style="width:10%" class="num">Size</th><th style="width:26%">Remaining</th>
+        <th style="width:10%">State</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <p class="note">
+      <b>This countdown is a display, not a permission.</b> Nothing here decides whether a
+      script still works. The service decides that on every read, from the file it actually
+      holds &mdash; so editing this page, or letting it sit open for a year, cannot keep an
+      expired script alive. When a script expires its file is deleted from disk, and its
+      loadstring prints <code>Script cannot be loaded, doesnt exist or expired.</code>
+      <br><br>
+      A script with no timer still has a ceiling: <b>one year</b> from when it was first
+      published. Re-publishing an existing script does not push that back.
+    </p>
+  </div>
 </div>
+
 <script>
-async function doCheck() {
-    var err = document.getElementById('err');
-    var btn = document.getElementById('checkBtn');
-    var results = document.getElementById('results');
-    err.textContent = '';
-    results.style.display = 'none';
-    var base = document.getElementById('workerUrl').value.trim().replace(/\/+$/, '');
-    var code = document.getElementById('accessCode').value;
-    if (!base) { err.textContent = 'Paste your worker URL first.'; return; }
-    btn.disabled = true; btn.textContent = 'Checking...';
-    try {
-        // 1) login with the access code -> session token
-        var lr = await fetch(base + '/sh/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ code: code }) });
-        var ld = await lr.json();
-        if (!ld.ok) throw new Error('Login failed: ' + (ld.error || 'wrong code'));
-        // 2) status
-        var sr = await fetch(base + '/sh/gh-status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: ld.token }) });
-        var d = await sr.json();
-        if (!d.ok) throw new Error(d.error || 'status failed');
-        var mb = function(b) { return (b / (1024*1024)).toFixed(1) + ' MB'; };
-        var rows = [
-            ['Storage Keeper', d.configured
-                ? '<span class="ok-badge on">CONFIGURED</span>'
-                : '<span class="ok-badge off">NOT CONFIGURED</span>'],
-            ['Repo', (d.repo || '—')],
-            ['Scripts stored', (d.scripts || 0)],
-            ['Total stored', mb(d.totalBytes || 0)],
-            ['Largest script', mb(d.largestBytes || 0)],
-            ['Max part size', mb(d.partMaxBytes || 0)],
-            ['Per-script ceiling', '256 parts ≈ 10 GB']
-        ];
-        var t = document.getElementById('statTable');
-        t.innerHTML = '';
-        for (var i = 0; i < rows.length; i++) {
-            var tr = document.createElement('tr');
-            var a = document.createElement('td'); a.textContent = rows[i][0];
-            var b = document.createElement('td'); b.innerHTML = rows[i][1];
-            tr.appendChild(a); tr.appendChild(b); t.appendChild(tr);
-        }
-        results.style.display = 'block';
-        if (!d.configured) err.textContent = 'Worker secrets missing: add SH_GH_TOKEN (GitHub PAT) + SH_GH_REPO (Scripter-Coder/Storage-Keeper-1) in worker Settings.';
-    } catch (e) {
-        err.textContent = e && e.message ? e.message : 'network error';
-    }
-    btn.disabled = false; btn.textContent = '🔍 Check Storage Keeper';
+"use strict";
+var $ = function (id) { return document.getElementById(id); };
+
+// Remembered locally so the page is usable on a reload. This is a convenience, not a
+// secret store - the token is the service's own credential and the page is yours.
+try {
+  $('url').value = localStorage.getItem('sk.url') || '';
+  $('token').value = localStorage.getItem('sk.token') || '';
+} catch (e) {}
+
+function humanBytes(b) {
+  b = Number(b) || 0;
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(2) + ' GB';
 }
+
+function humanRemaining(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec === 0) return 'expired';
+  var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600),
+      m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+// The bar shows how much of the object's LIFE is left, against the year it is allowed.
+function pctRemaining(obj) {
+  var span = obj.effective_expires_at - obj.created_at;
+  if (!span || span <= 0) return 0;
+  return Math.max(0, Math.min(100, (obj.remaining_seconds / span) * 100));
+}
+
+var timer = null;
+var cache = [];
+
+function paint() {
+  var tb = $('rows');
+  tb.innerHTML = '';
+  cache.forEach(function (o) {
+    var tr = document.createElement('tr');
+
+    var tdId = document.createElement('td');
+    var code = document.createElement('div');
+    code.className = 'id'; code.textContent = o.id;
+    var note = document.createElement('div');
+    note.className = 'when';
+    note.textContent = o.has_timer
+      ? 'timer set by owner'
+      : 'no timer - one year maximum from first publish';
+    tdId.appendChild(code); tdId.appendChild(note);
+    tr.appendChild(tdId);
+
+    var tdKind = document.createElement('td');
+    tdKind.textContent = o.kind; tr.appendChild(tdKind);
+
+    var tdSize = document.createElement('td');
+    tdSize.className = 'num'; tdSize.textContent = humanBytes(o.size);
+    tr.appendChild(tdSize);
+
+    var tdBar = document.createElement('td');
+    var bar = document.createElement('div'); bar.className = 'bar';
+    var fill = document.createElement('div'); fill.className = 'fill';
+    var pct = pctRemaining(o);
+    fill.style.width = pct.toFixed(1) + '%';
+    if (o.state !== 'live') fill.className = 'fill dead';
+    else if (o.remaining_seconds < 86400) fill.className = 'fill soon';
+    bar.appendChild(fill);
+    var when = document.createElement('div'); when.className = 'when';
+    when.dataset.remaining = String(o.remaining_seconds);
+    when.textContent = humanRemaining(o.remaining_seconds) + ' left';
+    tdBar.appendChild(bar); tdBar.appendChild(when);
+    tr.appendChild(tdBar);
+
+    var tdState = document.createElement('td');
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + (o.state === 'live' ? 'live' : 'expired');
+    tag.textContent = o.state;
+    tdState.appendChild(tag); tr.appendChild(tdState);
+
+    tb.appendChild(tr);
+  });
+  tick();
+}
+
+// Ticks the numbers down locally so the page feels live between refreshes. It never
+// changes a state - an object the server considers expired stays marked expired here
+// until the next refresh, and a refresh can only ever remove rows, never add life.
+function tick() {
+  var cells = document.querySelectorAll('.when[data-remaining]');
+  var rows = $('rows').children;
+  for (var i = 0; i < cells.length && i < cache.length; i++) {
+    var rem = Math.max(0, parseInt(cells[i].dataset.remaining, 10) - 1);
+    cells[i].dataset.remaining = String(rem);
+    cells[i].textContent = humanRemaining(rem) + ' left';
+    var span = cache[i].effective_expires_at - cache[i].created_at;
+    var pct = span > 0 ? Math.max(0, Math.min(100, (rem / span) * 100)) : 0;
+    var fill = rows[i].querySelector('.fill');
+    if (fill && cache[i].state === 'live') {
+      fill.style.width = pct.toFixed(1) + '%';
+      if (rem < 86400) fill.className = 'fill soon';
+    }
+  }
+}
+
+function authHeaders() {
+  return { 'Authorization': 'Bearer ' + $('token').value.trim() };
+}
+
+function fail(msg) {
+  $('err').textContent = msg;
+  $('summary').style.display = 'none';
+  $('rows').innerHTML = '';
+  cache = [];
+  if (timer) { clearInterval(timer); timer = null; }
+}
+
+async function load() {
+  var base = $('url').value.trim().replace(/\/+$/, '');
+  var token = $('token').value.trim();
+  if (!base) { fail('Enter the service address first.'); return; }
+  if (!token) { fail('Enter the bearer token.'); return; }
+  $('err').textContent = '';
+  try {
+    localStorage.setItem('sk.url', base);
+    localStorage.setItem('sk.token', token);
+  } catch (e) {}
+
+  try {
+    var sr = await fetch(base + '/v1/admin/stats', { headers: authHeaders() });
+    if (sr.status === 401) { fail('The service refused that token.'); return; }
+    var st = await sr.json();
+
+    var lr = await fetch(base + '/v1/admin/objects', { headers: authHeaders() });
+    if (lr.status === 401) { fail('The service refused that token.'); return; }
+    var list = await lr.json();
+
+    cache = (list.objects || []).slice();
+    $('sLive').textContent = st.live != null ? st.live : cache.length;
+    $('sBytes').textContent = humanBytes(st.bytes_live || 0);
+    $('sNext').textContent = st.next_expiry_in ? humanRemaining(st.next_expiry_in) : '-';
+    $('summary').style.display = '';
+    paint();
+
+    if (timer) clearInterval(timer);
+    timer = setInterval(tick, 1000);
+  } catch (e) {
+    // Deliberately vague about WHY. The page may well be opened against a host that is
+    // not the service, and the browser's error text can include the full URL.
+    fail('Could not reach the service. Check the address, that it is running, and that nothing else is on that port.');
+  }
+}
+
+async function sweep() {
+  var base = $('url').value.trim().replace(/\/+$/, '');
+  $('err').textContent = '';
+  try {
+    var r = await fetch(base + '/v1/admin/sweep', { method: 'POST', headers: authHeaders() });
+    if (!r.ok) { fail('Cleanup was refused (HTTP ' + r.status + ').'); return; }
+    var d = await r.json();
+    $('err').textContent = 'Cleanup finished: ' + (d.expired || 0) + ' expired, '
+      + (d.removed_files || 0) + ' files removed.';
+    load();
+  } catch (e) {
+    fail('Could not reach the service.');
+  }
+}
+
+$('refresh').addEventListener('click', load);
+$('sweep').addEventListener('click', sweep);
+if ($('url').value) load();
 </script>
 </body>
 </html>
