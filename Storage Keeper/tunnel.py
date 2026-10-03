@@ -83,21 +83,32 @@ def find_cloudflared() -> str | None:
     return None
 
 
-def load_or_create_token() -> str:
-    """One token, persisted, reused. See the module docstring for why."""
+def load_or_create_token() -> tuple[str, str]:
+    """One token, persisted, reused. See the module docstring for why.
+
+    Returns the token AND where it came from, because the operator has to be able to tell
+    those apart. Reporting "generated" for a token that was in fact reused from disk is
+    worse than useless: it invites someone to re-paste a token into the worker when the
+    existing one is still correct, and it hides the one case that really matters - a
+    genuinely fresh token, which means every script stops delivering until the worker's
+    copy is updated by hand.
+    """
     DATA.mkdir(parents=True, exist_ok=True)
     if TOKEN_FILE.is_file():
         existing = TOKEN_FILE.read_text(encoding="utf-8").strip()
         if existing:
-            return existing
-    token = os.environ.get("SH_STORE_TOKEN") or secrets.token_urlsafe(32)
+            return existing, "reused from " + str(TOKEN_FILE)
+    token = os.environ.get("SH_STORE_TOKEN")
+    if token:
+        return token, "from SH_STORE_TOKEN"
+    token = secrets.token_urlsafe(32)
     TOKEN_FILE.write_text(token, encoding="utf-8")
     try:
         # Windows only. POSIX gets 0600 from a plain write.
         os.chmod(TOKEN_FILE, 0o600)
     except OSError:
         pass
-    return token
+    return token, "generated, saved to " + str(TOKEN_FILE)
 
 
 def start_service(port: int, token: str, root: Path) -> subprocess.Popen:
@@ -231,8 +242,20 @@ def main() -> int:
         return 1
     log(f"cloudflared: {exe}")
 
-    token = load_or_create_token()
-    log(f"token: {'from SH_STORE_TOKEN' if os.environ.get('SH_STORE_TOKEN') else f'generated, saved to {TOKEN_FILE}'}")
+    token, token_source = load_or_create_token()
+    log(f"token: {token_source}")
+    # A fresh token invalidates the copy the worker already holds, and the symptom is
+    # every script failing at once with the service healthy on disk. Say so loudly and
+    # only in that case - a reused token needs no warning, and crying wolf here trains
+    # the operator to ignore the one message that matters.
+    if token_source.startswith("generated"):
+        print()
+        print("  " + "*" * 64)
+        print("  A NEW TOKEN was just generated. The worker still holds the OLD one.")
+        print("  Every script will fail until you update SH_STORE_TOKEN on the worker")
+        print("  with the value printed below.")
+        print("  " + "*" * 64)
+        print()
 
     service = start_service(args.port, token, args.root)
     atexit.register(lambda: service.terminate())

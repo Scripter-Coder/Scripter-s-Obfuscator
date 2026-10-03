@@ -34,7 +34,7 @@
 #      wrangler d1 execute scripterhub --file=migrations/0001_init.sql
 #
 # 4. set the three secrets (see the block below for what each one does):
-#      wrangler secret put SH_SETUP_TOKEN
+#      wrangler secret put SH_SETUP_TOKEN"
 #      wrangler secret put SH_SESSION_SECRET
 #      wrangler secret put SH_KDF_PEPPER
 #
@@ -138,7 +138,7 @@
 name = "scripterhub-stats"             # the WORKER, not the KV namespace
 main = "For Cloudflare/worker.js"
 compatibility_date = "2024-11-01"
-account_id = "CHANGE_ME"              # CHANGE ME
+account_id = "569dfd1193e2a3561429007982b06acf"              # CHANGE ME
 
 # -----------------------------------------------------------------------------
 # STATE

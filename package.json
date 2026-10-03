@@ -51,6 +51,7 @@
                     "test:drag":  "node tools/drag_test.mjs",
                     "keeper:run":  "py \"Storage Keeper/run.py\"",
                     "keeper:tunnel":  "py \"Storage Keeper/tunnel.py\"",
+                    "keeper:e2e":  "node tools/keeper_public_e2e_test.mjs",
                     "keeper:test":  "py \"Storage Keeper/tests/test_store.py\" \u0026\u0026 py \"Storage Keeper/tests/test_service.py\"",
                     "keeper:migrate":  "py \"Storage Keeper/migrate.py\"",
                     "test:keeper":  "py \"Storage Keeper/tests/test_store.py\" \u0026\u0026 py \"Storage Keeper/tests/test_service.py\" \u0026\u0026 node tools/storage_keeper_test.mjs",
