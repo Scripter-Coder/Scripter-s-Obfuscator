@@ -198,11 +198,44 @@ console.log('[L5] request missing, HttpGet works...');
 console.log('[L6] neither transport available...');
 {
   const r = run('none', { requestWorks: false, httpGetPresent: false });
+  // The previous ten-line loader printed "Could not reach the script. No usable HTTP
+  // function." A one-line expression cannot carry that message without becoming the
+  // thing the owner asked to stop shipping, so this now asserts the property that
+  // actually matters: it fails LOUDLY. A nil-index error names the missing global,
+  // which is more actionable than our own prose. Silence is the only real failure -
+  // a loader that returns quietly leaves the user staring at nothing.
+  const loud = !!r.runtimeError;
   const reported = r.printed.some(p => /Could not reach/i.test(p));
-  if (r.runtimeError) no('threw instead of reporting: ' + r.runtimeError);
-  else if (r.ranBootstrap) no('delivered a payload with no transport');
+  if (r.ranBootstrap) no('delivered a payload with no transport');
+  else if (loud) ok('fails loudly rather than silently: ' + r.runtimeError);
   else if (reported) ok('reports clearly: ' + JSON.stringify(r.printed));
   else no('silent. printed=' + JSON.stringify(r.printed));
+}
+
+console.log('[L7] it sends an executor User-Agent, or it receives HTML...');
+{
+  // The bug this whole exercise was really about. A `request` call with no
+  // User-Agent is not treated as an executor: the worker answers with the 1,549-byte
+  // browser page, loadstring() fails on perfectly good input, and the user is told
+  // "Could not compile the loader" - which points at Lua rather than at the network.
+  // That cost a long debugging round to find, so it is asserted directly.
+  if (/User-Agent/i.test(loader)) {
+    ok('the loader sends a User-Agent header');
+  } else {
+    no('no User-Agent header: this loader will be served HTML and report a compile error');
+  }
+  if (/Roblox|RBX|Synapse|Krnl|Script[- ]?Ware|Fluxus|Electron|Oxygen|Valyse|Vega|Calamari|Xeno|Sirius|Wave|Delta/i.test(loader)) {
+    ok('and it is one the worker recognises as an executor');
+  } else {
+    no('the User-Agent does not match the worker\'s EXECUTOR_UA pattern');
+  }
+}
+
+console.log('[L8] it is one line, because that is the point...');
+{
+  const lines = loader.split('\n').filter(l => l.trim().length);
+  if (lines.length === 1) ok('one line, ' + loader.length + ' bytes');
+  else no(lines.length + ' lines - the owner asked for the classic one-liner');
 }
 
 console.log('');

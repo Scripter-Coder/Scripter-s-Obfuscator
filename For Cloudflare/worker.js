@@ -2946,32 +2946,34 @@ function jsonResponse(data, status) {
 // "Method Not Allowed" page — what browsers see when opening a loader link
 // ---------- the loader we hand out ----------
 //
-// Prefers `request` and falls back to game:HttpGet, which is the same order
-// the bootstrap's own GET() uses. Hardcoding HttpGet here was a portability
-// bug: at least one executor in circulation throws
+// ONE LINE, and it is one line on purpose. The previous version was ten, and the extra
+// nine existed to be defensive about executors rather than to do anything. It also had a
+// real bug: it called `request` with NO User-Agent header, and a request without one is
+// not treated as an executor. The worker then serves the BROWSER PAGE - 1,549 bytes of
+// HTML - instead of the loader, so loadstring() failed on valid input and the user was
+// told "Could not compile the loader", which points at Lua and not at the network. That
+// cost a full round of debugging to find; the header below is the fix.
 //
-//     invalid argument #1 to find (string expected, got nil)
+// WHY request COMES FIRST, still:
+//   * at least one executor in circulation throws
+//         invalid argument #1 to find (string expected, got nil)
+//     from inside its own game:HttpGet, before any request is made. Its HttpGet is
+//     hardcoded to a nil. loadstring(game:HttpGet(url))() cannot work there, which is
+//     why that exact one-liner used to be a portability bug. Trying `request` first is
+//     what makes this line work on that executor anyway.
+//   * the header matters for BOTH paths: game:HttpGet stamps a genuine Roblox UA, but a
+//     bare request() call does not, and without an executor-looking UA the worker
+//     answers with HTML rather than the loader.
 //
-// from inside its own internal_request, before any request is made. The
-// bootstrap would have worked on that executor - it tries `request` first -
-// so the failure was purely in the one line a user pastes.
+// So the order is request+UA, then HttpGet. One line, both fallbacks, no silent HTML.
 //
-// It is longer than loadstring(game:HttpGet(url))() and that is the trade:
-// a loader that works on more executors is worth more than a short one. It
-// still contains no script material, which is what gate G01 is about.
+// It still contains no script material, which is what gate G01 is about - it fetches the
+// loader from /sh/<id>, and the loader is what performs the licensed session handshake.
 function shLoader(base, id) {
     const u = base + '/sh/' + id;
-    return 'local u=' + JSON.stringify(u) + '\n'
-        + 'local b\n'
-        + 'if request then local ok,r=pcall(function() return request({Url=u,Method=\'GET\'}) end) '
-        + 'if ok and type(r)==\'table\' and type(r.Body)==\'string\' and r.Body~=\'\' then b=r.Body end end\n'
-        + 'if not b and game and game.HttpGet then local ok2,r2=pcall(function() return game:HttpGet(u,true) end) '
-        + 'if ok2 and type(r2)==\'string\' and r2~=\'\' then b=r2 end end\n'
-        + 'if not b then print(\'[ScripterHub] Could not reach the script. No usable HTTP function.\') return end\n'
-        + 'local LS=loadstring or load\n'
-        + 'local f=LS and LS(b)\n'
-        + 'if not f then print(\'[ScripterHub] Could not compile the loader.\') return end\n'
-        + 'f()';
+    return 'loadstring((request and request({Url=' + JSON.stringify(u)
+        + ',Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}).Body)'
+        + ' or game:HttpGet(' + JSON.stringify(u) + '))()';
 }
 function methodNotAllowed() {
     return new Response('Method Not Allowed\n', {

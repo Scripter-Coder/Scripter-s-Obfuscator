@@ -102,14 +102,34 @@ console.log('[U6] normalCode capped at 7MB (Discord attachment limit)...');
     console.log('    OK');
 }
 
-console.log('[U7] gh-put accepts user token...');
+console.log('[U7] the large-script parts endpoint accepts a user token...');
 {
-    const d = await j('POST', '/sh/gh-put', { userToken: userToken, id: 'ScripterHub0000000010', part: 0, content: 'partdata' });
-    // auth must pass; without SH_GH_TOKEN/SH_GH_REPO env the worker
-    // correctly reports "Storage Keeper not configured" (NOT 401)
+    // This used to hit /sh/gh-put. That endpoint is retired - script bytes go to the
+    // owner's PC now - but the PROPERTY is unchanged and still worth guarding: a normal
+    // registered user, not just the owner, must be able to upload a multi-part script
+    // with nothing but a session token. Losing that would quietly turn "friends can
+    // create scripts" into "only the owner can".
+    //
+    // SH_STORE_URL/TOKEN are unbound in tests, so a correct worker reports the backend
+    // as unconfigured. That message is the proof auth passed: an auth failure would
+    // answer 401 instead, which is the distinction this assertion exists to make.
+    const d = await j('POST', '/sh/kb-put', { userToken: userToken, id: 'ScripterHub0000000010', part: 0, content: 'partdata' });
     assert.notStrictEqual(d.status, 401, 'user token must pass auth');
-    assert.ok(/Storage Keeper not configured/.test(d.error || ''), 'expected the GH-not-configured message, got: ' + (d.error || ''));
-    console.log('    OK: auth passed (GH env not set in tests - expected)');
+    assert.ok(
+        /not configured/i.test(d.error || ''),
+        'expected the backend-not-configured message, got: ' + (d.error || '')
+    );
+    console.log('    OK: auth passed (keeper env not set in tests - expected)');
+}
+
+console.log('[U7b] the retired GitHub upload refuses a user token too...');
+{
+    // The retirement is not owner-only. If gh-put ever quietly starts accepting writes
+    // again, scripts would go back to a repository the owner believes is empty.
+    const d = await j('POST', '/sh/gh-put', { userToken: userToken, id: 'ScripterHub0000000010', part: 0, content: 'partdata' });
+    assert.strictEqual(d.status, 410, 'gh-put must answer 410 Gone for a valid user token, got: ' + d.status);
+    assert.ok(/retired/i.test(d.error || ''), 'and must say why: ' + (d.error || ''));
+    console.log('    OK: retired, auth-first, and explicit');
 }
 
 console.log('\nALL USER-TOKEN TESTS PASSED - friends can create scripts now.');
