@@ -367,9 +367,10 @@
                             body.wantId = wantId;
                             body.splitKey = splitKey;
                         }
-                        // LARGE SCRIPTS: the obfuscated code > ~45MB goes to
-                        // the GitHub Storage Keeper (parts of 40MB, up to
-                        // 10GB per script). Small scripts keep /sh/upload.
+                        // LARGE SCRIPTS: the obfuscated code > ~45MB is uploaded in parts (40MB each,
+// up to 10GB per script) to the owner's PC via the Storage Keeper service.
+// Small scripts keep /sh/upload. Nothing is written to a GitHub repository -
+// that path is retired, so every byte of every script lands on the owner's disk.
                         if (obf.length > 45 * 1024 * 1024) {
                             var ghId = 'ScripterHub' + String(Date.now()).slice(-10);
                             var PART = 40 * 1024 * 1024;
@@ -378,19 +379,19 @@
                             for (var pi = 0; pi < parts; pi++) {
                                 (function(idx) {
                                     chain = chain.then(function() {
-                                        return fetch(WORKER + '/sh/gh-put', {
+                                        return fetch(WORKER + '/sh/kb-put', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ token: token, id: ghId, part: idx, content: obf.slice(idx * PART, (idx + 1) * PART) })
                                         }).then(function(r) { return r.json(); }).then(function(pd) {
                                             if (!pd.ok) throw new Error('Storage Keeper part ' + (idx + 1) + '/' + parts + ' failed: ' + (pd.error || 'unknown'));
-                                            errEl.textContent = 'Uploading to Storage Keeper... part ' + (idx + 1) + '/' + parts;
+                                            errEl.textContent = 'Saving to your PC (Storage Keeper)... part ' + (idx + 1) + '/' + parts;
                                         });
                                     });
                                 })(pi);
                             }
                             return chain.then(function() {
-                                return fetch(WORKER + '/sh/gh-finalize', {
+                                return fetch(WORKER + '/sh/kb-finalize', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({

@@ -1,10 +1,16 @@
-// STORAGE KEEPER (GitHub big-script storage) tests.
-// The worker proxies parts from a private GitHub repo. A mock GitHub
-// API (global fetch shim) captures the calls. Covers:
-//   - gh-put rejects non-owners + oversized parts
-//   - multi-part upload -> finalize registers the loader
+// LEGACY GitHub big-script storage - READ path only.
+//
+// Script BYTES used to be written to a private GitHub repository through
+// /sh/gh-put + /sh/gh-finalize. Those endpoints are RETIRED (410): bytes now go to
+// the owner's own disk via the Storage Keeper service. New large scripts never touch a
+// repo - see tools/storage_keeper_test.mjs for that path.
+//
+// This file still exists, and matters, because scripts published BEFORE the retirement
+// are running on people's machines right now. It seeds an already-published script
+// directly and then drives the real delivery flow against it:
+//   - the upload endpoints refuse, and refuse 401-first
 //   - /sh/<id> is artifact-free; the GATE opens a chain
-//   - /sh/g/<id>/<i> proxies parts behind that chain, forward-only
+//   - /sh/g/<id>/<i> proxies parts behind that chain, forward-only, non-replayable
 //   - the bootstrap stitches + (keyless) actually RUNS in Lua
 //   - gh-delete removes parts
 //   - gh-status summarizes usage
@@ -135,57 +141,67 @@ const b64 = s => Buffer.from(s, 'utf8').toString('base64');
 
 async function login() { return (await j('POST', '/sh/login', { code: OWNER_CODE_PLAIN })).token; }
 
-console.log('[G1] gh-put rejects non-owners and oversized parts...');
-{
-    const r1 = await j('POST', '/sh/gh-put', { id: 'ScripterHub0000000010', part: 0, content: 'x' });
-    assert.strictEqual(r1.status, 401, 'non-owner rejected');
-    const token = await login();
-    const r2 = await j('POST', '/sh/gh-put', { token, id: 'ScripterHub0000000010', part: 0, content: 'z'.repeat(40_000_001) });
-    assert.strictEqual(r2.status, 413, 'oversized part rejected');
-    const r3 = await j('POST', '/sh/gh-put', { token, id: 'badid', part: 0, content: 'x' });
-    assert.strictEqual(r3.status, 400, 'bad id rejected');
-    console.log('    OK: guards work');
+// The GitHub byte path is RETIRED. Script bytes go to the owner's PC instead.
+//
+// What still has to work is the READ path, because scripts published before the
+// retirement are still running on people's machines. Refusing an upload must not orphan
+// a loadstring somebody is executing right now. So these tests seed an
+// already-published script straight into the mock repo and the index - exactly the state
+// the retired endpoints used to leave behind - then drive the real delivery flow on it.
+function seedPublishedGithubScript(id, parts, opts = {}) {
+    const rec = {
+        repo: GH_REPO, path: 'scripts/' + id, n: parts.length,
+        len: parts.join('').length, head: 'head_abc123',
+        name: opts.name || 'BigScript', user: opts.user || 'tester',
+        keyless: opts.keyless !== false, webKey: true,
+        keyHash: opts.keyHash || '', authRequired: false,
+        at: Date.now(), parts: {},
+    };
+    parts.forEach((c, i) => {
+        ghStore.set('scripts/' + id + '/' + i + '.part', { content: b64(c), sha: 'sha_part' + i });
+        rec.parts[i] = { sha: 'sha_part' + i, len: c.length };
+    });
+    KV._store.set('sh_gh_' + id, JSON.stringify(rec));
+    KV._store.set('sh_meta_' + id, JSON.stringify({
+        name: rec.name, user: rec.user, at: rec.at, keyHash: rec.keyHash,
+        keyless: rec.keyless, webKey: rec.webKey, authRequired: rec.authRequired,
+        storage: 'github', parts: rec.n, len: rec.len,
+    }));
+    return rec;
 }
 
-console.log('[G2] multi-part upload -> finalize registers the loader...');
-let GH_ID = '';
+console.log('[G1] the GitHub UPLOAD endpoints are retired, auth still comes first...');
 {
+    // Unauthenticated first: an endpoint must not tell a stranger it is retired.
+    const anon = await j('POST', '/sh/gh-put', { id: 'ScripterHub0000000010', part: 0, content: 'x' });
+    assert.strictEqual(anon.status, 401, 'an unauthenticated caller must not learn the endpoint state');
+
     const token = await login();
-    GH_ID = 'ScripterHub0000000011';
-    // 3 parts of 10MB each (30MB total - well under KV, but proving GH path)
-    const p0 = 'A'.repeat(10 * 1024 * 1024);
-    const p1 = 'B'.repeat(10 * 1024 * 1024);
-    const p2 = 'C'.repeat(10 * 1024 * 1024);
-    for (let i = 0; i < 3; i++) {
-        const content = [p0, p1, p2][i];
-        const d = await j('POST', '/sh/gh-put', { token, id: GH_ID, part: i, content });
-        assert.strictEqual(d.ok, true, JSON.stringify(d));
-        assert.ok(d.sha, 'part sha returned');
+    for (const p of ['/sh/gh-put', '/sh/gh-finalize']) {
+        const r = await j('POST', p, { token, id: 'ScripterHub0000000010', part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'y' });
+        assert.strictEqual(r.status, 410, p + ' must answer 410 Gone, got ' + r.status);
+        assert.ok(/retired/i.test(String(r.error)), p + ' must say why, got: ' + r.error);
     }
-    // parts are in the fake GitHub repo
-    assert.ok(ghStore.has('scripts/' + GH_ID + '/0.part'), 'part 0 in repo');
-    assert.ok(ghStore.has('scripts/' + GH_ID + '/2.part'), 'part 2 in repo');
-    const f = await j('POST', '/sh/gh-finalize', {
-        token, id: GH_ID, n: 3, len: 30 * 1024 * 1024,
-        name: 'BigScript', user: 'tester', keyless: true, webKey: true,
-        keyHash: 'abc', authRequired: false
-    });
-    assert.strictEqual(f.ok, true, JSON.stringify(f));
-    assert.ok(f.loadstring.includes('/sh/' + f.id), 'loader points at the GitHub script id');
-            assert.ok(f.loadstring.includes('test.workers.dev'), 'loader points at this worker');
-            assert.ok(!/SHOK|__SH_SPLITKEY/.test(f.loadstring), 'loader carries no script material');
+    assert.strictEqual(ghStore.size, 0, 'a refused upload must not touch the repo');
+    console.log('    OK: retired, still 401-first, repo untouched');
+}
+
+console.log('[G2] an ALREADY-PUBLISHED GitHub script is still readable...');
+const GH_ID = 'ScripterHub0000000011';
+{
+    // 3 parts of 10MB each (30MB total) - the size the reassembly assertions below expect.
+// Kept large on purpose: "reassembles exactly" over 30MB is the claim being defended,
+// and shrinking it to a few KB would let a chunking bug pass.
+    seedPublishedGithubScript(GH_ID, [
+        'A'.repeat(10 * 1024 * 1024),
+        'B'.repeat(10 * 1024 * 1024),
+        'C'.repeat(10 * 1024 * 1024),
+    ], { name: 'BigScript' });
     const meta = JSON.parse(KV._store.get('sh_meta_' + GH_ID));
     assert.strictEqual(meta.storage, 'github');
     assert.strictEqual(meta.parts, 3);
-    console.log('    OK: 3 parts committed + loader registered');
-}
-
-console.log('[G3] finalize rejects missing parts...');
-{
-    const token = await login();
-    const d = await j('POST', '/sh/gh-finalize', { token, id: 'ScripterHub0000000012', n: 2, len: 5, name: 'x', user: 'y' });
-    assert.strictEqual(d.ok, false, 'must reject when no parts uploaded');
-    console.log('    OK: no parts -> rejected');
+    assert.ok(ghStore.has('scripts/' + GH_ID + '/0.part'), 'part 0 present in the repo');
+    console.log('    OK: a pre-existing script is intact and indexed');
 }
 
 // PHASE 3 REWRITE. Was: "/sh/<id> serves the parts bootstrap".
@@ -205,11 +221,10 @@ console.log('[G4] /sh/<id> is artifact-free; the gate hands out the /sh/g chain.
     assert.strictEqual(chain.n, 3, 'chain reports 3 parts');
     assert.strictEqual(chain.root, '/sh/g/' + GH_ID, 'chain root is the GitHub proxy');
 
-    // keyed version: the loader must still ask for the Special Key
-    const token = await login();
+    // keyed version: the loader must still ask for the Special Key.
+    // Seeded, not uploaded - the upload endpoints are gone (G1).
     const kid = 'ScripterHub0000000013';
-    await j('POST', '/sh/gh-put', { token, id: kid, part: 0, content: 'K'.repeat(1024) });
-    await j('POST', '/sh/gh-finalize', { token, id: kid, n: 1, len: 1024, name: 'K', user: 't', keyless: false, webKey: true, keyHash: 'h', authRequired: false });
+    seedPublishedGithubScript(kid, ['K'.repeat(1024)], { name: 'K', user: 't', keyless: false, keyHash: 'h' });
     const r2 = await call('GET', '/sh/' + kid, null, EXECUTOR_UA);
     const boot2 = await r2.text();
     assert.ok(boot2.includes('ScripterHubKey'), 'keyed bootstrap asks for the Special Key');

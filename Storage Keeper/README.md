@@ -5,14 +5,30 @@ keeps only the metadata the website needs (id, name, visibility, who owns it); t
 obfuscated bytes live in `Storage Keeper/data/scripts/`.
 
 ```
-browser ──POST /sh/upload──▶ Cloudflare worker ──PUT /v1/objects/<id>──▶ this PC
-                                                                       (Python)
-executor ──/sh/<id>───────▶ Cloudflare worker ──GET /v1/objects/<id>──▶ this PC
+browser ──POST /sh/upload───────▶ worker ──PUT /v1/objects/<id>──▶ this PC
+browser ──POST /sh/kb-put ×N────▶ worker ──PUT /v1/objects/<id>──▶ this PC
+                                                    (kind=part0…part255)
+executor ──/sh/<id>────────────▶ worker ──GET /v1/objects/<id>──▶ this PC
+executor ──/sh/kb/<id>/<i>─────▶ worker ──GET /v1/objects/<id>──▶ this PC
 ```
 
 The worker stays the only thing an executor ever talks to. All license gates, HWID
 locks, killswitches and session grants keep working exactly as before — only the bytes
 move. **Nothing about the obfuscator changed.**
+
+### Large scripts are parts, and they live here too
+
+A script over ~45 MB is uploaded as a sequence of 40 MB parts (`kind=part0`, `part1`, …
+up to `part255`) rather than one object, and delivered as a forward-only chain — the
+loader fetches them one at a time behind the gate's grant. It is the same mechanism the
+old GitHub backend used, with the repository swapped for this service. Up to 256 parts,
+so roughly **10 GB for one script**.
+
+**Nothing is written to a GitHub repository any more.** `/sh/gh-put` and
+`/sh/gh-finalize` answer `410 Gone` — and still answer `401` to an unauthenticated
+caller first, so the endpoint does not advertise itself to strangers. The *read* path
+`/sh/g/<id>/<i>` deliberately stays: scripts published before the retirement are running
+on people's machines right now, and removing it would orphan them.
 
 ## Starting it
 
@@ -201,13 +217,24 @@ Existing scripts keep working without migrating: their `storage_backend` stays `
 npm run test:keeper
 ```
 
-63 Python tests and 30 integration tests. The integration test boots a **real Python
+79 Python tests and 41 integration tests. The integration test boots a **real Python
 process** and runs the **real worker** against it — it is the only test that would fail if
 the storage service were broken.
 
 Covered: creation, loading, expiry, deletion, missing scripts, concurrent requests,
 concurrent expiry, concurrent deletes, re-upload, path traversal, token auth, and that
 nothing internal leaks.
+
+Plus, for the parts path specifically: parts round-trip without disturbing the artifact,
+out-of-range and path-shaped kinds are refused, a part expires on its own clock, deleting
+a script reclaims every part **off disk**, concurrent parts all land, finalize refuses a
+part count the service cannot back, the chain points at `/sh/kb/` and not at the retired
+GitHub route, and a browser User-Agent cannot fetch a part.
+
+The legacy GitHub read path has its own suite (`ghstorage.test.mjs`) that seeds an
+already-published script and drives the real gated chain — including running a 30 MB
+stitched artifact through Lua — so retiring the upload half cannot silently break
+delivery for scripts already in the wild.
 
 ## Files
 
@@ -216,10 +243,10 @@ nothing internal leaks.
 | `run.py` | entrypoint |
 | `tunnel.py` | runs the service behind a Cloudflare Tunnel, so executors can reach it |
 | `storage_keeper/config.py` | env config, the one refusal body |
-| `storage_keeper/ids.py` | id grammar, kinds |
+| `storage_keeper/ids.py` | id grammar, kinds (including `part0..part255`) |
 | `storage_keeper/store.py` | SQLite index + files, expiry, cleanup |
 | `storage_keeper/app.py` | HTTP service |
 | `migrate.py` | existing-script migration |
 | `status.html` | owner dashboard with countdown bars |
-| `tests/` | 63 tests |
+| `tests/` | 79 tests |
 | `data/` | your actual storage — gitignored, never commit |

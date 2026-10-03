@@ -375,6 +375,81 @@ group('deletion removes it from the PC and stops delivery');
     else no('a deleted script still delivers: ' + JSON.stringify(after).slice(0, 160));
 }
 
+group('a LARGE script is stored as parts on the PC, not in a GitHub repo');
+const PART_ID = 'ScripterHub9000000010';
+{
+    // The whole point of the change: a script too big for one object must land on the
+    // owner's disk. Before this, /sh/gh-put wrote it to a private GitHub repository.
+    const parts = ['print("part one")', 'print("part two")', 'print("part three")'];
+    let uploaded = 0;
+    for (let i = 0; i < parts.length; i++) {
+        const r = await j(env, 'POST', '/sh/kb-put', { token, id: PART_ID, part: i, content: parts[i] }, BROWSER_UA);
+        if (r.ok) uploaded++;
+        else no(`part ${i} refused: ` + JSON.stringify(r).slice(0, 160));
+    }
+    if (uploaded === parts.length) ok('all three parts were accepted by the service');
+    else no(`only ${uploaded}/${parts.length} parts were accepted`);
+
+    // Finalizing must verify against the SERVICE, not the index: a chain that opens with
+    // a part the service does not hold fails halfway through a run, not at publish time.
+    const bad = await j(env, 'POST', '/sh/kb-finalize', { token, id: PART_ID, n: 5, len: 99, name: 'x', user: 'tester', keyless: true }, BROWSER_UA);
+    if (bad.ok === false && /part/i.test(String(bad.error))) ok('finalize refuses a count the service cannot back: ' + String(bad.error).slice(0, 60));
+    else no('finalize accepted a part count with no bytes behind it: ' + JSON.stringify(bad).slice(0, 160));
+
+    const fin = await j(env, 'POST', '/sh/kb-finalize', {
+        token, id: PART_ID, n: parts.length, len: parts.join('').length,
+        name: 'big', user: 'tester', keyless: true,
+    }, BROWSER_UA);
+    if (fin.ok && fin.parts === parts.length) ok('finalize registered the script with the right part count');
+    else no('finalize failed: ' + JSON.stringify(fin).slice(0, 200));
+
+    // The index record must not contain the bytes. It is an index.
+    const rec = JSON.parse(env._KV._store.get('sh_kb_' + PART_ID) || '{}');
+    if (rec.n === parts.length && !JSON.stringify(rec).includes('part one')) ok('the index holds only a count, never script bytes');
+    else no('the index is carrying data it should not: ' + JSON.stringify(rec).slice(0, 160));
+
+    // Delivery must open a chain pointing at the keeper part route.
+    const d = await deliver(env, PART_ID);
+    const head = String(d.text);
+    if (head.startsWith('SHG ') && head.includes('/sh/kb/' + PART_ID)) ok('delivery opens a chain at /sh/kb/ for a part-stored script');
+    else no('expected an SHG chain at /sh/kb/, got: ' + JSON.stringify(head).slice(0, 160));
+
+    if (!head.includes('/sh/g/')) ok('the chain does not point at the retired GitHub route');
+    else no('the chain still points at GitHub: ' + head.slice(0, 120));
+
+    // A part is served only to a session that already spent a delivery.
+    const r = await worker.fetch(new Request(`https://test.workers.dev/sh/kb/${PART_ID}/0`, {
+        headers: { 'User-Agent': BROWSER_UA },
+    }), env, { waitUntil: () => {} });
+    if (r.status !== 200) ok('a browser UA cannot fetch a part directly -> ' + r.status);
+    else no('a part was served to a browser User-Agent');
+}
+
+group('the GitHub byte-storage path is retired, not merely unused');
+{
+    for (const p of ['/sh/gh-put', '/sh/gh-finalize']) {
+        const r = await j(env, 'POST', p, { token, id: PART_ID, part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'tester' }, BROWSER_UA);
+        const r410 = await worker.fetch(new Request('https://test.workers.dev' + p, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': BROWSER_UA },
+            body: JSON.stringify({ token, id: PART_ID, part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'tester' }),
+        }), env, { waitUntil: () => {} });
+        if (r410.status === 410) ok(`${p} -> 410 Gone`);
+        else no(`${p} -> HTTP ${r410.status}, expected 410 (a silent accept would put scripts back in the repo)`);
+    }
+}
+
+group('deleting a part-stored script frees every part on the PC');
+{
+    const before = await j(env, 'POST', '/sh/kb-delete', { token, id: PART_ID }, BROWSER_UA);
+    if (before.ok && before.partsFreed === 3) ok('the service confirmed all three parts were removed');
+    else no('kb-delete did not free the parts: ' + JSON.stringify(before).slice(0, 160));
+
+    const after = await deliver(env, PART_ID);
+    if (String(after.text).includes('SHERR gone')) ok('a deleted part-stored script is refused with SHERR gone');
+    else no('a deleted part-stored script still delivers: ' + JSON.stringify(after).slice(0, 160));
+}
+
 group('the service refuses a caller with the wrong token');
 {
     for (const [method, p] of [['GET', `/v1/objects/${ID}`], ['DELETE', `/v1/objects/${ID}`], ['GET', '/v1/admin/stats']]) {

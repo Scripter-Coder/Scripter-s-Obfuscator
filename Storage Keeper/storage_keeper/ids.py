@@ -32,6 +32,20 @@ KIND_LOADER = "loader"
 KIND_WEB = "web"
 KINDS = (KIND_ARTIFACT, KIND_LOADER, KIND_WEB)
 
+# PARTS - the fourth kind, and the only one with many instances per script.
+#
+# A script too large for one object is uploaded as a sequence of parts and delivered as
+# a forward-only chain (the loader fetches them one at a time). The bound is the same 256
+# the frontend and the worker have always used, kept identical on purpose: the worker
+# writes 'SHG <n>' into the loader header and refuses an index above 255, so a service
+# that accepted part300 would store bytes the delivery path can never ask for.
+MAX_PARTS = 256
+
+# Deliberately narrow. A kind becomes part of a FILENAME, so anything loose here would be
+# a path-traversal surface - and the whole point of this service is that no caller-supplied
+# string ever reaches the filesystem. digits only, anchored, and range-checked after the match.
+PART_KIND_PATTERN = re.compile(r"^part([0-9]{1,3})$")
+
 
 class InvalidId(ValueError):
     """Raised for anything that is not a well-formed script id.
@@ -67,7 +81,26 @@ def new_id() -> str:
     return f"{PREFIX}{n:0{ID_DIGITS}d}"
 
 
+def is_part_kind(kind: object) -> bool:
+    """True for 'part0' .. 'part255'. Out-of-range indices are NOT part kinds."""
+    if not isinstance(kind, str):
+        return False
+    m = PART_KIND_PATTERN.match(kind)
+    return m is not None and int(m.group(1)) < MAX_PARTS
+
+
+def part_kind(index: int) -> str:
+    """'part7' -> the kind for part 7. Raises InvalidId outside 0..255."""
+    if not isinstance(index, int) or isinstance(index, bool):
+        raise InvalidId("part index must be an integer")
+    if index < 0 or index >= MAX_PARTS:
+        raise InvalidId("part index out of range")
+    return f"part{index}"
+
+
 def validate_kind(kind: object) -> str:
-    if kind not in KINDS:
-        raise InvalidId("unknown object kind")
-    return kind  # type: ignore[return-value]
+    if kind in KINDS:
+        return kind  # type: ignore[return-value]
+    if is_part_kind(kind):
+        return kind  # type: ignore[return-value]
+    raise InvalidId("unknown object kind")

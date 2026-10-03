@@ -265,16 +265,16 @@ function shServerKeyOpts(keyless, wantId) {
     return { serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId } };
 }
 
-const SH_GH_PART_SIZE = 40 * 1024 * 1024;
-async function shUploadGithub(o) {
+const SH_KEEPER_PART_SIZE = 40 * 1024 * 1024;
+async function shUploadKeeper(o) {
     try {
         const id = shNewScriptId();
-        const n = Math.ceil(o.obfCode.length / SH_GH_PART_SIZE);
+        const n = Math.ceil(o.obfCode.length / SH_KEEPER_PART_SIZE);
         if (n > 256) return { ok: false, error: 'script exceeds 10 GB (256 parts). Split it.' };
         // 1) upload parts sequentially (progress via console + optional callback)
         for (let i = 0; i < n; i++) {
-            const part = o.obfCode.slice(i * SH_GH_PART_SIZE, (i + 1) * SH_GH_PART_SIZE);
-            const res = await fetch(SH_STATS_ENDPOINT + 'sh/gh-put', {
+            const part = o.obfCode.slice(i * SH_KEEPER_PART_SIZE, (i + 1) * SH_KEEPER_PART_SIZE);
+            const res = await fetch(SH_STATS_ENDPOINT + 'sh/kb-put', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ token: o.token, userToken: o.userToken, id: id, part: i, content: part })
@@ -285,7 +285,7 @@ async function shUploadGithub(o) {
             if (typeof window.__shGhProgress === 'function') { try { window.__shGhProgress(i + 1, n); } catch (e) {} }
         }
         // 2) finalize: register loader meta + optional web-view cipher tail
-        const fres = await fetch(SH_STATS_ENDPOINT + 'sh/gh-finalize', {
+        const fres = await fetch(SH_STATS_ENDPOINT + 'sh/kb-finalize', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -299,7 +299,7 @@ async function shUploadGithub(o) {
         });
         const fd = await fres.json();
         if (!fd.ok) return { ok: false, error: 'Storage Keeper finalize failed: ' + (fd.error || 'unknown') };
-        return { ok: true, id: fd.id, loadstring: fd.loadstring, storage: 'github', parts: n };
+        return { ok: true, id: fd.id, loadstring: fd.loadstring, storage: 'keeper', parts: n };
     } catch (e) {
         return { ok: false, error: 'Storage Keeper upload failed: ' + (e && e.message ? e.message : 'network') };
     }
@@ -472,10 +472,10 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         const GH_SWITCH = 45 * 1024 * 1024;
         const obfLen = obfCode.length;
         if (!keyless && obfLen > GH_SWITCH) {
-            return await shUploadGithub({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
         }
         if (keyless && obfLen > GH_SWITCH) {
-            return await shUploadGithub({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
         }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',

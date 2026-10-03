@@ -11,7 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from storage_keeper.config import GONE_MESSAGE, HARD_CAP_SECONDS, Config
-from storage_keeper.ids import InvalidId, is_valid_id, validate_id
+from storage_keeper.ids import (
+    InvalidId,
+    is_part_kind,
+    is_valid_id,
+    part_kind,
+    validate_id,
+    validate_kind,
+)
 from storage_keeper.store import Store
 
 NOW = 1_800_000_000  # fixed clock, so expiry assertions are exact rather than timing-dependent
@@ -263,6 +270,84 @@ class TestDelete(unittest.TestCase):
             sid = st.put(b"x", "artifact", now=NOW).script_id
             self.assertEqual(st.delete(sid), 1)
             self.assertEqual(st.delete(sid), 0)
+
+
+class TestParts(unittest.TestCase):
+    """A large script is many part objects under one id.
+
+    These exist because parts were added to a store whose delete() enumerated a FIXED list
+    of kinds. Every test here is a way that could have gone wrong unnoticed.
+    """
+
+    def test_a_part_round_trips_independently_of_the_artifact(self):
+        with store_ctx() as st:
+            sid = "ScripterHub5555555555"
+            st.put(b"ARTIFACT", "artifact", script_id=sid, now=NOW)
+            st.put(b"part-zero", "part0", script_id=sid, now=NOW)
+            self.assertEqual(st.get(sid, "artifact", now=NOW), b"ARTIFACT")
+            self.assertEqual(st.get(sid, "part0", now=NOW), b"part-zero")
+
+    def test_part_kinds_cover_the_whole_delivery_range(self):
+        # The worker writes 'SHG <n>' into the loader header and refuses an index above
+        # 255, so part0..part255 is exactly the set the delivery path can ask for.
+        self.assertEqual(part_kind(0), "part0")
+        self.assertEqual(part_kind(255), "part255")
+        self.assertTrue(is_part_kind("part0"))
+        self.assertTrue(is_part_kind("part255"))
+        self.assertFalse(is_part_kind("part256"))
+        self.assertFalse(is_part_kind("part-1"))
+        self.assertFalse(is_part_kind("part"))
+        self.assertFalse(is_part_kind("part01x"))
+
+    def test_a_kind_that_is_also_a_path_is_refused(self):
+        # The kind becomes part of a FILENAME. This is the whole reason the grammar is a
+        # regex rather than an allowlist that somebody extends with a stray value.
+        for bad in ("../../etc/passwd", "part0/../../x", "..", "part0.bin", "PART0", " part0"):
+            with self.assertRaises(InvalidId):
+                validate_kind(bad)
+
+    def test_out_of_range_part_index_is_refused(self):
+        for bad in (-1, 256, 1000):
+            with self.assertRaises(InvalidId):
+                part_kind(bad)
+
+    def test_delete_removes_the_parts_too(self):
+        # The regression this guards: delete() enumerated KINDS, so part files survived with
+        # their rows cleared - and the sweep walks ROWS, so it could never see them again.
+        with store_ctx() as st:
+            sid = "ScripterHub6666666666"
+            st.put(b"a", "artifact", script_id=sid, now=NOW)
+            for i in (0, 1, 2):
+                st.put(b"p" * 32, "part%d" % i, script_id=sid, now=NOW)
+            removed = st.delete(sid)
+            self.assertEqual(removed, 4)
+            for i in (0, 1, 2):
+                self.assertFalse(st._path_for(sid, "part%d" % i).exists())
+                self.assertIsNone(st.get(sid, "part%d" % i, now=NOW))
+
+    def test_a_part_expires_on_its_own_clock(self):
+        with store_ctx() as st:
+            sid = "ScripterHub7777777777"
+            st.put(b"short", "part0", script_id=sid, expires_at=NOW + 10, now=NOW)
+            st.put(b"long", "part1", script_id=sid, now=NOW)
+            self.assertIsNone(st.get(sid, "part0", now=NOW + 11))
+            self.assertEqual(st.get(sid, "part1", now=NOW + 11), b"long")
+
+    def test_sweep_reclaims_expired_parts(self):
+        with store_ctx() as st:
+            sid = "ScripterHub8888888888"
+            st.put(b"p", "part0", script_id=sid, expires_at=NOW + 10, now=NOW)
+            report = st.sweep(now=NOW + 100)
+            self.assertEqual(report["expired"], 1)
+            self.assertFalse(st._path_for(sid, "part0").exists())
+
+    def test_reuploading_a_part_replaces_it_atomically(self):
+        with store_ctx() as st:
+            sid = "ScripterHub9999999999"
+            st.put(b"first", "part0", script_id=sid, now=NOW)
+            st.put(b"second-and-longer", "part0", script_id=sid, now=NOW)
+            self.assertEqual(st.get(sid, "part0", now=NOW), b"second-and-longer")
+            self.assertEqual(st.head(sid, "part0", now=NOW).size, len(b"second-and-longer"))
 
 
 class TestSweep(unittest.TestCase):

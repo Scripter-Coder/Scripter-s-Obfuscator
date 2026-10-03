@@ -2244,6 +2244,7 @@ async function scriptAuthz(env, id) {
     const exists = meta !== null
         || (await env.LOADERS_KV.get(KV_PREFIX + id)) !== null
         || (await env.LOADERS_KV.get(KV_GH_PREFIX + id)) !== null
+        || (await env.LOADERS_KV.get(KV_KB_PREFIX + id)) !== null
         || (await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id)) !== null;
     if (!exists) return null;
     return {
@@ -2398,30 +2399,26 @@ async function saveLicenses(env, map) {
         catch (e) { console.error('[ScripterHub] license sync to D1 failed: ' + (e && e.message)); }
     }
 }
-// ---- STORAGE KEEPER (GitHub-backed big-script storage) ----
-// Cloudflare KV caps at ~50MB/script (25MB per value). Scripts larger
-// than the KV ceiling are stored in a PRIVATE GitHub repository (the
-// owner's "Storage Keeper" repo) using the Git Data API:
-//   POST /sh/gh-put      <- owner: upload one part (<=40MB, matches the
-//                           100MB API file cap with base64 overhead ~1.33x)
-//   POST /sh/gh-finalize <- owner: create the git tree+commit+ref update
-//                           (all parts land in ONE commit at path
-//                            scripts/<id>/<i>.part) and register the
-//                           loader meta so /sh/<id> starts working
-//   POST /sh/gh-delete   <- owner: delete a script's folder + commit
-//   POST /sh/gh-status   <- owner: usage summary (repos + parts + sizes)
-//   GET  /sh/g/<id>/<i>  <- EXECUTOR-ONLY part download, proxied from
-//                           GitHub by the worker (repo stays private,
-//                           the token never leaves the worker)
-// Requirements (worker Settings -> Variables and Secrets):
-//   SH_GH_TOKEN    = GitHub PAT with repo scope (classic) or Contents
-//                    read+write (fine-grained) for the storage repo
-//   SH_GH_REPO     = "owner/repo" e.g. "Scripter-Coder/Storage-Keeper-1"
-// The parts are the SAME obfuscated/encrypted ciphertext as KV scripts
-// - GitHub never sees plaintext, and neither does anyone without a valid
-// executor User-Agent hitting the worker proxy.
+// ---- LEGACY GITHUB big-script storage: READ PATH ONLY ----
+// This used to be where the bytes of a large script lived: a PRIVATE GitHub repository
+// written through the Git Data API, one commit per part, with the repo token held here.
+//   GET  /sh/g/<id>/<i>  <- EXECUTOR-ONLY part download, proxied from GitHub
+//
+// The WRITE half (/sh/gh-put, /sh/gh-finalize) is RETIRED and answers 410. Large
+// scripts now store on the owner's own disk through the Storage Keeper service, which is
+// the entire point of that change: a private repo was still Cloudflare-adjacent hosting
+// with a 100MB-per-file cap, not the owner's drive.
+//
+// The read path stays because scripts published before the retirement are still running.
+// Deleting it would orphan loadstrings that people are executing today. Nothing new can
+// get in, so the repo only ever shrinks from here.
+// Requirements, for the legacy read path only:
+//   SH_GH_TOKEN / SH_GH_REPO  (can be removed once no pre-retirement script is live)
 const GH_PART_MAX = 40_000_000;      // 40MB raw -> ~53MB base64 (API cap 100MB)
 const KV_GH_PREFIX = 'sh_gh_';      // sh_gh_<id> = { repo, path, n, len, sha, at, name, user, keyless, webKey, keyHash, authRequired }
+// Parts live on the owner's PC via the Storage Keeper service. This record is only the
+// INDEX - "this script is n parts long" - never the bytes.
+const KV_KB_PREFIX = 'sh_kb_';      // sh_kb_<id> = { n, len, at, name, user, keyless, webKey, keyHash, authRequired }
 const GH_API = 'https://api.github.com';
 // minimal GitHub REST client (workers fetch, no deps)
 async function ghFetch(env, path, opts) {
@@ -4468,91 +4465,142 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // fetch parts through the worker proxy (/sh/g/*) - GitHub is
         // never exposed publicly.
 
-        // ---------- POST /sh/gh-put : owner uploads ONE part ----------
-        // Body: { token|ownerProof, id, part (0-based), content (RAW
-        // string, <=40MB - NOT base64; the worker b64-encodes for GitHub) }
-        // isOwnerRequest covers owner token + ownerProof; ALSO accept any
-        // registered user's session token (sh/user-login) so normal users
-        // can upload big scripts via the Storage Keeper path too.
+        // KV records are written by this worker, but a half-written or hand-edited value must not
+        // be able to throw inside a delivery request. Returns null on anything unparseable.
+        function parseJson(raw) {
+            if (raw === null || raw === undefined) return null;
+            try { return JSON.parse(raw); } catch (e) { return null; }
+        }
+
+        // Owner token + ownerProof, OR any registered user's session token, so normal users can
+        // upload big scripts through the parts path and not only the owner.
         async function isUserOrOwner(env, url, body) {
             if (await isOwnerRequest(env, url, body, request)) return true;
             if (body && body.userToken && await verifyUserToken(body.userToken, env)) return true;
             return false;
         }
 
+        // A part is 40MB of RAW text. Chosen to sit under the service's 64 MiB per-object
+        // ceiling with room to spare, so a full part is never refused by the service for
+        // being oversized - a failure the uploader would otherwise see as an opaque 502.
+        const KB_PART_MAX = 40_000_000;
+
+        // ---------- POST /sh/gh-put : RETIRED ----------
+        // Script bytes no longer go into a GitHub repository. They go to the owner's PC
+        // through the Storage Keeper service, which is the entire point of the change:
+        // a private repo was still Cloudflare-adjacent hosting with a 100MB-per-file cap
+        // and a commit per part, not the owner's own disk.
+        //
+        // AUTH BEFORE the 410, deliberately.
+        //
+        // Answering an unauthenticated caller with "this endpoint is retired" tells a
+        // stranger something about the deployment for free. 401 first keeps the only
+        // difference between "you may not ask" and "this is gone" behind a credential,
+        // which is the same ordering every other write route in this worker uses.
+        //
+        // REFUSED rather than removed, and refused LOUDLY, because silently accepting
+        // these would let new scripts keep landing in the repo the owner believes is
+        // empty. Already-published scripts stay readable through /sh/g/<id>/<i> below -
+        // refusing an upload must not orphan a script somebody is running right now.
         if (url.pathname === '/sh/gh-put' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            return jsonResponse({
+                ok: false,
+                error: 'GitHub script storage is retired. Use /sh/kb-put (Storage Keeper, stores on the owner\'s PC).'
+            }, 410);
+        }
+        if (url.pathname === '/sh/gh-finalize' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            return jsonResponse({
+                ok: false,
+                error: 'GitHub script storage is retired. Use /sh/kb-finalize (Storage Keeper, stores on the owner\'s PC).'
+            }, 410);
+        }
+
+        // ---------- POST /sh/kb-put : owner uploads ONE part to the owner's PC ----------
+        // Body: { token|ownerProof, userToken, id, part (0-based), content (RAW string,
+        // <=40MB - not base64; the service stores exactly these bytes) }
+        if (url.pathname === '/sh/kb-put' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             if (!/^ScripterHub[0-9]{6,16}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must be ScripterHub followed by 6 to 16 digits' }, 400);
+            if (!storeConfigured(env)) {
+                // Refusing beats falling back. The old fallback here was GitHub, which is
+                // exactly where the owner asked to stop storing scripts.
+                return jsonResponse({ ok: false, error: 'Storage Keeper is not configured (SH_STORE_URL / SH_STORE_TOKEN).' }, 503);
+            }
             const id = String(body.id);
             const part = parseInt(String(body.part), 10);
             const content = String(body.content || '');
             if (!Number.isFinite(part) || part < 0 || part > 255) return jsonResponse({ ok: false, error: 'part must be 0..255' }, 400);
             if (!content) return jsonResponse({ ok: false, error: 'content required' }, 400);
-            if (content.length > GH_PART_MAX) return jsonResponse({ ok: false, error: 'part too large (max 40MB raw)' }, 413);
-            try {
-                const b64 = btoa(content); // worker-side b64 (content is raw text)
-                const path = 'scripts/' + id + '/' + part + '.part';
-                const r = await ghPutPart(env, env.SH_GH_REPO, path, b64, 'main');
-                // remember the highest part we have seen for this id
-                const recKey = KV_GH_PREFIX + id;
-                const rec = JSON.parse((await env.LOADERS_KV.get(recKey)) || '{}');
-                rec.parts = rec.parts || {};
-                rec.parts[part] = { sha: r && r.content ? r.content.sha : null, len: content.length };
-                rec.id = id;
-                await env.LOADERS_KV.put(recKey, JSON.stringify(rec), { expirationTtl: LOADER_TTL });
-                return jsonResponse({ ok: true, part: part, sha: rec.parts[part].sha });
-            } catch (e) {
-                return jsonResponse({ ok: false, error: String(e.message || e).slice(0, 300) }, 502);
-            }
+            if (content.length > KB_PART_MAX) return jsonResponse({ ok: false, error: 'part too large (max 40MB raw)' }, 413);
+
+            const put = await storePut(env, id, 'part' + part, content, null);
+            if (put === false) return jsonResponse({ ok: false, error: 'storage keeper refused the part. Check the service is running and its token matches.' }, 502);
+            if (put === null) return jsonResponse({ ok: false, error: 'storage keeper is unreachable. The part was NOT stored.' }, 503);
+
+            // The index only records THAT a part exists. No bytes, no hash of the body.
+            const recKey = KV_KB_PREFIX + id;
+            const rec = parseJson(await env.LOADERS_KV.get(recKey)) || {};
+            rec.parts = rec.parts || {};
+            rec.parts[part] = { len: content.length };
+            rec.id = id;
+            await env.LOADERS_KV.put(recKey, JSON.stringify(rec), { expirationTtl: LOADER_TTL });
+            return jsonResponse({ ok: true, part: part, len: content.length });
         }
 
-        // ---------- POST /sh/gh-finalize : owner commits + registers the loader ----------
-        // Body: { token|ownerProof, id, n (part count), len (total bytes),
-        //         name, user, keyless, webKey, keyHash, authRequired,
-        //         replaces (old loader id), cipherTail (optional - last
-        //         KV-sized slice kept in KV for the browser key page) }
-        if (url.pathname === '/sh/gh-finalize' && request.method === 'POST') {
+        // ---------- POST /sh/kb-finalize : register the loader for a keeper-stored script ----------
+        // Body: { token|ownerProof, userToken, id, n (part count), len (total bytes),
+        //         name, user, keyless, webKey, keyHash, authRequired, replaces,
+        //         cipherTail (optional - last slice kept in KV for the browser key page) }
+        if (url.pathname === '/sh/kb-finalize' && request.method === 'POST') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isUserOrOwner(env, null, body))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             if (!/^ScripterHub[0-9]{6,16}$/.test(String(body.id || ''))) return jsonResponse({ ok: false, error: 'id must be ScripterHub followed by 6 to 16 digits' }, 400);
+            if (!storeConfigured(env)) return jsonResponse({ ok: false, error: 'Storage Keeper is not configured (SH_STORE_URL / SH_STORE_TOKEN).' }, 503);
             const id = String(body.id);
-            const recKey = KV_GH_PREFIX + id;
-            const rec = JSON.parse((await env.LOADERS_KV.get(recKey)) || '{}');
-            if (!rec.parts || !Object.keys(rec.parts).length) return jsonResponse({ ok: false, error: 'no parts uploaded for this id (call /sh/gh-put first)' }, 400);
+            const recKey = KV_KB_PREFIX + id;
+            const rec = parseJson(await env.LOADERS_KV.get(recKey)) || {};
+
             const n = parseInt(String(body.n), 10);
             if (!Number.isFinite(n) || n < 1) return jsonResponse({ ok: false, error: 'n (part count) required' }, 400);
-            // verify all parts 0..n-1 exist in the KV record
+            // Verify every part against the SERVICE, not against the index. The index
+            // says a part was accepted; the service is what actually holds the bytes, and
+            // it is also the authority on whether they are still there. Finalizing a
+            // script with a missing part produces a loadstring that 404s halfway through
+            // a chain, which is the "works until someone runs it" class of bug.
             for (let i = 0; i < n; i++) {
-                if (!rec.parts[i]) return jsonResponse({ ok: false, error: 'missing part ' + i + ' - upload it first' }, 400);
+                const head = await storeMeta(env, id, 'part' + i);
+                if (!head) {
+                    return jsonResponse({ ok: false, error: 'part ' + i + ' is not in storage. Upload it before finalizing.' }, 400);
+                }
             }
-            const repo = env.SH_GH_REPO;
-            let head = null;
-            try { head = await ghHead(env, repo, 'heads/main'); } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e).slice(0, 300) }, 502); }
-            rec.repo = repo;
-            rec.path = 'scripts/' + id;
             rec.n = n;
             rec.len = Number(body.len) || 0;
-            rec.head = head;
+            rec.at = Date.now();
             rec.name = String(body.name || 'script').slice(0, 100);
             rec.user = String(body.user || 'unknown').slice(0, 100);
             rec.keyless = body.keyless === true;
             rec.webKey = body.webKey === true;
             rec.keyHash = String(body.keyHash || '');
             rec.authRequired = body.authRequired === true;
-            rec.at = Date.now();
             await env.LOADERS_KV.put(recKey, JSON.stringify(rec), { expirationTtl: LOADER_TTL });
-            // register the loader meta so /sh/<id> serves the GitHub bootstrap
+            // register the loader meta so /sh/<id> serves the bootstrap
             await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
                 name: rec.name, user: rec.user, at: rec.at, keyHash: rec.keyHash,
                 keyless: rec.keyless, webKey: rec.webKey, authRequired: rec.authRequired,
-                storage: 'github', parts: n, len: rec.len
+                storage: 'keeper', parts: n, len: rec.len
             }), { expirationTtl: LOADER_TTL });
-            // optional cipher tail in KV (browser key page for keyed GH scripts)
+            // optional cipher tail in KV (browser key page for keyed scripts)
             if (body.cipherTail && String(body.cipherTail).length < MAX_CIPHER_LEN) {
                 await env.LOADERS_KV.put(KV_WEB_PREFIX + id, String(body.cipherTail), { expirationTtl: LOADER_TTL });
             }
@@ -4567,7 +4615,40 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             return jsonResponse({ ok: true, id, parts: n, loadstring: shLoader(base, id) });
         }
 
-        // ---------- POST /sh/gh-delete : owner deletes a GitHub script ----------
+        // The ORIGINAL /sh/gh-finalize body was removed here. It is unreachable - the 410
+        // handler above matches the pathname first - and leaving it would mean two handlers
+        // claiming one route, with the live one being the one that refuses.
+
+        // ---------- POST /sh/kb-delete : owner deletes a keeper-stored script ----------
+        // Body: { token|ownerProof, id }. Removes every part from the service, then the
+        // index and meta.
+        //
+        // Parts MUST be removed explicitly. Nobody sweeps them up afterwards: the service's
+        // cleanup is driven by expiry, and a deleted script has no expiry to pass, so a
+        // forgotten part would sit on the owner's drive forever, invisible to every
+        // number the dashboard reports. storeDelete with no kind removes every kind the
+        // index knows for the id, which is what makes this a single call.
+        if (url.pathname === '/sh/kb-delete' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const id = String(body.id || '');
+            if (!/^ScripterHub[0-9]{6,16}$/.test(id)) return jsonResponse({ ok: false, error: 'bad id' }, 400);
+            if (!storeConfigured(env)) return jsonResponse({ ok: false, error: 'Storage Keeper is not configured.' }, 503);
+            const rec = parseJson(await env.LOADERS_KV.get(KV_KB_PREFIX + id));
+            let freed = 0;
+            if (rec && rec.n) {
+                for (let i = 0; i < rec.n; i++) {
+                    if (await storeDelete(env, id, 'part' + i)) freed++;
+                }
+            }
+            await env.LOADERS_KV.delete(KV_KB_PREFIX + id).catch(() => {});
+            await env.LOADERS_KV.delete(KV_META_PREFIX + id).catch(() => {});
+            await env.LOADERS_KV.delete(KV_WEB_PREFIX + id).catch(() => {});
+            return jsonResponse({ ok: true, partsFreed: freed });
+        }
+
+        // ---------- POST /sh/gh-delete : owner deletes a GitHub-stored script ----------
         // Body: { token|ownerProof, id } - removes scripts/<id>/ folder
         // contents one by one (GitHub has no folder delete), then the KV meta.
         if (url.pathname === '/sh/gh-delete' && request.method === 'POST') {
@@ -4652,6 +4733,56 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             } catch (e) {
                 return methodNotAllowed();
             }
+        }
+
+        // ---------- GET /sh/kb/<id>/<i> : EXECUTOR-ONLY keeper part, proxied from the PC ----------
+        // The /sh/g/ twin above, with the owner's storage service where GitHub was. It
+        // reuses guardPartRequest, which is the whole gate: a part is served only to a
+        // session that already spent a delivery, only as the next step of its own
+        // forward-only chain, and only once. Reusing the gate rather than writing a
+        // second one is deliberate - the checks are the security property, and two
+        // copies of a security property drift.
+        const kbMatch = url.pathname.match(/^\/sh\/kb\/(ScripterHub[0-9]{6,16})\/(\d+)$/);
+        if (kbMatch) {
+            const limited = await guardRate(env, 'part', rateIdentity(request, url));
+            if (limited) return limited;
+            if (!env.LOADERS_KV) return methodNotAllowed();
+            if (!storeConfigured(env)) return methodNotAllowed();
+            const id = kbMatch[1];
+            const idx = parseInt(kbMatch[2], 10);
+            const ua = request.headers.get('User-Agent') || '';
+            if (!EXECUTOR_UA.test(ua) || !Number.isFinite(idx) || idx < 0 || idx > 255) { S.threatsBlocked++; return methodNotAllowed(); }
+            const rec = parseJson(await env.LOADERS_KV.get(KV_KB_PREFIX + id));
+            if (!rec || !rec.n || idx >= rec.n) { S.threatsBlocked++; return methodNotAllowed(); }
+            const denied = await guardPartRequest(env, request, url, id, idx);
+            if (denied) return denied;
+            const got = await storeGet(env, id, 'part' + idx);
+            if (got.unreachable) {
+                // Distinct from "gone". Reporting gone here would tell every running
+                // executor its script had expired when the owner's PC was merely asleep.
+                console.error('[ScripterHub] keeper part unreachable');
+                return methodNotAllowed();
+            }
+            if (got.value === null) {
+                // Missing or expired part. Byte-identical to how a missing script is
+                // answered, for the same reason: a distinguishable answer is an oracle.
+                return new Response('SHERR gone', {
+                    status: 404,
+                    headers: {
+                        'Content-Type': 'text/plain; charset=utf-8',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': 'no-store'
+                    }
+                });
+            }
+            return new Response(got.value, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
         }
 
         // ---------- GET /sh/auth/<id>?k=<license>&h=<hwid>&t=<t0> ----------
@@ -5034,10 +5165,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // ---- where do the bytes come from? ----
                 const ghRaw = await env.LOADERS_KV.get(KV_GH_PREFIX + id);
                 const isGithub = ghRaw !== null;
+                const kbRaw = await env.LOADERS_KV.get(KV_KB_PREFIX + id);
+                const isKeeper = kbRaw !== null;
                 const cmetaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id);
                 const isChunked = cmetaRaw !== null;
                 let inlineBlob = '';
-                if (!isGithub && !isChunked) {
+                if (!isGithub && !isChunked && !isKeeper) {
                     if (storeConfigured(env)) {
                         // The bytes live on the owner's PC. The service is the authority
                         // on whether they still exist AND whether they have expired - it
@@ -5075,14 +5208,15 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // A script whose metadata exists but whose body cannot be produced is not
                 // a script anybody can run. Refuse with the one controlled answer rather
                 // than returning an empty SHL body, which the loader would try to compile.
-                if (!isGithub && !isChunked && !inlineBlob) {
+                if (!isGithub && !isChunked && !isKeeper && !inlineBlob) {
                     return refuse(DENY.NO_SCRIPT);
                 }
 
-                const needsChain = isGithub || isChunked;
+                const needsChain = isGithub || isChunked || isKeeper;
                 let total = 0;
                 if (isChunked) { try { total = Number(JSON.parse(cmetaRaw).n) || 0; } catch (e) { total = 0; } }
                 if (isGithub) { try { total = Number(JSON.parse(ghRaw).n) || 0; } catch (e) { total = 0; } }
+                if (isKeeper) { try { total = Number(JSON.parse(kbRaw).n) || 0; } catch (e) { total = 0; } }
 
                 // SMALL: everything in one response. This is the strong case:
                 // one atomic consume, one response, nothing left to fetch, and
@@ -5140,7 +5274,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     let skRaw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
                     let sk = null;
                     if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
-                    let head = 'SHG ' + total + ' ' + (isGithub ? '/sh/g/' : '/sh/c/') + id + ' ' + grant + '\n';
+                    let head = 'SHG ' + total + ' ' + (isGithub ? '/sh/g/' : isKeeper ? '/sh/kb/' : '/sh/c/') + id + ' ' + grant + '\n';
                     // Same rule as the inline path: a keyless script's chain
                     // carries no key line. Fixed in both places because they are
                     // separate code paths and the bug was in both.

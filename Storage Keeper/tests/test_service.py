@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -258,6 +259,93 @@ class TestLifecycle(ServiceTestCase):
     def test_empty_body_is_refused(self):
         status, _ = self.put("ScripterHub1234567890", b"")
         self.assertEqual(status, 400)
+
+
+class TestPartsOverHttp(ServiceTestCase):
+    """The parts API surface: the only way a large script reaches the owner's PC.
+
+    The store tests cover what a part IS. These cover what the network lets a caller do to
+    one, which is a different question - a part kind is caller-supplied and becomes a
+    filename, so the grammar has to hold at the HTTP boundary and not just in the store.
+    """
+
+    SID = "ScripterHub2468024680"
+
+    def test_a_part_is_uploaded_and_fetched_by_index(self):
+        for i, payload in enumerate((b"CHUNK-0", b"CHUNK-1", b"CHUNK-2")):
+            status, meta = self.put(self.SID, payload, kind=f"part{i}")
+            self.assertEqual(status, 200)
+            self.assertEqual(meta["kind"], f"part{i}")
+        for i, payload in enumerate((b"CHUNK-0", b"CHUNK-1", b"CHUNK-2")):
+            self.assertEqual(self.get(self.SID, kind=f"part{i}")[1], payload)
+
+    def test_parts_do_not_collide_with_the_artifact(self):
+        self.put(self.SID, b"THE SCRIPT")
+        self.put(self.SID, b"PART ZERO", kind="part0")
+        self.assertEqual(self.get(self.SID)[1], b"THE SCRIPT")
+        self.assertEqual(self.get(self.SID, kind="part0")[1], b"PART ZERO")
+
+    def test_an_out_of_range_part_index_is_refused(self):
+        # 256 is refused rather than stored. The worker caps a chain at 256 parts, so a
+        # part256 is bytes the delivery path could never ask for - storage for nothing.
+        status, _ = self.put(self.SID, b"x", kind="part256")
+        self.assertEqual(status, 400)
+
+    def test_a_kind_shaped_like_a_path_is_refused(self):
+        for bad in ("part0/../../x", "../../etc/passwd", "part0.bin", "PART0"):
+            status, _ = self.put(self.SID, b"x", kind=bad)
+            self.assertEqual(status, 400, f"{bad!r} should be refused")
+            status, _ = self.get(self.SID, kind=bad)
+            self.assertEqual(status, 400, f"{bad!r} should be refused")
+
+    def test_a_missing_part_is_indistinguishable_from_an_expired_one(self):
+        self.put(self.SID, b"live", kind="part0", expires_at=int(time.time()) - 5)
+        self.assertEqual(self.get(self.SID, kind="part0")[1], GONE_BODY)
+        status, data = self.get(self.SID, kind="part7")
+        self.assertEqual(status, 404)
+        self.assertEqual(data, GONE_BODY)
+
+    def test_deleting_the_script_reclaims_every_part(self):
+        for i in range(3):
+            self.put(self.SID, b"p" * 64, kind=f"part{i}")
+        self.put(self.SID, b"artifact bytes")
+        status, _ = self.call("DELETE", f"/v1/objects/{self.SID}")
+        self.assertEqual(status, 200)
+        for i in range(3):
+            status, data = self.get(self.SID, kind=f"part{i}")
+            self.assertEqual(status, 404)
+            self.assertEqual(data, GONE_BODY)
+        # and nothing is left occupying disk
+        leftovers = list(self.config.objects_dir.glob(f"{self.SID}.*"))
+        self.assertEqual(leftovers, [], f"part files survived deletion: {leftovers}")
+
+    def test_a_part_still_needs_the_token(self):
+        self.put(self.SID, b"secret", kind="part0")
+        status, _ = self.call("GET", f"/v1/objects/{self.SID}?kind=part0", token="wrong")
+        self.assertEqual(status, 401)
+        status, _ = self.call("PUT", f"/v1/objects/{self.SID}?kind=part1", body=b"x", token="wrong")
+        self.assertEqual(status, 401)
+
+    def test_concurrent_parts_all_land(self):
+        import threading as _t
+        errors = []
+
+        def worker(i):
+            try:
+                status, _ = self.put(self.SID, ("p%d" % i).encode() * 32, kind=f"part{i}")
+                if status != 200:
+                    errors.append((i, status))
+            except Exception as e:  # noqa: BLE001
+                errors.append((i, repr(e)))
+
+        threads = [_t.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
+        for i in range(8):
+            self.assertEqual(self.get(self.SID, kind=f"part{i}")[1], ("p%d" % i).encode() * 32)
 
 
 class TestExpiryIsServerSide(ServiceTestCase):

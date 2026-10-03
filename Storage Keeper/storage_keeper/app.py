@@ -33,7 +33,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from .config import GONE_BODY, Config
-from .ids import ID_PATTERN, KIND_ARTIFACT, KIND_LOADER, KINDS, InvalidId
+from .ids import ID_PATTERN, KIND_ARTIFACT, KIND_LOADER, InvalidId, validate_kind
 from .store import Store
 
 log = logging.getLogger("storage_keeper")
@@ -112,8 +112,17 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _kind_from(self, query: str) -> Optional[str]:
+        """Resolve the ?kind= parameter, or None if it is not a kind this service stores.
+
+        A bad kind is answered 400 rather than 404: unlike a bad id, the set of valid kinds
+        is not secret, and there is no existence to probe - the route has already matched a
+        well-formed script id by the time this runs.
+        """
         raw = (parse_qs(query).get("kind") or [KIND_ARTIFACT])[0]
-        return raw if raw in KINDS else None
+        try:
+            return validate_kind(raw)
+        except InvalidId:
+            return None
 
     def _read_body(self, limit: int) -> Optional[bytes]:
         """Read at most `limit` bytes. Returns None if the client sent more.
@@ -281,6 +290,17 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(HTTPStatus.NOT_FOUND, NOT_FOUND)
             return
         script_id = m.group(1)
+        # "no ?kind=" must mean EVERY kind, not the artifact.
+        #
+        # _kind_from defaults to artifact, which is right for a read and wrong for a
+        # delete: a delete that silently spared the parts would leave a deleted script's
+        # bytes sitting on the owner's drive with no expiry left to sweep them, and no
+        # stat that reports them. The default is the bug, not the delete.
+        named = parse_qs(parsed.query).get("kind")
+        if not named:
+            removed = self.store.delete(script_id, None)
+            self._send(HTTPStatus.OK, json.dumps({"removed": removed}).encode(), "application/json")
+            return
         kind = self._kind_from(parsed.query)
         if kind is None:
             self._fail(HTTPStatus.BAD_REQUEST, GENERIC_ERROR)

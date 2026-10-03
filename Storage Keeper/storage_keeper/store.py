@@ -335,7 +335,19 @@ class Store:
             validate_id(script_id)
         except InvalidId:
             return 0
-        kinds = (kind,) if kind else KINDS
+        if kind:
+            kinds: tuple[str, ...] = (kind,)
+        else:
+            # Every kind the index knows for this script, not just the three singletons.
+            #
+            # Enumerating a fixed tuple here would leave part0..partN on disk while their
+            # rows were cleared - and the sweep walks ROWS, so it could never see them
+            # again. That is silent, permanent disk usage on the owner's drive, invisible
+            # to every stat the service reports, which is the worst shape a leak can take.
+            rows = self._conn().execute(
+                "SELECT DISTINCT kind FROM objects WHERE script_id=?", (script_id,)
+            ).fetchall()
+            kinds = tuple(dict.fromkeys(tuple(KINDS) + tuple(r["kind"] for r in rows)))
         removed = 0
         for k in kinds:
             try:
