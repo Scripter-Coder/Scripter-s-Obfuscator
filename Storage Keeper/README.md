@@ -16,9 +16,15 @@ move. **Nothing about the obfuscator changed.**
 
 ## Starting it
 
+Loopback only — good for testing, useless for delivery, since nothing outside your PC can
+reach `127.0.0.1`.
+
 ```powershell
 py "Storage Keeper/run.py"
 ```
+
+For real use, put it behind a tunnel instead — see
+[The part that needs a decision from you](#the-part-that-needs-a-decision-from-you).
 
 It prints the URL it bound to. If `SH_STORE_TOKEN` is unset it generates one and shows
 it once — set it yourself so it survives a restart:
@@ -57,20 +63,51 @@ old behaviour rather than to a broken website.
 
 Executors run on your friends' phones and PCs. They cannot reach your PC — it's behind
 your router with no public IP. So for scripts to actually *deliver from* your PC rather
-than just be *stored* there, something has to bridge that gap. **This is not done yet and
-I have not deployed anything.**
+than just be *stored* there, something has to bridge that gap. `tunnel.py` is that
+bridge:
 
-The options, in the order I'd pick them:
+```powershell
+py "Storage Keeper/tunnel.py"
+```
 
-1. **cloudflared tunnel** (recommended) — `cloudflared tunnel --url http://127.0.0.1:8787`
-   gives a public HTTPS URL. Point `SH_STORE_URL` at it. The worker keeps every gate and
-   only fetches bytes through the tunnel. Requires leaving cloudflared running.
-2. **Don't bridge it.** Store on the PC as the canonical copy, keep KV as the delivery
-   cache. Safe, but KV usage doesn't drop, so it doesn't meet the storage goal.
-3. **Port-forward your PC.** Works, but exposes your machine directly. Not recommended.
+It starts the service, starts `cloudflared` pointed at it, **verifies `/v1/health`
+through the public address**, and only then prints the URL and token to paste into the
+worker. Both processes must stay running for delivery to work.
 
-Until one of those is done, the PC holds the bytes and Cloudflare still serves them —
-which is a backup, not the goal.
+**cloudflared is not installed on this machine yet**, and `winget` is unavailable, so
+this has not been run end to end. Install it first:
+
+```
+# from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+# put cloudflared-windows-amd64.exe somewhere on PATH
+```
+
+Then choose a mode:
+
+| Mode | Command | Address | Trade-off |
+|---|---|---|---|
+| quick (default) | `py "Storage Keeper/tunnel.py"` | random `*.trycloudflare.com` | Proves the path works. **Changes on every restart.** |
+| named | see below | a hostname you choose | Stable. Needs a domain in your Cloudflare account. |
+
+The quick-mode address is random, which is a trap worth knowing about: after a reboot
+the worker is holding a URL that no longer exists, and **every script fails at once**
+while the service still looks perfectly healthy on disk. `tunnel.py` prints that warning
+every time for exactly this reason. For anything you depend on, use a named tunnel:
+
+```powershell
+cloudflared tunnel login
+cloudflared tunnel create scripterhub-keeper
+cloudflared tunnel route dns scripterhub-keeper keeper.YOUR-DOMAIN
+py "Storage Keeper/tunnel.py" --mode named --name scripterhub-keeper --hostname keeper.YOUR-DOMAIN
+```
+
+The token is persisted to `data/token.txt` and reused across restarts. Generating a fresh
+one per run would be the obvious simplification and it is a trap: the worker holds one
+copy, so a restart would lock the service out of its own worker.
+
+The other option is to not bridge it at all — keep the PC as the canonical copy and KV as
+the delivery cache. That is safe, but KV usage doesn't drop, so it doesn't meet the
+storage goal.
 
 ## Expiry
 
@@ -153,6 +190,7 @@ nothing internal leaks.
 | Path | What |
 |---|---|
 | `run.py` | entrypoint |
+| `tunnel.py` | runs the service behind a Cloudflare Tunnel, so executors can reach it |
 | `storage_keeper/config.py` | env config, the one refusal body |
 | `storage_keeper/ids.py` | id grammar, kinds |
 | `storage_keeper/store.py` | SQLite index + files, expiry, cleanup |
