@@ -46,6 +46,30 @@ py "Storage Keeper/run.py"
 
 Stdlib only — no pip install, no dependencies.
 
+## What actually got bigger
+
+Worth being precise, because "100 GB free" and "bigger scripts" are two different
+things and only the first one is unlimited.
+
+**Total capacity is now your disk.** KV has a namespace ceiling as well as a per-value
+one; that ceiling is gone. Publish as many scripts as your drive holds and the only
+thing that ever runs out is space you actually own.
+
+**Per-script size is NOT your disk.** It is 64 MiB by default
+(`SH_STORE_MAX_OBJECT_BYTES`), and raising it costs RAM, not storage — the service
+buffers a whole object in memory on the way in and again on the way out. The real
+ceiling on any single script is whichever runs out first:
+
+- the service's RAM while buffering a 500 MB object (plus the worker holding the same
+  text as a JS string on the other end, and Cloudflare's own per-request limits);
+- your patience tuning all three.
+
+The old KV ceiling was ~50 MB/script (20 chunks × ~25 MB). So the honest summary is
+that the per-script number moved from 50 MB to 64 MB and is now *yours to set* — the
+unbounded part was always aggregate capacity, and that part is fixed. Raising the cap
+for genuinely huge scripts is an env var and nothing else, but a script big enough to
+need it was probably better split up.
+
 ## Turning it on in the worker
 
 Two variables, nothing else:
