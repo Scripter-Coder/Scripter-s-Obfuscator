@@ -856,10 +856,10 @@ const URL_SESSION_TTL_MS = 15000;
 // matters; the window only bounds how long a partial crawl can be resumed.
 const CHAIN_GRANT_TTL_MS = 15 * 60 * 1000;
 
-// Artifacts at or below this are returned INLINE by the single delivery gate:
-// one atomic consume, one response, nothing left to fetch. That is the strong
-// case and it is the normal one.
-const INLINE_DELIVERY_LIMIT = 2 * 1024 * 1024;
+// The inline/chain split is decided by ONE number, defined with CHUNK_THRESHOLD below.
+// See the note there: these two used to be independent constants and the gap between
+// them was a dead zone where a script could be uploaded successfully and then never
+// deliver at all.
 
 // Refusal reasons. Returned to the loader as `SHERR <reason>` so the in-game
 // UX can say something useful, and written to the audit log. Deliberately
@@ -1266,6 +1266,27 @@ const MAX_CIPHER_LEN = 72_000_000;  // ~70 MB of cipher text (was 4.5 MB)
 const KV_MAX_VALUE = 25_000_000;    // Cloudflare KV hard per-value limit
 const CHUNK_THRESHOLD = KV_MAX_VALUE - 1000; // chunk when bigger than one safe KV value
 const MAX_CHUNKS = 20;              // 20 * ~25MB = ~50MB blob ceiling
+
+// Artifacts at or below this are returned INLINE by the single delivery gate: one atomic
+// consume, one response, nothing left to fetch. That is the strong case and the common
+// one.
+//
+// IT MUST EQUAL CHUNK_THRESHOLD. That is the whole point of writing it this way.
+//
+// These were two independent numbers - 2 MiB here, ~25 MB there - and the space between
+// them was a dead zone. putBlob only starts chunking ABOVE CHUNK_THRESHOLD, so a 3 MB
+// script is stored as ONE KV value; delivery only inlines BELOW 2 MiB, so that same 3 MB
+// value matched neither the inline path nor the chain path, fell past both, and was
+// refused with SHERR gone. The upload reported success. The loader reported the script
+// did not exist. Nothing in between was wrong-looking, which is why it survived every
+// test in this repo: every one of them published and read back a script small enough to
+// stay under the limit.
+//
+// Real scripts land there constantly - a 3000-line Lua file obfuscates to ~3 MB, which is
+// what a user actually publishes. So the boundary is derived, not chosen twice: anything
+// that fits in one value can be delivered in one response, and anything larger is chunked
+// at upload and arrives as a chain. There is no third case to fall into.
+const INLINE_DELIVERY_LIMIT = CHUNK_THRESHOLD;
 
 // ---- user sync helpers ----
 async function loadUsersMap(env) {
