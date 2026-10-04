@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import hashlib
 import json
 import os
 import re
@@ -244,6 +245,12 @@ def main() -> int:
 
     token, token_source = load_or_create_token()
     log(f"token: {token_source}")
+    # A fingerprint, NOT the token. The question this answers is "is the worker still
+    # holding the same secret?", which is asked every single time the service restarts
+    # and which nobody should have to answer by opening a file and reading a credential.
+    # Eight hex characters of SHA-256 cannot be turned back into the token, and a
+    # mismatch here is the earliest possible warning that every script is about to fail.
+    log(f"token fingerprint: {hashlib.sha256(token.encode()).hexdigest()[:8]}")
     # A fresh token invalidates the copy the worker already holds, and the symptom is
     # every script failing at once with the service healthy on disk. Say so loudly and
     # only in that case - a reused token needs no warning, and crying wolf here trains
