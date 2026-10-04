@@ -5173,37 +5173,59 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const isChunked = cmetaRaw !== null;
                 let inlineBlob = '';
                 if (!isGithub && !isChunked && !isKeeper) {
+                    // TRY THE PC FIRST, THEN KV. Not one or the other.
+                    //
+                    // This used to be an either/or: if the keeper was bound, only the PC
+                    // was asked, and a miss was treated as "gone". That silently broke
+                    // every script published BEFORE the storage move - their bytes are in
+                    // KV and the PC has never heard of them - so binding SH_STORE_URL took
+                    // 71 working scripts offline without a single error, which is the worst
+                    // possible failure mode for a change whose whole promise was that
+                    // existing scripts keep working.
+                    //
+                    // KV is therefore a FALLBACK, not a legacy branch. Two things fall out
+                    // of that, both of them wanted:
+                    //   * a pre-migration script still runs, and
+                    //   * the site keeps serving those scripts while the owner's PC is off,
+                    //     asleep, rebooting or mid-tunnel-restart. Only scripts actually
+                    //     stored on the PC depend on the tunnel being up.
+                    //
+                    // A script stored ONLY on the PC is unaffected: it is not in KV, so
+                    // the fallback misses and it refuses exactly as before.
                     if (storeConfigured(env)) {
-                        // The bytes live on the owner's PC. The service is the authority
-                        // on whether they still exist AND whether they have expired - it
-                        // refuses to serve an expired object, so a browser countdown
-                        // lying about a script changes nothing here.
                         const got = await storeGet(env, id, 'artifact');
                         if (got.unreachable) {
                             // Distinct from "gone". Reporting gone would tell every user
                             // their script had expired when the owner's PC was simply off.
-                            console.error('[ScripterHub] delivery deferred: storage keeper unreachable');
-                            return refuse(DENY.NO_STATE);
-                        }
-                        if (got.value !== null) inlineBlob = got.value;
-                    } else {
-                    const rawInline = await env.LOADERS_KV.get(KV_PREFIX + id);
-                    if (rawInline !== null) {
-                        if (isEncrypted(rawInline)) {
-                            const r = await tryDecryptAtRest(env, rawInline);
-                            if (!r.ok) {
-                                // Refuse loudly rather than serving the raw
-                                // envelope. The operator needs to know the KEK
-                                // is missing; the user needs to know the script
-                                // is not broken.
-                                console.error('[ScripterHub] delivery refused: at-rest decrypt failed: ' + r.error);
-                                return refuse(DENY.NO_STATE);
-                            }
-                            inlineBlob = r.text;
-                        } else {
-                            inlineBlob = rawInline;
+                            // Falling through to KV is safe and is what keeps the
+                            // pre-migration catalogue alive while the tunnel is down.
+                            console.error('[ScripterHub] storage keeper unreachable; falling back to KV');
+                        } else if (got.value !== null) {
+                            // The service is the authority on whether the bytes exist AND
+                            // whether they have expired - it refuses to serve an expired
+                            // object, so a browser countdown lying about a script changes
+                            // nothing here.
+                            inlineBlob = got.value;
                         }
                     }
+                    if (!inlineBlob) {
+                        const rawInline = await env.LOADERS_KV.get(KV_PREFIX + id);
+                        if (rawInline !== null) {
+                            if (isEncrypted(rawInline)) {
+                                const r = await tryDecryptAtRest(env, rawInline);
+                                if (!r.ok) {
+                                    // Refuse loudly rather than serving the raw
+                                    // envelope. The operator needs to know the KEK
+                                    // is missing; the user needs to know the script
+                                    // is not broken.
+                                    console.error('[ScripterHub] delivery refused: at-rest decrypt failed: ' + r.error);
+                                    return refuse(DENY.NO_STATE);
+                                }
+                                inlineBlob = r.text;
+                            } else {
+                                inlineBlob = rawInline;
+                            }
+                        }
                     }
                 }
 
