@@ -30,17 +30,48 @@ caller first, so the endpoint does not advertise itself to strangers. The *read*
 `/sh/g/<id>/<i>` deliberately stays: scripts published before the retirement are running
 on people's machines right now, and removing it would orphan them.
 
-## Starting it
+## Running it without babysitting it
 
-Loopback only — good for testing, useless for delivery, since nothing outside your PC can
-reach `127.0.0.1`.
+Obfuscation runs entirely in the browser and has never needed the tunnel. What needs the
+tunnel is **publishing and delivery** — the worker moves script bytes onto this PC through
+it. Because a quick tunnel hands out a **random address on every start**, restarting by
+hand leaves the worker pointing at an address that no longer exists. That happened four
+times.
 
-```powershell
-py "Storage Keeper/run.py"
+One command does the whole sequence — start it, wait for it, point the worker at it:
+
+```cmd
+keeper-autostart.cmd
 ```
 
-For real use, put it behind a tunnel instead — see
-[The part that needs a decision from you](#the-part-that-needs-a-decision-from-you).
+Registered as a **Scheduled Task** (`ScripterHub-Keeper-AutoStart`) that runs at every
+logon, so after a reboot there is nothing to do by hand. Re-running is safe: a tunnel that
+is already live is reused rather than starting a second one over it.
+
+| Flag | Effect |
+|---|---|
+| `--skip-deploy` | start the tunnel, leave the worker alone |
+| `--force-restart` | start a fresh tunnel even if one is live |
+| `--timeout 300` | wait longer for the tunnel to answer |
+
+### Why it waits before deploying
+
+A fresh `*.trycloudflare.com` hostname takes roughly **30–60 s** to resolve from a resolver
+that has not seen it. Measured during development: the service answered on `127.0.0.1`,
+cloudflared reported `readyConnections: 1`, and every external fetch still failed — then all
+of it worked seconds later with neither process changed.
+
+So the launcher **waits until the public address actually answers**, and only then
+deploys. Deploying first is how a dead address ships, and the symptom only shows later as
+a `502` on publish with a service that looks perfectly healthy.
+
+For manual work, `py "Storage Keeper/run.py"` serves on loopback only — fine for testing,
+useless for delivery.
+
+### Still the weak link
+
+The autostart handles the changing address for you, but a **named tunnel** removes it
+entirely. That needs a domain in your Cloudflare account.
 
 It prints the URL it bound to. If `SH_STORE_TOKEN` is unset it generates one and shows
 it once — set it yourself so it survives a restart:
