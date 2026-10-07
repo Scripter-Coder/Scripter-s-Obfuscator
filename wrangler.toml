@@ -251,7 +251,7 @@ SH_SESSION_TTL_SECONDS = "45"         # primary request() path
 # A QUICK TUNNEL (cloudflared tunnel --url) gets a RANDOM address that CHANGES ON EVERY
 # RESTART. If you set one here, the next reboot makes every script fail at once while
 # your PC still looks healthy - update this value at the same time as you restart.
-SH_STORE_URL = "https://basic-both-seems-centered.trycloudflare.com"
+SH_STORE_URL = "https://shipping-taste-reform-steven.trycloudflare.com"
 
 # Your telemetry webhook. Set this HERE or in the dashboard — the dashboard is
 # usually easier, and a Text variable keeps the value visible so a typo is
