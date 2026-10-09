@@ -15,6 +15,7 @@ Lua source
   → Register allocation (src/ir/register.js) — liveness/intervals/coalescing
   → VM lowering (vm-bytecode.js compile) — emits custom bytecode chunks, vault, refs
   → Register allocation (src/ir/register.js allocateProgram) — liveness/intervals/coalescing → frame-size reduction
+  → Layout hardening (src/vm/code-layout.js) — block relocation, hole filling, identifier scrambling
   → VM emission (vm-bytecode.js emitVM) — per-build ciphers, vault/blob, handlers, dispatcher
   → Outer layers (custom-obfuscator.js) — seed-chain encChain, slot table, anti-tamper, anti-crack, wrapped payload
   → fengari (Lua 5.3 VM in JS) for differential testing; native lua* when available via src/targets/*
@@ -38,6 +39,8 @@ Lua source
 | Variability | `src/generator/variability.js`, `src/vm/variants.js`, `src/vm/dispatcher.js` | 8-category variability |
 | Targets | `src/targets/registry.js`, `src/targets/*.js` | 6-target registry, honest status |
 | Security | `src/security/*`, `src/compression/*` | staticEnv, compat, anti-tamper, compression |
+| Layout | `src/vm/code-layout.js` | block relocation, hole filling, identifier scrambling (see `LAYOUT_HARDENING.md`) |
+| Bench | `tools/bench/*.mjs` | correctness differential, deob A/B, size/perf |
 | CLI | `cli.mjs` | --target/--profile/--vm/--seed etc., validation |
 | Devirt | `tools/devirt.js` | 9-task hardness harness |
 

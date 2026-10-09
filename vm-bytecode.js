@@ -2055,7 +2055,7 @@ function compile(src, opts) {
     // scheduler-compatible instruction stream, which is immediately promoted to
     // target-independent IR, CFG, optimizer/allocation analysis, concrete VM
     // transforms, and lowered back to the same scheduler bytecode ABI.
-    var pipeline = runProductionPipeline({ chunks, OPCODES, seed, profileName, hiddenIds, refs, vaultPlain, disableFolding: opts.unroll === true });
+    var pipeline = runProductionPipeline({ chunks, OPCODES, seed, profileName, hiddenIds, refs, vaultPlain, disableFolding: opts.unroll === true, hardenOff: opts.hardenOff === true, scrambleOff: opts.scrambleOff === true });
 
     var constPool = buildConstantPool({ vaultPlain: vaultPlain, refs: refs, seed: seed, profileName: profileName });
     var nativeSourceText = nativeFns.map((fn) => String(fn.source || '')).join('\n');

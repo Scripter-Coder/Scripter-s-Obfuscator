@@ -8,6 +8,21 @@ import { allocateRegisters } from './register.js';
 import { applyFusion } from './fusion.js';
 import { applySplitting } from './splitting.js';
 import { chooseMutation } from './mutation.js';
+import { hardenInstructionStream, applyIdentifierPermutation } from '../vm/code-layout.js';
+
+// Per-profile layout hardening. relocateRatio is the share of basic blocks
+// moved out of line; fillRatio scales how much unreachable filler lands in the
+// vacated slots. FAST keeps the historical flat layout so small artifacts stay
+// cheap to load.
+//
+// The cost is real: at these values SECURE roughly grows the VM image by half
+// again and roughly doubles total artifact size. tools/bench/size-perf.mjs
+// measures that on any source so the trade is never made blind.
+const LAYOUT = {
+  FAST:     { relocateRatio: 0,    fillRatio: 0,    maxLoops: 0 },
+  BALANCED: { relocateRatio: 0.20, fillRatio: 0.7,  maxLoops: 1 },
+  SECURE:   { relocateRatio: 0.35, fillRatio: 1.0,  maxLoops: 3 },
+};
 
 const ARG_OPS = new Set([
   'CONST','NUMK','GLOB','GSET','LLOAD','LNEW','LSET','ULOAD','USET',
@@ -97,6 +112,10 @@ export function runProductionPipeline(build, opts={}) {
   const seed=build.seed>>>0;
   const profile=build.profileName||'BALANCED';
   let totalReuse=0,totalFold=0,totalFusion=0,totalSplit=0,totalMut=0,totalCfg=0,totalAppliedReuse=0;
+  let totalRelocated=0,totalJunkBlocks=0,totalJunkWords=0,totalScrambled=0;
+  // Instruction streams are hardened first and encoded only after the
+  // build-wide identifier permutation, so every chunk shares one map.
+  const pending=[];
   for(let chunkIndex=0; chunkIndex<build.chunks.length; chunkIndex++) {
     const chunk=build.chunks[chunkIndex];
     const chunkMeta=chunk.meta||{};
@@ -207,17 +226,42 @@ export function runProductionPipeline(build, opts={}) {
       }
       return {op:i.op,args:i.a==null?[]:[i.a],oldPc:i.meta?.oldPc||decoded[n]?.oldPc||0,meta:i.meta,line:i.line||decoded[n]?.line||0};
     });
-    const enc=encodeChunk(lowered,build.OPCODES);
-    chunk.code=enc.code;
-    chunk.lines=enc.lines;
-    reports.push({profile:chunkProfile, vm:chunkMeta.vm||'OPAL', blocks:blocks.length,optimizer:opt.stats,allocation:alloc, fused:fu.fused, split:originalSplit.splits, mutations:filtered.filter(i=>i.meta?.mutation).length});
+    const layout=LAYOUT[chunkProfile]||LAYOUT.BALANCED;
+    const hardenOn = !opts.hardenOff && !build.hardenOff && layout.relocateRatio>0
+      && chunkMeta.transform!=='NO_JUNK' && chunkMeta.transform!=='NO_OPAQUE';
+    let stream=lowered;
+    let layoutStats={relocated:0,junkBlocks:0,junkWords:0};
+    if(hardenOn){
+      const r=hardenInstructionStream(lowered,{
+        seed:(seed+chunkIndex*2654435761)>>>0,
+        relocateRatio:layout.relocateRatio,
+        fillRatio:layout.fillRatio,
+        maxLoops:layout.maxLoops,
+        refsCount:(build.refs||[]).length,
+      });
+      stream=r.insts; layoutStats=r.stats;
+      totalRelocated+=r.stats.relocated; totalJunkBlocks+=r.stats.junkBlocks; totalJunkWords+=r.stats.junkWords;
+    }
+    pending.push({chunk,stream});
+    reports.push({profile:chunkProfile, vm:chunkMeta.vm||'OPAL', blocks:blocks.length,optimizer:opt.stats,allocation:alloc, fused:fu.fused, split:originalSplit.splits, mutations:filtered.filter(i=>i.meta?.mutation).length, layout:layoutStats});
+  }
+  // One build-wide permutation for constant indices and lexical ids, applied
+  // after every chunk is hardened and before any chunk is encoded. Upvalue
+  // cells are keyed by the same id space in every chunk, so a single shared
+  // permutation preserves capture while no chunk decodes on its own.
+  const permuted=build.scrambleOff||opts.scrambleOff?{changed:0}:applyIdentifierPermutation(build,pending);
+  totalScrambled=permuted.changed;
+  for(const p of pending){
+    const enc=encodeChunk(p.stream,build.OPCODES);
+    p.chunk.code=enc.code;
+    p.chunk.lines=enc.lines;
   }
   // User-visible and captured lexical IDs remain ABI-stable; compiler-generated
   // temporaries are physically reused before lowering and remain scheduler-safe.
   build.pipeline={
-    stages:['AST','IR','CFG','optimizer','register-allocation','transforms','lowering','VM-bytecode'],
-    ir:true,cfg:true,optimizer:true,registerAllocation:true,transforms:true,lowering:true,
-    stats:{chunks:build.chunks.length,cfgBlocks:totalCfg,folded:totalFold,reused:totalReuse,appliedReuse:totalAppliedReuse,fused:totalFusion,split:totalSplit,mutations:totalMut},
+    stages:['AST','IR','CFG','optimizer','register-allocation','transforms','layout-hardening','lowering','VM-bytecode'],
+    ir:true,cfg:true,optimizer:true,registerAllocation:true,transforms:true,lowering:true,layoutHardening:true,identifierScrambling:true,
+    stats:{chunks:build.chunks.length,cfgBlocks:totalCfg,folded:totalFold,reused:totalReuse,appliedReuse:totalAppliedReuse,fused:totalFusion,split:totalSplit,mutations:totalMut,relocatedBlocks:totalRelocated,junkBlocks:totalJunkBlocks,junkWords:totalJunkWords,scrambledOperands:totalScrambled},
     reports
   };
   for(const ch of build.chunks) delete ch._decodedForPipeline;
