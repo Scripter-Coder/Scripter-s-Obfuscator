@@ -418,7 +418,12 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
                 // REAL error instead of silently asking for the OWNER
                 // access code (users do not have it)
                 if (currentUser) {
-                    return { ok: false, error: 'Could not sign in to the loadstring service with your account. Check your internet connection and re-login on the website, then try again.' };
+                    // "Check your internet connection" sent people to the wrong
+                    // place: the overwhelmingly common cause was never the
+                    // network, it was a device with no session token (see
+                    // shApi), and no amount of reconnecting fixes that. Name the
+                    // actual remedy instead.
+                    return { ok: false, error: 'This browser has no session for your account. Sign out and sign in again on THIS device, then retry.' };
                 }
                 const ok = await shLoginRaw();
                 if (!ok) return { ok: false, error: 'login failed (could not sign in - re-login on the website and try again)' };
@@ -506,12 +511,42 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
 // in from any device. Local storage stays the working copy (offline
 // fallback); cloud is the source of truth for the panels.
 
+// A POST to the worker, with the HTTP STATUS kept on the result.
+//
+// This used to be `.then(function(r){ return r.json(); })` and nothing else, so
+// the resolved object never carried a status. shApiGet below has always attached
+// one, and the difference turned out to matter: handleLogin refuses a
+// wrong-password sign-in with `d.ok === false && d.status === 401`, and with no
+// status that condition could NEVER be true. Every rejection - 401, 429, a 500,
+// a Cloudflare HTML error page - silently fell through to the local sign-in
+// path, which shows "Logged in successfully!" and saves NO session token.
+//
+// The user then looks logged in, and every protected action calls
+// shEnsureUserToken(), which finds no token, replays the locally stored
+// btoa(password) that the worker will not accept for a PBKDF2 record, gets
+// nothing, and reports the misleading "Could not sign in to the loadstring
+// service... Check your internet connection". That is why this only ever
+// affected a user's SECOND device: their first one still had a token in
+// localStorage, so it never reached the broken path.
+//
+// r.json() also throws on an empty body or an HTML error page, and the throw was
+// swallowed into a bare {ok:false}, making a Cloudflare error page
+// indistinguishable from a rejected password. So: read as TEXT, parse
+// defensively, and keep the status. This mirrors shApiGet.
 function shApi(endpoint, body) {
     return fetch(SH_STATS_ENDPOINT + endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {})
-    }).then(function(r) { return r.json(); }).catch(function() { return { ok: false, error: 'network' }; });
+    }).then(function (r) {
+        return r.text().then(function (t) {
+            var d;
+            try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { ok: false, error: 'the server did not return JSON' }; }
+            if (d && d.ok === undefined) d.ok = false;
+            d.status = r.status;
+            return d;
+        });
+    }).catch(function () { return { ok: false, status: 0, error: 'network' }; });
 }
 
 // A GET with query parameters, and a body read as TEXT.
@@ -3026,6 +3061,19 @@ function handleLogin(event) {
             if (d && d.ok === false && d.status === 401) {
                 showNotification('Sign-in Failed',
                     'That is not the password this account has. If you are certain it is right, this device is holding an older copy - sign out and sign in again, or try a different browser.',
+                    'error', 10000);
+                return;
+            }
+            // Any other server-side refusal is NOT a sign-in, and it is NOT
+            // offline either. 429 (rate limited) and 5xx used to fall through to
+            // the local sign-in below, which announced success, saved no token,
+            // and left the account looking logged in while every protected
+            // action failed later. Say what actually happened instead.
+            if (d && d.ok === false && d.status >= 400) {
+                showNotification('Sign-in Failed',
+                    d.status === 429
+                        ? 'Too many sign-in attempts from this device. Wait a minute, then try again.'
+                        : 'The server could not complete the sign-in (HTTP ' + d.status + '). Nothing was changed - try again in a moment.',
                     'error', 10000);
                 return;
             }

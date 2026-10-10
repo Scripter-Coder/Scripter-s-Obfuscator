@@ -1296,6 +1296,74 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         if (options.ultra === true) intensity = Math.max(intensity, 22);
         else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
     }
+
+    // ---- SIZE-AWARE INTENSITY BUDGET -------------------------------------
+    //
+    // THE BUG THIS FIXES. The clamps above bound LAYER COUNT and nothing else, so a
+    // 190 KB script and a 10,000 line script received identical settings. The executor
+    // pays for the OUTPUT, not the layer count, and the output is source x multiplier.
+    //
+    // Measured on this machine (tools/profile_size_budget.mjs, plus the runtime figures
+    // from tools/artifact_run_cost.mjs):
+    //
+    //     intensity <= 4  ->  multiplier ~4.0-4.9x   (FAST / BALANCED / SECURE)
+    //     intensity 10    ->  multiplier ~22x
+    //     intensity 22    ->  multiplier ~73-97x     (ultra)
+    //
+    //     a 0.26 MB artifact runs in ~4.5 s
+    //     a 3.2  MB artifact takes ~52 s and drops the Roblox client to 0 fps
+    //     a 15   MB artifact never runs anywhere
+    //
+    // That last line is the whole story: a 15 MB artifact is a ~190 KB script run
+    // through ultra, not a huge script. Ultra multiplied by up to 97x with no reference
+    // to how much source it was multiplying.
+    //
+    // The budget is an AFFORDABLE MULTIPLIER rather than an output size, because the
+    // multiplier is what the caller controls and it is what decides whether an executor
+    // survives. Tiny sources are unaffected: with a 10 KB input the affordable
+    // multiplier is enormous, nothing is clamped, and SECURE-ultra still means ultra.
+    var srcKB = Math.max(1, (code ? code.length : 0) / 1024);
+    var BUDGET_KB = 600;          // the largest artifact observed running acceptably, x2
+    var MULT_FLOOR = 4.0;        // VM + loader overhead that no setting switches off
+    // TWO TERMS, because one is not enough.
+    //
+    // A pure multiplier fit the LARGE-source points and badly missed the small ones: a
+    // 3 KB source under ultra measured 671 KB (223x) while a 2,347 KB source measured
+    // 182 MB (78x). The small case is dominated by FIXED cost - loader, VM tables, decoy
+    // structures - which scales with intensity but not with source. A one-term model
+    // therefore waves through exactly the tiny inputs that produce the worst ratios.
+    //
+    // Fitted to both regimes:
+    //   mult(i)      4.5 * (i/4)^1.73   -> 4.5x at 4, 22x at 10, ~86x at 22
+    //   overhead(i)  22 * (i - 4) KB     -> ~400 KB at ultra, ~0 at intensity <= 4
+    var estMult = function (i) { return 4.5 * Math.pow(Math.max(1, i) / 4, 1.73); };
+    var estOutKB = function (i) { return Math.max(0, i - 4) * 22 + srcKB * estMult(i); };
+    var sizeCap = 1;
+    for (var _i = 22; _i >= 1; _i--) {
+        if (estOutKB(_i) <= BUDGET_KB) { sizeCap = _i; break; }
+    }
+    var sizeClamped = false;
+    if (intensity > sizeCap) { intensity = sizeCap; sizeClamped = true; }
+
+    // At intensity 1 the multiplier still cannot go below MULT_FLOOR, so a source larger
+    // than BUDGET/MULT_FLOOR cannot reach the budget at ANY setting. Say so out loud,
+    // because the alternative is shipping a multi-megabyte artifact silently and hearing
+    // about it from a user whose game froze.
+    var unreachableBudget = srcKB * MULT_FLOOR > BUDGET_KB;
+    if (debugInfo) {
+        debugInfo.sourceKB = Math.round(srcKB);
+        debugInfo.budgetKB = BUDGET_KB;
+        debugInfo.estimatedMultiplier = Math.round(estMult(intensity) * 10) / 10;
+        debugInfo.estimatedOutputKB = Math.round(estOutKB(intensity));
+        debugInfo.intensityClampedBySize = sizeClamped;
+        debugInfo.budgetUnreachable = unreachableBudget;
+    }
+    if (unreachableBudget && typeof console !== 'undefined' && console.warn) {
+        console.warn('[ScripterHub] source is ' + Math.round(srcKB) + ' KB, so even the lightest' +
+            ' profile yields roughly ' + Math.round(srcKB * MULT_FLOOR) + ' KB, over the ' +
+            BUDGET_KB + ' KB executors tolerate. Split the script into modules.');
+    }
+
     if (debugInfo) debugInfo.profile = profName;
     var meta = {
         id: options.scriptId || ('sh_' + hex(8)),
