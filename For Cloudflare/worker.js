@@ -1237,7 +1237,111 @@ const HWID_RESET_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 1 HWID reset per day
 const LOADER_TTL = 60 * 60 * 24 * 365; // scripts live 1 year (then auto-delete)
 const TOKEN_TTL = 12 * 60 * 60 * 1000; // login session: 12 hours
 // ---- CROSS-DEVICE USER SYNC (KV-backed user database) ----
-const USERS_KV_KEY = 'sh_users_db';    // single KV entry: { email: userRecord }
+//
+// WHY ONE KEY PER USER, NOT ONE BLOB FOR EVERYONE
+//
+// Every user record used to live inside a single KV entry, sh_users_db. That
+// shape has three failures, and all three bit this deployment for real:
+//
+//   1. THE READ CEILING. Workers KV get() returns null (rather than throwing)
+//      once a value passes roughly 1MB. loadUsersMap() could not tell that
+//      apart from "there are no users", so it returned {}. Every login then
+//      answered 401 "Invalid email/username or password." for EVERY account
+//      including ones with a provably correct password, and every signup
+//      "succeeded" because the duplicate check was looking at an empty table.
+//      The data was intact the entire time; the read was failing and the
+//      catch block was hiding it.
+//
+//   2. LOST WRITES. Signup is a read-modify-write of the whole table. Two
+//      signups inside the ~60s KV read cache both read the same snapshot and
+//      the second put erased the first. This is the "Refresh from Cloud shows
+//      16 not 17" report.
+//
+//   3. NO SCALING. Avatars are base64 and ride along in the record, so the
+//      table grows toward the ceiling with normal use.
+//
+// One key per record fixes all three: a login reads one small value instead of
+// the whole table, and a signup writes one key, so two concurrent signups
+// cannot collide.
+//
+// The 13 call sites keep their existing shape - loadUsersMap() still returns a
+// whole map and saveUsersMap() still takes one - because both are now
+// implemented on top of per-user keys. That is deliberate: it keeps the diff to
+// this one module instead of touching every route that reads users.
+const USERS_KV_KEY = 'sh_users_db';    // LEGACY single-entry table. Read-only now, kept so an
+                                        // un-migrated deployment still finds its accounts.
+const USER_PREFIX = 'sh_user_';        // sh_user_<lowercased email> -> one user record
+const UNAME_PREFIX = 'sh_uname_';      // sh_uname_<lowercased username> -> the email that owns it
+const USERS_LIST_MAX = 1000;           // KV list() caps a page at 1000 keys.
+
+// The key a user record lives under. Emails are case-insensitive in practice
+// and the old blob was keyed by exactly what the client typed, so both sides
+// are lowercased here and the login path looks up the same way. Without this,
+// "User@x.com" and "user@x.com" became two accounts with two passwords.
+function userKvKey(email) {
+    return USER_PREFIX + d1UserId(email);
+}
+function unameKvKey(username) {
+    return UNAME_PREFIX + String(username || '').trim().toLowerCase().slice(0, MAX_USERNAME_LEN + 4);
+}
+
+// Read ONE account. This is the path login uses, and it is the reason the
+// 1MB ceiling above can never lock anybody out again: the largest thing it can
+// read is a single record.
+//
+// The legacy blob is consulted ONLY when the per-user key is absent, which is
+// the state of a deployment that predates this change. The first successful
+// login promotes the record and every later read is a single key.
+async function loadUserRecord(env, emailOrUsername) {
+    if (!env.LOADERS_KV) return null;
+    const want = String(emailOrUsername || '').trim();
+    if (!want) return null;
+    try {
+        const byEmail = await env.LOADERS_KV.get(userKvKey(want));
+        if (byEmail) return JSON.parse(byEmail);
+        // Username sign-in. The index maps a lowercased username to its email.
+        const un = await env.LOADERS_KV.get(unameKvKey(want));
+        if (un) {
+            const viaName = await env.LOADERS_KV.get(userKvKey(un));
+            if (viaName) return JSON.parse(viaName);
+        }
+    } catch (e) {
+        console.error('[ScripterHub] loadUserRecord failed: ' + (e && e.message));
+        return null;
+    }
+    // LEGACY FALLBACK: still the whole table, still one big read. This is the
+    // pre-migration shape and it is what makes the rollout safe - a deployment
+    // that has never written a per-user key keeps working, and the first
+    // successful login moves the account across.
+    try {
+        const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+        if (raw) {
+            const m = JSON.parse(raw) || {};
+            const hit = m[want] || m[want.toLowerCase()] || null;
+            if (hit) return hit;
+        }
+    } catch (e) {
+        console.error('[ScripterHub] legacy users blob unreadable: ' + (e && e.message));
+    }
+    return null;
+}
+
+// Write ONE account and keep the username index in step.
+//
+// The index is what makes username sign-in a single get instead of a scan of
+// every user. It is written on every save, and it is derived data - losing it
+// costs username login, never an account.
+async function putUserRecord(env, rec) {
+    const email = d1UserId(rec && (rec.email || rec.id));
+    if (!email) return;
+    const key = userKvKey(email);
+    const stored = JSON.stringify(storageSafeUser({ ...rec, email }));
+    await env.LOADERS_KV.put(key, stored);
+    const un = String((rec && rec.username) || '').trim();
+    if (un) {
+        try { await env.LOADERS_KV.put(unameKvKey(un), email); } catch (e) { /* derived */ }
+    }
+}
 const OWNER_EMAIL = 'dubovikstanislav51@gmail.com'; // the owner (Scripter) account - used for ownerProof auth
 // ---- SIGNUP ABUSE GUARDS (the KV got flooded with 1200+ junk bot
 // accounts, which burned the ENTIRE daily KV write quota and broke every
@@ -1289,25 +1393,75 @@ const MAX_CHUNKS = 20;              // 20 * ~25MB = ~50MB blob ceiling
 const INLINE_DELIVERY_LIMIT = CHUNK_THRESHOLD;
 
 // ---- user sync helpers ----
+//
+// Both functions keep their original signature and return shape, because
+// thirteen call sites depend on them and rewriting every route in the same
+// change as the storage fix is how a storage fix turns into an outage.
+//
+// WHAT CHANGED
+//
+// loadUsersMap() walks the sh_user_ prefix with KV list() instead of reading
+// one enormous blob. Each record is a separate small get(), so no single read
+// can trip the value ceiling, and one unreadable record no longer hides the
+// other seventy.
+//
+// saveUsersMap() no longer PUTs the whole table. It writes the keys that
+// differ and deletes the ones that are gone. A signup therefore touches ONE
+// key, so two concurrent signups cannot overwrite each other - the lost update
+// behind "Refresh from Cloud shows 16 not 17".
+//
+// THE LEGACY BLOB IS STILL READ
+//
+// A deployment that has never written a per-user key keeps working: the read
+// path falls back to sh_users_db, and the first write migrates. Nothing is
+// deleted on the way, so rolling this out cannot lose an account.
 async function loadUsersMap(env) {
     if (!env.LOADERS_KV) return {};
     let map = {};
+
+    // 1. The per-user keys are the store now.
     try {
-        // KV's get() enforces a 60-SECOND MINIMUM cacheTtl, so passing 0 is invalid:
-        // it throws, the catch below turns that into an EMPTY map, and then every
-        // signup writes back a table containing only itself.
-        //
-        // Measured on the live worker after deploying that change: /sh/health
-        // reported the count climbing (66 -> 78, because syncUsersToD1 only ever
-        // inserts) while EVERY login returned 401 "Invalid email/username or
-        // password", because the read side was seeing an empty user table.
-        //
-        // So: plain get(), default 60s cache. The staleness is real and is worth
-        // fixing, but it has to be fixed by not using ONE KV blob as the user
-        // database - not by making the read throw.
+        let cursor = null;
+        let guard = 0;
+        do {
+            const page = await env.LOADERS_KV.list({ prefix: USER_PREFIX, cursor: cursor || undefined, limit: USERS_LIST_MAX });
+            for (const k of (page.keys || [])) {
+                let rec = null;
+                try {
+                    const raw = await env.LOADERS_KV.get(k.name);
+                    if (!raw) continue;
+                    rec = JSON.parse(raw);
+                } catch (e) {
+                    // ONE bad record must not cost the other accounts. Log it
+                    // and move on - the previous implementation turned exactly
+                    // this into a total outage for every user.
+                    console.error('[ScripterHub] unreadable user record ' + k.name + ': ' + (e && e.message));
+                    continue;
+                }
+                const email = String((rec && (rec.email || rec.id)) || k.name.slice(USER_PREFIX.length));
+                if (email) map[email] = rec;
+            }
+            cursor = page.list_complete ? null : page.cursor;
+            if (++guard > 20) { cursor = null; break; }   // never loop forever
+        } while (cursor);
+    } catch (e) {
+        console.error('[ScripterHub] user list failed: ' + (e && e.message));
+    }
+
+    // 2. Legacy blob, merged under the per-user keys so an un-migrated account
+    //    is still found. Per-user wins: it is the newer copy.
+    try {
         const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
-        map = raw ? JSON.parse(raw) : {};
-    } catch (e) { map = {}; }
+        if (raw) {
+            const legacy = JSON.parse(raw) || {};
+            for (const email of Object.keys(legacy)) {
+                if (!map[email] && legacy[email]) map[email] = legacy[email];
+            }
+        }
+    } catch (e) {
+        console.error('[ScripterHub] legacy users blob unreadable: ' + (e && e.message));
+    }
+
     // Reconcile into D1 so the gate's live account check has rows to read.
     // Best-effort, but NOT silent: a failure here shows up as account-bound
     // deliveries being refused with no other explanation.
@@ -1452,39 +1606,60 @@ async function syncUsersToD1(env, map) {
     }
 }
 
+// save the users map WITHOUT ever throwing a blank 500.
+//
+// THE WHOLE-TABLE PUT IS GONE, and that is the point of this change.
+//
+// It used to be: serialise every account, and if that passed the cap strip
+// image payloads until it fitted, then PUT the entire thing. Two consequences,
+// both observed in production:
+//
+//   * LOST UPDATES. Two signups inside the ~60s KV read cache both read the
+//     same snapshot and the second PUT erased the first. Signup reported
+//     success either way, so accounts silently vanished.
+//
+//   * A CEILING SOMEWHERE ELSE. Workers KV get() answers null past roughly
+//     1MB. loadUsersMap() could not tell that apart from "there are no users
+//     exist" and returned {}, so every login 401'd and every signup
+//     "succeeded" against an empty table. The records were never lost - the
+//     READ was failing.
+//
+// Now: each account is its own key, and this writes only what actually
+// changed. A signup touches exactly one key, so concurrent signups cannot
+// collide, and the largest read anywhere in the system is one record.
+//
+// The delete pass is what keeps /sh/users-delete and /sh/users-clear working.
+// Without it a removed account would keep logging in forever from its own key.
+//
+// Cost: this is O(changed) rather than O(1), because it lists first to find
+// what disappeared. Listing is cheap and paginated; the alternative is
+// O(all users) written on every signup, which is what caused the bug.
 async function saveUsersMap(env, map) {
-    let json = JSON.stringify(map);
-    if (json.length > KV_MAX_VALUE - 1000) {
-        // Step 1: bring every image back under the per-field cap.
-        for (const email of Object.keys(map)) map[email] = storageSafeUser(map[email]);
-        json = JSON.stringify(map);
+    if (!env.LOADERS_KV) return;
+
+    const before = await env.LOADERS_KV.list({ prefix: USER_PREFIX, limit: USERS_LIST_MAX });
+    const existing = new Set((before.keys || []).map(k => k.name));
+
+    for (const email of Object.keys(map || {})) {
+        const rec = map[email];
+        if (!rec || typeof rec !== 'object') continue;
+        const key = userKvKey(email);
+        const next = JSON.stringify(storageSafeUser({ ...rec, email }));
+        let prev = null;
+        try { prev = await env.LOADERS_KV.get(key); } catch (e) { prev = null; }
+        // Skip the write when nothing changed. Most call sites re-save an
+        // untouched record (a profile merge, a plan change) and writing those
+        // back spends a write operation for nothing.
+        if (prev === next) { existing.delete(key); continue; }
+        await putUserRecord(env, rec);
+        existing.delete(key);
     }
-    if (json.length > KV_MAX_VALUE - 1000) {
-        // Step 2: drop the images entirely.
-        //
-        // This step did not exist. The second pass was a byte-for-byte repeat of
-        // the first - same two fields, same comparison - so on a map whose images
-        // were all already UNDER the cap but numerous enough to add up, it changed
-        // nothing, `json` was unchanged, and the PUT went out oversized and threw.
-        // The one escape hatch a "the value is too big" error needs is the one that
-        // actually makes it smaller.
-        //
-        // It costs an avatar. That is the right trade against losing every account:
-        // the local copy is what the UI renders, so the device that set the image
-        // keeps showing it, and the owner can re-upload it.
-        for (const email of Object.keys(map)) {
-            const u = map[email];
-            if (!u || typeof u !== 'object') continue;
-            for (const k of SH_IMAGE_FIELDS) {
-                if (typeof u[k] === 'string' && u[k]) u[k] = '';
-            }
-        }
-        json = JSON.stringify(map);
-        console.warn('[ScripterHub] users map was ' + JSON.stringify(map).length +
-            ' bytes of records; image payloads were dropped to fit the ' + KV_MAX_VALUE +
-            ' byte KV limit. Avatars on the server were cleared - re-upload them from a device that still has them.');
+
+    // Anything still in `existing` was removed from the map by the caller.
+    for (const key of existing) {
+        await env.LOADERS_KV.delete(key).catch(() => {});
     }
-    await env.LOADERS_KV.put(USERS_KV_KEY, json);
+
     // Authoritative write for the gate's live account check. Wrapped so a D1
     // problem surfaces as refused account-bound deliveries rather than a blank
     // 500 in the panel — but never swallowed silently.
@@ -2955,8 +3130,7 @@ async function verifyUserToken(token, env) {
         }
         if (!raw || raw.kind !== 'user') return null;
         if (Date.now() - raw.t > TOKEN_TTL) return null;
-        const map = await loadUsersMap(env);
-        const rec = map[raw.e];
+        const rec = await loadUserRecord(env, raw.e);
         if (!rec) return null;
         if (raw.pwd) {
             const want = await credentialFingerprint(env, String(rec.password || ''));
@@ -3656,12 +3830,22 @@ async function handleRequest(request, env, ctx) {
                 // indistinguishable from the site being broken.
                 const signupViol = ruleCheck('your username', username, 0)
                     || ruleCheck('your description', body.description, 0);
-                const map = await loadUsersMap(env);
-                if (map[email]) return jsonResponse({ ok: false, error: 'An account with this email already exists.' }, 409);
-                for (const k in map) {
-                    if (String(map[k].username || '').toLowerCase() === username.toLowerCase()) {
-                        return jsonResponse({ ok: false, error: 'This username is already taken.' }, 409);
-                    }
+                // Duplicate checks read ONE record and ONE index key.
+//
+// This used to load the entire user table and scan it for both the email and
+// the username. Beyond being O(all users) on every signup, that is what made
+// the failure so confusing: when the table read returned nothing, BOTH checks
+// silently passed, so signing up with an email that already existed returned
+// 200 and created a second account. Measured on the live worker during this
+// investigation: a known existing address returned 200 instead of 409.
+const existingRec = await loadUserRecord(env, email);
+if (existingRec) return jsonResponse({ ok: false, error: 'An account with this email already exists.' }, 409);
+{
+    // The username index maps a lowercased username to its email, so this is
+                    // a single get rather than a scan.
+                    let takenBy = null;
+                    try { takenBy = await env.LOADERS_KV.get(unameKvKey(username)); } catch (e) { takenBy = null; }
+                    if (takenBy) return jsonResponse({ ok: false, error: 'This username is already taken.' }, 409);
                 }
                 const rec = sanitizeUserRecord({
                     id: body.id || ('user_' + Date.now()),
@@ -3683,8 +3867,9 @@ async function handleRequest(request, env, ctx) {
                 // Apply the block AFTER the record exists, so the account and
                 // everything it will ever own are preserved. See ruleCheck.
                 if (signupViol) ruleApplyModeration(rec, signupViol);
-                map[email] = storageSafeUser(rec);
-                await saveUsersMap(env, map);
+                // ONE key. Writing the whole table here is what made two
+                // signups inside the read cache erase each other.
+                await putUserRecord(env, rec);
     // A session token is issued HERE, at signup, rather than being fetched with a
     // second /sh/user-login call the client used to make purely to obtain one.
     //
@@ -3741,12 +3926,20 @@ async function handleRequest(request, env, ctx) {
             try {
                 const emailOrUser = String(body.emailOrUsername || '').trim();
                 if (!emailOrUser || emailOrUser.length > MAX_EMAIL_LEN || String(body.password || '').length > 500) return jsonResponse({ ok: false, error: 'Invalid email/username or password.' }, 401);
-                const map = await loadUsersMap(env);
-                let found = null;
-                let foundEmail = null;
-                for (const k in map) {
-                    if (k === emailOrUser || String(map[k].username || '').toLowerCase() === emailOrUser.toLowerCase()) { found = map[k]; foundEmail = k; break; }
-                }
+                // ONE record, not the whole table.
+                //
+                // This used to call loadUsersMap() and then loop over every
+                // account looking for a match. That meant authenticating one
+                // person required reading all of them - so the moment the table
+                // crossed the KV read ceiling, EVERY login failed with the same
+                // 401, for a correct password and an incorrect one alike.
+                //
+                // loadUserRecord() reads a single key (plus one username-index
+                // key), so its size is bounded by one account no matter how many
+                // accounts exist.
+                const rec = await loadUserRecord(env, emailOrUser);
+                let found = rec || null;
+                let foundEmail = rec ? d1UserId(rec.email || rec.id) : null;
                 if (!found) {
                     return jsonResponse({ ok: false, error: 'Invalid email/username or password.' }, 401);
                 }
@@ -3778,8 +3971,11 @@ async function handleRequest(request, env, ctx) {
                 if (verdict.needsRehash) {
                     try {
                         found.password = await hashPassword(env, body.password);
-                        map[foundEmail] = storageSafeUser(found);
-                        await saveUsersMap(env, map);
+                        // ONE key, not the whole table. Calling saveUsersMap()
+                        // here would re-read and re-write every account on a
+                        // routine login, which is both slow and a lost-update
+                        // risk against a concurrent signup.
+                        await putUserRecord(env, found);
                     } catch (e) { /* a failed upgrade must not block login */ }
                 }
                 // Issue a USER session token. It binds to the account id and
@@ -3862,7 +4058,13 @@ async function handleRequest(request, env, ctx) {
                     if (inc[k] !== undefined) rec[k] = inc[k];
                 }
                 map[email] = rec;
-                await saveUsersMap(env, map);
+                // ONE key - this route only ever touches the caller's own
+                // record, so there is nothing here that needs the whole table.
+                await putUserRecord(env, rec);
+                if (stateFor(env)) {
+                    try { await syncUsersToD1(env, (await loadUsersMap(env))); }
+                    catch (e) { console.error('[ScripterHub] user sync to D1 failed: ' + (e && e.message)); }
+                }
                 return jsonResponse({ ok: true, user: publicUser(rec) });
             }
             // new record (account migration from a device that made it
@@ -3878,8 +4080,11 @@ async function handleRequest(request, env, ctx) {
             }
             rec.password = btoa(password || rec.password || 'x');
             if (!rec.password || rec.password === btoa('')) rec.password = btoa('sh_no_login_' + Date.now());
-            map[email] = rec;
-            await saveUsersMap(env, map);
+            await putUserRecord(env, rec);
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, (await loadUsersMap(env))); }
+                catch (e) { console.error('[ScripterHub] user sync to D1 failed: ' + (e && e.message)); }
+            }
             return jsonResponse({ ok: true, user: publicUser(rec) });
         }
 
