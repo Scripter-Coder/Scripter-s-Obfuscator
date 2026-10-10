@@ -372,16 +372,26 @@ async function shMintUserToken(emailOrUsername, rawPassword) {
 // It is kept because a legacy account on a device that already holds the record
 // genuinely has no other way in, and because returning null is now a truthful
 // answer that the caller reports, rather than a silent undefined.
+// Why the last shEnsureUserToken() gave up, so the caller can name WHICH reason
+// applied instead of reporting one generic failure.
+//
+// "Could not sign in to the loadstring service" is what you get for an expired
+// token, a rejected password, a rate limit and a missing local record alike -
+// and only one of those is fixed by signing in again.
+var shEnsureUserTokenReason = '';
 async function shEnsureUserToken() {
     var existing = shGetUserToken();
     if (existing) return existing;
-    if (!currentUser) return null;
+    if (!currentUser) { shEnsureUserTokenReason = 'no account is signed in on this device'; return null; }
     var u = users[currentUser.email];
-    if (!u || !u.password) return null;
+    if (!u || !u.password) { shEnsureUserTokenReason = 'this device holds no stored password for ' + currentUser.email + ' - sign in again'; return null; }
     try {
         var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: u.password });
-        if (d && d.ok && d.token) return shSaveUserToken(d.token);
-    } catch (e) {}
+        if (d && d.ok && d.token) { shEnsureUserTokenReason = ''; return shSaveUserToken(d.token); }
+        shEnsureUserTokenReason = 'the server refused the sign-in'
+            + (d && d.status ? ' (HTTP ' + d.status + ')' : '')
+            + ((d && d.error) ? ': ' + d.error : '');
+    } catch (e) { shEnsureUserTokenReason = 'could not reach the sign-in service (' + ((e && e.message) || e) + ')'; }
     return null;
 }
 
@@ -423,7 +433,7 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
                     // network, it was a device with no session token (see
                     // shApi), and no amount of reconnecting fixes that. Name the
                     // actual remedy instead.
-                    return { ok: false, error: 'This browser has no session for your account. Sign out and sign in again on THIS device, then retry.' };
+                    return { ok: false, error: 'This browser has no session for your account' + (shEnsureUserTokenReason ? ' (' + shEnsureUserTokenReason + ')' : '') + '. Sign out and sign in again on THIS device, then retry.' };
                 }
                 const ok = await shLoginRaw();
                 if (!ok) return { ok: false, error: 'login failed (could not sign in - re-login on the website and try again)' };
@@ -2961,20 +2971,40 @@ function handleSignup(event) {
                 + 'devices until it syncs. Retrying automatically in a few seconds - if it still fails, '
                 + 'check your connection and sign in again.', 'warning', 12000);
     }
+    // ONE in-flight signup, shared by every caller.
+    //
+    // This used to fire twice within a few milliseconds: once fire-and-forget
+    // here, and again further down to mint the session token. The worker refuses
+    // a duplicate email with 409 "An account with this email already exists.", so
+    // the SECOND call - the one whose response decides whether the token is saved
+    // - always came back not-ok, and reportMirrorFailure() then told the user
+    // "Saved on this device only ... will not appear on your other devices" about
+    // an account that had just been created on the server.
+    //
+    // Deduplicating fixes the false alarm and the wasted round trip. The promise
+    // is cleared once it settles, so the retry below is still a real retry.
+    var cloudPush = null;
     function pushToCloud() {
-        return shApi('sh/user-signup', mirrorPayload).then(function(d) {
+        if (cloudPush) return cloudPush;
+        cloudPush = shApi('sh/user-signup', mirrorPayload).then(function (d) {
     // The RESPONSE is returned, not just a verdict. /sh/user-signup issues a
     // session token, and the caller needs it - fetching one separately costs a
     // second PBKDF2 over the same password.
     if (d && d.ok) return d;
             reportMirrorFailure((d && d.error) || 'the server did not confirm it');
-        }).catch(function(e) {
+            return null;
+        }).catch(function (e) {
             reportMirrorFailure('could not reach the server (' + ((e && e.message) || e) + ')');
+            return null;
+        }).then(function (r) {
+            cloudPush = null;
+            return r;
         });
+        return cloudPush;
     }
-    pushToCloud();
     // One automatic retry, because a transient failure is the common case and a
-    // silent half-created account is not a helpful outcome.
+    // silent half-created account is not a helpful outcome. cloudPush has settled
+    // by now, so this is a genuine new attempt rather than a duplicate.
     setTimeout(function() {
         if (!users[email] || !users[email].notOnCloud) return;
         pushToCloud();

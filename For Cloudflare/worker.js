@@ -1293,7 +1293,21 @@ async function loadUsersMap(env) {
     if (!env.LOADERS_KV) return {};
     let map = {};
     try {
-        const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+        // cacheTtl: 0 - NO local cache, read the authoritative copy.
+        //
+        // The whole user table is ONE KV value, and every mutation is a full
+        // read-modify-write. A plain get() is served from the isolate's in-memory
+        // cache for 60s by default, so two writes inside that window both read the
+        // SAME stale snapshot and the second silently discards whatever the first
+        // added.
+        //
+        // That is exactly the reported symptom: an account created on a phone
+        // never appeared in "Refresh from Cloud" on the PC, with no error
+        // anywhere - the write reported success, it just wrote back a snapshot
+        // taken before that account existed. Freshness costs a few ms on a route
+        // that is already an interactive admin call; losing an account costs the
+        // signup.
+        const raw = await env.LOADERS_KV.get(USERS_KV_KEY, { cacheTtl: 0 });
         map = raw ? JSON.parse(raw) : {};
     } catch (e) { map = {}; }
     // Reconcile into D1 so the gate's live account check has rows to read.
