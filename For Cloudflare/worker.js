@@ -1293,21 +1293,19 @@ async function loadUsersMap(env) {
     if (!env.LOADERS_KV) return {};
     let map = {};
     try {
-        // cacheTtl: 0 - NO local cache, read the authoritative copy.
+        // KV's get() enforces a 60-SECOND MINIMUM cacheTtl, so passing 0 is invalid:
+        // it throws, the catch below turns that into an EMPTY map, and then every
+        // signup writes back a table containing only itself.
         //
-        // The whole user table is ONE KV value, and every mutation is a full
-        // read-modify-write. A plain get() is served from the isolate's in-memory
-        // cache for 60s by default, so two writes inside that window both read the
-        // SAME stale snapshot and the second silently discards whatever the first
-        // added.
+        // Measured on the live worker after deploying that change: /sh/health
+        // reported the count climbing (66 -> 78, because syncUsersToD1 only ever
+        // inserts) while EVERY login returned 401 "Invalid email/username or
+        // password", because the read side was seeing an empty user table.
         //
-        // That is exactly the reported symptom: an account created on a phone
-        // never appeared in "Refresh from Cloud" on the PC, with no error
-        // anywhere - the write reported success, it just wrote back a snapshot
-        // taken before that account existed. Freshness costs a few ms on a route
-        // that is already an interactive admin call; losing an account costs the
-        // signup.
-        const raw = await env.LOADERS_KV.get(USERS_KV_KEY, { cacheTtl: 0 });
+        // So: plain get(), default 60s cache. The staleness is real and is worth
+        // fixing, but it has to be fixed by not using ONE KV blob as the user
+        // database - not by making the read throw.
+        const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
         map = raw ? JSON.parse(raw) : {};
     } catch (e) { map = {}; }
     // Reconcile into D1 so the gate's live account check has rows to read.
