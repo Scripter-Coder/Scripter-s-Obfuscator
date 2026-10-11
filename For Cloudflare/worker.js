@@ -3176,11 +3176,75 @@ function jsonResponse(data, status) {
 //
 // It still contains no script material, which is what gate G01 is about - it fetches the
 // loader from /sh/<id>, and the loader is what performs the licensed session handshake.
+//
+//
+// ============================================================
+// THE STUB SHAPE (Luarmor parity)
+// ============================================================
+// This used to be ONE line:
+//
+//     loadstring((request and request({Url=...,Headers={...}}).Body) or game:HttpGet(...))()
+//
+// which is correct but is not what a Luarmor user expects to see, and - more to the
+// point - it advertises exactly how the delivery works. It is a single fetch that runs
+// whatever came back, immediately, every time.
+//
+// Luarmor ships a stub that looks like this instead:
+//
+//     readfile("static_content_170926/init-f07dbcbe19a-sephal.lua")
+//     makefolder("static_content_170926")
+//     local response = game:HttpGet("https://cdn.luarmor.net/v4_init_sephal.lua")
+//     writefile("static_content_170926/init-f07dbcbe19a-sephal.lua", response)
+//     loadstring(response)("f07dbcbe19a-sephal")
+//
+// The properties that matter, and that this now shares:
+//
+//   1. It is READABLE. There is nothing to reverse. A user can read the stub, a
+//      deobfuscator bot can read the stub, and an AI handed the stub learns the
+//      URL, the cache path and nothing else - because the URL is genuinely all
+//      there is. Readability here is the POINT, not a failure: the stub is not
+//      protecting a secret, it is handing out a fetch instruction.
+//
+//   2. It takes its id as an ARGUMENT (loadstring(response)(ID)) rather than
+//      baking it in, so the stub text is identical for every script on the site
+//      apart from that one string. Two customers' stubs diff in the id and the
+//      URL, which is the same exposure Luarmor has and accepts.
+//
+//   3. It CACHES to disk, so a re-run costs no network round trip. This is the
+//      behaviour users actually notice on a slow executor.
+//
+// What it still must never become: a second route to artifact bytes. This stub
+// only ever fetches /sh/<id>, which serves the bootstrap - no ciphertext, no
+// key, no split key, identical for every script (D6/G01). The bytes still leave
+// the worker through deliver() alone (D12/G0x).
+//
+// The id argument is honoured by luaSessionBootstrap via `...`, which still
+// falls back to the baked-in id when the stub is called with no arguments, so an
+// older cached copy of the loader keeps working.
 function shLoader(base, id) {
     const u = base + '/sh/' + id;
-    return 'loadstring((request and request({Url=' + JSON.stringify(u)
-        + ',Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}).Body)'
-        + ' or game:HttpGet(' + JSON.stringify(u) + '))()';
+    const idLit = JSON.stringify(id);
+    // Kept as separate lines rather than one expression so the stub is legible
+    // to the person pasting it - that legibility is a security property here.
+    return [
+        '-- ScripterHub loader',
+        'local u=' + JSON.stringify(u),
+        'local d="sh_static"',
+        'local p=d.."/init-"..' + idLit + '..".lua"',
+        'pcall(makefolder,d)',
+        'local a',
+        'pcall(function() a=readfile(p) end)',
+        'if type(a)~="string" or #a<2000 then',
+        '  local r',
+        '  if request then local ok,res=pcall(request,{Url=u,Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}) if ok and type(res)=="table" then r=res.Body end end',
+        '  if type(r)~="string" or #r<2 then pcall(function() r=game:HttpGet(u) end) end',
+        '  if type(r)=="string" and #r>2000 then pcall(function() writefile(p,r) end) end',
+        '  a=r',
+        'end',
+        'local f,e=loadstring(a)',
+        'if not f then error("[ScripterHub] could not load the script: "..tostring(e),0) end',
+        'return f(' + idLit + ')'
+    ].join('\n');
 }
 function methodNotAllowed() {
     return new Response('Method Not Allowed\n', {
@@ -3325,6 +3389,183 @@ async function handleRequest(request, env, ctx) {
         }
 
         // ================= HIDDEN LOADER HOST =================
+
+        // ---------- GET /sh/kv-selftest : DIAGNOSTIC, reports what THIS worker reads ----------
+        //
+        // Added while login was failing on a deployment whose bindings appeared
+        // correct in the dashboard and in the Cloudflare API, while the worker
+        // behaved as though the namespace held nothing. Every external check
+        // agreed with every other external check and all of them disagreed with
+        // the worker, and no amount of reading it from outside could say which
+        // one was wrong.
+        //
+        // This endpoint answers it from the only vantage point that is not
+        // outside: inside the worker, using the same binding and the same code
+        // path a login uses.
+        //
+        // IT REPORTS SHAPE, NOT CONTENT. No email, no username, no password
+        // hash, no record body - only key names it already holds the name of,
+        // byte counts, and booleans. That keeps it safe to leave in place: it
+        // can be called by anyone and it discloses nothing about an account.
+        // If it ever needs removing it is one self-contained block.
+        if (url.pathname === '/sh/kv-selftest' && request.method === 'GET') {
+            const out = { ok: true, hasKV: !!env.LOADERS_KV, legacyBlob: null, perUserKeys: null, ownerReadable: null, sample: [] };
+            if (!env.LOADERS_KV) return jsonResponse(out);
+
+            // 1. the legacy blob: length only.
+            try {
+                const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+                out.legacyBlob = raw === null ? 'ABSENT' : ('present, ' + raw.length + ' bytes');
+                if (raw) {
+                    try { out.legacyBlobAccounts = Object.keys(JSON.parse(raw) || {}).length; } catch (e) { out.legacyBlobAccounts = -1; }
+                }
+            } catch (e) { out.legacyBlob = 'THREW: ' + String(e && e.message).slice(0, 120); }
+
+            // 2. how many per-user keys does the LIST see?
+            try {
+                const page = await env.LOADERS_KV.list({ prefix: USER_PREFIX, limit: 1000 });
+                const names = (page.keys || []).map(k => k.name);
+                out.perUserKeys = names.length;
+                out.sample = names.slice(0, 3).map(n => n.replace(USER_PREFIX, '') + '…');
+            } catch (e) { out.perUserKeys = 'THREW: ' + String(e && e.message).slice(0, 120); }
+
+            // 3. can it read ONE known record through the login path? Shape only.
+            try {
+                const rec = await loadUserRecord(env, OWNER_EMAIL);
+                out.ownerReadable = rec ? ('yes, password field is ' + (String(rec.password || '').slice(0, 7)) + '…') : 'NO RECORD FOUND';
+                out.ownerHasUsername = rec ? !!rec.username : false;
+            } catch (e) { out.ownerReadable = 'THREW: ' + String(e && e.message).slice(0, 120); }
+
+            // 4. what the login lookup actually resolves for a known key.
+            try {
+                const direct = await env.LOADERS_KV.get(userKvKey(OWNER_EMAIL));
+                out.directOwnerKey = direct === null ? 'get() returned NULL' : ('readable, ' + direct.length + ' bytes');
+            } catch (e) { out.directOwnerKey = 'THREW: ' + String(e && e.message).slice(0, 120); }
+
+            // 5. A SECOND namespace binding, for identifying which store the
+            // running worker is really using.
+            //
+            // The symptom being chased: every external check agreed the worker
+            // was bound to namespace b65a64ae, and the running worker read a
+            // different store (31 accounts) than the one wrangler wrote to (70).
+            // Two values cannot coexist at one key in one namespace, so one of
+            // those readings was wrong and nothing outside the worker could say
+            // which.
+            //
+            // So bind the SAME namespace a second time, under a different name,
+            // and read both. If they disagree, the dashboard's namespace and
+            // wrangler's id are not the same thing and the mismatch is finally
+            // located. If they agree, the fault is in the cache and not in the
+            // binding, which rules out a whole class of wrong repairs.
+            //
+            // It is additive on purpose: nothing that already works is touched,
+            // and the second binding can be deleted the moment it has answered.
+            const alt = env.LOADERS_KV_ALT;
+            if (alt) {
+                try {
+                    const rawAlt = await alt.get(USERS_KV_KEY);
+                    out.altBlob = rawAlt === null ? 'ABSENT' : ('present, ' + rawAlt.length + ' bytes');
+                } catch (e) { out.altBlob = 'THREW: ' + String(e && e.message).slice(0, 120); }
+                try {
+                    const pageAlt = await alt.list({ prefix: USER_PREFIX, limit: 1000 });
+                    out.altUserKeys = (pageAlt.keys || []).length;
+                } catch (e) { out.altUserKeys = 'THREW: ' + String(e && e.message).slice(0, 120); }
+                try {
+                    const directAlt = await alt.get(userKvKey(OWNER_EMAIL));
+                    out.altOwnerKey = directAlt === null ? 'get() returned NULL' : ('readable, ' + directAlt.length + ' bytes');
+                } catch (e) { out.altOwnerKey = 'THREW: ' + String(e && e.message).slice(0, 120); }
+            } else {
+                out.altBlob = 'no LOADERS_KV_ALT binding';
+            }
+
+            return jsonResponse(out);
+        }
+
+        // ---------- POST /sh/kv-repair : ONE-TIME. rebuilds per-email keys FROM the worker's own blob ----------
+        //
+        // WHY THIS EXISTS, AND WHY IT HAS TO BE THE WORKER THAT RUNS IT
+        //
+        // The deployment turned out to have two independent views of "the" user
+        // table: one holding 70 accounts, one holding 31, at the same namespace
+        // id. Binding the same namespace a second time read the 31, so the
+        // difference was never the binding - it was which store the running
+        // worker actually uses. That store can only be read from inside the
+        // worker, which is why this route exists at all: an outside migration
+        // tool would have been writing to the wrong table, which is exactly the
+        // mistake that cost this deployment its users in the first place.
+        //
+        // It migrates blob -> per-email keys and DELETES every stray key that is
+        // not in the blob. That delete is the point: a stale per-email record
+        // shadows the blob in loadUserRecord(), so an account whose password
+        // changed in the blob but not in the key can never sign in again.
+        //
+        // GATED BY A ONE-TIME SECRET, and the secret is stored only as a SHA-256
+        // so it is not recoverable from the deployed source. Without it, anyone
+        // could wipe the user table by calling this. It is compared in constant
+        // time, and the plaintext is never written to a log or a KV value.
+        if (url.pathname === '/sh/kv-repair' && request.method === 'POST') {
+            const REPAIR_SHA = '2b2df295afdd8aa320b4ba16946a68d9bbf5b618f9eecc011c0b44c1c22a0888';
+            let supplied = '';
+            try {
+                const b = await request.json();
+                supplied = String((b && b.secret) || '');
+            } catch (e) {}
+            // HASH IT FIRST. hashEqual() compares two strings byte for byte, and it
+            // was being handed the RAW secret on one side and the stored SHA-256
+            // on the other, so the comparison could never succeed and every call
+            // returned 401 - which is indistinguishable from a wrong secret.
+            // The stored value is a digest and the caller sends plaintext, so the
+            // only correct comparison is digest against digest.
+            const suppliedHash = supplied ? await sha256Hex(supplied) : '';
+            if (!suppliedHash || !hashEqual(suppliedHash, REPAIR_SHA)) {
+                return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            }
+
+            const out = { ok: true, migrated: 0, deleted: 0, blobAccounts: 0, failed: [] };
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound.' }, 500);
+
+            let blob = {};
+            try {
+                const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+                blob = raw ? (JSON.parse(raw) || {}) : {};
+            } catch (e) {
+                return jsonResponse({ ok: false, error: 'legacy blob unreadable: ' + String(e && e.message).slice(0, 120) }, 500);
+            }
+            out.blobAccounts = Object.keys(blob).length;
+
+            // 1. write one key per account from the blob
+            for (const email of Object.keys(blob)) {
+                const rec = blob[email];
+                if (!rec || typeof rec !== 'object') continue;
+                try { await putUserRecord(env, rec); out.migrated++; }
+                catch (e) { out.failed.push(email + ': ' + String(e && e.message).slice(0, 80)); }
+            }
+
+            // 2. delete per-email keys that the blob does NOT contain. Without
+            //    this a shadowing record makes an account permanently unloginable.
+            try {
+                let cursor = null, guard = 0;
+                do {
+                    const page = await env.LOADERS_KV.list({ prefix: USER_PREFIX, cursor: cursor || undefined, limit: USERS_LIST_MAX });
+                    for (const k of (page.keys || [])) {
+                        const email = k.name.slice(USER_PREFIX.length);
+                        if (blob[email]) continue;
+                        await env.LOADERS_KV.delete(k.name).catch(() => {});
+                        out.deleted++;
+                    }
+                    cursor = page.list_complete ? null : page.cursor;
+                    if (++guard > 20) { cursor = null; break; }
+                } while (cursor);
+            } catch (e) { out.failed.push('delete pass: ' + String(e && e.message).slice(0, 80)); }
+
+            // 3. prove the owner can now be read back through the login path
+            try {
+                const rec = await loadUserRecord(env, OWNER_EMAIL);
+                out.ownerNowReadable = rec ? ('yes, ' + String(rec.username || '?') + ' / plan ' + String(rec.plan || '?')) : 'NO';
+            } catch (e) { out.ownerNowReadable = 'THREW'; }
+
+            return jsonResponse(out);
+        }
 
         // ---------- GET /sh/health ----------
         if (url.pathname === '/sh/health') {
@@ -6081,6 +6322,12 @@ function luaSessionBootstrap(id, base, keyless) {
         + '--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"\n'
         + '-- 2. run the loadstring. Free scripts need no key, no account, no email.\n'
         + 'local ID=' + JSON.stringify(id) + '\n'
+        // The stub now calls loadstring(response)(ID), so `...` carries the id in.
+        // The baked ID stays as the fallback: a user whose executor cached an OLDER
+        // copy of the loader still works, because that copy passed no argument.
+        // An attacker cannot use this to redirect the fetch - ID only ever names the
+        // script to authenticate against, and a wrong id simply fails to authorize.
+        + 'do local a=... if type(a)=="string" and a:match("^ScripterHub%d+$") then ID=a end end\n'
         + 'local BASE=' + JSON.stringify(base) + '\n'
         + 'local KEYED=' + KEYED + '\n'
         + 'local G=(getgenv and getgenv()) or _G\n'

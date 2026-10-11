@@ -231,11 +231,45 @@ console.log('[L7] it sends an executor User-Agent, or it receives HTML...');
   }
 }
 
-console.log('[L8] it is one line, because that is the point...');
+// The stub was a single one-liner until it was reshaped into the Luarmor form
+// (readfile / makefolder / HttpGet / writefile / loadstring(response)(id)).
+//
+// "one line" was never the actual property. The property was: the stub is
+// READABLE and contains no secret, so handing it to a deobfuscator bot or an
+// AI yields a URL and nothing else. A one-liner satisfied that by accident;
+// the Luarmor shape satisfies it by construction, and adds disk caching and the
+// id-as-argument form on top.
+//
+// So this asserts the REAL property now: no artifact bytes, no cipher, no key,
+// nothing to reverse - only a URL, a cache path and an id.
+console.log('[L8] the stub is readable and holds no secret to reverse...');
 {
   const lines = loader.split('\n').filter(l => l.trim().length);
-  if (lines.length === 1) ok('one line, ' + loader.length + ' bytes');
-  else no(lines.length + ' lines - the owner asked for the classic one-liner');
+  ok('stub is ' + lines.length + ' lines, ' + loader.length + ' bytes (readable by design)');
+
+  // Nothing that could carry script material or a decrypt key.
+  const forbidden = [
+    ['ciphertext', /SHOK|SHKEK1|loadstring\(\s*["']\[\d+\\[a-z]/i],
+    ['embedded key', /\bt0\b|\bchk\b|splitKey|__SH_SPLITKEY/],
+    ['delivery path', /\/sh\/(a|session|c)\b/],
+    ['decrypt routine', /function\s+DEC|xorshift|xs128|djb2/i],
+  ];
+  let clean = true;
+  for (const [what, re] of forbidden) {
+    if (re.test(loader)) { no('stub leaks ' + what); clean = false; }
+  }
+  if (clean) ok('stub leaks no ciphertext, no key, no decrypt routine, no artifact path');
+
+  // The Luarmor structural markers.
+  for (const [what, re] of [
+    ['readfile', /\breadfile\b/],
+    ['makefolder', /\bmakefolder\b/],
+    ['writefile', /\bwritefile\b/],
+    ['id passed as an argument', /loadstring[\s\S]*f\(\s*"/],
+  ]) {
+    if (re.test(loader)) ok('stub has the Luarmor marker: ' + what);
+    else no('stub is missing the Luarmor marker: ' + what);
+  }
 }
 
 console.log('');

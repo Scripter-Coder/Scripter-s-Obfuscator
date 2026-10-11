@@ -736,3 +736,57 @@ Unchanged: D6, D12, D16. The delivery chain was already correct - a BOM only
 ever affected what the chain was allowed to carry.
 
 ---
+
+## D25 - The loader stub is readable ON PURPOSE (Luarmor parity)
+
+`shLoader()` returned a single line:
+
+    loadstring((request and request({Url=...,Headers={...}}).Body) or game:HttpGet(...))()
+
+That worked, and it was the wrong shape. It advertises the delivery mechanism
+in a form that invites the question "what does this fetch?", and it re-fetches
+on every run.
+
+The stub is now the Luarmor shape - readfile / makefolder / HttpGet / writefile /
+loadstring(response)(id) - with two transports, a disk cache, and a loud error
+instead of a silent nil. 17 lines, ~783 bytes, plain text.
+
+The reasoning, which is the opposite of the usual instinct:
+
+**Making the stub unreadable protects nothing.** The artifact is not in the
+stub. The URL is public and permanent (D6) and cannot change. Obfuscating the
+stub only raises the cost of reading a URL a scraper can just fetch.
+
+**Making the stub maximally readable IS the security property.** A bot or an AI
+handed this text writes down a URL and stops - there is no reversing work to do,
+because there is nothing hidden. That is exactly what the Luarmor stub
+accomplishes, and it is why that stub is not obfuscated either.
+
+Properties this now shares with Luarmor:
+
+1. Readable, with no secret in it. Legibility is the property, not a failure.
+2. The id is passed as an ARGUMENT rather than baked in, so the stub text is
+   identical across every script apart from the id and the URL. LP4 asserts
+   that two scripts differ in nothing else.
+3. Caches to disk, so a re-run costs no round trip.
+
+`luaSessionBootstrap` now reads `...` for the id and KEEPS the baked-in value as
+the fallback, so an executor that cached an older one-liner keeps working. The
+argument is pattern-matched to ^ScripterHub%d+$ before use, and `...` reaches
+neither BASE nor any fetch - it can only name a script, so it is not an SSRF
+primitive. LP6 executes that guard in a real Lua VM against a URL, a traversal
+string, a number, an empty string and trailing junk, and confirms each one falls
+back to the baked id.
+
+Unchanged and deliberately so: the stub still only ever fetches /sh/<id>, which
+serves the bootstrap containing no ciphertext, no key and no split key
+(D6/G01). The bytes still leave the worker through deliver() alone (D12).
+Readability did not become a second route to the artifact.
+
+tools/luarmor_parity_test.mjs (26 checks, npm run test:luarmor) locks this down.
+
+The old "must be one line" assertion in loader_exec_test.mjs was REPLACED, not
+deleted: "one line" was never the property, "carries no secret" was - and that is
+now asserted directly against the stub.
+
+---
