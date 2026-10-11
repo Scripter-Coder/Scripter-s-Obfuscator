@@ -36,6 +36,7 @@
                     "test:singlefile":  "node tools/single_file_worker_test.mjs",
                     "test:bootstrap":  "node tools/bootstrap_exec_test.mjs",
                     "test:loader":  "node tools/loader_exec_test.mjs",
+                    "test:owneridentity":  "node tools/owner_identity_test.mjs",
                     "test:luarmor":  "node tools/luarmor_parity_test.mjs",
                     "test:ids":  "node tools/script_id_test.mjs",
                     "test:keyless":  "node tools/keyless_artifact_test.mjs \u0026\u0026 node tools/keyless_decision_test.mjs \u0026\u0026 node tools/keyless_wiring_test.mjs",

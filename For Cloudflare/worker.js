@@ -1292,18 +1292,51 @@ function unameKvKey(username) {
 // The legacy blob is consulted ONLY when the per-user key is absent, which is
 // the state of a deployment that predates this change. The first successful
 // login promotes the record and every later read is a single key.
+// OWNER FIX: a record may name its owner with `id` instead of `email`.
+//
+// The symptom was the owner being unable to change a plan: a signed-in owner,
+// holding a valid token, got 401 from /sh/users and the dashboard said "sign in
+// as the owner account on THIS tab". The token was never the problem.
+//
+// verifyUserToken() returned the record fine, and the gate then compared
+// `u.email` against OWNER_EMAIL. A record stored with `id` and no `email` has
+// no such field, so the comparison was "" === "dubovikstanislav51@gmail.com",
+// i.e. false, and a legitimately signed-in owner was refused.
+//
+// This is the pre-migration shape, and /sh/kv-repair exists precisely because it
+// is in the wild. It was invisible because the same wrong assumption is repeated
+// at three sites (the gate, plus the two role derivations), so patching any one
+// of them would have left the owner half-recognised elsewhere.
+//
+// Normalised HERE instead, at the single point every caller reads through:
+// loadUserRecord is what verifyUserToken returns, so one fix covers all three
+// comparisons, and any future caller. `email` is filled from `id` when missing;
+// an existing `email` is never overwritten, so this cannot re-point a record
+// that already resolves correctly.
+//
+// This grants nothing. The identity is still proven by the token signature and
+// the password/fingerprint re-check in verifyUserToken, and this only stops the
+// record's own field name from hiding an identity that was already proven.
+function normalizeUserIdentity(rec) {
+    if (!rec || typeof rec !== 'object') return rec;
+    if (rec.email) return rec;
+    const id = String(rec.id || '').trim();
+    if (!id) return rec;
+    return { ...rec, email: id };
+}
+
 async function loadUserRecord(env, emailOrUsername) {
     if (!env.LOADERS_KV) return null;
     const want = String(emailOrUsername || '').trim();
     if (!want) return null;
     try {
         const byEmail = await env.LOADERS_KV.get(userKvKey(want));
-        if (byEmail) return JSON.parse(byEmail);
+        if (byEmail) return normalizeUserIdentity(JSON.parse(byEmail));
         // Username sign-in. The index maps a lowercased username to its email.
         const un = await env.LOADERS_KV.get(unameKvKey(want));
         if (un) {
             const viaName = await env.LOADERS_KV.get(userKvKey(un));
-            if (viaName) return JSON.parse(viaName);
+            if (viaName) return normalizeUserIdentity(JSON.parse(viaName));
         }
     } catch (e) {
         console.error('[ScripterHub] loadUserRecord failed: ' + (e && e.message));
@@ -1318,7 +1351,7 @@ async function loadUserRecord(env, emailOrUsername) {
         if (raw) {
             const m = JSON.parse(raw) || {};
             const hit = m[want] || m[want.toLowerCase()] || null;
-            if (hit) return hit;
+            if (hit) return normalizeUserIdentity(hit);
         }
     } catch (e) {
         console.error('[ScripterHub] legacy users blob unreadable: ' + (e && e.message));
