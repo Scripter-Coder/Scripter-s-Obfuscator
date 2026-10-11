@@ -5652,6 +5652,17 @@ function shBytecodeVMNote() {
     if (info && box) info.style.display = box.checked ? "none" : "block";
 }
 
+// Surfaced when applyCustomObfuscator could not run the bytecode VM and fell
+// back to the lite tier. That tier still encrypts, but it is NOT virtualised,
+// so the protection is materially weaker and the customer must be told rather
+// than discovering it after publishing.
+function shShowVMFallbackNotice(reason) {
+    var msg = 'Bytecode VM did not run, so this build ships the weaker lite tier ' +
+        '(not virtualised - static deobfuscation is far easier).\n\nReason: ' + String(reason || 'unknown');
+    if (window.shToast) { try { window.shToast(msg, 'error'); return; } catch (e) { /* fall through */ } }
+    try { window.alert(msg); } catch (e) { /* ignore */ }
+}
+
 function obfuscateScriptCode(code, engine, options) {
     return new Promise(function(resolve, reject) {
         try {
@@ -5714,6 +5725,13 @@ function obfuscateScriptCode(code, engine, options) {
                 // is only about what the client generates.
                 var withServerKey = Object.assign({}, options, shServerKeyOpts(options.keyless, wantId));
                 var out = applyCustomObfuscator(code, withServerKey, dbgInfo);
+                // If the bytecode VM declined the source we shipped the weaker
+                // lite tier. Tell the customer rather than letting it pass as
+                // a normal build - otherwise a protection failure is invisible
+                // and looks exactly like a successful one.
+                if (dbgInfo.vmFallback) {
+                    try { shShowVMFallbackNotice(dbgInfo.vmFallback); } catch (e) { /* non-fatal */ }
+                }
                 if (dbgInfo.splitKey && dbgInfo.splitKey.paddedKey) {
                     resolve({ code: out, splitKey: dbgInfo.splitKey, wantId: wantId });
                 } else {

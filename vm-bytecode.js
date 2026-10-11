@@ -252,10 +252,45 @@ function functionNameForNode(fnNode, slot) {
 }
 
 // ============================================================
+// SOURCE NORMALIZATION
+// ============================================================
+// A UTF-8 BOM (U+FEFF) at the head of the source makes luaparse 0.3.1 die
+// inside its own lexer with a misleading "Cannot read properties of
+// undefined (reading 'range')" - it is not a syntax error in the user's
+// script, it is a byte-order mark sitting in front of it.
+//
+// The consequence was severe and completely silent: applyBytecodeVm caught
+// the throw, returned null, and custom-obfuscator.js fell back to the lite
+// tier. The customer received a ~33 KB artifact whose payload is their
+// source behind a static key schedule, instead of the ~355 KB real VM.
+// That fallback artifact is recoverable in a single static pass - it is
+// the exact "hand the obfuscated source to a deobfuscator bot" outcome
+// this whole system exists to prevent.
+//
+// Every Windows text editor (Notepad, VS Code, many IDEs) writes a BOM, and
+// customers paste scripts into the site by copy-paste, so this was not an
+// edge case - it silently disarmed the VM for a large share of real
+// uploads.
+//
+// Stripping here rather than at the call site fixes it for EVERY consumer
+// of this module (cli.mjs, main.js and the tools/ harnesses all route
+// through compile()), so a future caller cannot reintroduce it.
+export function normalizeSourceText(src) {
+    var s = String(src == null ? '' : src);
+    // UTF-8 BOM, and the UTF-16 BOMs a script may arrive with after a
+    // decode/encode round-trip through the browser textarea.
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    if (s.charCodeAt(0) === 0xFFFE) s = s.slice(1);
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    return s;
+}
+
+// ============================================================
 // COMPILER
 // ============================================================
 function compile(src, opts) {
     opts = opts || {};
+    src = normalizeSourceText(src);
     var optsSeed = opts.seedOverride;
     var requestedTarget = String(opts.target || 'lua51').toLowerCase();
     var targetMod = getTarget(requestedTarget);

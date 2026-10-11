@@ -1,4 +1,4 @@
-﻿# Architecture decisions
+# Architecture decisions
 
 Record of decisions that were open, and why they were settled. Anything here
 that later turns out to be wrong should be changed here first, with a reason.
@@ -696,3 +696,43 @@ never once been executed.
 
 ---
 
+
+## D24 - A protection failure must never be silent
+
+`applyBytecodeVm` returns `null` (rather than throwing) for any unsupported
+construct, so the tier below it in `custom-obfuscator.js` used to degrade to
+the lite pass with no signal at all.
+
+A UTF-8 BOM at the head of a customer script was the trigger. luaparse 0.3.1
+dies inside its own lexer on the BOM with a misleading `Cannot read properties
+of undefined (reading 'range')` - which reads like a syntax error in the
+customer's code, but is not. The result was that the customer received a
+~33 KB artifact whose payload is their own source behind a static key
+schedule, instead of the ~355 KB real VM. That fallback artifact is
+recoverable in a single static pass: it is exactly the "paste the obfuscated
+source into a deobfuscator bot" outcome this system exists to prevent.
+
+Scripts arrive by copy-paste and every Windows text editor writes a BOM, so
+this was not an edge case. Nothing caught it because every fixture in the
+repo was written without a BOM.
+
+Three changes, in order of importance:
+
+1. `normalizeSourceText()` in `vm-bytecode.js` strips the BOM inside
+   `compile()`, so every consumer benefits and no future caller can
+   reintroduce it at a different entry point.
+2. The VM tier now captures WHY it declined. `debugInfo.vmFallback` carries
+   the reason, the console warns, and `main.js` tells the customer their
+   build is not VM-protected. A protection failure that looks exactly like a
+   successful build is worse than a visible failure.
+3. `strictVm: true` refuses the degraded build instead of shipping it, for
+   callers that would rather fail loudly.
+
+`tools/bom_vm_regression_test.mjs` locks all three in place. It also asserts
+its own fixture is valid Lua before testing anything, because an invalid
+fixture produces a fallback that is indistinguishable from this bug.
+
+Unchanged: D6, D12, D16. The delivery chain was already correct - a BOM only
+ever affected what the chain was allowed to carry.
+
+---
