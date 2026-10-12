@@ -47,12 +47,137 @@ ROUTE_STATS = re.compile(r"^/v1/admin/stats$")
 ROUTE_OBJECTS = re.compile(r"^/v1/admin/objects$")
 ROUTE_SWEEP = re.compile(r"^/v1/admin/sweep$")
 ROUTE_HEALTH = re.compile(r"^/v1/health$")
+# Host-side obfuscation. NEW. The browser cannot compile a large script - a
+# 6000-line Lua file expands ~195x and a tab runs out of heap long before it
+# finishes - so the compile is done on the owner's machine, where it is Node
+# with a full heap, and the browser only ships the source and renders the result.
+ROUTE_OBFUSCATE = re.compile(r"^/v1/obfuscate$")
+ROUTE_OBFUSCATE_HEALTH = re.compile(r"^/v1/obfuscate/health$")
+
+# CORS. ADDED, and its absence is why this never worked from another device.
+#
+# The service bound to 127.0.0.1 and sent exactly one header
+# (X-Content-Type-Options). A browser on the SAME machine is exempt from CORS,
+# so it worked from there and looked healthy. Any other device's browser makes
+# a cross-origin request, the preflight comes back without
+# Access-Control-Allow-Origin, and the browser drops the request before it is
+# ever sent - which presents as "it just doesn't work from other devices" with
+# nothing in the console of the service to explain it.
+#
+# The tunnel makes this necessary rather than merely tidy: a trycloudflare
+# hostname is a different ORIGIN from the site, so every call is cross-origin.
+#
+# The credentials question is answered by NOT using cookies. A request with
+# credentials "include" plus a wildcard origin is rejected by browsers anyway,
+# and this service authenticates with a bearer token rather than a session, so
+# Access-Control-Allow-Credentials stays false and the wildcard is valid.
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Max-Age": "600",
+    "Vary": "Origin",
+}
+
+# Bound on a single obfuscation request. The point of hosting is to escape the
+# browser's limits, not to remove all limits: this is an unauthenticated-ish
+# public endpoint that will compile anything, so it is capped and serialised.
+MAX_OBFUSCATE_BYTES = 8 * 1024 * 1024      # 8 MB of Lua source
+OBFUSCATE_TIMEOUT_SEC = 900                # 15 min; 1.5 MB measured at 243 s
 
 # The single refusal body. One string, for every way a script can be unavailable.
 NOT_FOUND = GONE_BODY
 
 GENERIC_ERROR = b"SHERR internal"
 UNAUTHORIZED = b"unauthorized"
+
+# ---- host-side obfuscation helpers -----------------------------------------
+#
+# One compile at a time, process-wide. See _serve_obfuscate for why.
+_obfuscate_slots = threading.Lock()
+
+_APP_DIR = Path(__file__).resolve().parent.parent      # the "Storage Keeper" dir
+_HOST_SCRIPT = _APP_DIR / "host_obfuscate.mjs"
+
+
+def _find_node() -> Optional[str]:
+    """Locate the node executable, or None.
+
+    shutil.which first because PATH is the normal case; the extra names are
+    there because a Windows install is often not on the PATH of whatever
+    account runs the scheduled task.
+    """
+    import shutil
+    found = shutil.which("node")
+    if found:
+        return found
+    for name in ("node.exe", "node"):
+        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+            if not base:
+                continue
+            candidate = Path(base) / "nodejs" / name
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def _run_node_obfuscate(node_exe: str, code: str, options: dict) -> Optional[bytes]:
+    """Run the compile in a child Node process and return its JSON reply.
+
+    A child process rather than an in-process call for three reasons: a
+    multi-hundred-MB compile must not be able to take the storage service down
+    with it, the timeout has to be real (a thread cannot be cancelled), and the
+    obfuscator's own global state cannot leak into a later request.
+    """
+    import subprocess
+
+    if not _HOST_SCRIPT.exists():
+        log.error("obfuscate: %s is missing", _HOST_SCRIPT.name)
+        return None
+
+    payload = json.dumps({"code": code, "options": options}).encode("utf-8")
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            [node_exe, str(_HOST_SCRIPT)],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=OBFUSCATE_TIMEOUT_SEC,
+            cwd=str(_APP_DIR.parent),
+        )
+    except subprocess.TimeoutExpired:
+        log.error("obfuscate: compile exceeded %ds", OBFUSCATE_TIMEOUT_SEC)
+        return None
+    except Exception as exc:
+        log.error("obfuscate: could not start node: %s", exc)
+        return None
+
+    took = time.time() - started
+    out = (proc.stdout or b"").strip()
+    if not out:
+        log.error("obfuscate: node produced no output (%s)",
+                  (proc.stderr or b"")[:300])
+        return None
+
+    # One JSON object on one line. A trailing line means the script logged
+    # something; taking the LAST complete line is what the contract says the
+    # answer is, so a stray warning cannot be mistaken for a result.
+    last = out.splitlines()[-1]
+    try:
+        parsed = json.loads(last)
+    except Exception:
+        log.error("obfuscate: node output was not JSON")
+        return None
+
+    if not parsed.get("ok"):
+        log.warning("obfuscate: compile failed after %.1fs: %s", took,
+                    str(parsed.get("error"))[:200])
+    else:
+        size_mb = len(str(parsed.get("code") or "")) / (1024 * 1024)
+        log.info("obfuscate: compiled %.1f KB -> %.1f MB in %.1fs",
+                 len(code) / 1024, size_mb, took)
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -83,11 +208,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        # On EVERY response, including the error ones. A CORS failure is reported
+        # by the browser as an opaque network error, so a refusal that omitted
+        # these headers would be indistinguishable in the browser from a refusal
+        # that had been delivered - and the client could never tell why.
+        for k, v in CORS_HEADERS.items():
+            self.send_header(k, v)
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD" and body:
             self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        # The preflight. Without this the browser refuses the real request
+        # before it is sent, which is why this service looked broken from every
+        # browser except the one on the same machine.
+        self.send_response(HTTPStatus.NO_CONTENT)
+        for k, v in CORS_HEADERS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _fail(self, status: HTTPStatus, body: bytes) -> None:
         self._send(status, body)
@@ -108,8 +249,67 @@ class Handler(BaseHTTPRequestHandler):
     def _require_auth(self) -> bool:
         if self._authorized():
             return True
+        # Drain first, THEN refuse.
+        #
+        # Answering while the client is still uploading leaves unread bytes in
+        # the socket. The client is mid-write when the response lands, so it
+        # reads a body that does not match Content-Length and reports
+        # ERR_CONTENT_LENGTH_MISMATCH - an error that looks like a transport
+        # fault rather than the 401 it actually got. That is worse than slow:
+        # the caller cannot tell a credential problem from a dead network.
+        #
+        # The drain is bounded, so this cannot be used to make the service read
+        # an unbounded body on behalf of a caller with no token.
+        self._drain_body()
         self._fail(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED)
         return False
+
+    def _drain_body(self, limit: int = MAX_OBFUSCATE_BYTES) -> None:
+        """Read and discard whatever the client is still sending.
+
+        Bounded on purpose. An unauthenticated caller must not be able to make
+        the service hold an arbitrary amount of data in memory.
+        """
+        encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        try:
+            if "chunked" in encoding:
+                while True:
+                    line = self.rfile.readline(1 << 16)
+                    if not line:
+                        break
+                    head = line.split(b";", 1)[0].strip()
+                    try:
+                        size = int(head, 16)
+                    except ValueError:
+                        break
+                    if size == 0:
+                        break
+                    remaining = size
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(remaining, 1 << 16))
+                        if not chunk:
+                            return
+                        remaining -= len(chunk)
+                return
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None:
+                return
+            try:
+                declared = int(raw_len)
+            except ValueError:
+                return
+            if declared < 0 or declared > limit:
+                # Too big to drain. Say so rather than pretending the request
+                # was fully handled.
+                return
+            remaining = declared
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 1 << 16))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+        except Exception:
+            return
 
     def _kind_from(self, query: str) -> Optional[str]:
         """Resolve the ?kind= parameter, or None if it is not a kind this service stores.
@@ -262,6 +462,12 @@ class Handler(BaseHTTPRequestHandler):
         if ROUTE_HEALTH.match(parsed.path):
             self._send(HTTPStatus.OK, b'{"ok":true}')
             return
+        # Same reasoning for the compile-ready probe: it answers "can the host
+        # take this job", which is safe to ask and needed BEFORE sending work,
+        # so the client can say "waiting for host" rather than hanging.
+        if ROUTE_OBFUSCATE_HEALTH.match(parsed.path):
+            self._serve_obfuscate_health()
+            return
         if not self._require_auth():
             return
         meta = ROUTE_META.match(parsed.path)
@@ -309,15 +515,101 @@ class Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, json.dumps({"removed": removed}).encode(), "application/json")
 
     def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        # Obfuscation is checked BEFORE the blanket auth requirement so it can
+        # answer /health without a token: the client polls that to decide
+        # whether to say "waiting for host" or "host refused the credential",
+        # and those are different problems needing different fixes.
+        if ROUTE_OBFUSCATE_HEALTH.match(parsed.path):
+            self._serve_obfuscate_health()
+            return
+        if ROUTE_OBFUSCATE.match(parsed.path):
+            if not self._require_auth():
+                return
+            self._serve_obfuscate()
+            return
         if not self._require_auth():
             return
-        parsed = urlparse(self.path)
         if ROUTE_SWEEP.match(parsed.path):
             report = self.store.sweep()
             log.info("sweep: %s", report)
             self._send(HTTPStatus.OK, json.dumps(report).encode(), "application/json")
             return
         self._fail(HTTPStatus.NOT_FOUND, NOT_FOUND)
+
+    # -- host-side obfuscation ------------------------------------------------
+    def _serve_obfuscate_health(self) -> None:
+        """Report whether a compile could run right now.
+
+        Deliberately unauthenticated and deliberately dull: no paths, no Node
+        version, no queue depth. It answers one question - is the host ready -
+        and that question is safe to let anyone ask.
+        """
+        report = {
+            "ok": True,
+            "node": bool(_find_node()),
+            "busy": _obfuscate_slots.locked(),
+            "maxSourceBytes": MAX_OBFUSCATE_BYTES,
+        }
+        self._send(HTTPStatus.OK, json.dumps(report).encode(), "application/json")
+
+    def _serve_obfuscate(self) -> None:
+        """Compile Lua on this machine and return the artifact.
+
+        The whole point: a browser tab cannot do this. A 6000-line script
+        expands ~195x, and the tab dies before the compile finishes.
+
+        Serialised behind a single lock. Two concurrent multi-hundred-MB
+        compiles would exhaust the machine's memory, and this endpoint is
+        reachable by anyone who learns the tunnel URL, so the bound is a
+        availability guard rather than a nicety.
+        """
+        raw = self._read_body(MAX_OBFUSCATE_BYTES)
+        if raw is None:
+            return  # _read_body already answered
+
+        try:
+            req = json.loads(raw.decode("utf-8"))
+        except Exception:
+            log.warning("obfuscate: body was not JSON")
+            self._fail(HTTPStatus.BAD_REQUEST, GENERIC_ERROR)
+            return
+
+        code = str((req or {}).get("code") or "")
+        options = (req or {}).get("options") or {}
+        if not isinstance(options, dict):
+            options = {}
+        if not code:
+            self._fail(HTTPStatus.BAD_REQUEST, GENERIC_ERROR)
+            return
+
+        node_exe = _find_node()
+        if not node_exe:
+            # Not "gone": the host is up and refusing. The client must be able
+            # to tell this from a missing script.
+            log.warning("obfuscate: node was not found on PATH")
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE,
+                       b'{"ok":false,"error":"host has no node on PATH"}')
+            return
+
+        if not _obfuscate_slots.acquire(blocking=False):
+            # 429, not a queue. A queued multi-minute compile would blow
+            # through every browser and proxy timeout between here and the
+            # client, so the caller is told to retry rather than left hanging.
+            self._send(HTTPStatus.TOO_MANY_REQUESTS,
+                       b'{"ok":false,"error":"host is already compiling"}',
+                       "application/json")
+            return
+
+        try:
+            result = _run_node_obfuscate(node_exe, code, options)
+        finally:
+            _obfuscate_slots.release()
+
+        if result is None:
+            self._fail(HTTPStatus.INTERNAL_SERVER_ERROR, GENERIC_ERROR)
+            return
+        self._send(HTTPStatus.OK, result, "application/json")
 
     # -- handlers ----------------------------------------------------------
     def _serve_object(self, script_id: str, query: str) -> None:
