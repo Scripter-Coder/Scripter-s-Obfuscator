@@ -22,7 +22,36 @@
 
 import { applyCustomObfuscator } from '../custom-obfuscator.js';
 import { vmBCSetLuaparse } from '../vm-bytecode.js';
-import * as luaparse from 'luaparse';
+
+// luaparse, WITHOUT a bare specifier.
+//
+// This line was `import * as luaparse from 'luaparse'`, which works in the Vite
+// bundle and fails everywhere else with:
+//
+//   TypeError: Failed to resolve module specifier "luaparse".
+//   Relative references must start with either "/", "./", or "../".
+//
+// The deployed site is not the bundle: GitHub Pages serves index.html, which
+// loads `./main.js` as a raw ES module, so every import is resolved by the
+// BROWSER and there is no bundler to expand a bare specifier. The page itself
+// never noticed, because index.html loads luaparse with a classic
+// <script src="public/vendor/luaparse.js"> tag, which attaches
+// window.luaparse - a global a Worker does not have, and which this bug
+// therefore hid: the main thread was fine while the worker never constructed.
+//
+// importScripts is NOT an option here: this worker is created with
+// {type:'module'}, and importScripts is unavailable in a module worker. The
+// vendored build is UMD, so under a side-effect ESM import it finds neither
+// AMD nor CommonJS (`define`, `module` and `exports` are all absent in a
+// module) and falls through to its final branch, assigning itself onto
+// globalThis. That is the same code path the <script> tag takes.
+import '../public/vendor/luaparse.js';
+
+const luaparse = self.luaparse;
+
+if (!luaparse || typeof luaparse.parse !== 'function') {
+    throw new Error('luaparse did not attach to the worker global');
+}
 
 // The VM needs a parser; the main thread passes one in through the bundler.
 vmBCSetLuaparse(luaparse);
