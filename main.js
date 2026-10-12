@@ -4009,15 +4009,15 @@ function confirmOwnPlanChange() {
     //
     // confirmOwnPlanChange wrote to localStorage, painted the UI, and stopped.
     // The server never heard about it, so it still held the old plan - and any
-    // refresh, any sign-in sync, or any second open tab read that server copy
+    // refresh, any sign-in sync, or any open second tab read that server copy
     // and put the old plan back. It always reverted to Basic for the owner
     // because Basic is what the server actually had.
     //
     // confirmChangePlan(email) - the admin panel's version of this same action -
-    // has always pushed through shPushCloudUserUpdate. This is that identical
-    // call, with the result reported rather than fired and forgotten: a silent
-    // failure here is indistinguishable, from the user's side, from the bug
-    // that was just fixed.
+    // has always pushed through shPushCloudUserUpdate. This is the identical
+    // call, and it is awaited with the result reported rather than fired and
+    // forgotten: a silent failure here is indistinguishable, from the user's
+    // side, from the bug that was just fixed.
     var email = currentUser.email;
     var changed = null;
     for (var k2 in users) { if (users[k2].id === currentUser.id) { changed = users[k2]; break; } }
@@ -5756,21 +5756,189 @@ function obfuscateScriptCode(code, engine, options) {
                 // keyless script WITH a split key and asserts /sh/k still gates it. This
                 // is only about what the client generates.
                 var withServerKey = Object.assign({}, options, shServerKeyOpts(options.keyless, wantId));
-                var out = applyCustomObfuscator(code, withServerKey, dbgInfo);
-                // If the bytecode VM declined the source we shipped the weaker
-                // lite tier. Tell the customer rather than letting it pass as
-                // a normal build - otherwise a protection failure is invisible
-                // and looks exactly like a successful one.
-                if (dbgInfo.vmFallback) {
-                    try { shShowVMFallbackNotice(dbgInfo.vmFallback); } catch (e) { /* non-fatal */ }
-                }
-                if (dbgInfo.splitKey && dbgInfo.splitKey.paddedKey) {
-                    resolve({ code: out, splitKey: dbgInfo.splitKey, wantId: wantId });
-                } else {
-                    resolve(out);
-                }
+                // RUN IT IN A WORKER.
+                //
+                // This call is synchronous and CPU-bound: luaparse, the IR
+                // passes and the VM emitter, 10-30 seconds for a 6000-line
+                // script. On the main thread the browser cannot paint during any
+                // of it, so the page froze solid with no spinner and no way to
+                // tell it was still working - which reads as a crash, not as a
+                // slow compile.
+                //
+                // The worker runs the identical code off the UI thread. The page
+                // stays interactive, the progress panel below updates live, and
+                // a failure reports an actual error instead of a frozen tab.
+                shObfuscateInWorker(code, 'default', withServerKey).then(function (r) {
+                    var out = r.result;
+                    var dbg = r.dbgInfo || {};
+                    // If the bytecode VM declined the source we shipped the weaker
+                    // lite tier. Tell the customer rather than letting it pass as
+                    // a normal build - otherwise a protection failure is invisible
+                    // and looks exactly like a successful one.
+                    if (dbg.vmFallback) {
+                        try { shShowVMFallbackNotice(dbg.vmFallback); } catch (e) { /* non-fatal */ }
+                    }
+                    if (dbg.splitKey && dbg.splitKey.paddedKey) {
+                        resolve({ code: out, splitKey: dbg.splitKey, wantId: wantId });
+                    } else {
+                        resolve(out);
+                    }
+                }).catch(function (e) { reject(e); });
             }
         } catch (e) { reject(e); }
+    });
+}
+
+// ============ OBFUSCATION PROGRESS (non-blocking) ============
+//
+// Formats a duration the way the panel states it: "Will take around
+// 2 hours 30 seconds", "about 45 seconds", "1 minute 5 seconds".
+//
+// Only units that carry information are shown, and seconds are always shown
+// when they are under a minute, because "Will take around 0 minutes" is worse
+// than no estimate at all.
+function shFormatDuration(ms) {
+    var total = Math.max(0, Math.round(ms / 1000));
+    if (total < 1) return 'less than a second';
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    var parts = [];
+    if (h) parts.push(h + (h === 1 ? ' hour' : ' hours'));
+    if (m) parts.push(m + (m === 1 ? ' minute' : ' minutes'));
+    if (s && (!h || s)) parts.push(s + (s === 1 ? ' second' : ' seconds'));
+    if (!parts.length) return 'less than a minute';
+    return parts.join(' ');
+}
+
+// A single reusable overlay. Rebuilt in place so the page never reflows wildly
+// as the numbers tick.
+var shProgressEl = null;
+function shProgressEnsure(title) {
+    var el = document.getElementById('shObfsProgress');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'shObfsProgress';
+        el.style.cssText = [
+            'position:fixed', 'inset:0', 'z-index:99999',
+            'display:flex', 'alignItems:center', 'justifyContent:center',
+            'background:rgba(8,6,20,0.82)', 'backdropFilter:blur(3px)'
+        ].join(';');
+        el.innerHTML = '<div style="background:#141026;border:1px solid rgba(139,92,246,0.5);'
+            + 'border-radius:16px;padding:28px 34px;min-width:360px;max-width:520px;'
+            + 'box-shadow:0 20px 60px rgba(0,0,0,0.6);text-align:center;color:#fff">'
+            + '<div id="shObfsTitle" style="font-size:17px;font-weight:700;margin-bottom:14px"></div>'
+            + '<div style="height:8px;background:#241d44;border-radius:99px;overflow:hidden">'
+            + '<div id="shObfsBar" style="height:100%;width:0%;border-radius:99px;'
+            + 'background:linear-gradient(90deg,#8b5cf6,#22d3ee);transition:width .4s ease"></div></div>'
+            + '<div id="shObfsEta" style="margin-top:14px;font-size:13px;color:#c4b5fd;min-height:20px"></div>'
+            + '<div id="shObfsElapsed" style="margin-top:6px;font-size:12px;color:#8b86a8"></div>'
+            + '</div>';
+        document.body.appendChild(el);
+    }
+    document.getElementById('shObfsTitle').textContent = title || 'Obfuscating…';
+    return el;
+}
+function shProgressUpdate(etaMs, elapsedMs) {
+    var bar = document.getElementById('shObfsBar');
+    var eta = document.getElementById('shObfsEta');
+    var el = document.getElementById('shObfsElapsed');
+    if (!bar || !eta || !el) return;
+    // A bar that reaches 100% before the work is done is a lie, so it is
+    // capped just under full and only completes on the real 'done' message.
+    if (etaMs > 0) {
+        var pct = Math.max(3, Math.min(92, Math.round((elapsedMs / etaMs) * 100)));
+        bar.style.width = pct + '%';
+        eta.textContent = 'Will take around ' + shFormatDuration(Math.max(0, etaMs - elapsedMs));
+    } else {
+        bar.style.width = '8%';
+        eta.textContent = 'Working…';
+    }
+    el.textContent = 'Elapsed: ' + shFormatDuration(elapsedMs);
+}
+function shProgressDone() {
+    var bar = document.getElementById('shObfsBar');
+    if (bar) bar.style.width = '100%';
+}
+function shProgressHide() {
+    var el = document.getElementById('shObfsProgress');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+// Run applyCustomObfuscator in a Worker, showing live progress.
+//
+// The ETA is derived from INPUT SIZE, measured against real build timings from
+// this project's own benchmark (tools/bench/size-perf.mjs): roughly a linear
+// cost, ~1.0 s per 100 KB of source on the SECURE profile, plus a fixed ~1.5 s
+// overhead. It is an ESTIMATE and the UI says so. It is not a measurement of
+// the current run - that does not exist until the run finishes.
+function shObfuscateInWorker(code, engine, options) {
+    return new Promise(function (resolve, reject) {
+        var bytes = code.length;
+        var ETA = Math.round(1500 + (bytes / 100000) * 1000 * 1.0);
+
+        // A tiny script finishes faster than a progress panel can usefully
+        // render, and flashing an overlay for 200 ms is just a flicker.
+        if (bytes < 12000) {
+            try {
+                var dbg = {};
+                resolve({ result: applyCustomObfuscator(code, options, dbg), dbgInfo: dbg });
+            } catch (e) { reject(e); }
+            return;
+        }
+
+        var title = 'Obfuscating your script…';
+        try { shProgressUpdate(ETA, 0); } catch (e) { /* non-fatal */ }
+        shProgressEnsure(title);
+
+        var worker;
+        try {
+            worker = new Worker(new URL('./src/obfuscate.worker.js', import.meta.url), { type: 'module' });
+        } catch (e) {
+            // No Worker support (or a blocked blob): fall back to the old
+            // synchronous path rather than refusing to obfuscate at all. The
+            // page will freeze again, which is the old behaviour - honest
+            // degradation, not a new failure.
+            shProgressHide();
+            try {
+                var dbg2 = {};
+                resolve({ result: applyCustomObfuscator(code, options, dbg2), dbgInfo: dbg2 });
+            } catch (e2) { reject(e2); }
+            return;
+        }
+
+        var settled = false;
+        var t0 = Date.now();
+        var tick = setInterval(function () { shProgressUpdate(ETA, Date.now() - t0); }, 400);
+
+        function finish(fn, arg) {
+            if (settled) return;
+            settled = true;
+            clearInterval(tick);
+            try { worker.terminate(); } catch (e) { /* */ }
+            shProgressHide();
+            fn(arg);
+        }
+
+        worker.onmessage = function (e) {
+            var m = e.data || {};
+            if (m.type === 'progress') { shProgressUpdate(ETA, m.elapsedMs || (Date.now() - t0)); return; }
+            if (m.type === 'start') return;
+            if (m.type === 'done') {
+                shProgressDone();
+                var secs = shFormatDuration(m.elapsedMs || (Date.now() - t0));
+                showNotification('Script Created', 'Obfuscation finished in ' + secs + '.', 'success', 6000);
+                finish(resolve, { result: m.result, dbgInfo: m.dbgInfo, elapsedMs: m.elapsedMs });
+                return;
+            }
+            if (m.type === 'cancelled') { finish(reject, new Error('Cancelled.')); return; }
+            if (m.type === 'error') { finish(reject, new Error(m.error)); return; }
+        };
+        worker.onerror = function (err) {
+            finish(reject, new Error((err && err.message) ? err.message : 'worker failed'));
+        };
+
+        worker.postMessage({ type: 'obfuscate', code: code, engine: engine, options: options });
     });
 }
 

@@ -1423,7 +1423,53 @@ const MAX_CHUNKS = 20;              // 20 * ~25MB = ~50MB blob ceiling
 // what a user actually publishes. So the boundary is derived, not chosen twice: anything
 // that fits in one value can be delivered in one response, and anything larger is chunked
 // at upload and arrives as a chain. There is no third case to fall into.
+// RETAINED as the no-dead-zone floor: putBlob only starts chunking ABOVE
+// CHUNK_THRESHOLD, so delivery must inline at least up to here or a 3 MB
+// artifact would match neither path. Delivery now inlines up to
+// INLINE_DELIVERY_MAX below, which is SMALLER - see there for why.
 const INLINE_DELIVERY_LIMIT = CHUNK_THRESHOLD;
+
+// ---- INLINE DELIVERY IS CAPPED HARDER THAN STORAGE -----------------------
+//
+// INLINE_DELIVERY_LIMIT used to equal CHUNK_THRESHOLD (~25 MB), on the
+// reasoning that anything fitting in one KV value can be delivered in one
+// response. Storage reasoning, not delivery reasoning - and it was wrong in a
+// way only a large script exposes.
+//
+// A real script from this site came back at 18,607,247 bytes, delivered as a
+// single inline SHL response. That took 13.9 s to fetch from a workstation
+// with a fast connection. On an executor it does not survive:
+//
+//   * Cloudflare returns 524 (timeout) or 502 for a response that large,
+//     and the body arrives as an HTML error page;
+//   * the bootstrap's envelope check sees HTML and prints exactly:
+//
+//         [ScripterHub] Unrecognised delivery format.
+//
+//   * which names neither the size nor the timeout, so it reads as a corrupt
+//     script rather than an oversized response.
+//
+// That is the reported error, reproduced and explained. It is not a corrupted
+// artifact and not a bad loadstring - the artifact is fine, the CHANNEL is not.
+//
+// The chain path already exists and already works for this: SHG returns a
+// small header naming a grant, and the bootstrap fetches the parts separately.
+// It was simply never reached, because a sub-25 MB artifact took the inline
+// path instead.
+//
+// So the inline cap is now a DELIVERY limit, chosen from what a single HTTP
+// response can reliably carry, and deliberately far below the storage limit.
+//
+// 6 MB, not a round-looking number picked for looks: it keeps a normal inline
+// response to a few seconds on a mobile connection while leaving a 5x margin
+// under the size that was observed failing. Anything larger chains, and the
+// chain path is already tested end-to-end (chunked.test.mjs drives a 26 MB
+// keyed artifact through it).
+//
+// This is deliberately NOT CHUNK_THRESHOLD any more. Making the two equal was
+// correct for "never fall between the two paths" and wrong for "never send one
+// response too big to arrive" - and only the second one is a user-visible bug.
+const INLINE_DELIVERY_MAX = 6_000_000;
 
 // ---- user sync helpers ----
 //
@@ -5757,7 +5803,15 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // SMALL: everything in one response. This is the strong case:
                 // one atomic consume, one response, nothing left to fetch, and
                 // no way to come back for more.
-                if (!needsChain && inlineBlob && inlineBlob.length <= INLINE_DELIVERY_LIMIT) {
+                //
+                // The limit is INLINE_DELIVERY_MAX (~6 MB), NOT the storage
+                // threshold. An artifact under 25 MB used to be inlined, and a
+                // real one shipped at 18,607,247 bytes took 13.9 s to fetch from
+                // a workstation - which on an executor becomes a Cloudflare 524
+                // and an HTML body, which the bootstrap reports as
+                // "Unrecognised delivery format." So a large artifact now chains
+                // instead of riding one response. See INLINE_DELIVERY_MAX.
+                if (!needsChain && inlineBlob && inlineBlob.length <= INLINE_DELIVERY_MAX) {
                     const skRaw = await env.LOADERS_KV.get(KV_SKEY_PREFIX + id);
                     let sk = null;
                     if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
