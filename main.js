@@ -4003,6 +4003,38 @@ function confirmOwnPlanChange() {
         }
     }
     saveUsers();
+
+    // PUSH TO THE CLOUD. This was missing entirely, which is why the change
+    // looked like it worked and then undid itself.
+    //
+    // confirmOwnPlanChange wrote to localStorage, painted the UI, and stopped.
+    // The server never heard about it, so it still held the old plan - and any
+    // refresh, any sign-in sync, or any second open tab read that server copy
+    // and put the old plan back. It always reverted to Basic for the owner
+    // because Basic is what the server actually had.
+    //
+    // confirmChangePlan(email) - the admin panel's version of this same action -
+    // has always pushed through shPushCloudUserUpdate. This is that identical
+    // call, with the result reported rather than fired and forgotten: a silent
+    // failure here is indistinguishable, from the user's side, from the bug
+    // that was just fixed.
+    var email = currentUser.email;
+    var changed = null;
+    for (var k2 in users) { if (users[k2].id === currentUser.id) { changed = users[k2]; break; } }
+    var toSend = Object.assign({}, changed || currentUser);
+    delete toSend.password;
+    shPushCloudUserUpdate(email, toSend).then(function (d) {
+        if (d && d.ok) {
+            showNotification('Cloud Synced', 'Plan synced to the cloud ✓', 'success', 4000);
+        } else {
+            showNotification('Cloud Sync Failed',
+                (d && d.error) || 'Plan saved on this device only. Sign in as the owner and try again, or use the admin panel.',
+                'warning', 9000);
+        }
+    }).catch(function () {
+        showNotification('Cloud Sync Failed', 'Could not reach the server. Your plan was saved on this device only.', 'warning', 9000);
+    });
+
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Plan Updated', 'Your plan changed to ' + newPlan + '!', 'success');
