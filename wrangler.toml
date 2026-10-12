@@ -156,6 +156,21 @@ account_id = "569dfd1193e2a3561429007982b06acf"              # CHANGE ME
 # below, so do NOT read a clean dry-run as "KV is fine". Set the real id.
 [[kv_namespaces]]
 binding = "LOADERS_KV"
+# THE id IS REQUIRED, and its absence is not cosmetic.
+#
+# Without it, `wrangler deploy` has no namespace to bind and resolves the
+# binding from whatever the currently-deployed version happens to carry -
+# which is why the dashboard now says "Update your wrangler config file with
+# these changes to keep your local development environment in sync" and refuses
+# to save, because there is nothing local for it to sync TO.
+#
+# It also means a deploy from a clean machine can silently provision a NEW
+# empty namespace. Every account would then be invisible: the worker reads a
+# blank user table while the real data sits in the old namespace. That is a
+# worse failure than an error message, so the id is pinned here.
+#
+# This is the ID column from `wrangler kv namespace list`, NOT the title.
+id = "6473e0a2dcfc4dc5ab477512ce713a74"
 # MUST BE UNCOMMENTED. Get it from:
 #     wrangler kv namespace list
 #   (or dashboard -> Storage & Databases -> KV -> your namespace -> ID)
@@ -251,7 +266,7 @@ SH_SESSION_TTL_SECONDS = "45"         # primary request() path
 # A QUICK TUNNEL (cloudflared tunnel --url) gets a RANDOM address that CHANGES ON EVERY
 # RESTART. If you set one here, the next reboot makes every script fail at once while
 # your PC still looks healthy - update this value at the same time as you restart.
-SH_STORE_URL = "https://photographer-cause-prints-consumption.trycloudflare.com"
+SH_STORE_URL = "https://coast-stanley-herein-humidity.trycloudflare.com"
 
 # Your telemetry webhook. Set this HERE or in the dashboard — the dashboard is
 # usually easier, and a Text variable keeps the value visible so a typo is

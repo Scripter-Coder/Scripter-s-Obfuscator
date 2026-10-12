@@ -882,7 +882,12 @@ const DENY = {
     // a secret mismatch on the operator's side, not a missing script. It needs
     // its own code because "gone" sends the operator to hunt for a deleted or
     // expired script instead of at the one secret that is wrong.
-    STORAGE_AUTH: 'storageauth'
+    STORAGE_AUTH: 'storageauth',
+    // The artefact exists and was retrieved, but it is too big to deliver in
+    // one response AND it was stored whole, so there are no parts to chain.
+    // "gone" would be a lie: the script is right there, and the fix is to
+    // re-upload so it gets split.
+    TOO_BIG_WHOLE: 'toobig'
 };
 
 // ---------------------------------------------------------------------------
@@ -5900,6 +5905,38 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     });
                 }
 
+                // An OVER-CAP blob with no chain to serve is still deliverable
+                // INLINE, and this is the only place that can happen.
+                //
+                // Capping inline delivery at INLINE_DELIVERY_MAX created a dead
+                // zone for PC-stored scripts, which is the same mistake the
+                // chunking boundary warned about in the opposite direction:
+                //
+                //   needsChain = isGithub || isChunked || isKeeper
+                //   a PC-only script has none of those, so needsChain is false
+                //   18,592,590 > 6,000,000, so the inline branch above is skipped
+                //   needsChain is false, so the chain branch below is skipped too
+                //   -> refuse(NO_SCRIPT)
+                //
+                // Measured on a real deployment: the worker spent 11.7 s
+                // SUCCESSFULLY fetching all 18 MB from the keeper, and then
+                // reported "SHERR gone" - "this script does not exist" - for a
+                // script that exists, is stored, and was fully retrieved.
+                //
+                // The chain machinery only exists for artefacts that were
+                // SPLIT at upload time. A blob that arrived whole has no parts,
+                // so the only thing to do with it is send it - and a 19 MB
+                // response is exactly what INLINE_DELIVERY_MAX exists to
+                // prevent, so this case must fail LOUDLY and honestly rather
+                // than claim the script is gone.
+                if (!needsChain && inlineBlob && inlineBlob.length > INLINE_DELIVERY_MAX) {
+                    console.error('[ScripterHub] artefact for ' + id + ' is ' + inlineBlob.length
+                        + ' bytes, over the ' + INLINE_DELIVERY_MAX + ' byte inline cap, and it was'
+                        + ' stored whole (no parts to chain). It was NOT published in parts, so it'
+                        + ' cannot be delivered in parts either. Re-upload it so it is split.');
+                    return refuse('toobig');
+                }
+
                 // LARGE: open a forward-only chain and hand back a grant.
                 // The session is ALREADY spent (deliver() ran). The chain is a
                 // continuation of that one delivery, never an alternative.
@@ -6495,6 +6532,11 @@ function luaSessionBootstrap(id, base, keyless) {
         // secret. The user cannot fix it, but the operator reading the log or
         // asking the operator can.
         + ' if r=="storageauth" then return "The script is still stored, but the site cannot reach its storage. The owner needs to check the Storage Keeper is running and that SH_STORE_TOKEN matches it." end\n'
+        // NOT a missing script. It was found and downloaded; it is simply too
+        // large to send in one piece, and it was published whole so it cannot
+        // be sent in pieces either. Saying "gone" here sends the user looking
+        // for a deleted script instead of at the re-upload that fixes it.
+        + ' if r=="toobig" then return "This script is too large to load in one piece and was stored whole. The owner needs to re-upload it so it is split into parts." end\n'
         + ' if r=="invalid" then return "That license key is not valid." end\n'
         + ' if r=="expired" then return "That license has expired." end\n'
         + ' if r=="banned" then return "That license has been banned." end\n'
