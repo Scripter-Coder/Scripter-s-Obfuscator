@@ -877,7 +877,12 @@ const DENY = {
     NO_SESSION:  'nosession',   // sid unknown, spent, or revoked
     BAD_NONCE:   'nonce',       // nonce unknown, spent, or wrong session
     EXPIRED_SESSION: 'stale',
-    TOO_LARGE:   'toolarge'
+    TOO_LARGE:   'toolarge',
+    // The PC storage backend rejected our credential. The script EXISTS - it is
+    // a secret mismatch on the operator's side, not a missing script. It needs
+    // its own code because "gone" sends the operator to hunt for a deleted or
+    // expired script instead of at the one secret that is wrong.
+    STORAGE_AUTH: 'storageauth'
 };
 
 // ---------------------------------------------------------------------------
@@ -2838,12 +2843,41 @@ async function storeGet(env, id, kind) {
     if (!STORE_ID_RE.test(String(id))) return { value: null, unreachable: false };
     const out = await storeFetch(env, '/v1/objects/' + id + '?kind=' + encodeURIComponent(kind), { method: 'GET' });
     if (out.unreachable) return { value: null, unreachable: true };
-    if (!out.ok) return { value: null, unreachable: false };
+    // AN AUTH FAILURE IS NOT "THE SCRIPT IS ABSENT".
+    //
+    // This used to collapse every non-OK response into {value:null,
+    // unreachable:false}, and `unreachable:false` is read downstream as "the
+    // backend authoritatively says there is nothing here". So a 401 from the
+    // Storage Keeper - a wrong or stale SH_STORE_TOKEN - was reported to the
+    // user as:
+    //
+    //     [ScripterHub] Script cannot be loaded, doesnt exist or expired.
+    //
+    // which is a lie in a direction that costs hours: the script exists, the
+    // operator goes looking for a deleted or expired script instead of at the
+    // one secret that is wrong. Measured on a real deployment: the keeper held
+    // 18,592,590 bytes for the script and served them in 16.1 s, while the
+    // worker refused the same fetch as "gone" because its token did not match.
+    //
+    // So 401/403 now reports `authFailed`, which the delivery site treats as an
+    // outage (same fallback path as unreachable) AND logs loudly. The script is
+    // not lost, and the operator is pointed at the credential.
+    if (out.status === 401 || out.status === 403) {
+        console.error('[ScripterHub] storage keeper REJECTED our credential (HTTP ' + out.status
+            + ') for ' + kind + ' ' + id + ' - SH_STORE_TOKEN does not match the keeper. '
+            + 'The script still exists; this is a secret mismatch, not a missing script.');
+        return { value: null, unreachable: true, authFailed: true, status: out.status };
+    }
+    if (!out.ok) {
+        console.error('[ScripterHub] storage keeper answered HTTP ' + out.status
+            + ' for ' + kind + ' ' + id);
+        return { value: null, unreachable: false, status: out.status };
+    }
     try {
         return { value: new TextDecoder().decode(await out.res.arrayBuffer()), unreachable: false };
     } catch (e) {
         console.error('[ScripterHub] storage keeper returned an unreadable body');
-        return { value: null, unreachable: false };
+        return { value: null, unreachable: true };
     }
 }
 
@@ -5730,6 +5764,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const cmetaRaw = await env.LOADERS_KV.get(KV_CMETA_PREFIX + KV_PREFIX + id);
                 const isChunked = cmetaRaw !== null;
                 let inlineBlob = '';
+                // Set when the PC storage backend refused our credential, so the
+                // final refusal can say THAT instead of blaming the script.
+                let keeperAuthBroken = false;
                 if (!isGithub && !isChunked && !isKeeper) {
                     // TRY THE PC FIRST, THEN KV. Not one or the other.
                     //
@@ -5757,7 +5794,17 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                             // their script had expired when the owner's PC was simply off.
                             // Falling through to KV is safe and is what keeps the
                             // pre-migration catalogue alive while the tunnel is down.
-                            console.error('[ScripterHub] storage keeper unreachable; falling back to KV');
+                            //
+                            // A credential rejection lands here too, and it MUST:
+                            // falling back to KV keeps a token-mismatch outage from
+                            // taking every PC-hosted script offline, and the script is
+                            // still there - only our copy of it is unreachable.
+                            if (got.authFailed) {
+                                keeperAuthBroken = true;
+                            }
+                            console.error('[ScripterHub] storage keeper unavailable'
+                                + (got.authFailed ? ' (credential rejected)' : '')
+                                + '; falling back to KV');
                         } else if (got.value !== null) {
                             // The service is the authority on whether the bytes exist AND
                             // whether they have expired - it refuses to serve an expired
@@ -5889,6 +5936,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     });
                 }
 
+                // The script's RECORD exists (scriptAuthz passed to reach
+                // here) but no backend could produce its BYTES. When we know
+                // the PC storage backend rejected our credential, say so: the
+                // operator needs to fix a secret, and "gone" sends them to
+                // delete a perfectly good script instead.
+                if (keeperAuthBroken) return refuse('storageauth');
                 return refuse(DENY.NO_SCRIPT);
             }
         }
@@ -6437,6 +6490,11 @@ function luaSessionBootstrap(id, base, keyless) {
         // first version shipped exactly that and every case failed to compile.
         + ' if r=="hidden" then return "This script is private. Only the author can run it." end\n'
         + ' if r=="gone" then return "Script cannot be loaded, doesnt exist or expired." end\n'
+        // NOT a missing script. Saying so here cost real time: the script was on
+        // the operator's PC the whole time, and the fault was one mismatched
+        // secret. The user cannot fix it, but the operator reading the log or
+        // asking the operator can.
+        + ' if r=="storageauth" then return "The script is still stored, but the site cannot reach its storage. The owner needs to check the Storage Keeper is running and that SH_STORE_TOKEN matches it." end\n'
         + ' if r=="invalid" then return "That license key is not valid." end\n'
         + ' if r=="expired" then return "That license has expired." end\n'
         + ' if r=="banned" then return "That license has been banned." end\n'

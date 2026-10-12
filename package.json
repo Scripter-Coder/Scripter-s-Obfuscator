@@ -39,6 +39,7 @@
                     "test:owneridentity":  "node tools/owner_identity_test.mjs",
                     "test:bigdelivery":  "node tools/big_delivery_test.mjs",
                     "test:duration":  "node tools/duration_format_test.mjs",
+                    "test:progress":  "node tools/progress_panel_test.mjs",
                     "test:luarmor":  "node tools/luarmor_parity_test.mjs",
                     "test:ids":  "node tools/script_id_test.mjs",
                     "test:keyless":  "node tools/keyless_artifact_test.mjs \u0026\u0026 node tools/keyless_decision_test.mjs \u0026\u0026 node tools/keyless_wiring_test.mjs",

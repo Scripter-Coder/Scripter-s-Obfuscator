@@ -5843,6 +5843,16 @@ function shProgressUpdate(etaMs, elapsedMs) {
     var bar = document.getElementById('shObfsBar');
     var eta = document.getElementById('shObfsEta');
     var el = document.getElementById('shObfsElapsed');
+    // SELF-HEAL rather than return quietly.
+    //
+    // This used to `return` when the panel was absent, which is what hid the
+    // ordering bug above: the ETA was computed and then dropped on the floor,
+    // with no error and nothing to notice. Recreating the panel here means a
+    // missing element can never again silently swallow the estimate.
+    if (!bar || !eta || !el) { try { shProgressEnsure('Obfuscating your script…'); } catch (e) { return; } }
+    bar = document.getElementById('shObfsBar');
+    eta = document.getElementById('shObfsEta');
+    el = document.getElementById('shObfsElapsed');
     if (!bar || !eta || !el) return;
     // A bar that reaches 100% before the work is done is a lie, so it is
     // capped just under full and only completes on the real 'done' message.
@@ -5888,8 +5898,17 @@ function shObfuscateInWorker(code, engine, options) {
         }
 
         var title = 'Obfuscating your script…';
-        try { shProgressUpdate(ETA, 0); } catch (e) { /* non-fatal */ }
+        // CREATE THE PANEL FIRST, THEN FILL IT.
+        //
+        // These two calls were the other way round, so shProgressUpdate() ran
+        // while #shObfsEta did not exist yet: it wrote nothing, and the panel
+        // then appeared with an empty estimate line. That is exactly the
+        // symptom reported - the panel showed, a spinner or bar showed, and the
+        // "Will take around ..." line never did. shProgressUpdate() also
+        // returns silently when the elements are missing, so nothing failed
+        // loudly enough to notice.
         shProgressEnsure(title);
+        try { shProgressUpdate(ETA, 0); } catch (e) { /* non-fatal */ }
 
         var worker;
         try {
