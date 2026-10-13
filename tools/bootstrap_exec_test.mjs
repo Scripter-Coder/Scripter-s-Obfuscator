@@ -314,6 +314,12 @@ function runBootstrap(lua, opts) {
   // getgenv: ONE persistent table in the registry. Returning a fresh table per
   // call meant the payload wrote its marker somewhere unobservable, which
   // reported as an ambiguous "never ran".
+  // Hoisted so `probeKeys` can read the table back AFTER the bootstrap has run.
+  // The bootstrap writes __SH_SPLITKEY into genv, and loadstring is stubbed here
+  // (it captures the payload rather than executing it), so a probe payload can
+  // never observe it. Reading the registry entry is the only way to see what the
+  // Lua actually left behind.
+  let genvRef = null;
   if (opts.getgenv) {
     LUA.lua_newtable(state);
     for (const [k, v] of Object.entries(genv)) {
@@ -322,7 +328,7 @@ function runBootstrap(lua, opts) {
       LUA.lua_rawset(state, -3);
     }
     LUA.lua_pushvalue(state, -1);
-    const genvRef = AUX.luaL_ref(state, REG);
+    genvRef = AUX.luaL_ref(state, REG);
     setGlobal('getgenv', (s) => {
       LUA.lua_rawgeti(s, REG, genvRef);
       return 1;
@@ -423,6 +429,15 @@ function runBootstrap(lua, opts) {
       LUA.lua_pushstring(s, tls(err));
       return 2;
     }
+    // On success luaL_loadstring leaves the compiled function ON THE STACK.
+    // This stub used to return undefined here, which fengari reads as "zero
+    // return values" - so the function stayed on the stack unclaimed, the
+    // bootstrap's own pcall consumed it as stack junk, and the outer pcall
+    // ended on a corrupted stack. That surfaced as a userdata error with no
+    // message, which the old read-back rendered as null, i.e. as NO error at
+    // all. Four tests were passing only because their assertion chain fell
+    // through to a later check that happened to hold.
+    return 1;
   });
 
   const finish = (extra) => {
@@ -434,9 +449,26 @@ function runBootstrap(lua, opts) {
     return finish({ compileError: tjs(LUA.lua_tostring(state, -1)) });
   }
   if (LUA.lua_pcall(state, 0, 0, 0) !== 0) {
-    return finish({ runtimeError: tjs(LUA.lua_tostring(state, -1)) });
+    // A non-string error used to read back as null, which reported as
+    // "no runtime error" and silently fell through to the next assertion.
+    // That is how a failing case presented as a missing-value case.
+    const t = LUA.lua_type(state, -1);
+    let msg = LUA.lua_tostring(state, -1);
+    if (msg === null || msg === undefined) msg = '(non-string error, lua type ' + t + ')';
+    return finish({ runtimeError: tjs(msg) });
   }
-  return finish({});
+  // Read back whatever the Lua left in genv.
+  const probed = {};
+  if (opts.probeKeys && genvRef !== null) {
+    for (const k of opts.probeKeys) {
+      LUA.lua_rawgeti(state, REG, genvRef);
+      LUA.lua_pushstring(state, tls(k));
+      LUA.lua_rawget(state, -2);
+      probed[k] = LUA.lua_isnil(state, -1) ? null : tjs(LUA.lua_tostring(state, -1));
+      LUA.lua_pop(state, 2);
+    }
+  }
+  return finish({ probed });
 }
 
 // -----------------------------------------------------------------------------
@@ -747,6 +779,100 @@ console.log('[B11] a payload that will not compile says WHY, and how big...');
 }
 
 
+
+// -----------------------------------------------------------------------------
+console.log('[B11] SHX: a FREE script gets a server-only layer, and still needs no key...');
+// -----------------------------------------------------------------------------
+// WHY THIS CASE EXISTS
+//
+// Every build used to be keyless-or-split-key, and keyless meant NO split key
+// at all. The reasoning was "a free script has no licence to gate, so there is
+// nothing for a split key to protect" - which confuses the licence with the
+// last layer of the artifact. Without the split key the file is fully
+// self-contained, so a free script was a valid single-sample deobfuscation
+// target: paste the loadstring, take the artifact, work offline.
+//
+// SHX is the fix. It is SHL PLUS a key line, with the body still PLAIN LUA -
+// deliberately not spelled SHK, because SHK means "ciphertext follows" and a
+// keyless bootstrap never runs DEC (there is no Special Key), so it would hand
+// raw key numbers to the parser as line 1.
+//
+// The load-bearing assertion is that the SPLIT KEY REACHES THE ARTIFACT. A
+// substring check on the worker cannot show that; only executing the Lua can.
+{
+  const KEYLINE = '1790442165935 4242 ' + [11, 22, 33, 44, 55, 66, 77, 88].join(' ');
+  const PROBE = 'local _shxProbe = 1\n';
+
+  const body = 'SHX\n' + KEYLINE + '\n' + PROBE;   // EXACTLY the worker's format
+  const r = runBootstrap(factory(ID, BASE, true), {
+    request: (url) => url.includes('/sh/session') ? 'SHS sid123 nonce456 1700000000' : body,
+    getgenv: true, identifyexecutor: true,
+    probeKeys: ['__SH_SPLITKEY']
+  });
+  const problems = [];
+  if (r.compileError) problems.push('compile error: ' + r.compileError);
+  else if (r.runtimeError) problems.push('runtime error: ' + r.runtimeError);
+  else if (r.delivered.length !== 1) problems.push('loadstring called ' + r.delivered.length + ' times');
+  // THE POINT. The payload handed to loadstring must be EXACTLY the code. If the
+  // key line were left attached the parser would receive raw key numbers as
+  // line 1 - the exact failure this envelope exists to avoid.
+  else if (r.delivered[0] !== PROBE) {
+    problems.push('loadstring got ' + JSON.stringify(r.delivered[0].slice(0, 60))
+      + ' - the key line was not stripped as a header');
+  } else if (/1790442165935/.test(r.delivered[0])) {
+    problems.push('the key line leaked into the payload');
+  }
+  if (problems.length) { no('SHX delivery: ' + problems.join('; ')); }
+  else ok('SHX strips the key line and hands loadstring exactly the payload');
+
+  // The key must reach the artifact, or the envelope buys nothing. Observed
+  // directly: read the global back out of the Lua state after the run.
+  const got = r.probed && r.probed.__SH_SPLITKEY;
+  if (!got) no('__SH_SPLITKEY is EMPTY - the free script is still fully self-contained');
+  else if (got !== KEYLINE) no('__SH_SPLITKEY did not carry the key line. got: ' + JSON.stringify(got));
+  else ok('the server-held key line reached the artifact through genv');
+
+  const gen = factory(ID, BASE, true);
+  if (gen.includes('"SHX\\n"')) ok('the keyless bootstrap understands the SHX envelope');
+  else no('no SHX branch in the keyless bootstrap - an SHX delivery would read "Unrecognised delivery format"');
+}
+
+// -----------------------------------------------------------------------------
+console.log('[B12] SHL still works, so scripts published before SHX keep running...');
+// -----------------------------------------------------------------------------
+{
+  // A script stored with no split key in KV still gets SHL. If the new branch
+  // had REPLACED SHL rather than sat beside it, every already-published free
+  // script would break on the next fetch.
+  const body = 'SHL\n-- OLD FREE PAYLOAD\n';
+  const r = runBootstrap(factory(ID, BASE, true), {
+    bare: true, identifyexecutor: true,
+    request: (url) => url.includes('/sh/session') ? 'SHS sid123 nonce456 1700000000' : body
+  });
+  if (r.runtimeError) no('runtime error: ' + r.runtimeError);
+  else if (r.delivered.length === 1 && r.delivered[0].includes('OLD FREE PAYLOAD'))
+    ok('SHL still delivers the payload verbatim for scripts with no split key');
+  else no('SHL regressed - an already-published free script would break. delivered: ' + JSON.stringify(r.delivered));
+}
+
+// -----------------------------------------------------------------------------
+console.log('[B13] a malformed SHX reports, it never indexes nil...');
+// -----------------------------------------------------------------------------
+{
+  const bodies = ['SHX\n', 'SHX\nonly-a-key-line'];
+  const bad = [];
+  for (const body of bodies) {
+    const r = runBootstrap(factory(ID, BASE, true), {
+      bare: true, identifyexecutor: true,
+      request: (url) => url.includes('/sh/session') ? 'SHS sid123 nonce456 1700000000' : body
+    });
+    const said = (r.printed || []).concat(r.notifications || []).join(' | ');
+    if (r.runtimeError) bad.push(JSON.stringify(body) + ' -> crashed: ' + r.runtimeError);
+    else if (/Unrecognised delivery format/.test(said)) bad.push(JSON.stringify(body) + ' -> fell through to the unknown-format branch');
+  }
+  if (!bad.length) ok(bodies.length + ' malformed SHX envelopes report cleanly instead of crashing');
+  else { no(bad.length + ' malformed SHX envelope(s) mishandled:'); for (const b of bad) console.log('         ' + b); }
+}
 
 console.log('='.repeat(72));
 console.log('BOOTSTRAP EXECUTION   ' + pass + ' passed, ' + fail + ' failed');

@@ -137,12 +137,20 @@ if (/shServerKeyOpts\(\s*options\.keyless\s*,/.test(src)) {
   no('the split-key decision no longer reads options.keyless');
 }
 
-// and record the sharp edge, so a reader knows why every site matters
+// The sharp edge is gone, and it is worth asserting rather than noting.
+//
+// shServerKeyOpts used to begin `if (keyless) return {}` - which meant a
+// MISSING keyless property was treated as PAID, and more importantly that a
+// free script shipped with no server-only layer at all. Every build now gets a
+// split key, so there is no branch here to get wrong and no call site that can
+// silently opt a script back into being self-contained.
 if (/function shServerKeyOpts\(keyless, wantId\) \{\s*if \(keyless\) return \{\};/.test(src)) {
-  console.log('  note: shServerKeyOpts treats a MISSING keyless as PAID, so an absent');
-  console.log('        property silently ships a paid artifact for a free script.');
+  no('shServerKeyOpts still withholds the split key from keyless builds - a free script would ship self-contained');
+} else if (/function shServerKeyOpts\([^)]*\) \{\s*return \{ serverKey:/.test(src)) {
+  console.log('  ok   shServerKeyOpts always returns a serverKey - no free script can be self-contained');
+  pass++;
 } else {
-  no('shServerKeyOpts no longer has the expected shape');
+  no('shServerKeyOpts has an unexpected shape; re-check it still returns a serverKey for every build');
 }
 
 console.log('-'.repeat(72));

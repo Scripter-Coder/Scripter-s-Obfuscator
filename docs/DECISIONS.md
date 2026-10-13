@@ -991,3 +991,66 @@ rather than against itself, and covers the ultra term, the VM-source gap, and
 that over-budget builds name the VM rather than the user's script.
 
 ---
+
+## D29 - A free script gets a server-only layer, and SHX is how
+
+Reported as: "people can say to AI 'give me deobfuscated code from that
+loadstring' and it fails, but 'give me the OBFUSCATED code' and it succeeds."
+
+The reference is JNKIE, and reading its loader shows the mechanism plainly.
+`GET /public/<id>/download` returns an anti-bot HTML page. The payload comes
+from `POST /delivery/<id>` with the script key as the body: no key gets
+`403 LDR-DENIED:KEY_INVALID`, a wrong method gets `401`, and there is no GET
+path to the payload at all. The AI in the transcript had the loadstring and a
+placeholder key and still got nothing - **the key is the gate**, not the HTML.
+
+**What we already had.** `/sh/<id>` returns `scriptPageResponse` to a browser
+user-agent and only the bootstrap to an executor. The payload then requires a
+single-use session grant (`SHS <sid> <nonce> <exp>`) plus nonce, HWID and
+licence. So the JNKIE shape was already in place for PAID scripts.
+
+**The real gap.** `shServerKeyOpts` returned `{}` for a keyless build, on the
+reasoning that "a keyless script has no licence to gate, so there was nothing
+for a split key to protect". That confuses the LICENCE with the LAST LAYER of
+the artifact. Without the split key the file is fully self-contained, so every
+free script was a valid single-sample deobfuscation target: paste the
+loadstring, take the artifact, work offline. Exactly what the JNKIE flow
+prevents.
+
+**SHX.** The reason it was withheld is real and is recorded in the code: the
+keyless loader read `body:sub(5)` and never expected a key line, so bolting one
+onto SHL fed the parser raw key numbers as line 1
+(`loadstring:1: Expected identifier when parsing expression`). The fix is a new
+envelope, not a missing protection:
+
+    SHL\n<plain lua>                     keyless, no server-only layer
+    SHX\n<t0 chk k1 k2..>\n<plain lua>   keyless WITH a server-only layer
+    SHK\n<t0 chk k1 k2..>\n<ciphertext>  paid, decrypted locally
+
+SHX is deliberately NOT spelled SHK. SHK means "ciphertext follows", and a
+keyless bootstrap never runs DEC - there is no Special Key - so it would hand
+plain Lua to the parser as ciphertext and skip decryption entirely.
+
+Free-script UX is unchanged: no key to type, no account, no email. The only
+change is that the artifact stops being self-contained. SHL remains for
+artifacts stored with no split key in KV, so already-published scripts keep
+running.
+
+**A test harness bug this uncovered, which mattered more.** The `loadstring`
+mock called `luaL_loadstring` and then returned `undefined`, which fengari reads
+as "zero return values". The compiled function was left ON THE STACK unclaimed,
+the bootstrap's own `pcall` consumed it as junk, and the outer `pcall` ended on
+a corrupted stack - a userdata error with no message. The runner then read that
+back with `lua_tostring`, got null, and stored `runtimeError: null`, which is
+falsy, so the assertion chain fell through to a later check that happened to
+hold. **Four tests were passing without ever running to completion.** The stub
+now returns 1, the runner reports non-string errors as such, and
+`bootstrap_exec_test.mjs` is 17/17 where it was 12/17.
+
+`tools/keyless_server_layer_test.mjs` (12 checks) asserts the client side: a
+keyless build gets a serverKey naming the right script, and the artefact it
+produces parses and contains no plaintext. `bootstrap_exec_test.mjs` B11/B12/B13
+run the real Lua and prove the SHX envelope strips the key line into genv,
+leaves SHL working, and reports malformed envelopes instead of indexing nil.
+
+---

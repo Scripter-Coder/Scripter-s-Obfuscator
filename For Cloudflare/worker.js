@@ -6052,9 +6052,34 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 //
                 // The artifact was never the problem. An SHL body is now pure
                 // Lua by construction, whatever is in KV.
-                let out = script.keyless ? 'SHL\n' : 'SHK\n';
-                out += (sk && !script.keyless ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
-                    out += inlineBlob;
+                //
+                // SHX IS SHL PLUS A KEY LINE, and it exists because a KEYLESS
+                // script had no server-only layer at all.
+                //
+                // The rule was "a keyless script has no licence to gate, so
+                // there is nothing for a split key to protect" - which reads
+                // sensibly and is wrong. The split key is not the licence; it
+                // is the last layer of the artifact, and without it the file is
+                // fully self-contained. That makes every free script a valid
+                // single-sample deobfuscation target: paste the loadstring, get
+                // the artifact, work on it offline at leisure.
+                //
+                // SHX carries the plain Lua AND the key line, and the key line
+                // is what the bootstrap hands to the artifact in __SH_SPLITKEY.
+                // The body is NOT ciphertext - the bootstrap only runs DEC for
+                // KEYED scripts, because free scripts have no Special Key to
+                // decrypt with. So SHX must not be spelled SHK: SHK means
+                // "ciphertext follows", and a keyless bootstrap would treat
+                // plain Lua as ciphertext, skip DEC, and hand the parser raw
+                // key numbers on line 1 - the exact failure recorded above.
+                let out, keyLine = sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ')) : '';
+                if (script.keyless) {
+                    out = keyLine ? ('SHX\n' + keyLine + '\n') : 'SHL\n';
+                } else {
+                    out = 'SHK\n';
+                    if (keyLine) out += keyLine + '\n';
+                }
+                out += inlineBlob;
                     try {
                         await state.audit({
                             event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
@@ -6769,7 +6794,24 @@ function luaSessionBootstrap(id, base, keyless) {
         // ---- 4. assemble the payload
         + 'local SK, B\n'
         + 'if body:sub(1,4)=="SHL\\n" then\n'
-        + '  B=body:sub(5)                      -- keyless: the obfuscated code\n'
+        + '  B=body:sub(5)                      -- keyless, no server-only layer\n'
+        // SHX: keyless, WITH a server-only layer.
+        //
+        // Same shape as SHK - a key line, then a body - but the body is plain
+        // Lua, not ciphertext, because there is no Special Key to decrypt it
+        // with on a free script. So SK is captured and B is taken verbatim, and
+        // the KEYED branch below stays out of it.
+        //
+        // This is what makes a free script require the server. The artifact's
+        // last layer is encrypted with the padded key, those bytes are not in
+        // the file, and the only copy is behind a single-use session grant. An
+        // injected or guessed global fails the t0/chk comparison the file bakes
+        // in, so this cannot be forged from the client side.
+        + 'elseif body:sub(1,4)=="SHX\\n" then\n'
+        + '  local nl=body:find("\\n",5)\n'
+        + '  if not nl then DIE("Malformed delivery - no key line.") return end\n'
+        + '  SK=body:sub(5,nl-1)                -- "t0 chk k1 k2 k3..."\n'
+        + '  B=body:sub(nl+1)                   -- plain Lua, NOT ciphertext\n'
         + 'elseif body:sub(1,4)=="SHK\\n" then\n'
         + '  local nl=body:find("\\n",5)\n'
         + '  if not nl then DIE("Malformed delivery - no key line.") return end\n'

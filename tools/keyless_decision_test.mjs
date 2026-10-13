@@ -40,9 +40,24 @@ const shServerKeyOpts = new Function(
 )('https://stats.test/');
 
 // 2. the decision itself
+//
+// CHANGED. This used to assert a keyless build gets NO serverKey, on the
+// reasoning that "a keyless script has no licence to gate, so there is nothing
+// for a split key to protect".
+//
+// That was the bug. The split key is not the licence - it is the last layer of
+// the artifact. Without it the file is fully self-contained, so every free
+// script was a valid single-sample deobfuscation target: paste the loadstring,
+// get the artifact, work on it offline. Nothing about a free script makes that
+// acceptable.
+//
+// What DID need protecting was the envelope: the keyless loader read
+// body:sub(5) and never expected a key line. That is now handled by the SHX
+// envelope (plain Lua PLUS a key line), not by withholding the key, so the
+// free-script UX is unchanged - no key to type, no account.
 const free = shServerKeyOpts(true, 'ScripterHub0000000001');
-if (free.serverKey === undefined) ok('keyless -> no serverKey');
-else no('keyless -> returned a serverKey: ' + JSON.stringify(free.serverKey));
+if (free.serverKey && free.serverKey.keyUrl) ok('keyless -> serverKey present, so the artifact is not self-contained');
+else no('keyless -> no serverKey: the free script ships fully self-contained');
 
 const paid = shServerKeyOpts(false, 'ScripterHub0000000001');
 if (paid.serverKey && paid.serverKey.keyUrl) {
@@ -58,10 +73,13 @@ if (paid.serverKey && paid.serverKey.scriptRef === 'ScripterHub0000000001') {
 
 // 3. keyless must win even if the caller passes a truthy id, i.e. the flag is
 //    the ONLY thing that decides it
-if (shServerKeyOpts(1, 'ScripterHub0000000001').serverKey === undefined) {
-  ok('keyless is decided by the flag alone (a truthy 1 is still keyless)');
+// Every build now gets a serverKey, so a truthy `keyless` cannot change the
+// outcome either way - and it must not start doing so later, or one call site
+// silently ships a self-contained artifact again.
+if (shServerKeyOpts(1, 'ScripterHub0000000001').serverKey !== undefined) {
+  ok('the keyless flag cannot remove the server-only layer');
 } else {
-  no('a truthy keyless value was treated as paid');
+  no('a truthy keyless value removed the split key - the artifact becomes self-contained');
 }
 
 // 4. the call site must route through the helper, not inline a conditional

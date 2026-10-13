@@ -261,8 +261,29 @@ function shNewScriptId() {
 // A plain function so tools/keyless_artifact_test.mjs can lift it out of
 // this file and assert the decision, instead of only asserting that the
 // obfuscator behaves when handed the right options.
+// EVERY build gets a split key now, including keyless ones.
+//
+// WHY THIS CHANGED
+//
+// This returned {} for a keyless script, on the reasoning that "a keyless
+// script has no licence to gate, so there was nothing for it to protect". That
+// reads correctly and is wrong. The split key is not the licence - it is the
+// LAST LAYER of the artifact. Without it the file is fully self-contained, so
+// every free script was a valid single-sample deobfuscation target: paste the
+// loadstring, get the artifact, work on it offline at leisure. That is exactly
+// what JNKIE's POST-with-key flow prevents and this did not.
+//
+// The concern that actually mattered is preserved, and is now handled by a
+// distinct SHX envelope (plain Lua PLUS a key line) rather than by withholding
+// the key: a keyless loader used to read body:sub(5) and never expected a key
+// line, so bolting one onto SHL fed the parser raw key numbers. Free-script UX
+// is unchanged - no key to type, no account - while the artifact stops being
+// self-contained.
+//
+// A plain function so tools/keyless_artifact_test.mjs can lift it out of
+// this file and assert the decision, instead of only asserting the
+// obfuscator behaves when handed the right options.
 function shServerKeyOpts(keyless, wantId) {
-    if (keyless) return {};
     return { serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId } };
 }
 
