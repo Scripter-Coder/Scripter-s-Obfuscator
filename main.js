@@ -333,6 +333,10 @@ async function shUploadKeeper(o) {
                 token: o.token, userToken: o.userToken, id: id, n: n, len: o.obfCode.length,
                 name: o.name, user: o.user,
                 keyless: !!o.keyless, webKey: !!o.cipher, keyHash: o.keyHash || '',
+                // The split key travels with the finalize call, not /sh/kb-put.
+                // Omitting it published every LARGE script without the key its own
+                // artifact requires - see the note in kb-finalize.
+                splitKey: o.splitKey || null,
                 authRequired: !!o.requireAuth,
                 replaces: o.replaces || '',
                 normalCode: (o.normalCode && o.normalCode.length < 7 * 1024 * 1024) ? o.normalCode : ''
@@ -527,10 +531,10 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         const GH_SWITCH = 45 * 1024 * 1024;
         const obfLen = obfCode.length;
         if (!keyless && obfLen > GH_SWITCH) {
-            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, splitKey: splitKey || null, replaces: replaces || '', normalCode: normalCode || '' });
         }
         if (keyless && obfLen > GH_SWITCH) {
-            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, replaces: replaces || '', normalCode: normalCode || '' });
+            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, splitKey: splitKey || null, replaces: replaces || '', normalCode: normalCode || '' });
         }
         const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
             method: 'POST',

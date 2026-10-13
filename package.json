@@ -73,7 +73,8 @@
     "test:tokenpersist": "py \"Storage Keeper/tests/test_token_persistence.py\"",
     "test:sizemodel": "node tools/size_model_test.mjs",
     "test:keys": "node tools/key_generation_test.mjs",
-    "test:keylesslayer": "node tools/keyless_server_layer_test.mjs"
+    "test:keylesslayer": "node tools/keyless_server_layer_test.mjs",
+    "test:splitkeypersist": "node tools/splitkey_persistence_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

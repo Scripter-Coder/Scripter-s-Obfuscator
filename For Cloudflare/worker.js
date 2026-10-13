@@ -4016,6 +4016,41 @@ async function handleRequest(request, env, ctx) {
             // normalCode is ONLY for the Discord attachment (7MB cap there)
             // - never let a giant raw source bloat the request body.
             const normalCode = String(body.normalCode || '').slice(0, 7_000_000);
+            // A KEYLESS UPLOAD MUST STILL STORE THE SPLIT KEY.
+            //
+            // Since D29 every build - keyless included - is compiled with a
+            // serverKey, so the artifact's last layer is encrypted with the
+            // padded key and those bytes are NOT in the file. The only copy is
+            // served here, behind a session, and handed to the artifact through
+            // __SH_SPLITKEY.
+            //
+            // The keyless branch never stored one, so delivery found no key and
+            // fell back to SHL - a plain body with no key line. The artifact
+            // then went to its own /sh/k fallback, which requires a session it
+            // does not have, and died with:
+            //
+            //     [ScripterHub] Key response too short
+            //
+            // That is the whole failure. Not a big script, not chunking - a
+            // free script built to need a key that was never saved. The paid
+            // path above has always stored it; this branch had no equivalent.
+            if (body.splitKey && Array.isArray(body.splitKey.paddedKey) && body.splitKey.paddedKey.length) {
+                await env.LOADERS_KV.put(KV_SKEY_PREFIX + id, JSON.stringify({
+                    paddedKey: body.splitKey.paddedKey.map(n => n & 0xFF),
+                    t0: Number(body.splitKey.t0) || 0,
+                    chk: Number(body.splitKey.chk) || 0
+                }), { expirationTtl: LOADER_TTL });
+            } else if (body.keyless === true) {
+                // Refuse rather than publish something that cannot run.
+                //
+                // The alternative is a loadstring that uploads successfully and
+                // then fails on every user's machine with an error naming
+                // nothing - the "works until someone runs it" class of bug.
+                return jsonResponse({
+                    ok: false,
+                    error: 'this build has no server-held key, so the script would be published in a form that cannot execute. Re-obfuscate it (this is a client/server version mismatch).'
+                }, 400);
+            }
             if (body.keyless === true) {
                 const plainCode = String(body.plainCode || '');
                 const cipher = String(body.cipher || '');
@@ -5213,6 +5248,37 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             rec.keyHash = String(body.keyHash || '');
             rec.authRequired = body.authRequired === true;
             await env.LOADERS_KV.put(recKey, JSON.stringify(rec), { expirationTtl: LOADER_TTL });
+            // ---- THE SPLIT KEY, WHICH LARGE SCRIPTS WERE LOSING ----
+            //
+            // Every build is compiled with a serverKey, so the artifact's last
+            // layer is encrypted with the padded key and those bytes are not in
+            // the file. The only copy is this record, served behind a session.
+            //
+            // kb-finalize never wrote it, so EVERY script that took the keeper
+            // path - i.e. every large one - was published without the key its
+            // own artifact requires. Delivery then found no key, fell back to
+            // SHL, and the artifact died at runtime with:
+            //
+            //     [ScripterHub] Key response too short
+            //
+            // It is a small KV record even when the artifact is tens of
+            // megabytes on the PC, which is why the bytes live in KV while only
+            // the artifact lives in the keeper.
+            if (body.splitKey && Array.isArray(body.splitKey.paddedKey) && body.splitKey.paddedKey.length) {
+                await env.LOADERS_KV.put(KV_SKEY_PREFIX + id, JSON.stringify({
+                    paddedKey: body.splitKey.paddedKey.map(n => n & 0xFF),
+                    t0: Number(body.splitKey.t0) || 0,
+                    chk: Number(body.splitKey.chk) || 0
+                }), { expirationTtl: LOADER_TTL });
+            } else if (body.keyless === true) {
+                // A keyless build with no key cannot execute. Refusing beats
+                // publishing a loadstring that fails on every user's machine
+                // with an error that names nothing.
+                return jsonResponse({
+                    ok: false,
+                    error: 'this build has no server-held key, so the script would be published in a form that cannot execute. Re-obfuscate it (this is a client/server version mismatch).'
+                }, 400);
+            }
             // register the loader meta so /sh/<id> serves the bootstrap
             await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
                 name: rec.name, user: rec.user, at: rec.at, keyHash: rec.keyHash,
@@ -6145,10 +6211,28 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     let sk = null;
                     if (skRaw) { try { sk = JSON.parse(skRaw); } catch (e) { sk = null; } }
                     let head = 'SHG ' + total + ' ' + (isGithub ? '/sh/g/' : isKeeper ? '/sh/kb/' : '/sh/c/') + id + ' ' + grant + '\n';
-                    // Same rule as the inline path: a keyless script's chain
-                    // carries no key line. Fixed in both places because they are
-                    // separate code paths and the bug was in both.
-                    head += (sk && !script.keyless ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n') : '');
+                    // SAME RULE AS THE INLINE PATH: the key line goes out
+                    // whenever a key EXISTS, keyless or not.
+                    //
+                    // This still said `sk && !script.keyless`, which was correct
+                    // when a keyless build shipped self-contained and had no key
+                    // to send - and became the bug the moment every build got
+                    // one (D29).
+                    //
+                    // It mattered most here. The inline path is only reached for
+                    // artifacts that fit in one response; a large script is
+                    // keeper-stored, so it chains, so it came through HERE and
+                    // left without its key. The artifact then fell back to its
+                    // own /sh/k, which needs a session it does not have, and
+                    // died with:
+                    //
+                    //     [ScripterHub] Key response too short
+                    //
+                    // The inline fix looked complete and fixed nothing for large
+                    // scripts, because it was a different branch. Two delivery
+                    // paths, one rule, applied in one place - and the bug lived
+                    // in the other.
+                    if (sk) head += (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ') + '\n');
                     try {
                         await state.audit({
                             event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,
