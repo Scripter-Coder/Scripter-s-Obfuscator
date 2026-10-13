@@ -5875,14 +5875,102 @@ function shProgressHide() {
     if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
-// Run applyCustomObfuscator in a Worker, showing live progress.
+// Above this the browser is sent to the owner's machine instead.
 //
-// The ETA is derived from INPUT SIZE, measured against real build timings from
-// this project's own benchmark (tools/bench/size-perf.mjs): roughly a linear
-// cost, ~1.0 s per 100 KB of source on the SECURE profile, plus a fixed ~1.5 s
-// overhead. It is an ESTIMATE and the UI says so. It is not a measurement of
-// the current run - that does not exist until the run finishes.
+// Measured expansion through the bytecode VM is ~195x, so a 6000-line script
+// (~300-480 KB of source) wants 58-93 MB of output plus the AST, the IR and
+// the instruction stream, all live at once in one tab. The tab dies and the
+// user is told "Obfuscation Failed", which reads as "my script is too big"
+// rather than "the tab is too small".
+//
+// 60 KB is chosen from the measured curve, not taste: 60 KB -> ~12 MB, which
+// is comfortable in a tab, and anything past it goes to the host. Below the
+// threshold the browser is faster than a round trip, so the host is pure
+// overhead there.
+var SH_HOST_MIN_SOURCE = 60 * 1024;
+
+// Is the owner's machine available to compile?
+//
+// Asked BEFORE shipping the script, because the honest failure is "the host is
+// not running", and finding that out after uploading a megabyte is a worse
+// experience than being told up front.
+function shHostReady() {
+    return fetch(SH_STATS_ENDPOINT + 'sh/obfuscate/health')
+        .then(function (r) { return r.json(); })
+        .then(function (d) { return !!(d && d.ready); })
+        .catch(function () { return false; });
+}
+
+// Compile on the owner's machine, via the worker.
+//
+// The worker holds the keeper's credential and relays; the browser never sees
+// it. That is what lets this work from any device without handing a stranger
+// the token to the owner's PC.
+function shObfuscateOnHost(code, options) {
+    var url = SH_STATS_ENDPOINT + 'sh/obfuscate';
+    var tok = shGetUserToken() || '';
+    shProgressEnsure('Waiting for the host…');
+
+    var started = Date.now();
+    // There is no progress stream across a tunnel, so the ETA is a display
+    // estimate only. It is not a measurement, and it is replaced by the real
+    // elapsed time when the answer arrives.
+    var ETA = Math.round(1500 + (code.length / 100000) * 1000 * 1.0);
+    shProgressUpdate(ETA, 0);
+    var tick = setInterval(function () { shProgressUpdate(ETA, Date.now() - started); }, 400);
+
+    return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-SH-User-Token': tok },
+        body: JSON.stringify({ code: code, options: options, userToken: tok })
+    }).then(function (r) {
+        clearInterval(tick);
+        return r.text().then(function (t) {
+            var data;
+            try { data = JSON.parse(t); } catch (e) { data = { ok: false, error: 'the host sent an unreadable reply' }; }
+            if (!r.ok || !data || !data.ok) {
+                var why = (data && data.reason) || '';
+                if (why === 'noauth') return Promise.reject(new Error('Sign in before obfuscating on the host.'));
+                if (why === 'hostdown' || r.status === 503) {
+                    return Promise.reject(new Error('Waiting for host - the owner\'s PC is not running the Storage Keeper right now.'));
+                }
+                if (r.status === 429) {
+                    return Promise.reject(new Error('The host is already compiling another script. Try again in a moment.'));
+                }
+                return Promise.reject(new Error((data && data.error) || ('the host refused the script (HTTP ' + r.status + ')')));
+            }
+            shProgressDone();
+            var secs = shFormatDuration(Date.now() - started);
+            showNotification('Script Created', 'Compiled on the host in ' + secs + '.', 'success', 6000);
+            shProgressHide();
+            return { result: data.code, dbgInfo: data.dbgInfo || {}, elapsedMs: data.elapsedMs };
+        });
+    }).catch(function (e) {
+        clearInterval(tick);
+        shProgressHide();
+        if (e && e.message) throw e;
+        throw new Error('could not reach the host');
+    });
+}
+
+// Run applyCustomObfuscator, showing live progress.
+//
+// A big script goes to the owner's machine; a small one runs here in a Worker,
+// which is faster than a round trip. The threshold is SH_HOST_MIN_SOURCE.
+//
+// The ETA is derived from INPUT SIZE against real build timings from this
+// project's own benchmark (tools/bench/size-perf.mjs): roughly linear, ~1.0 s
+// per 100 KB on SECURE plus ~1.5 s fixed. It is an ESTIMATE and the UI says so.
 function shObfuscateInWorker(code, engine, options) {
+    // Large scripts cannot be compiled here at all - the tab runs out of heap -
+    // so this is not an optimisation, it is the only path that works.
+    if (code.length >= SH_HOST_MIN_SOURCE) {
+        return shObfuscateOnHost(code, options);
+    }
+    return shObfuscateLocally(code, engine, options);
+}
+
+function shObfuscateLocally(code, engine, options) {
     return new Promise(function (resolve, reject) {
         var bytes = code.length;
         var ETA = Math.round(1500 + (bytes / 100000) * 1000 * 1.0);

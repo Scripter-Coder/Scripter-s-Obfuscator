@@ -5492,6 +5492,131 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // and it is the specific hole the audit recorded as G06.
         // ==================================================================
 
+        // ---------- POST /sh/obfuscate : compile on the OWNER'S MACHINE ----------
+        //
+        // A browser tab cannot obfuscate a large script. A 6000-line Lua file
+        // expands ~195x through the obfuscator - measured 17 KB -> 3.5 MB up to
+        // 1501 KB -> 220 MB - and the tab holds the page, the AST, the IR and
+        // the emitted source at once, in a fraction of the heap Node has. The
+        // tab dies and the user is told "Obfuscation Failed", which reads as
+        // their script being too big rather than the tab being too small.
+        //
+        // So the compile runs on the owner's PC, which already runs the Storage
+        // Keeper over a cloudflared tunnel and already has Node. Verified end
+        // to end through that path: 47,264 lines / 1.28 MB in, 214.5 MB out.
+        //
+        // THE PROXY IS THE POINT, not a convenience.
+        //
+        // The keeper's bearer token must never reach a browser. main.js is
+        // public, so a token in it is a token anyone can read, and anyone who
+        // reads it can spend the owner's CPU and reach the stored scripts.
+        // Holding the token here means the browser authenticates to THIS
+        // worker with the account token it already has, and the keeper token
+        // never leaves the worker.
+        //
+        // It also removes the tunnel address from the browser's world
+        // entirely. A quick tunnel gets a new random hostname on every
+        // restart; only the worker needs to know the current one, and the
+        // browser keeps posting to a URL that never changes.
+        if (url.pathname === '/sh/obfuscate' && request.method === 'POST') {
+            if (!env.SH_STORE_URL || !env.SH_STORE_TOKEN) {
+                return jsonResponse({ ok: false, error: 'The host is not configured.', reason: 'nohost' }, 503);
+            }
+            let tok = '';
+            try {
+                const h = request.headers.get('X-SH-User-Token') || '';
+                if (h) {
+                    tok = h;
+                } else {
+                    // Custom headers are what a cross-origin preflight is FOR,
+                    // and the page can send whatever is preflighted, so the
+                    // body is the reliable place to find the credential.
+                    const clone = request.clone();
+                    const parsed = JSON.parse(await clone.text());
+                    tok = String(parsed.userToken || '');
+                }
+            } catch (e) { tok = ''; }
+
+            // Signed in, or nothing. An anonymous caller must not be able to
+            // use the owner's machine as a free compile service.
+            let user = null;
+            if (tok) { try { user = await verifyUserToken(tok, env); } catch (e) { user = null; } }
+            if (!user) return jsonResponse({ ok: false, error: 'Not authorized.', reason: 'noauth' }, 401);
+
+            const bodyText = await request.text();
+            const limited = await guardRate(env, 'obfuscate', rateIdentity(request, url));
+            if (limited) return limited;
+
+            let upstream;
+            try {
+                upstream = await fetch(String(env.SH_STORE_URL).replace(/\/+$/, '') + '/v1/obfuscate', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + String(env.SH_STORE_TOKEN),
+                        'Content-Type': 'application/json'
+                    },
+                    body: bodyText
+                });
+            } catch (e) {
+                // The tunnel is down, the PC is asleep, or DNS has not settled.
+                // "waiting for host" is the honest answer; a 500 would send the
+                // user hunting for a syntax error in their own code.
+                return jsonResponse({
+                    ok: false,
+                    error: 'The host is not reachable right now. Start the Storage Keeper on the owner\'s PC and try again.',
+                    reason: 'hostdown'
+                }, 503);
+            }
+            const text = await upstream.text();
+            return new Response(text, {
+                status: upstream.status,
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
+
+        // ---------- GET /sh/obfuscate/health : can the host take work? ----------
+        //
+        // Unauthenticated on purpose and it answers only yes/no. The page polls
+        // this so it can say "waiting for host" BEFORE shipping a megabyte into
+        // a tunnel that will refuse it.
+        if (url.pathname === '/sh/obfuscate/health' && request.method === 'GET') {
+            if (!env.SH_STORE_URL) return jsonResponse({ ok: true, ready: false, reason: 'nohost' }, 200);
+            try {
+                // `cache` IS NOT AN OPTION HERE.
+                //
+                // This used to pass cache: 'no-store', and Workers does not
+                // implement that field on RequestInit - the fetch throws
+                // synchronously with:
+                //
+                //   The 'cache' field on 'RequestInitializerDict' is not implemented.
+                //
+                // Which the catch below reported as "hostdown", so the worker
+                // declared the owner's PC unreachable while it was sitting
+                // right there answering health checks. Verified by deploying a
+                // probe worker: the same fetch WITHOUT `cache` returns 200, and
+                // the same fetch WITH it throws.
+                //
+                // Bypassing the cache is already guaranteed elsewhere: the
+                // keeper sends Cache-Control: no-store on every response.
+                const probe = await fetch(String(env.SH_STORE_URL).replace(/\/+$/, '') + '/v1/obfuscate/health', {
+                    headers: { 'Authorization': 'Bearer ' + String(env.SH_STORE_TOKEN) }
+                });
+                const data = await probe.json().catch(() => null);
+                return jsonResponse({
+                    ok: true,
+                    ready: !!(data && data.ok),
+                    busy: !!(data && data.busy),
+                    node: !!(data && data.node)
+                }, 200);
+            } catch (e) {
+                return jsonResponse({ ok: true, ready: false, reason: 'hostdown' }, 200);
+            }
+        }
+
         // ---------- POST|GET /sh/session : MINT ----------
         // In:  id, k (license), h (hwid), u (account email, keyless scripts)
         // Out: "SHS <sid> <nonce> <expiresAtMs>"  or  "SHERR <reason>"
