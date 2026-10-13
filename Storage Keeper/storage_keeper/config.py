@@ -34,6 +34,46 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _persisted_token(root: Path) -> str:
+    """The token from a previous run, or "" on a first run.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT THE OBVIOUS SIMPLIFICATION
+
+    Generating a fresh token per run looks like the safer default, and tunnel.py
+    already persists one. But this function is reached by a BARE
+    `py run.py` restart, which is exactly what an operator does after pulling
+    a change - and that path used to mint a new token silently.
+
+    The worker holds its own copy of this token. So a "harmless" restart locked
+    the service out of its own worker: every script stopped delivering and every
+    browser call returned a credential error, with nothing in the keeper's own
+    logs to say the token had changed. The service looked perfectly healthy.
+
+    A token is only secret because it is the SAME secret in two places. Changing
+    it in one place is a configuration change, so it must not be something a
+    restart can do by accident. Reading the previous value first - and writing
+    it on first run - makes a restart idempotent, which is the whole property
+    that was missing.
+    """
+    token_file = root / "token.txt"
+    try:
+        existing = token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    if existing:
+        return existing
+
+    fresh = secrets.token_urlsafe(32)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(fresh, encoding="utf-8")
+    except OSError:
+        # An unwritable data directory must not stop the service from starting.
+        # The operator reads the token from the startup banner instead.
+        pass
+    return fresh
+
+
 @dataclass(frozen=True)
 class Config:
     """Resolved runtime configuration."""
@@ -57,8 +97,9 @@ class Config:
 
     @classmethod
     def from_env(cls, **overrides) -> "Config":
+        root = Path(overrides.get("root") or os.environ.get("SH_STORE_ROOT") or DEFAULT_ROOT)
         cfg = cls(
-            root=Path(os.environ.get("SH_STORE_ROOT") or DEFAULT_ROOT),
+            root=root,
             host=os.environ.get("SH_STORE_HOST") or "127.0.0.1",
             port=_env_int("SH_STORE_PORT", 8787),
             token=os.environ.get("SH_STORE_TOKEN", ""),
@@ -66,9 +107,15 @@ class Config:
             cleanup_interval_seconds=_env_int("SH_STORE_CLEANUP_SECONDS", 300),
         )
         if not cfg.token:
-            # Never fall back to an empty token on a real service. Generating one keeps the
-            # service safe by default; the operator reads it from the startup banner.
-            cfg = Config(**{**cfg.__dict__, "token": secrets.token_urlsafe(32)})
+            # Resolved against the SAME root the service will use.
+            #
+            # This used to read the environment/default root and apply the
+            # caller's root override afterwards, so `from_env(root=tmp)` read
+            # and could WRITE the real data/token.txt while appearing to work
+            # in a temporary directory. Order matters: the root has to be
+            # settled before anything touches the disk.
+            token = _persisted_token(root) or secrets.token_urlsafe(32)
+            cfg = Config(**{**cfg.__dict__, "token": token})
         if overrides:
             cfg = Config(**{**cfg.__dict__, **overrides})
         return cfg

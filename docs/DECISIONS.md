@@ -870,3 +870,43 @@ reach the host" and sends the user to restart a machine that is running
 perfectly. `tools/cors_test.mjs` caught the worker half of this.
 
 ---
+
+## D27 - A restart must not be able to change the bearer token
+
+Reported as "the host is unreachable" after a perfectly ordinary restart.
+
+`Config.from_env()` generated a fresh `secrets.token_urlsafe(32)` whenever
+`SH_STORE_TOKEN` was absent from the environment. `tunnel.py` persisted its token
+to `data/token.txt` and passed it in, so the launcher path was safe - but a BARE
+`py run.py` restart, which is exactly what an operator does after pulling a
+change, went straight to the generator.
+
+The consequence is the reason this is worth a decision rather than a patch. The
+worker holds its own copy of that token. A restart therefore changed the token in
+one place only, and the service locked itself out of its own worker: every script
+stopped delivering and every browser call came back a credential error, while the
+keeper reported itself perfectly healthy and said nothing about the token having
+moved. Restarting again - the obvious remedy - re-broke it, because every restart
+minted another token.
+
+The fix is to make a restart idempotent. `_persisted_token()` reads
+`data/token.txt` first and only generates (and writes) when there is nothing
+there. A token is secret only because it is the SAME secret in two places, so
+changing it in one place is a configuration change - and it must not be
+something a restart can do by accident.
+
+One ordering bug was found while testing this and is worth recording, because the
+first draft had it. The token was resolved against the environment root and the
+caller's `root=` override was applied afterwards. A test calling
+`from_env(root=tmp)` therefore read the real `data/token.txt`, and could have
+written it, while appearing to work in a temporary directory. The root has to be
+settled before anything touches the disk.
+
+`Storage Keeper/tests/test_token_persistence.py` (8 checks) pins the property: a
+restart returns the same token, the token is on disk, a restart does not rewrite
+the file, eight restarts produce one distinct value, an existing token file is
+honoured (the migration path for an operator who already has a working one), an
+explicit `SH_STORE_TOKEN` still wins, a first run still generates a real secret,
+and a blank token file is replaced rather than trusted.
+
+---
