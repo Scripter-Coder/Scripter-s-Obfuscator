@@ -790,3 +790,83 @@ deleted: "one line" was never the property, "carries no secret" was - and that i
 now asserted directly against the stub.
 
 ---
+
+## D26 - The host compile is NOT proxied; the browser is given a ticket
+
+Four separate failures were reported on one 6000-line script. They share one
+theme: every one of them was a size limit that had been placed in the wrong
+layer.
+
+**1. HTTP 520 on a 100-second compile.** The browser POSTed to the worker and
+the worker relayed to the keeper. A Worker holding a subrequest open across a
+100-second Node compile is killed by Cloudflare, and 520 is reported as "can't
+understand the response from your origin" - which points at the owner's PC and
+hides that the relay was the problem. The host was fine and simply too slow to
+be proxied.
+
+The relay is split into two fast steps. `POST /sh/obfuscate-ticket` authenticates
+the user and signs a ticket (milliseconds); the browser then POSTs to the keeper
+directly, where there is no proxy to expire. The retired `/sh/obfuscate` route
+is KEPT but answers immediately with "reload the page", so an open tab gets a
+sentence it can act on instead of a 404. It will not come back.
+
+The keeper's permanent token still never leaves the worker: main.js is public, so
+a permanent token in the page would be readable by anyone, who could then spend
+the owner's machine and reach the stored scripts. A ticket authorises ONE
+compile and expires in 10 minutes.
+
+The ticket is signed with `SH_STORE_TOKEN` - the secret the worker already holds
+and the keeper already trusts - so there is no second secret to configure and
+therefore no second secret to forget. The signature covers the expiry, so a
+ticket cannot be extended by editing it.
+
+`Storage Keeper/tests/test_compile_ticket.py` (11 checks) covers the accepted
+case, the forged signature, the wrong secret, the expired ticket, a ticket with
+no expiry at all, an edited expiry, garbage, and the property that a compile
+ticket does NOT unlock the stored-script routes.
+
+**2. "Sign in before obfuscating on the host" while signed in.** `shObfuscateOnHost`
+read the token from sessionStorage, which is empty unless this tab has already
+uploaded something. `shEnsureUserToken()` mints one from stored credentials when
+there is none - the same fix the owner panel already used. The 401 was never
+about authorisation.
+
+**3. "Unrecognised delivery format." - and the `toobig` dead zone.** ONE root
+cause: parts were 40 MB. A part is delivered as a single HTTP response, so a 40
+MB part is a 40 MB response; Cloudflare answers 524/502, the body arrives as an
+HTML page, and the bootstrap reports a format error naming neither size nor
+timeout. Worse, an 18.5 MB artifact under the old 40 MB size produced `n = 1` -
+a "chunked" script with exactly one part, so there was no chain to fall back on.
+
+`SH_KEEPER_PART_SIZE` is now the same number the worker uses for an inline body
+(`INLINE_DELIVERY_MAX`). The two are the same question - what one response can
+reliably carry - and keeping them in step is the fix.
+
+The KV writer had the matching bug: `putBlob` split at `CHUNK_THRESHOLD`
+(~25 MB, a STORAGE limit) while delivery inlined at 6 MB (a DELIVERY limit).
+Anything between the two was stored whole with no parts, so it could be neither
+inlined nor chained and was refused. `CHUNK_DELIVERY_MAX` is now DERIVED from
+`INLINE_DELIVERY_MAX` rather than being a second literal, because two independent
+numbers with a gap between them is precisely how the original bug existed - and a
+derived value cannot drift apart again.
+
+`tools/delivery_part_size_test.mjs` (27 checks) pins the invariant. It evaluates
+the constant EXPRESSIONS rather than regexing the first number out of them: that
+flaw was in the first draft of this test and it passed with the 40 MB bug
+reintroduced, which is the failure mode this test exists to prevent.
+
+**4. `QuotaExceededError` on a successful build.** `saveProjects` wrote first and
+caught the exception, so every big obfuscation printed a red console error and
+the page looked broken although the script had uploaded fine. The payload is now
+measured BEFORE the write and the bulky fields dropped until it fits, so the
+common case never throws. Only local copies are dropped - the cloud copy and the
+loadstring are untouched - and `codeStripped` is now READ: Script Settings says
+the local copy was dropped and why, instead of opening an empty code pane that
+reads as data loss.
+
+Two CORS allowlists gained `X-SH-Ticket`. Without it the preflight fails and the
+browser deletes the request BEFORE it is sent, which presents as "could not
+reach the host" and sends the user to restart a machine that is running
+perfectly. `tools/cors_test.mjs` caught the worker half of this.
+
+---

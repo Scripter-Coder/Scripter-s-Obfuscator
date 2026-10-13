@@ -205,13 +205,13 @@ async function shLoginRaw() {
     }
 }
 
-// ---- STORAGE KEEPER (GitHub) big-script upload ----
-// For obfuscated scripts > ~45MB (KV ceiling). Slices the code into
-// 40MB parts, streams each to the worker (which forwards them to the
-// private GitHub storage repo), then finalizes. Executors later fetch
-// the parts through the worker proxy (/sh/g/*) - GitHub never exposed.
-// Hard ceiling: 256 parts x 40MB = ~10GB per script (repo-size guidance
-// keeps total usage under ~10GB too).
+// ---- STORAGE KEEPER big-script upload ----
+// Slices the obfuscated code into parts sized to fit ONE delivery response,
+// streams each to the worker (which forwards it to the owner's PC), then
+// finalizes. Executors later fetch the parts through the worker - the PC is
+// never exposed. See SH_KEEPER_PART_SIZE for why the part size is a delivery
+// limit and not a storage one.
+// Hard ceiling: 256 parts x 6 MB = ~1.5 GB per script.
 // A SCRIPT ID IS 10 RANDOM DIGITS, NOT A TIMESTAMP.
 //
 // It used to be String(Date.now()).slice(-10) - a clock reading, strictly
@@ -265,7 +265,26 @@ function shServerKeyOpts(keyless, wantId) {
     return { serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId } };
 }
 
-const SH_KEEPER_PART_SIZE = 40 * 1024 * 1024;
+// A PART IS DELIVERED AS ONE HTTP RESPONSE. So its size is bounded by what one
+// response can carry, not by what the keeper will accept.
+//
+// This was 40 MB, which is the same mistake as the old inline cap and has the
+// same failure. A part is fetched by the loader with a single GET, so a 40 MB
+// part is a 40 MB response: Cloudflare answers 524/502, the body arrives as an
+// HTML error page, and the bootstrap reports
+//
+//     [ScripterHub] Unrecognised delivery format.
+//
+// which names neither size nor timeout, so it reads as a corrupt script. Worse,
+// a 18 MB artifact under the old 40 MB size produced n = 1 - a "chunked"
+// script with exactly one part, so there was no chain to fall back on.
+//
+// It is now the same number the worker uses for an inline body
+// (INLINE_DELIVERY_MAX in worker.js), because the two are the same question:
+// what can one response reliably carry. Keep the two in step - a part larger
+// than the inline cap reintroduces this exact bug under a different name.
+const SH_KEEPER_PART_SIZE = 6 * 1000 * 1000;
+
 async function shUploadKeeper(o) {
     try {
         const id = shNewScriptId();
@@ -473,12 +492,11 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             payload.wantId = wantId;
             payload.splitKey = splitKey;
         }
-        // SIZE PRE-CHECK: KV/JSON path caps at ~50MB (Cloudflare). Larger
-        // scripts automatically switch to the GitHub Storage Keeper path
-        // below (up to ~10GB). Anything above 10GB cannot be stored.
+        // SIZE PRE-CHECK: the keeper path stores 256 parts of SH_KEEPER_PART_SIZE,
+        // so that product is the real ceiling. Anything above it cannot be stored.
         const approxBody = (payload.plainCode ? payload.plainCode.length : 0) + (payload.cipher ? payload.cipher.length : 0) + (payload.normalCode ? payload.normalCode.length : 0);
-        if (approxBody > 10 * 1024 * 1024 * 1024) {
-            return { ok: false, error: 'too large: scripts cap at 10 GB (Storage Keeper repo limit of 256 x 40MB parts). Split the script.' };
+        if (approxBody > 256 * SH_KEEPER_PART_SIZE) {
+            return { ok: false, error: 'too large: scripts cap at ' + Math.round(256 * SH_KEEPER_PART_SIZE / 1000000) + ' MB (256 delivery-sized parts). Split the script.' };
         }
         // ---- STORAGE KEEPER (GitHub) path for obfuscated code > ~45MB ----
         // Parts of 40MB stream to the worker (-> private GitHub repo),
@@ -4646,45 +4664,103 @@ function loadProjects() {
     } catch (e) { return []; }
 }
 
+// ============ LOCAL PROJECT STORAGE ============
+//
+// WHY THIS IS NOT JUST localStorage.setItem IN A try
+//
+// A host-compiled artifact is tens of megabytes. localStorage holds about five.
+// The old code wrote first and caught QuotaExceededError afterwards, so every
+// big obfuscation printed a red "Error saving projects" in the console and the
+// page looked broken even though the script had uploaded fine - the user
+// reported exactly that, alongside a successful build.
+//
+// The size is now measured BEFORE the write and the bulky fields are dropped
+// until it fits, so the common case never throws at all.
+//
+// WHAT GETS DROPPED, AND WHY IT IS SAFE
+//
+// Only the local copies: `code` (the artifact) and then `originalCode` (the
+// source). The cloud copy is untouched and the loadstring points at the cloud,
+// so a stripped script keeps running for everyone - what the owner loses is the
+// local "view code" pane, which says so rather than showing an empty box.
+const SH_LOCAL_BUDGET = 3.4 * 1000 * 1000;   // chars; localStorage is ~5MB
+
 function saveProjects(projects) {
+    var key = 'projects_' + (currentUser ? currentUser.id : '');
+
+    // One note per burst. Re-Obfuscating + Storage Note + Special Key can all
+    // fire together and three stacked warnings reads as three failures.
+    function note(msg) {
+        if (Date.now() - (window._shLastStorageNote || 0) > 4000) {
+            window._shLastStorageNote = Date.now();
+            showNotification('Storage Note', msg, 'warning', 8000);
+        }
+    }
+
+    var payload;
     try {
-        // LURAPH FIX: avoid double-notification cascade. If we already warned
-        // about storage in the last 4s, don't warn again (prevents 3-at-once spam
-        // when Re-Obfuscating + Storage Note + Special Key fire together).
-        var _lastNote = window._shLastStorageNote || 0;
-        var _now = Date.now();
-        localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(projects));
+        payload = JSON.stringify(projects);
     } catch (e) {
-        // localStorage quota (~5-10MB) exceeded - usually a HUGE obfuscated
-        // script. Degrade gracefully: strip the bulky code fields from the
-        // OLDEST scripts until it fits, keeping every script entry + the
-        // newest code. The loadstring stays functional (the worker holds
-        // the real copy); only the local "view code" needs re-obfuscation.
-        console.error('Error saving projects:', e);
+        // A cyclic or unserialisable value is a real bug and should be loud.
+        console.error('saveProjects: could not serialise the project list', e);
+        return;
+    }
+
+    if (payload.length <= SH_LOCAL_BUDGET) {
         try {
-            var trimmed = JSON.parse(JSON.stringify(projects));
-            var idx = 0;
-            while (idx < trimmed.length) {
-                var freed = false;
-                if (trimmed[idx].scripts) {
-                    for (var si = 0; si < trimmed[idx].scripts.length; si++) {
-                        var sc = trimmed[idx].scripts[si];
-                        if (sc.code && sc.code.length > 200000) { sc.code = ''; sc.codeStripped = true; freed = true; }
-                    }
+            localStorage.setItem(key, payload);
+            return;
+        } catch (e) { /* quota smaller than assumed - fall through and trim */ }
+    }
+
+    // Trim order: the project the user has open is considered LAST, so their
+    // working script keeps its local code while stale projects give theirs up.
+    var order = [];
+    for (var i = 0; i < projects.length; i++) {
+        var list = (projects[i] && projects[i].scripts) || [];
+        for (var j = 0; j < list.length; j++) {
+            order.push({ s: list[j], open: !!(currentProject && projects[i].id === currentProject.id) });
+        }
+    }
+    order.sort(function (a, b) { return (a.open ? 1 : 0) - (b.open ? 1 : 0); });
+
+    var droppedCode = 0;
+    // Pass 0 drops the artifact, pass 1 the source. Two passes because a single
+    // artifact can be larger than the whole budget on its own.
+    for (var pass = 0; pass < 2; pass++) {
+        for (var n = 0; n < order.length; n++) {
+            var sc = order[n].s;
+            if (pass === 0) {
+                if (sc.code) {
+                    sc.codeBytes = sc.code.length;
+                    sc.code = '';
+                    sc.codeStripped = true;
+                    droppedCode++;
                 }
-                try {
-                    localStorage.setItem('projects_' + (currentUser ? currentUser.id : ''), JSON.stringify(trimmed));
-                    if (freed || idx === trimmed.length - 1) {
-                        // debounce: don't spam Storage Note if we just showed it
-                        if (Date.now() - (window._shLastStorageNote || 0) > 4000) {
-                            window._shLastStorageNote = Date.now();
-                            showNotification('Storage Note', 'Local storage was full - old scripts\' obfuscated code was trimmed locally (loadstrings keep working; re-obfuscate from Settings if you need the local copy).', 'warning', 8000);
-                        }
-                        return;
-                    }
-                } catch (e2) { idx++; }
+            } else if (sc.originalCode) {
+                sc.originalCode = '';
+                sc.sourceStripped = true;
             }
-        } catch (e3) { /* give up silently - in-memory state still works */ }
+            payload = JSON.stringify(projects);
+            if (payload.length <= SH_LOCAL_BUDGET) break;
+        }
+        if (payload.length <= SH_LOCAL_BUDGET) break;
+    }
+
+    try {
+        localStorage.setItem(key, payload);
+    } catch (e) {
+        // Even trimmed, the browser refused. Nothing is lost in the cloud, but
+        // say that plainly instead of leaving a console stack trace as the only
+        // evidence.
+        console.warn('saveProjects: local storage refused even the trimmed project list', e);
+        note('This browser would not store the project list at all. Nothing was lost in the cloud - reload to continue.');
+        return;
+    }
+
+    if (droppedCode > 0) {
+        note('This script\'s obfuscated code is too large for browser storage, so the local copy was dropped. '
+            + 'The uploaded script and its loadstring are unaffected.');
     }
 }
 
@@ -5907,49 +5983,88 @@ function shHostReady() {
 // it. That is what lets this work from any device without handing a stranger
 // the token to the owner's PC.
 function shObfuscateOnHost(code, options) {
-    var url = SH_STATS_ENDPOINT + 'sh/obfuscate';
-    var tok = shGetUserToken() || '';
     shProgressEnsure('Waiting for the host…');
 
+    // THE TOKEN MUST BE MINTED, NOT JUST READ.
+    //
+    // This read sessionStorage directly, and it is empty unless this tab has
+    // already uploaded something - the same trap that broke shOwnerApi, where
+    // an owner who was plainly signed in sent no credential and the worker
+    // answered 401 for a reason that had nothing to do with authorisation. The
+    // user saw "Sign in before obfuscating on the host." while sitting on their
+    // signed-in account.
+    //
+    // shEnsureUserToken() is the fix the owner panel already uses: read the
+    // cached token, and mint one from the stored credentials if there is none.
+    return shEnsureUserToken().then(function (tok) {
+        if (!tok) {
+            shProgressHide();
+            throw new Error('Sign in on this device first' +
+                (shEnsureUserTokenReason ? ' (' + shEnsureUserTokenReason + ')' : '') + '.');
+        }
+        return shMintHostTicket(tok).then(function (ticket) {
+            return shCompileDirect(ticket, code, options);
+        });
+    });
+}
+
+// Ask the worker for a short-lived pass to the host.
+//
+// Fast (milliseconds). The worker authenticates the account and signs a ticket;
+// it does NOT proxy the compile, because a 100-second subrequest is what
+// produced the HTTP 520 the user saw.
+function shMintHostTicket(tok) {
+    return fetch(SH_STATS_ENDPOINT + 'sh/obfuscate-ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-SH-User-Token': tok },
+        body: JSON.stringify({ userToken: tok })
+    }).then(function (r) {
+        return r.json().then(function (d) {
+            if (!r.ok || !d || !d.ok) throw new Error('The site would not authorise a host compile (HTTP ' + r.status + ').');
+            return d;
+        });
+    });
+}
+
+// Compile directly against the keeper.
+//
+// No proxy in the path, so a slow compile is not a 520. The ticket is scoped to
+// this one request and expires in minutes.
+function shCompileDirect(ticket, code, options) {
     var started = Date.now();
-    // There is no progress stream across a tunnel, so the ETA is a display
-    // estimate only. It is not a measurement, and it is replaced by the real
-    // elapsed time when the answer arrives.
     var ETA = Math.round(1500 + (code.length / 100000) * 1000 * 1.0);
     shProgressUpdate(ETA, 0);
     var tick = setInterval(function () { shProgressUpdate(ETA, Date.now() - started); }, 400);
 
-    return fetch(url, {
+    return fetch(ticket.keeperUrl + '/v1/obfuscate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-SH-User-Token': tok },
-        body: JSON.stringify({ code: code, options: options, userToken: tok })
+        headers: { 'Content-Type': 'application/json', 'X-SH-Ticket': ticket.ticket },
+        body: JSON.stringify({ code: code, options: options })
     }).then(function (r) {
         clearInterval(tick);
         return r.text().then(function (t) {
             var data;
             try { data = JSON.parse(t); } catch (e) { data = { ok: false, error: 'the host sent an unreadable reply' }; }
             if (!r.ok || !data || !data.ok) {
-                var why = (data && data.reason) || '';
-                if (why === 'noauth') return Promise.reject(new Error('Sign in before obfuscating on the host.'));
-                if (why === 'hostdown' || r.status === 503) {
-                    return Promise.reject(new Error('Waiting for host - the owner\'s PC is not running the Storage Keeper right now.'));
-                }
-                if (r.status === 429) {
-                    return Promise.reject(new Error('The host is already compiling another script. Try again in a moment.'));
-                }
-                return Promise.reject(new Error((data && data.error) || ('the host refused the script (HTTP ' + r.status + ')')));
+                if (r.status === 429) throw new Error('The host is already compiling another script. Try again in a moment.');
+                if (r.status === 401) throw new Error('The host rejected the ticket. Restart the Storage Keeper and try again.');
+                throw new Error((data && data.error) || ('the host refused the script (HTTP ' + r.status + ')'));
             }
             shProgressDone();
-            var secs = shFormatDuration(Date.now() - started);
-            showNotification('Script Created', 'Compiled on the host in ' + secs + '.', 'success', 6000);
+            showNotification('Script Created', 'Compiled on the host in ' + shFormatDuration(Date.now() - started) + '.', 'success', 6000);
             shProgressHide();
             return { result: data.code, dbgInfo: data.dbgInfo || {}, elapsedMs: data.elapsedMs };
         });
     }).catch(function (e) {
         clearInterval(tick);
         shProgressHide();
-        if (e && e.message) throw e;
-        throw new Error('could not reach the host');
+        // A network-level failure reaching the tunnel is the "waiting for
+        // host" case, and it should say so rather than surfacing as a
+        // generic failure.
+        if (e && (e.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(String(e.message)))) {
+            throw new Error('Could not reach the host. Start the Storage Keeper on the owner\'s PC and check the tunnel is up.');
+        }
+        throw e;
     });
 }
 
@@ -6759,6 +6874,18 @@ function openScriptSettings(projectId, scriptId) {
         + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_USERS_KEY_HERE"</code>'
         + '</div>'
     ) : '';
+    // A stripped script used to open this modal with an empty code pane and no
+    // explanation, which reads as data loss. The cloud copy is intact and the
+    // loadstring above still works - only the local copy is gone.
+    var strippedHtml = (script.codeStripped || script.sourceStripped) ? (
+        '<div style="margin-top:12px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:12px;">'
+        + '<p style="color:#ffaa00; font-size:13px; margin:0 0 6px 0; font-weight:600;">Local code copy dropped (not lost)</p>'
+        + '<p style="color:#8888aa; font-size:11px; margin:0;">'
+        + (script.codeBytes ? 'Obfuscated output was ' + Math.round(script.codeBytes / 1000) + ' KB, ' : '')
+        + 'which is more than browser storage can hold. The uploaded script and its loadstring are unaffected - '
+        + 'the code simply is not kept on this device. Re-obfuscate from Edit if you want a local copy again.'
+        + '</p></div>'
+    ) : '';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px; max-height:90vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
@@ -6767,6 +6894,7 @@ function openScriptSettings(projectId, scriptId) {
             ${loadstringHtml}
             ${specialKeyHtml}
             ${keyInfoHtml}
+            ${strippedHtml}
             <div class="form-group"><label>Visibility</label><select id="scriptVisibility"><option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
                 <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>

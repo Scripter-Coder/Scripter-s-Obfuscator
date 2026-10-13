@@ -18,6 +18,8 @@ Run it:  py Storage Keeper/run.py
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -74,7 +76,11 @@ ROUTE_OBFUSCATE_HEALTH = re.compile(r"^/v1/obfuscate/health$")
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    # X-SH-Ticket is how a browser authorises one compile without ever holding
+    # the permanent bearer token. If it is not allowed here the preflight fails
+    # and the request is dropped before it leaves the page - which presents as
+    # "the host is down" and sends the user looking at the wrong machine.
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-SH-Ticket",
     "Access-Control-Max-Age": "600",
     "Vary": "Origin",
 }
@@ -245,6 +251,58 @@ class Handler(BaseHTTPRequestHandler):
         if len(presented) != len(expected):
             return False
         return hmac.compare_digest(presented, expected)
+
+    def _authorized_or_ticket(self) -> bool:
+        """The permanent token, OR a short-lived compile ticket.
+
+        WHY A TICKET EXISTS
+
+        # The browser must be able to compile HERE, not through the worker.
+        # A 6000-line script takes 100+ seconds on this machine, and a Worker
+        # that holds a subrequest open that long dies with HTTP 520 - which the
+        # page showed as "Cloudflare can't understand the response", naming
+        # nothing about the real problem. Measured: the same compile through
+        # the proxy is unusable; directly it works.
+
+        # So the WORKER mints a ticket and gets out of the way. The keeper's
+        # permanent token never leaves the worker, so nothing about it is in
+        # public JavaScript, and a ticket only authorises one compile and
+        # expires in minutes.
+
+        # Signed with the same secret the worker already holds
+        # (SH_STORE_TOKEN), so there is no second secret to configure and
+        # therefore no second secret to forget.
+        #
+        #   ticket = b64url({"exp": <unix ms>}) "." hex(HMAC-SHA256(payload))
+        #
+        # The signature covers the expiry, so a ticket cannot be extended by
+        # editing it - the same reasoning as signGrant in the worker.
+        """
+        if self._authorized():
+            return True
+        raw = (self.headers.get("X-SH-Ticket") or "").strip()
+        if not raw:
+            return False
+        dot = raw.rfind(".")
+        if dot <= 0:
+            return False
+        payload, sig = raw[:dot], raw[dot + 1:]
+        secret = str(self.config.token or "")
+        if not secret:
+            return False
+        want = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(want, sig):
+            return False
+        try:
+            pad = "=" * (-len(payload) % 4)
+            body = json.loads(base64.urlsafe_b64decode(payload + pad).decode("utf-8"))
+        except Exception:
+            return False
+        exp = int(body.get("exp") or 0)
+        if not exp or exp < int(time.time() * 1000):
+            return False
+        return True
 
     def _require_auth(self) -> bool:
         if self._authorized():
@@ -524,7 +582,12 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_obfuscate_health()
             return
         if ROUTE_OBFUSCATE.match(parsed.path):
-            if not self._require_auth():
+            # Either the permanent token (the worker's own calls) or a
+            # short-lived ticket minted by the worker for a browser compile.
+            # See _authorized_or_ticket for why a browser needs its own path.
+            if not (self._authorized() or self._authorized_or_ticket()):
+                self._drain_body()
+                self._fail(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED)
                 return
             self._serve_obfuscate()
             return

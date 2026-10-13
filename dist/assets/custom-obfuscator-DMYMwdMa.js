@@ -1422,22 +1422,55 @@ export function applyCustomObfuscator(code, options, debugInfo) {
             bcOpts.seedOverride = options._vmSeedValue;
         }
         // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
+        // FAIL LOUD, NOT SILENT.
+        //
+        // applyBytecodeVm returns null (rather than throwing) on any
+        // unsupported construct, so the tier below used to degrade to the
+        // lite pass with no signal at all. That is how a UTF-8 BOM in the
+        // customer's script silently shipped a 33 KB static-key artifact
+        // instead of the 355 KB VM - recoverable in one pass by a
+        // deobfuscator bot. A protection failure must never be invisible,
+        // so the reason is captured here and surfaced to the caller.
+        var vmReason = '';
+        function tryBytecodeVm() {
+            var probe = bcOpts;
+            try {
+                probe = Object.assign({}, bcOpts, { rethrow: true });
+                var r = applyBytecodeVm(code, probe);
+                if (!r) vmReason = 'bytecode backend declined the source (unsupported construct or denied identifier)';
+                return r;
+            } catch (e) {
+                vmReason = (e && e.message) ? String(e.message).slice(0, 240) : String(e);
+                return null;
+            }
+        }
         if (profName === 'FAST' && !options.vmTier && selectedTarget !== 'luau') {
-            try { bc = applyBytecodeVm(code, bcOpts); } catch(e){ bc=null; }
+            bc = tryBytecodeVm();
             var liteTry = applyVmPass(code);
             if (liteTry !== code) { vmCode = liteTry; if(debugInfo) debugInfo.vmApplied='lite-FAST'; }
             else if (bc) { vmCode = bc; if(debugInfo) debugInfo.vmApplied='bytecode-FAST'; }
             else { vmCode = code; }
         } else {
-            try { bc = applyBytecodeVm(code, bcOpts); } catch (e) { bc = null; }
+            bc = tryBytecodeVm();
             if (bc) {
                 vmCode = bc;
                 if (debugInfo) debugInfo.vmApplied = 'bytecode';
             } else {
                 if (selectedTarget !== 'lua51') throw new Error('Target-specific bytecode backend failed for ' + selectedTarget + '; refusing generic fallback');
+                // Opt-in strict mode: refuse to ship the weakened artifact
+                // instead of degrading, for callers that would rather fail
+                // the build than hand out a reversibly-protected script.
+                if (options.strictVm) throw new Error('Bytecode VM failed and strictVm is set, refusing to ship the lite fallback: ' + (vmReason || 'unknown reason'));
                 options._vmSeedGenv = null;
                 vmCode = applyVmPass(code);
                 if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
+            }
+        }
+        // Surface every degradation to the caller, whatever tier we ended on.
+        if (debugInfo && vmReason && String(debugInfo.vmApplied || '').indexOf('bytecode') !== 0) {
+            debugInfo.vmFallback = vmReason;
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn('[ScripterHub] Bytecode VM did not run (' + vmReason + ') - shipping the weaker lite tier instead. Script source is NOT VM-protected for this build.');
             }
         }
     }

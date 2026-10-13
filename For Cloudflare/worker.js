@@ -1139,10 +1139,15 @@ const SPLITKEY_GENV = '__SH_SPLITKEY';
 //
 // The header must be listed here or the browser deletes the request. There is no
 // way to work around it from the client other than not sending the header.
+//
+// X-SH-Ticket is here for the same reason and is just as load-bearing. The
+// browser presents it to the host when compiling directly, and a preflight that
+// does not allow it means every single host compile is blocked before it is
+// sent - which would look exactly like the host being down.
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-SH-Token, X-SH-User-Token',
+    'Access-Control-Allow-Headers': 'Content-Type, X-SH-Token, X-SH-User-Token, X-SH-Ticket',
     // Lets the diagnostics panel and the owner panel read the status off a
     // cross-origin response. Without it the status is invisible in the browser,
     // which is the other half of why this took so long to find.
@@ -2934,18 +2939,33 @@ async function storeDelete(env, id, kind) {
     return !!out.ok;
 }
 
+// STORAGE MUST SPLIT WHERE DELIVERY STOPS INLINING.
+//
+// putBlob used to split at CHUNK_THRESHOLD (~25 MB, a KV limit) while delivery
+// inlines only up to INLINE_DELIVERY_MAX (6 MB, a DELIVERY limit). Anything in
+// between - and a real script landed there at 18,592,590 bytes - was stored as
+// one whole value with no parts, so it could neither be inlined nor chained and
+// was refused. That is the same class of bug the constant block above warns
+// about, in the opposite direction: two independent numbers with a gap between
+// them.
+//
+// One number, derived from the delivery limit, so the gap cannot reopen.
+// A chunk is also delivered as a single response, so sizing chunks at the
+// inline cap is the same reasoning as capping the inline response there.
+const CHUNK_DELIVERY_MAX = INLINE_DELIVERY_MAX;
+
 async function putBlob(env, id, prefix, text) {
     const s = String(text);
     const enc = !!kekConfigured(env);
-    if (s.length <= CHUNK_THRESHOLD) {
-        // legacy single-value path (scripts < ~25MB - the common case)
+    if (s.length <= CHUNK_DELIVERY_MAX) {
+        // One value, and it fits in one response. Nothing left to fetch.
         await env.LOADERS_KV.put(prefix + id, enc ? await encryptAtRest(env, s) : s, { expirationTtl: LOADER_TTL });
         return { chunked: false, len: s.length, encrypted: enc };
     }
-    const n = Math.ceil(s.length / CHUNK_THRESHOLD);
+    const n = Math.ceil(s.length / CHUNK_DELIVERY_MAX);
     if (n > MAX_CHUNKS) throw new Error('too large');
     for (let i = 0; i < n; i++) {
-        const part = s.slice(i * CHUNK_THRESHOLD, (i + 1) * CHUNK_THRESHOLD);
+        const part = s.slice(i * CHUNK_DELIVERY_MAX, (i + 1) * CHUNK_DELIVERY_MAX);
         await env.LOADERS_KV.put(KV_CHUNK_PREFIX + prefix + id + '_' + i,
             enc ? await encryptAtRest(env, part) : part, { expirationTtl: LOADER_TTL });
     }
@@ -5492,6 +5512,64 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // and it is the specific hole the audit recorded as G06.
         // ==================================================================
 
+        // ---------- POST /sh/obfuscate-ticket : a short-lived compile pass ----------
+        //
+        // THIS REPLACED A PROXY, AND THE PROXY WAS THE BUG.
+        //
+        // The first design had the browser POST the script to this worker and
+        // the worker relay it to the keeper. A 6000-line script takes 100+
+        // seconds on the owner's machine, and a Worker holding a subrequest
+        // open that long dies with HTTP 520 - which Cloudflare reports as
+        // "can't understand the response from your origin", naming nothing
+        // about the real problem. It looked like the host was broken; the host
+        // was fine and simply too slow to be proxied.
+        //
+        // So the worker gets OUT OF THE WAY. It authenticates the user (fast,
+        // milliseconds), mints a ticket signed with the keeper's own secret,
+        // and hands the browser the keeper's address. The browser then compiles
+        // directly against the host, where there is no proxy to time out.
+        //
+        // The keeper's permanent token STILL never leaves this worker: a
+        // ticket authorises one compile and expires. main.js is public, so a
+        // permanent token in the page would be a token anyone could read, and
+        // anyone holding it could spend the owner's machine and reach the
+        // stored scripts.
+        if (url.pathname === '/sh/obfuscate-ticket' && request.method === 'POST') {
+            if (!env.SH_STORE_URL || !env.SH_STORE_TOKEN) {
+                return jsonResponse({ ok: false, error: 'host not configured' }, 503);
+            }
+            let tok = '';
+            try {
+                const h = request.headers.get('X-SH-User-Token') || '';
+                if (h) tok = h;
+                else {
+                    const parsed = JSON.parse(await request.clone().text());
+                    tok = String(parsed.userToken || '');
+                }
+            } catch (e) { tok = ''; }
+            let user = null;
+            if (tok) { try { user = await verifyUserToken(tok, env); } catch (e) { user = null; } }
+            if (!user) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+
+            const limited = await guardRate(env, 'obfuscate', rateIdentity(request, url));
+            if (limited) return limited;
+
+            // Signed with the SAME secret the keeper already has, so there is no
+            // second secret to configure and therefore none to forget. The
+            // signature covers the expiry, so a ticket cannot be extended by
+            // editing it.
+            const exp = Date.now() + 10 * 60 * 1000;   // 10 minutes
+            const payload = b64u(new TextEncoder().encode(JSON.stringify({ exp })));
+            const sig = await hmacHex(String(env.SH_STORE_TOKEN), payload);
+            return jsonResponse({
+                ok: true,
+                keeperUrl: String(env.SH_STORE_URL).replace(/\/+$/, ''),
+                ticket: payload + '.' + sig,
+                expiresAt: exp,
+                email: String(user.email || '')
+            });
+        }
+
         // ---------- POST /sh/obfuscate : compile on the OWNER'S MACHINE ----------
         //
         // A browser tab cannot obfuscate a large script. A 6000-line Lua file
@@ -5519,63 +5597,31 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // restart; only the worker needs to know the current one, and the
         // browser keeps posting to a URL that never changes.
         if (url.pathname === '/sh/obfuscate' && request.method === 'POST') {
-            if (!env.SH_STORE_URL || !env.SH_STORE_TOKEN) {
-                return jsonResponse({ ok: false, error: 'The host is not configured.', reason: 'nohost' }, 503);
-            }
-            let tok = '';
-            try {
-                const h = request.headers.get('X-SH-User-Token') || '';
-                if (h) {
-                    tok = h;
-                } else {
-                    // Custom headers are what a cross-origin preflight is FOR,
-                    // and the page can send whatever is preflighted, so the
-                    // body is the reliable place to find the credential.
-                    const clone = request.clone();
-                    const parsed = JSON.parse(await clone.text());
-                    tok = String(parsed.userToken || '');
-                }
-            } catch (e) { tok = ''; }
-
-            // Signed in, or nothing. An anonymous caller must not be able to
-            // use the owner's machine as a free compile service.
-            let user = null;
-            if (tok) { try { user = await verifyUserToken(tok, env); } catch (e) { user = null; } }
-            if (!user) return jsonResponse({ ok: false, error: 'Not authorized.', reason: 'noauth' }, 401);
-
-            const bodyText = await request.text();
-            const limited = await guardRate(env, 'obfuscate', rateIdentity(request, url));
-            if (limited) return limited;
-
-            let upstream;
-            try {
-                upstream = await fetch(String(env.SH_STORE_URL).replace(/\/+$/, '') + '/v1/obfuscate', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Bearer ' + String(env.SH_STORE_TOKEN),
-                        'Content-Type': 'application/json'
-                    },
-                    body: bodyText
-                });
-            } catch (e) {
-                // The tunnel is down, the PC is asleep, or DNS has not settled.
-                // "waiting for host" is the honest answer; a 500 would send the
-                // user hunting for a syntax error in their own code.
+            // RETIRED, ON PURPOSE. IT WILL NOT COME BACK.
+            //
+            // This used to relay the compile to the keeper. It was the direct
+            // cause of the HTTP 520 the user hit on a 6000-line script: a
+            // Worker that holds a subrequest open across a 100-second Node
+            // compile is killed by Cloudflare, and 520 is reported as "can't
+            // understand the response from your origin" - which points at the
+            // owner's machine and hides that this file was the problem.
+            //
+            // The relay is now split in two fast steps (see /sh/obfuscate-ticket
+            // above): authenticate + mint a ticket here in milliseconds, then
+            // let the browser POST to the keeper directly, where there is no
+            // proxy to expire.
+            //
+            // The route is kept ONLY so that a browser tab still running the
+            // old main.js gets a sentence it can act on instead of a bare 404.
+            // It answers immediately and never opens a subrequest.
+            if (request.headers.get('X-SH-Refresh') !== '1') {
                 return jsonResponse({
                     ok: false,
-                    error: 'The host is not reachable right now. Start the Storage Keeper on the owner\'s PC and try again.',
-                    reason: 'hostdown'
-                }, 503);
+                    reason: 'stale',
+                    error: 'This page is running an older copy of the site. Reload it (Ctrl+F5), then obfuscate again.'
+                }, 409);
             }
-            const text = await upstream.text();
-            return new Response(text, {
-                status: upstream.status,
-                headers: {
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'Access-Control-Allow-Origin': '*',
-                    'Cache-Control': 'no-store'
-                }
-            });
+            return jsonResponse({ ok: false, error: 'unreachable' }, 400);
         }
 
         // ---------- GET /sh/obfuscate/health : can the host take work? ----------
