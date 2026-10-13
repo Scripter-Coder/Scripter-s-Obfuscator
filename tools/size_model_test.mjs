@@ -97,19 +97,49 @@ for (const [label, opts] of [['bytecode', {}], ['vm-lite', { vmTier: 'lite' }], 
 // --- over-budget must be flagged, and blamed on the right thing ------------
 {
     const big = build(mk(60), {});
-    check('a large bytecode build is reported over budget', big.dbg.artifactOverBudget === true,
-        `predicted ${big.dbg.postVmEstimatedOutputKB}KB`);
-    check('and it is unreachable, not merely tight',
-        big.dbg.budgetUnreachableAfterVm === true);
-    check('the VM is named as the cause, not the caller\'s script',
-        big.dbg.vmAppliedTier === 'bytecode' && big.dbg.vmOutputKB > big.dbg.sourceKB * 10,
-        `vm=${big.dbg.vmOutputKB}KB src=${big.dbg.sourceKB}KB`);
-    check('a cheaper tier is recommended when over budget',
-        big.dbg.recommendedVmTier === 'lite', 'got ' + big.dbg.recommendedVmTier);
+    // CHANGED. These used to assert a large build IS over budget, which was
+    // true only while every script silently took the bytecode VM regardless of
+    // size. The tier is now chosen by what fits, so a large build is expected
+    // to come back UNDER budget - and if it does not, that is the failure.
+    check('a large build is downgraded to a tier that fits',
+        big.dbg.sourceTierChosen === 'none' || big.dbg.sourceTierChosen === 'lite',
+        'chose ' + big.dbg.sourceTierChosen);
+    check('the downgraded artifact is inside the budget',
+        big.dbg.artifactOverBudget !== true,
+        `predicted ${big.dbg.postVmEstimatedOutputKB}KB, tier ${big.dbg.sourceTierChosen}`);
+    check('the downgrade is reported, not silent',
+        big.dbg.sourceTierExplicit === false && typeof big.dbg.noVmMaxSourceKB === 'number');
+    check('the VM output is still reported so the jump is visible',
+        typeof big.dbg.vmOutputKB === 'number' && big.dbg.vmOutputKB > 0);
 
     const small = build(mk(3), {});
+    check('a small build keeps the strongest tier',
+        small.dbg.sourceTierChosen === 'bytecode',
+        'chose ' + small.dbg.sourceTierChosen + ', vmApplied=' + small.dbg.vmAppliedTier);
     check('a small build under budget is NOT flagged', small.dbg.artifactOverBudget !== true,
         `predicted ${small.dbg.postVmEstimatedOutputKB}KB`);
+}
+
+// --- the tier thresholds are what make large uploads work ------------------
+{
+    const small = build(mk(3), {});
+    // Measured expansion per tier: bytecode 36.9x, lite 16.9x, none 1.0x.
+    // The ceilings must follow from those, not from taste.
+    const expectBytecode = Math.floor((600 - 29) / (36.9 * 4.15));
+    const expectLite = Math.floor((600 - 29) / (16.9 * 4.15));
+    const expectNone = Math.floor((600 - 29) / (1.0 * 4.15));
+    check('bytecode ceiling matches its measured expansion',
+        Math.abs(small.dbg.bytecodeMaxSourceKB - expectBytecode) <= 1,
+        `${small.dbg.bytecodeMaxSourceKB} vs ${expectBytecode}`);
+    check('vm-lite ceiling matches its measured expansion',
+        Math.abs(small.dbg.liteMaxSourceKB - expectLite) <= 1,
+        `${small.dbg.liteMaxSourceKB} vs ${expectLite}`);
+    check('no-VM ceiling matches its measured expansion',
+        Math.abs(small.dbg.noVmMaxSourceKB - expectNone) <= 1,
+        `${small.dbg.noVmMaxSourceKB} vs ${expectNone}`);
+    check('the ceilings strictly decrease (stronger tier, smaller reach)',
+        small.dbg.bytecodeMaxSourceKB < small.dbg.liteMaxSourceKB
+        && small.dbg.liteMaxSourceKB < small.dbg.noVmMaxSourceKB);
 }
 
 // --- the budget must be checked against the VM, not the source -------------

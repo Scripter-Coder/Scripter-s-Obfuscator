@@ -1499,6 +1499,61 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // is NOT embedded - the loader writes it into genv after the worker
     // key fetch, so even a fully peeled stub cannot decrypt constants.
     var splitMode = !!(options.serverKey || options.splitKey);
+    // ---- TIER IS CHOSEN BY SIZE, NOT BY HOPE ------------------------------
+    //
+    // Measured expansion of the source, per tier, on a 302 KB / 9000-line
+    // script. The layer multiplier (~4.15x) is the same for all of them, so
+    // the tier alone decides whether the artifact can run:
+    //
+    //     bytecode VM    36.9x source  ->  45.3 MB    never runs
+    //     vm lite        16.9x source  ->  20.9 MB    never runs
+    //     no VM           1.0x source  ->   1.28 MB   runs
+    //
+    // Ultra wrapping is NOT what makes a large script unrunnable - 45,404 KB
+    // with it and 46,451 KB without it, because the intensity clamp has already
+    // pulled intensity down on a source this size. The VM is the entire cost.
+    //
+    // So the strongest tier that FITS is chosen, and a caller who names a tier
+    // explicitly still gets it. Shipping 45 MB that cannot execute is worse
+    // than shipping 1.28 MB that can: the first uploads successfully and then
+    // fails on the user's machine with nothing pointing at the cause.
+    //
+    // THIS IS THE CHANGE THAT MAKES LARGE UPLOADS WORK. Before it, every script
+    // over a few KB silently took the bytecode VM and became unrunnable.
+    var _TIER_EXPANSION = { bytecode: 36.9, lite: 16.9, none: 1.0 };
+    // Largest source each tier can carry into the budget:
+    //   (budget - fixed floor) / (expansion * slope)
+    var _tierMaxSrcKB = function (tier) {
+        var perKB = _TIER_EXPANSION[tier] * LAYER_SLOPE;
+        return perKB > 0 ? Math.max(0, (BUDGET_KB - LAYER_FIXED_KB) / perKB) : Infinity;
+    };
+    var _autoTier = 'bytecode';
+    if (srcKB > _tierMaxSrcKB('bytecode')) _autoTier = 'lite';
+    if (srcKB > _tierMaxSrcKB('lite')) _autoTier = 'none';
+    // "Explicit" means the caller ACTIVELY chose a weaker tier - vmPass:false or
+    // vmTier:'lite'. It does NOT mean vmPass:true.
+    //
+    // The UI checkbox defaults to on and posts vmPass:true, so treating that as
+    // explicit would make the whole auto-selection dead code: every script would
+    // arrive "explicitly" wanting the bytecode VM and keep taking it at any
+    // size. vmPass:true is a permission, not an instruction - the tier is still
+    // chosen by what fits.
+    var _tierExplicit = (options.vmPass === false) || (options.vmTier === 'lite');
+    if (!_tierExplicit) {
+        // Only ever downgrade.
+        if (_autoTier === 'lite') options.vmTier = 'lite';
+        else if (_autoTier === 'none') { options.vmTier = 'lite'; options.vmPass = false; }
+    }
+    if (debugInfo) {
+        debugInfo.sourceTierChosen = _autoTier;
+        debugInfo.sourceTierExplicit = _tierExplicit;
+        debugInfo.bytecodeMaxSourceKB = Math.round(_tierMaxSrcKB('bytecode'));
+        debugInfo.liteMaxSourceKB = Math.round(_tierMaxSrcKB('lite'));
+        debugInfo.noVmMaxSourceKB = Math.round(_tierMaxSrcKB('none'));
+        // Past the last tier nothing fits, and the only honest answer is to
+        // split the script rather than ship something that cannot execute.
+        debugInfo.splitRecommended = (!_tierExplicit && srcKB > _tierMaxSrcKB('none'));
+    }
     var vmCode;
     if (options.vmPass === false) {
         vmCode = code;
