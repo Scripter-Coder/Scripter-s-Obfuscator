@@ -6069,7 +6069,29 @@ function shCompileDirect(ticket, code, options) {
             shProgressDone();
             showNotification('Script Created', 'Compiled on the host in ' + shFormatDuration(Date.now() - started) + '.', 'success', 6000);
             shProgressHide();
-            return { result: data.code, dbgInfo: data.dbgInfo || {}, elapsedMs: data.elapsedMs };
+            // THE SPLIT KEY ARRIVES AT THE TOP LEVEL, NOT INSIDE dbgInfo.
+            //
+            // host_obfuscate.mjs emits `payload.splitKey` as a sibling of
+            // `payload.dbgInfo`, while the in-browser worker path puts it inside
+            // dbgInfo. This line took dbgInfo wholesale and dropped the sibling,
+            // so the host path - which is EVERY script over SH_HOST_MIN_SOURCE,
+            // i.e. exactly the large ones - always produced no split key.
+            //
+            // obfuscateScriptCode then took the `else` branch, resolve()d a bare
+            // string with no splitKey, and the upload carried none. The server's
+            // guard then refused it:
+            //
+            //     POST /sh/upload 400
+            //     this build has no server-held key
+            //
+            // which is a correct refusal of a correctly-detected broken build.
+            // Nothing was wrong with the guard; everything was wrong with what
+            // reached it. Small scripts compile in the worker, take the other
+            // shape, and were never affected - which is why this looked like
+            // "large scripts are broken" rather than "one field is dropped".
+            var dbgInfo = data.dbgInfo || {};
+            if (data.splitKey && !dbgInfo.splitKey) dbgInfo.splitKey = data.splitKey;
+            return { result: data.code, dbgInfo: dbgInfo, elapsedMs: data.elapsedMs };
         });
     }).catch(function (e) {
         clearInterval(tick);
