@@ -874,6 +874,72 @@ console.log('[B13] a malformed SHX reports, it never indexes nil...');
   else { no(bad.length + ' malformed SHX envelope(s) mishandled:'); for (const b of bad) console.log('         ' + b); }
 }
 
+// -----------------------------------------------------------------------------
+console.log('[B14] a SPENT nonce mints a fresh session instead of failing...');
+// -----------------------------------------------------------------------------
+// The nonce is single-use by design. But the bootstrap's GET helper tries
+// request() first and falls back to game:HttpGet, and a large script's first
+// request can be slow enough that request() returns empty - so the fallback
+// fires a SECOND request with the SAME nonce. The first spent it. The user saw
+//
+//     [ScripterHub] Denied: nonce
+//
+// which names a security control rather than the timeout that caused it.
+//
+// Verified by making the FIRST delivery answer "SHERR nonce" and requiring the
+// bootstrap to recover on its own, with no user action.
+{
+  let sessions = 0;
+  let deliveries = 0;
+  const r = runBootstrap(factory(ID, BASE, true), {
+    request: (url) => {
+      if (url.includes('/sh/session')) {
+        sessions++;
+        return 'SHS sid' + sessions + ' nonce' + sessions + ' 1700000000';
+      }
+      deliveries++;
+      // The first delivery behaves exactly as a spent nonce does.
+      if (deliveries === 1) return 'SHERR nonce\n';
+      return 'SHL\n-- RECOVERED PAYLOAD\n';
+    },
+    getgenv: true, identifyexecutor: true
+  });
+  const said = (r.printed || []).concat(r.notifications || []).join(' | ');
+  if (r.runtimeError) no('runtime error: ' + r.runtimeError);
+  else if (/Denied: nonce/.test(said)) {
+    no('still reports "Denied: nonce" - the user is told about a security control, not the timeout that caused it');
+  } else if (sessions < 2) {
+    no('no fresh session was minted (sessions=' + sessions + ') - a spent nonce is still fatal');
+  } else if (deliveries < 2) {
+    no('the delivery was not retried (deliveries=' + deliveries + ')');
+  } else if (r.delivered.length !== 1 || !r.delivered[0].includes('RECOVERED')) {
+    no('the retry did not deliver the payload. delivered: ' + JSON.stringify(r.delivered));
+  } else {
+    ok('a spent nonce recovered on its own: ' + sessions + ' sessions, ' + deliveries + ' deliveries, payload delivered');
+  }
+}
+
+// -----------------------------------------------------------------------------
+console.log('[B15] a REAL refusal is still reported, not retried away...');
+// -----------------------------------------------------------------------------
+// The retry above must not swallow genuine refusals. Only a SPENT nonce is
+// recoverable; a banned or private script has to surface.
+{
+  let sessions = 0;
+  const r = runBootstrap(factory(ID, BASE, true), {
+    request: (url) => {
+      if (url.includes('/sh/session')) { sessions++; return 'SHS s1 n1 1700000000'; }
+      return 'SHERR banned\n';
+    },
+    getgenv: true, identifyexecutor: true
+  });
+  const said = (r.printed || []).concat(r.notifications || []).join(' | ');
+  if (r.runtimeError) no('runtime error: ' + r.runtimeError);
+  else if (!/banned/i.test(said)) no('a banned script stopped reporting as banned: ' + JSON.stringify(said));
+  else if (sessions !== 1) no('minted ' + sessions + ' sessions for a genuine refusal - only a spent nonce should retry');
+  else ok('a genuine refusal still reports, and spends exactly one session');
+}
+
 console.log('='.repeat(72));
 console.log('BOOTSTRAP EXECUTION   ' + pass + ' passed, ' + fail + ' failed');
 console.log('='.repeat(72));

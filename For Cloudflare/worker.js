@@ -6872,7 +6872,46 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'local S,N=resp:match("^SHS (%S+) (%S+) %S+")\n'
         + 'if not S or not N then DIE("Bad response from the license server.") return end\n'
         // ---- 3. spend it. one shot, this is where the bytes come from.
+        //
+        // A SPENT NONCE IS RECOVERED, NOT REPORTED.
+        //
+        // The nonce is single-use by design: presenting it twice is refused
+        // with SHERR nonce. But the bootstrap's own GET helper tries request()
+        // first and falls back to game:HttpGet, and a large script's first
+        // request can be slow enough over a tunnel that request() comes back
+        // empty - at which point the fallback fires a SECOND request carrying
+        // the SAME nonce. The first one spent it, so the second is refused, and
+        // the user saw:
+        //
+        //     [ScripterHub] Denied: nonce
+        //
+        // which names a security control rather than the timeout that caused
+        // it. Reporting it is worse than useless: the script exists, the key is
+        // valid, and retrying the loadstring is the correct user action, but
+        // nothing in that message says so.
+        //
+        // So a spent nonce mints a FRESH session and spends that instead, once.
+        // This cannot be abused: the caller already proved it may have a
+        // session, and the retry is bounded at one extra session.
         + 'local body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N)\n'
+        // Matched, not sliced. The first draft used body:sub(1,10)=="SHERR
+        // nonce", and "SHERR nonce" is ELEVEN characters - so the recovery
+        // never fired and the test caught it. An off-by-one in a security
+        // recovery path is exactly the kind of thing a substring check hides.
+        + 'local rsn=(type(body)=="string") and body:match("^SHERR (%S+)") or nil\n'
+        + 'if rsn=="nonce" then\n'
+        + '  local r2=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),u=tostring(G.ScripterHubUser or "")}))\n'
+        // NOT `local S2,N2 = (cond) and r2:match(...) or nil`.
+        //
+        // Lua's `and` truncates a multiple-value expression to ONE value, so
+        // that form assigned the first capture to S2 and left N2 nil forever -
+        // the retry never fired and the guard was dead code. A direct
+        // `local a,b = s:match(...)` does propagate both. The first mint a few
+        // lines up is written that way for exactly this reason.
+        + '  local S2,N2=nil,nil\n'
+        + '  if type(r2)=="string" then S2,N2=r2:match("^SHS (%S+) (%S+) %S+") end\n'
+        + '  if S2 and N2 then S,N=S2,N2; body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N) end\n'
+        + 'end\n'
         + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
         + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'
         // ---- 4. assemble the payload

@@ -1054,3 +1054,49 @@ run the real Lua and prove the SHX envelope strips the key line into genv,
 leaves SHL working, and reports malformed envelopes instead of indexing nil.
 
 ---
+
+## D30 - A spent nonce is recovered, not reported
+
+The second error from the same report: `[ScripterHub] Denied: nonce`, using the
+explicit loader stub rather than the one-liner.
+
+Reproduced against the live deployment by replaying a session: the second use of
+a `(sid, nonce)` pair is refused with exactly that string. So the user's bootstrap
+presented the same pair twice.
+
+It does so itself. `GET()` tries `request()` first and falls back to
+`game:HttpGet`, and a large script's first request can be slow enough over a
+tunnel that `request()` comes back empty - so the fallback fires a SECOND
+delivery carrying the SAME nonce. The first spent it; the second is refused.
+
+The message names a security control rather than the timeout that caused it. The
+script exists, the key is valid, and re-running the loadstring is the correct
+user action, but nothing in "Denied: nonce" says so.
+
+So a spent nonce now mints a FRESH session and spends that instead, once. It
+cannot be abused: the caller already proved it may hold a session, and the retry
+is bounded at one extra session. Genuine refusals - banned, private, expired -
+still report, and B15 asserts they spend exactly one session so the recovery
+cannot swallow them.
+
+**Two bugs found while writing the recovery, both of which made it dead code.**
+
+1. `body:sub(1,10)=="SHERR nonce"` - "SHERR nonce" is ELEVEN characters, so the
+   comparison never matched. Replaced with a `match("^SHERR (%S+)")` capture,
+   which cannot drift by a character count.
+
+2. `local S2,N2=(type(r2)=="string") and r2:match(...) or nil` - Lua's `and`
+   truncates a multiple-value expression to ONE value, so S2 took the first
+   capture and N2 was nil forever. The retry never ran and nothing was raised,
+   because `if S2 and N2` is an ordinary guard over a value that is always nil.
+   The existing mint a few lines above is written as a direct
+   `local a,b = s:match(...)` for exactly this reason, and the asymmetry is
+   what made it findable.
+
+Neither would be caught by a string check on the generated Lua - both compile,
+both parse, both look correct. B14 runs the real Lua VM, gets `SHERR nonce`, and
+requires the bootstrap to recover on its own.
+
+`tools/bootstrap_exec_test.mjs` is 19/19.
+
+---
