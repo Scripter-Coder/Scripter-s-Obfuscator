@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // ScripterHub Custom Obfuscator Engine v3.0
 // ------------------------------------------------------------
 // A REAL working Lua/Luau obfuscator that runs fully in JS:
@@ -1299,29 +1299,35 @@ export function applyCustomObfuscator(code, options, debugInfo) {
 
     // ---- SIZE-AWARE INTENSITY BUDGET -------------------------------------
     //
-    // THE BUG THIS FIXES. The clamps above bound LAYER COUNT and nothing else, so a
-    // 190 KB script and a 10,000 line script received identical settings. The executor
-    // pays for the OUTPUT, not the layer count, and the output is source x multiplier.
+    // Applied TWICE, and the second application is the one that matters.
     //
-    // Measured on this machine (tools/profile_size_budget.mjs, plus the runtime figures
-    // from tools/artifact_run_cost.mjs):
+    // The first version of this budget ran once, on the SOURCE, before the VM
+    // pass. That made it structurally blind to the largest term in the output.
+    // Measured on a 652-byte script (tools/ tier probe):
     //
-    //     intensity <= 4  ->  multiplier ~4.0-4.9x   (FAST / BALANCED / SECURE)
-    //     intensity 10    ->  multiplier ~22x
-    //     intensity 22    ->  multiplier ~73-97x     (ultra)
+    //     no VM          ->   33 KB    53x
+    //     VM lite        ->  238 KB   374x
+    //     bytecode VM    ->  300 KB   471x
     //
-    //     a 0.26 MB artifact runs in ~4.5 s
-    //     a 3.2  MB artifact takes ~52 s and drops the Roblox client to 0 fps
-    //     a 15   MB artifact never runs anywhere
+    // The VM multiplies the input by ~9x on its own, and it runs AFTER the
+    // budget had already decided. The budget predicted 53 KB and the artifact
+    // was 300 KB - under-reporting by 5.7x - so for a small script it reported
+    // success while shipping something the budget existed to prevent.
     //
-    // That last line is the whole story: a 15 MB artifact is a ~190 KB script run
-    // through ultra, not a huge script. Ultra multiplied by up to 97x with no reference
-    // to how much source it was multiplying.
+    // It also clamped the wrong knob. Intensity is not what drives size here:
+    // intensity 1 and intensity 6 measured 31 KB and 33 KB on the same input.
+    // Clamping intensity cannot bound an artifact whose bulk is fixed VM
+    // machinery.
     //
-    // The budget is an AFFORDABLE MULTIPLIER rather than an output size, because the
-    // multiplier is what the caller controls and it is what decides whether an executor
-    // survives. Tiny sources are unaffected: with a 10 KB input the affordable
-    // multiplier is enormous, nothing is clamped, and SECURE-ultra still means ultra.
+    // So the budget is now a reusable function that can be pointed at ANY
+    // input, and it is pointed at the VM's real output the moment that exists.
+    // Layers are applied after this point, so a clamp here genuinely reduces
+    // what ships.
+    //
+    // Measured runtime cost of an artifact (tools/artifact_run_cost.mjs):
+    //     0.26 MB -> ~4.5 s
+    //     3.2  MB -> ~52 s, drops the client to 0 fps
+    //     15    MB -> never runs anywhere
     var srcKB = Math.max(1, (code ? code.length : 0) / 1024);
     var BUDGET_KB = 600;          // the largest artifact observed running acceptably, x2
     var MULT_FLOOR = 4.0;        // VM + loader overhead that no setting switches off
@@ -1336,31 +1342,122 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // Fitted to both regimes:
     //   mult(i)      4.5 * (i/4)^1.73   -> 4.5x at 4, 22x at 10, ~86x at 22
     //   overhead(i)  22 * (i - 4) KB     -> ~400 KB at ultra, ~0 at intensity <= 4
+    //
+    // THE MODEL ABOVE WAS WRONG, AND MEASUREMENT IS WHAT KILLED IT.
+    //
+    // It predicted a multiplier that rose from 0.4x at intensity 1 to 86x at
+    // intensity 22, so the budget "clamped intensity" to control size. Layer
+    // pass with wraps disabled, measured across four source sizes:
+    //
+    //     srcKB    i=1   i=4   i=10  i=22
+    //       1.0     33    34    37    117
+    //       4.2     46    48    50     48
+    //      17.2    100   102   104    102
+    //      43.7    211   212   214    213
+    //
+    // Intensity does not move the output. Three of the four rows are flat to
+    // within 2 KB across a 22x change in intensity, and least-squares over the
+    // middle three gives outKB = 29 + 4.15 * srcKB. The 1 KB row at i=22 is the
+    // `ultra` flag, not the intensity scale.
+    //
+    // So clamping intensity was a no-op that reported success: the post-VM
+    // clamp fired on every measurement while the artifact stayed 2-4x over the
+    // budget it claimed to enforce. A control that cannot move the thing it
+    // claims to control is worse than none, because it is believed.
+    //
+    // What DOES move the output, measured:
+    //   layers      ~4.15x, plus a ~29 KB floor
+    //   bytecode VM ~30x source, plus a ~36 KB floor   <- the dominant term
+    //   vm lite     ~similar order, cheaper floor
+    var LAYER_FIXED_KB = 29;
+    var LAYER_SLOPE = 4.15;
+    // WRAP IS THE OTHER HUGE TERM, AND IT WAS MISSING ENTIRELY.
+    //
+    // Measured on a 1.2 KB source:
+    //
+    //     no-ultra, no VM              37 KB
+    //     no-ultra, bytecode VM       408 KB
+    //     ultra,    bytecode VM     8,976 KB
+    //
+    // Ultra wrapping is a ~22x multiplier on top of everything else, and the
+    // model predicted ~390 KB for all six configurations. That single missing
+    // term is the reported symptom: a few KB of source producing a multi-megabyte
+    // artifact that then fails on an executor.
+    //
+    // It is driven by the RESOLVED intensity, not by options.ultra directly -
+    // willDoubleWrap = intensity >= 7, willTripleWrap = intensity >= 25 - so it
+    // has to be evaluated after the clamp, or the model describes a build that
+    // never happens.
+    var WRAP_DOUBLE_MULT = 22;
+    var WRAP_TRIPLE_MULT = 46;
+    // HONEST SIZE PREDICTION. Used for REPORTING only - see below.
+    var estOutKB = function (baseKB, intensityNow) {
+        var base = LAYER_FIXED_KB + LAYER_SLOPE * baseKB;
+        if (intensityNow >= 25) return base * WRAP_TRIPLE_MULT;
+        if (intensityNow >= 7) return base * WRAP_DOUBLE_MULT;
+        return base;
+    };
+
+    // THE INTENSITY CLAMP IS A CORRECTNESS GUARD, NOT A SIZE CONTROL.
+    //
+    // Removing it was tried, on the theory that intensity does not move the
+    // output - which the measurement above supports. It does not. It breaks the
+    // EMITTER. With the clamp gone, a 40 KB source at SECURE produced Lua that
+    // does not parse:
+    //
+    //     40 KB SECURE produced invalid Lua:
+    //         [3:12037] unexpected symbol '\' near '18'
+    //
+    // So this clamp stays, on its original multiplier, because tools/
+    // size_budget_test.mjs passes 13/13 with it and fails 8 without it - two of
+    // which are corrupt artifacts rather than merely oversized ones. A silent
+    // Lua syntax error ships to users as an executor error that names nothing.
+    //
+    // It is NOT presented as a size control, because it is not one, and calling
+    // it that is what let the 5.7x blind spot survive: the clamp fired, the
+    // number was reported as clamped, and the artifact was 2-4x over budget.
     var estMult = function (i) { return 4.5 * Math.pow(Math.max(1, i) / 4, 1.73); };
-    var estOutKB = function (i) { return Math.max(0, i - 4) * 22 + srcKB * estMult(i); };
+    var legacyEstKB = function (i) { return Math.max(0, i - 4) * 22 + srcKB * estMult(i); };
     var sizeCap = 1;
     for (var _i = 22; _i >= 1; _i--) {
-        if (estOutKB(_i) <= BUDGET_KB) { sizeCap = _i; break; }
+        if (legacyEstKB(_i) <= BUDGET_KB) { sizeCap = _i; break; }
     }
     var sizeClamped = false;
     if (intensity > sizeCap) { intensity = sizeCap; sizeClamped = true; }
+
+    // Honest verdict for a given input, once the VM has (or has not) run.
+    var budgetVerdict = function (baseKB) {
+        var predicted = estOutKB(baseKB, intensity);
+        return {
+            predictedKB: predicted,
+            overBudget: predicted > BUDGET_KB,
+            // Even the cheapest tier cannot reach the budget for this input.
+            unreachable: baseKB * LAYER_SLOPE > BUDGET_KB
+        };
+    };
+    var _b1 = budgetVerdict(srcKB);
 
     // At intensity 1 the multiplier still cannot go below MULT_FLOOR, so a source larger
     // than BUDGET/MULT_FLOOR cannot reach the budget at ANY setting. Say so out loud,
     // because the alternative is shipping a multi-megabyte artifact silently and hearing
     // about it from a user whose game froze.
-    var unreachableBudget = srcKB * MULT_FLOOR > BUDGET_KB;
+    var unreachableBudget = _b1.unreachable;
     if (debugInfo) {
         debugInfo.sourceKB = Math.round(srcKB);
         debugInfo.budgetKB = BUDGET_KB;
-        debugInfo.estimatedMultiplier = Math.round(estMult(intensity) * 10) / 10;
-        debugInfo.estimatedOutputKB = Math.round(estOutKB(intensity));
+        // PRE-VM, layers-only. Kept under its own name because it is not the
+        // artifact size - the VM has not run yet, and it is the largest term.
+        debugInfo.preVmEstimatedOutputKB = Math.round(_b1.predictedKB);
+        debugInfo.estimatedOutputKB = Math.round(_b1.predictedKB);
         debugInfo.intensityClampedBySize = sizeClamped;
         debugInfo.budgetUnreachable = unreachableBudget;
+        // Layers are a near-constant 4.15x, so the caller's intensity is not
+        // reported as a size lever. It still controls protection strength.
+        debugInfo.sizeModel = 'measured: 29 KB + 4.15x (intensity-independent)';
     }
     if (unreachableBudget && typeof console !== 'undefined' && console.warn) {
-        console.warn('[ScripterHub] source is ' + Math.round(srcKB) + ' KB, so even the lightest' +
-            ' profile yields roughly ' + Math.round(srcKB * MULT_FLOOR) + ' KB, over the ' +
+        console.warn('[ScripterHub] source is ' + Math.round(srcKB) + ' KB, so the layers alone' +
+            ' yield roughly ' + Math.round(_b1.predictedKB) + ' KB, over the ' +
             BUDGET_KB + ' KB executors tolerate. Split the script into modules.');
     }
 
@@ -1472,6 +1569,48 @@ export function applyCustomObfuscator(code, options, debugInfo) {
             if (typeof console !== 'undefined' && console.warn) {
                 console.warn('[ScripterHub] Bytecode VM did not run (' + vmReason + ') - shipping the weaker lite tier instead. Script source is NOT VM-protected for this build.');
             }
+        }
+    }
+
+    // ---- BUDGET, SECOND PASS: against the VM's REAL output ----------------
+    //
+    // The pass above ran on `code`, before this block, so it could not see the
+    // VM's expansion - which is the dominant term. Now `vmCode` exists and its
+    // true length is known, so the budget is finally asked the right question.
+    //
+    // Nothing is clamped here, because there is nothing to clamp: intensity was
+    // measured not to move the output. What this pass does instead is NAME the
+    // cause, which the first pass structurally could not do. A user whose
+    // artifact is undeliverable on an executor needs to be told the VM is the
+    // reason, not their script.
+    var _vmKB = Math.max(1, (vmCode ? vmCode.length : 0) / 1024);
+    var _b2 = budgetVerdict(_vmKB);
+    if (debugInfo) {
+        debugInfo.vmOutputKB = Math.round(_vmKB);
+        debugInfo.vmAppliedTier = debugInfo.vmApplied || 'none';
+        debugInfo.postVmEstimatedOutputKB = Math.round(_b2.predictedKB);
+        // estimatedOutputKB is now the AUTHORITATIVE artifact prediction.
+        //
+        // It used to hold the pre-VM, layers-only figure under this name, so a
+        // reader - the test suite included - took a 41 KB layers-only estimate
+        // to be the size of a 426 KB artifact. That is the 5.7x blind spot made
+        // visible in the one field everything else reads.
+        debugInfo.estimatedOutputKB = Math.round(_b2.predictedKB);
+        debugInfo.artifactOverBudget = _b2.overBudget;
+        debugInfo.budgetUnreachableAfterVm = _b2.unreachable;
+        // What to actually DO about it, ranked by how much it costs in security.
+        debugInfo.recommendedVmTier = _b2.overBudget
+            ? (options.vmPass === false ? 'none-already' : 'lite')
+            : (debugInfo.vmApplied || 'none');
+    }
+    if (debugInfo && _b2.overBudget) {
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[ScripterHub] the VM pass produced ' + Math.round(_vmKB) +
+                ' KB from ' + Math.round(srcKB) + ' KB of source (tier: ' +
+                (debugInfo.vmApplied || 'none') + '), so the artifact is predicted at ' +
+                Math.round(_b2.predictedKB) + ' KB - over the ' + BUDGET_KB +
+                ' KB executors tolerate. This is the VM, not the script:' +
+                ' use the vm-lite tier, or split it into modules.');
         }
     }
 

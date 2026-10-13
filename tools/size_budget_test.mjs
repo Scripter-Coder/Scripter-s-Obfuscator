@@ -98,19 +98,40 @@ group('bigger source never gets MORE protection');
   // allowed to rise with source, because a bigger script legitimately produces a bigger
   // artifact. What must never happen is the estimate exceeding the budget, or intensity
   // going UP as source grows.
-  let worstOver = 0;
+  //
+  // WHAT CHANGED, and why this assertion was wrong rather than the code.
+  //
+  // This used to require that EVERY size lands inside the budget. It passed -
+  // while `estimatedOutputKB` held a layers-only, pre-VM figure. The bytecode
+  // VM had not run yet, so a 3 KB source reported 41 KB for an artifact that
+  // actually came out at 426 KB. The budget appeared satisfied because the
+  // number being compared was not the number that mattered.
+  //
+  // `estimatedOutputKB` is now the authoritative prediction, taken from the VM's
+  // real output. Some genuinely do exceed the budget - the bytecode VM costs
+  // ~36 KB plus ~30x source before a single layer is applied - so demanding
+  // that none ever do asserts the old lie.
+  //
+  // The property worth keeping is that every over-budget build is FLAGGED as
+  // over budget, so the caller can be told rather than discovering it on an
+  // executor. An unflagged oversize is the failure that matters.
+  let unflagged = 0;
+  let overBudget = 0;
   let intensityRose = 0;
   let prevIntensity = Infinity;
   for (const kb of [5, 20, 40, 80, 160, 320, 640]) {
     const r = run(makeLua(kb), { profile: 'SECURE', ultra: true });
-    if (r.dbg.estimatedOutputKB > r.dbg.budgetKB) worstOver++;
+    if (r.dbg.estimatedOutputKB > r.dbg.budgetKB) {
+      overBudget++;
+      if (r.dbg.artifactOverBudget !== true) unflagged++;
+    }
     // infer the applied intensity from the estimate the clamp settled on
     const applied = r.dbg.estimatedMultiplier;
     if (applied > prevIntensity + 0.01) intensityRose++;
     prevIntensity = applied;
   }
-  if (worstOver === 0) ok('every size lands inside the budget');
-  else no(worstOver + ' size(s) estimated OVER budget');
+  if (unflagged === 0) ok(`every over-budget size is FLAGGED (${overBudget} of 7 exceed the budget)`);
+  else no(unflagged + ' size(s) exceeded the budget WITHOUT being flagged - a silent oversize ships and fails on an executor');
   if (intensityRose === 0) ok('multiplier never increases as source grows');
   else no('multiplier went UP with source size - larger scripts got more protection');
 }

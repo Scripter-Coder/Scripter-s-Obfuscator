@@ -910,3 +910,84 @@ explicit `SH_STORE_TOKEN` still wins, a first run still generates a real secret,
 and a blank token file is replaced rather than trusted.
 
 ---
+
+## D28 - The artifact size model is measured, and the VM is the number that matters
+
+Reported as: a few KB of source obfuscates to ~18 MB, and the result does not
+run on executors. The instinct is that this is a storage limit. It is not.
+Storage is the owner's own disk and was never the constraint (D26). This is the
+obfuscator's expansion factor, and the model that was supposed to manage it was
+wrong in two independent ways.
+
+**1. The model could not see the VM.** It predicted `source x 4.5*(i/4)^1.73` and
+was evaluated on the SOURCE, before the VM pass ran. Measured on a 652-byte
+script:
+
+    no VM        ->   33 KB    53x
+    vm lite      ->  238 KB   374x
+    bytecode VM  ->  300 KB   471x
+
+The budget predicted 53 KB and the artifact was 300 KB - under-reporting by
+**5.7x** - so for a small script it reported success while shipping exactly what
+it existed to prevent.
+
+**2. The model clamped a knob that does not turn.** Layer pass, wraps isolated:
+
+    srcKB    i=1   i=4   i=10  i=22
+      4.2     46    48    50     48
+     17.2    100   102   104    102
+     43.7    211   212   214    213
+
+Intensity does not move the output. Three of four rows are flat to within 2 KB
+across a 22x change. The old clamp fired on every measurement while the artifact
+stayed 2-4x over budget: a control that cannot move the thing it claims to
+control, which is worse than none, because it is believed.
+
+**3. The largest term was missing entirely.** Ultra wrapping. On a 1.2 KB source:
+
+    no-ultra, no VM          37 KB
+    no-ultra, bytecode VM   408 KB
+    ultra,    bytecode VM 8,976 KB     <- ~22x, predicted as 390 KB
+
+This is the reported symptom. A few KB of source producing a multi-megabyte
+artifact is the bytecode VM plus ultra, not a large script.
+
+**What the model is now.** `outKB = (29 + 4.15 * vmKB) * wrapFactor`, where
+`vmKB` is the VM's REAL output length - measured, not modelled - and `wrapFactor`
+is 22 for double wrap (intensity >= 7), 46 for triple (>= 25), 1 otherwise. It is
+evaluated AFTER the intensity clamp, because the clamp changes which wrap
+applies and a model describing a build that never happens is worse than none.
+
+Verified within **7%** across every tier and source size measured, against a 5.7x
+error before.
+
+**The clamp stayed, and that is the second finding.** It was removed on the
+evidence that intensity does not move size - which is true, and it broke the
+EMITTER. Without it, a 40 KB source at SECURE produced Lua that does not parse:
+
+    40 KB SECURE produced invalid Lua: [3:12037] unexpected symbol '\' near '18'
+
+`tools/size_budget_test.mjs` went 13/13 -> 5/13 with the clamp removed, two of
+the failures being corrupt artifacts rather than oversized ones. So the clamp is
+a CORRECTNESS guard and is now labelled as one; it is no longer presented as a
+size control, which is what let the blind spot survive. Measured on tiny
+synthetic sources it looked like a no-op - on real ones it is load-bearing.
+
+**One assertion in `size_budget_test.mjs` was wrong rather than the code.** It
+required every size to land inside the budget, and it passed - while
+`estimatedOutputKB` held a layers-only, pre-VM figure. A 3 KB source reported
+41 KB for an artifact that came out at 426 KB. The budget appeared satisfied
+because the number being compared was not the number that mattered. It now
+requires that every over-budget build is FLAGGED, which is the property that
+matters: an unflagged oversize ships and fails on an executor.
+
+`debugInfo.estimatedOutputKB` is now the authoritative prediction. The pre-VM
+figure lives under `preVmEstimatedOutputKB`, and `vmOutputKB`,
+`vmAppliedTier`, `artifactOverBudget` and `recommendedVmTier` are reported so
+the caller can see the jump and what to do about it.
+
+`tools/size_model_test.mjs` (15 checks) predicts against the real obfuscator
+rather than against itself, and covers the ultra term, the VM-source gap, and
+that over-budget builds name the VM rather than the user's script.
+
+---
