@@ -4,6 +4,7 @@ import { vmSetLuaparse } from './vm-pass.js';
 import { vmBCSetLuaparse } from './vm-bytecode.js';
 import { initRewards, renderRewardsTab, openCreateRewardUI } from './rewards.js';
 import { shEncryptPayload } from './sh-crypto.js';
+import { shGenerateKey } from './sh-keys.js';
 
 // VM pass needs a Lua parser. index.html loads vendor/luaparse.js (UMD)
 // as a plain script BEFORE this module, which sets window.luaparse -
@@ -1771,27 +1772,17 @@ function getScriptForLoader(scriptId) { return null; }
 // ============ GENERATE KEY ============
 // 30 characters with Uppercase + Lowercase + Numbers + Symbols
 // (safe symbols only - no quotes/backslash so keys work inside Lua strings)
+// This used to build keys with Math.random(), which is a PRNG, not a random
+// source - its output is reconstructible from a few observed values. For a
+// string whose only job is to be unguessable that is the one property it has
+// to have, so it now draws from crypto.getRandomValues via rejection sampling,
+// which also avoids the modulo bias `byte % n` introduces.
+//
+// Length is 192, which is ~1140 bits. Length is what buys security here;
+// mixing in more character classes is close to free but close to pointless, and
+// non-ASCII costs copy/paste reliability. See sh-keys.js for the full note.
 function generateKey() {
-    var upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-    var lower = 'abcdefghijkmnpqrstuvwxyz';
-    var digits = '23456789';
-    var symbols = '!@#$%^&*()-_=+?';
-    var all = upper + lower + digits + symbols;
-    // guarantee at least one of each category, then fill randomly, then shuffle
-    var chars = [
-        upper.charAt(Math.floor(Math.random() * upper.length)),
-        lower.charAt(Math.floor(Math.random() * lower.length)),
-        digits.charAt(Math.floor(Math.random() * digits.length)),
-        symbols.charAt(Math.floor(Math.random() * symbols.length))
-    ];
-    for (var i = chars.length; i < 30; i++) {
-        chars.push(all.charAt(Math.floor(Math.random() * all.length)));
-    }
-    for (var i = chars.length - 1; i > 0; i--) {
-        var j = Math.floor(Math.random() * (i + 1));
-        var tmp = chars[i]; chars[i] = chars[j]; chars[j] = tmp;
-    }
-    return chars.join('');
+    return shGenerateKey(192);
 }
 
 // ============ KEYS SYSTEM ============

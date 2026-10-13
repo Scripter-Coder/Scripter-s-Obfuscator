@@ -71,7 +71,8 @@
     "test:partsizing": "node tools/delivery_part_size_test.mjs",
     "test:compileticket": "py \"Storage Keeper/tests/test_compile_ticket.py\"",
     "test:tokenpersist": "py \"Storage Keeper/tests/test_token_persistence.py\"",
-    "test:sizemodel": "node tools/size_model_test.mjs"
+    "test:sizemodel": "node tools/size_model_test.mjs",
+    "test:keys": "node tools/key_generation_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"
