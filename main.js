@@ -373,9 +373,15 @@ function shSaveUserToken(tok) {
 // Mint a session token from a password the user just typed.
 //
 // Called ONLY from the login and signup handlers, because that is the only place
-// the raw password exists. Reconstructing it later is not possible: the local
-// record holds btoa(password), which the worker will not accept for an account
-// whose hash has been migrated to PBKDF2.
+// the raw password exists.
+//
+// It used to say reconstruction was impossible because the local record held
+// btoa(password), which the worker will not accept for an account whose hash has
+// been migrated to PBKDF2. That was true, and it is why a fresh device could not
+// mint a token at all. Both handlers now store the plaintext - base64 protects
+// nothing in localStorage while making re-authentication impossible - and
+// records written before the change are migrated on first use by
+// shDecodeLegacyPassword.
 
 // Signing out must revoke the credential client-side. Without this, logout()
 // only changed the UI: shGetUserToken() kept returning the previous account's
@@ -408,11 +414,12 @@ async function shMintUserToken(emailOrUsername, rawPassword) {
 }
 // LAST RESORT ONLY. Prefer the token saved at login.
 //
-// This replays the locally-stored btoa(password) to /sh/user-login. That works
-// only while the worker still holds a LEGACY base64 record: for a PBKDF2 record
-// the worker hashes whatever it is given, so a base64 string can never match.
-// And the worker migrates legacy records on the first successful login, so this
-// path tends to work exactly once per account.
+// This replays the locally-stored password to /sh/user-login. The stored form
+// used to be btoa(password), which only worked while the worker still held a
+// LEGACY base64 record - for a PBKDF2 record the worker hashes whatever it is
+// given, so a base64 string could never match. That is what broke every fresh
+// device: a device with a cached token never reached this code, so the desktop
+// appeared healthy while a phone, which has no cache, could not get in at all.
 //
 // It is kept because a legacy account on a device that already holds the record
 // genuinely has no other way in, and because returning null is now a truthful
@@ -424,14 +431,68 @@ async function shMintUserToken(emailOrUsername, rawPassword) {
 // token, a rejected password, a rate limit and a missing local record alike -
 // and only one of those is fixed by signing in again.
 var shEnsureUserTokenReason = '';
+// The stored form is the PLAINTEXT password.
+//
+// It used to be btoa(password) on the login path and plaintext on the signup
+// path, so the two disagreed with each other. btoa is base64: it protects
+// nothing, and it broke re-authentication.
+//
+// WHAT THE USER SAW
+//
+//     This browser has no session for your account (the server refused the
+//     sign-in (HTTP 401): Invalid email/username or password.)
+//
+// on a phone, and never on the desktop. The reason is the token CACHE: a device
+// that has obfuscated before holds a user token, so shGetUserToken() returns it
+// and this function is never reached. A FRESH device has no cache, so the only
+// way it can obtain a token is to re-authenticate with the stored password - and
+// it sent base64 to a server expecting the plaintext. The desktop was not
+// working; it was skipping the broken path.
+function shStoredPassword(rec) {
+    return (rec && typeof rec.password === 'string') ? rec.password : '';
+}
+
+// Devices that logged in before this fix hold base64. Their record is not
+// corrupt, so it is accepted on a fallback and MIGRATED once it works - a
+// device that cannot be repaired by signing in again is exactly the device that
+// cannot sign in again.
+function shDecodeLegacyPassword(stored) {
+    if (!stored) return null;
+    try {
+        var out = atob(stored);
+        if (!out || out === stored) return null;
+        // CANONICAL ROUND TRIP, because atob is lenient.
+        //
+        // atob('hunter2') does not throw - it returns three bytes of mojibake. So
+        // "did it decode" is not the question; the question is whether this was
+        // BASE64 IN THE FIRST PLACE, and only re-encoding can tell. A password
+        // that is genuinely base64 survives btoa(atob(x)) == x untouched.
+        return btoa(out) === stored ? out : null;
+    } catch (e) { return null; }
+}
+
 async function shEnsureUserToken() {
     var existing = shGetUserToken();
     if (existing) return existing;
     if (!currentUser) { shEnsureUserTokenReason = 'no account is signed in on this device'; return null; }
     var u = users[currentUser.email];
-    if (!u || !u.password) { shEnsureUserTokenReason = 'this device holds no stored password for ' + currentUser.email + ' - sign in again'; return null; }
+    var stored = shStoredPassword(u);
+    if (!stored) { shEnsureUserTokenReason = 'this device holds no stored password for ' + currentUser.email + ' - sign in again'; return null; }
     try {
-        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: u.password });
+        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: stored });
+        // The legacy fallback. One extra request, only when the first is refused,
+        // and only for records written by the old build.
+        if ((!d || !d.ok) && shDecodeLegacyPassword(stored)) {
+            var legacy = shDecodeLegacyPassword(stored);
+            var d2 = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: legacy });
+            if (d2 && d2.ok && d2.token) {
+                // Migrate, so the next call costs one request instead of two.
+                u.password = legacy;
+                try { saveUsers(); } catch (e) { /* storage full is not fatal here */ }
+                shEnsureUserTokenReason = '';
+                return shSaveUserToken(d2.token);
+            }
+        }
         if (d && d.ok && d.token) { shEnsureUserTokenReason = ''; return shSaveUserToken(d.token); }
         shEnsureUserTokenReason = 'the server refused the sign-in'
             + (d && d.status ? ' (HTTP ' + d.status + ')' : '')
@@ -2964,7 +3025,18 @@ function handleSignup(event) {
         id: 'user_' + Date.now(),
         email: email,
         username: username,
-        password: btoa(password),
+        // PLAINTEXT, matching the login path.
+        //
+        // Both handlers used to store btoa(password). That is base64, not
+        // encryption: the value sits in localStorage either way, so it protected
+        // nothing while making shEnsureUserToken send a base64 string to a worker
+        // that hashes whatever it is given. For a PBKDF2 record that can never
+        // match, so re-authentication failed with 401 on every device whose token
+        // cache was empty - which is every FRESH device, so it read as "phone
+        // sign-in is broken" while the desktop merely skipped the path by having
+        // a cached token. shDecodeLegacyPassword migrates records written before
+        // this change.
+        password: password,
         plan: 'Basic',
         description: description || '',
         createdAt: new Date().toISOString(),
@@ -3081,12 +3153,24 @@ function handleLogin(event) {
             break;
         }
     }
-    if (!foundUser || btoa(password) !== foundUser.password) {
+    // Compare against BOTH stored forms.
+    //
+    // Signup stored plaintext and login stored btoa(password), so a record could
+    // hold either, and `btoa(password) === rec.password` rejected every record
+    // written by signup - sending the user to the cloud round trip for an account
+    // that was sitting on their own device.
+    if (!foundUser || (foundUser.password !== password && foundUser.password !== btoa(password))) {
         // not in this device's storage -> try the cloud (cross-device login)
         shApi('sh/user-login', { emailOrUsername: emailOrUsername, password: password }).then(function(d) {
             if (d.ok && d.user) {
                 users[d.user.email] = d.user;
-                users[d.user.email].password = btoa(password);
+                // PLAINTEXT, matching the signup path.
+                //
+                // btoa here protected nothing - the value is in localStorage
+                // either way - and it made shEnsureUserToken send base64 to a
+                // server expecting the plaintext, which is a 401 on any device
+                // whose token cache was empty. See shStoredPassword.
+                users[d.user.email].password = password;
                 // The worker just issued a session token and this threw it away.
                 // Every owner panel call authenticates with it, so discarding it is
                 // what left the panel with no credential and no honest error.

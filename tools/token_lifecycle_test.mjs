@@ -132,11 +132,30 @@ for (const [n, re] of [
   // very thing being asserted - which is how this check first reported a failure
   // against code that was already correct.
   const at = main.indexOf('async function shEnsureUserToken');
-  const win = at < 0 ? '' : main.slice(Math.max(0, at - 1200), at + 700);
-  if (/LAST RESORT/i.test(win) && /legacy/i.test(win) && /PBKDF2/i.test(win)) {
-    ok('the b64 replay is documented as a legacy-only last resort, with the PBKDF2 reason');
+  const win = at < 0 ? '' : main.slice(Math.max(0, at - 2600), at + 1200);
+  // CHANGED. This required the "LAST RESORT / legacy / PBKDF2" wording above
+  // shEnsureUserToken, which was true while the base64 replay was the ONLY way
+  // back in - and that is the defect, not a documented limitation.
+  //
+  // Both handlers stored btoa(password) while the worker hashes whatever it is
+  // given, so a base64 string can never match a PBKDF2 record. Every device
+  // whose token cache was empty therefore could not authenticate at all, which
+  // reads as "the phone is broken" only because a desktop that has obfuscated
+  // before never reaches this function.
+  //
+  // Both handlers now store the plaintext, so the general path works, and the
+  // base64 decode survives only as a one-shot fallback that MIGRATES the record.
+  // What is asserted is that shape, not the old prose.
+  const storesPlaintext = !/password:\s*btoa\(password\)/.test(main);
+  const hasFallback = /shDecodeLegacyPassword/.test(win);
+  const migrates = /u\.password = legacy/.test(win);
+  const triesPlaintextFirst = /password: stored/.test(win);
+  if (storesPlaintext && hasFallback && migrates && triesPlaintextFirst) {
+    ok('plaintext is the stored form; base64 survives only as a migrating fallback');
   } else {
-    no('shEnsureUserToken still presents b64 replay as a general solution');
+    no('shEnsureUserToken cannot get a fresh device in: plaintextStored=' + storesPlaintext
+      + ' fallback=' + hasFallback + ' migrates=' + migrates
+      + ' triesPlaintextFirst=' + triesPlaintextFirst);
   }
 }
 
