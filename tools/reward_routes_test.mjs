@@ -306,6 +306,55 @@ console.log('the blacklist is server-side and survives a storage wipe');
 }
 
 // ---------------------------------------------------------------------------
+console.log('clearing site data does not reset progress or hand out a new session');
+// ---------------------------------------------------------------------------
+// The session id is DERIVED server-side from (reward, fingerprint, IP) and
+// signed, rather than being a random value the browser keeps in localStorage.
+// That is what makes the ban meaningful and what makes progress survive.
+{
+    const res0 = await j(await call('POST', '/sh/reward/save', {
+        token: owner.token,
+        body: { reward: { name: 'Persist', keyDurationH: 1, maxKeys: 3,
+            checkpoints: [
+                { id: 'p1', name: 'A', provider: 'test', shortUrl: 'https://example.invalid/pa' },
+                { id: 'p2', name: 'B', provider: 'test', shortUrl: 'https://example.invalid/pb' }
+            ] } }
+    }));
+    const PRID = res0.rid;
+
+    const s1 = await j(await call('POST', '/sh/reward/start', { ip: '10.1.1.1', body: { rid: PRID, fp: 'fpPersist' } }));
+    check('a session opens', !!s1.sid, JSON.stringify(s1).slice(0, 120));
+    const firstSid = s1.sid;
+
+    const cb = await worker.fetch(new Request(s1.step.verifyUrl + '&confirmed=1', {
+        headers: { 'CF-Connecting-IP': '10.1.1.1' } }), env, { waitUntil() {} });
+    check('step 1 completes', /Checkpoint done/.test(await cb.text()));
+
+    // "clear site data": no sid is sent at all this time.
+    const s2 = await j(await call('POST', '/sh/reward/start', { ip: '10.1.1.1', body: { rid: PRID, fp: 'fpPersist' } }));
+    check('the same session comes back', s2.sid === firstSid,
+        'got ' + s2.sid + ' want ' + firstSid);
+    check('and step 1 is still done', s2.done === 1, 'done = ' + s2.done);
+    check('and the visitor is now on step 2', s2.step && s2.step.i === 1, JSON.stringify(s2.step));
+
+    // A client that DOES send a stale sid must not displace the real one.
+    const s3 = await j(await call('POST', '/sh/reward/start', {
+        ip: '10.1.1.1', body: { rid: PRID, fp: 'fpPersist', sid: 'sfabricated000000000000' }
+    }));
+    check('a client-supplied sid cannot replace the derived one', s3.sid === firstSid,
+        'got ' + s3.sid);
+    check('and does not grant fresh progress', s3.done === 1, 'done = ' + s3.done);
+
+    // A different reward must not accept the same session id.
+    const other = await j(await call('POST', '/sh/reward/save', {
+        token: owner.token,
+        body: { reward: { name: 'Other', keyDurationH: 1, maxKeys: 1,
+            checkpoints: [{ id: 'o1', name: 'O', provider: 'test', shortUrl: 'https://example.invalid/o' }] } }
+    }));
+    const s4 = await j(await call('POST', '/sh/reward/start', { ip: '10.1.1.1', body: { rid: other.rid, fp: 'fpPersist' } }));
+    check('the same fingerprint on a DIFFERENT reward gets a different session', s4.sid !== firstSid,
+        'sid was reused across rewards');
+}
 console.log('a session id cannot be replayed from another browser');
 // ---------------------------------------------------------------------------
 {

@@ -46,24 +46,95 @@ function saveRewardsData(d) {
     } catch (e) {}
 }
 
-function encodeRewardCfg(r) {
-    var plan = shPlan();
-    var cfg = { n: r.name, d: r.keyDurationH, mk: r.maxKeys, cd: r.cooldownH, mh: r.maxHours || 0, ext: r.allowExtending ? 1 : 0, eh: r.extHours || 6, mv: plan.visitors === Infinity ? 0 : plan.visitors, w: (window.SH_STATS_ENDPOINT || ''), cps: [] };
-    (r.checkpoints || []).forEach(function (cp) { cfg.cps.push({ u: cp.shortUrl, p: cp.provider }); });
-    var json = JSON.stringify(cfg);
-    return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// Push a reward to the worker and remember the rid it comes back with.
+//
+// WHY THE LINK IS NOW JUST AN ID
+//
+// encodeRewardCfg used to serialise the whole reward - name, duration, every
+// checkpoint's URL and provider - into the share link as base64. Two problems,
+// one of them fatal:
+//
+//   * It was unsigned and in the visitor's hands. Rewriting cps to a single
+//     about:blank entry and appending ?done=0 produced a completed reward and
+//     a key. The reward system paid out on demand.
+//   * The provider API token was not in it (it was dropped instead), so nothing
+//     was ever verified, and there was nowhere safe to put it: the link is
+//     handed to every visitor, so a token in it would be readable by anyone who
+//     opened the page, who could then forge a postback.
+//
+// So the config lives on the worker and the link carries the rid. The API
+// tokens go to /sh/reward/save and never come back to a visitor.
+//
+// MIGRATION: a reward that predates this has no rid. The first save mints one,
+// so the panel always shows the current link. The old ?r=... link stops
+// working, which is the correct outcome - it was never signed, so anyone
+// holding one could farm it forever.
+async function shRewardSave(r) {
+    try {
+        var res = await window.shOwnerApi('sh/reward/save', { reward: r });
+        if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'save failed' };
+        return { ok: true, rid: res.rid, public: res.public, notReady: res.notReady || [] };
+    } catch (e) {
+        return { ok: false, error: 'network' };
+    }
 }
 
+// Save and record the rid on the local record. Callers await this before
+// rendering, because the link shown to the owner depends on the rid, and a
+// panel that shows a stale link is how old links keep getting shared.
+async function shRewardPersist(r) {
+    var out = await shRewardSave(r);
+    if (!out.ok) return out;
+    r.rid = out.rid;
+    r.notReady = out.notReady;
+    // Keep the worker's counters so the panel does not lose history by
+    // round-tripping through the browser on every edit.
+    if (out.public) {
+        var prevCps = (r.checkpoints || []).slice();
+        (out.public.steps || []).forEach(function (s, i) {
+            if (prevCps[i]) {
+                prevCps[i].completed = prevCps[i].completed || 0;
+                prevCps[i].cancelled = prevCps[i].cancelled || 0;
+                prevCps[i].avgTimeSec = prevCps[i].avgTimeSec || 0;
+            }
+        });
+    }
+    return out;
+}
+
+// Every reward on the panel must have a rid before its link is usable.
+// Returns the number that had to be migrated, so the panel can say so out loud
+// rather than the owner discovering it when a visitor reports a dead link.
+async function shRewardMigrateAll() {
+    var d = loadRewardsData();
+    var migrated = 0;
+    for (var i = 0; i < (d.rewards || []).length; i++) {
+        var r = d.rewards[i];
+        if (r.rid) continue;
+        var out = await shRewardPersist(r);
+        if (out.ok) migrated++;
+    }
+    if (migrated) saveRewardsData(d);
+    return migrated;
+}
+
+// The public link carries ONLY the reward id.
+//
+// It used to carry the entire config, base64'd, unsigned - which is what let a
+// visitor rewrite the checkpoint list and mint a key without visiting an ad.
+// See shRewardSave for the whole argument.
 function rewardLink(r) {
+    if (!r.rid) return '';
     var path = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
-    return window.location.origin + path + 'reward.html?r=' + encodeRewardCfg(r);
+    return window.location.origin + path + 'reward.html?rid=' + encodeURIComponent(r.rid);
 }
 
-function rewardHash(cfgStr) {
-    var h = 0;
-    for (var i = 0; i < cfgStr.length; i++) { h = (h * 31 + cfgStr.charCodeAt(i)) % 999999937; }
-    return h;
+// A reward with no rid cannot be shared yet. The panel says so rather than
+// showing a link that would 404 for whoever it is sent to.
+function rewardLinkPending(r) {
+    return !r.rid;
 }
+
 
 function totalCheckpointsUsed(d) {
     var n = 0;
@@ -75,6 +146,7 @@ function initRewards() {
     renderRewardsTab();
 }
 
+
 function renderRewardsTab() {
     var statsRow = document.getElementById('rewardsStatsRow');
     var listEl = document.getElementById('rewardsList');
@@ -84,11 +156,10 @@ function renderRewardsTab() {
     var visitorsMax = plan.visitors === Infinity ? '∞' : (plan.visitors >= 1000 ? (plan.visitors / 1000) + 'k' : plan.visitors);
     var cpsMax = plan.checkpoints === Infinity ? '∞' : plan.checkpoints;
     var cpsUsed = totalCheckpointsUsed(d);
-    var blocked = false;
-    if (plan.checkpoints !== Infinity && cpsUsed >= plan.checkpoints) blocked = true;
     statsRow.innerHTML =
-        '<div class="stat-card"><div class="stat-label">👥 Registered Visitors</div><div class="stat-value">' + d.visitors + ' <span class="max">/ ' + visitorsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.visitors === Infinity ? 2 : Math.min(100, d.visitors / plan.visitors * 100)) + '%"></div></div></div>' +
+        '<div class="stat-card"><div class="stat-label">👥 Registered Visitors</div><div class="stat-value">' + (d.visitors || 0) + ' <span class="max">/ ' + visitorsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.visitors === Infinity ? 2 : Math.min(100, (d.visitors || 0) / plan.visitors * 100)) + '%"></div></div></div>' +
         '<div class="stat-card"><div class="stat-label">🛤️ Total Checkpoints</div><div class="stat-value">' + cpsUsed + ' <span class="max">/ ' + cpsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.checkpoints === Infinity ? 2 : Math.min(100, cpsUsed / plan.checkpoints * 100)) + '%"></div></div></div>';
+
     if (!d.rewards.length) {
         listEl.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">No rewards yet. Click "🎁 Create Reward" to make one - visitors will earn keys by completing ad checkpoints.</p>';
         return;
@@ -96,22 +167,58 @@ function renderRewardsTab() {
     var html = '';
     d.rewards.forEach(function (r) {
         var link = rewardLink(r);
-        html += '<div class="reward-card">' +
-            '<div class="reward-info">' +
-            '<div class="reward-name">🎁 ' + r.name + '</div>' +
-            '<div class="reward-link" title="' + link + '" onclick="copyText(\'' + link + '\')">🔗 ' + link + '</div>' +
-            '<div class="reward-meta">🔑 ' + (r.keyDurationH || 0) + 'h keys · max ' + (r.maxKeys || 1) + ' key(s) · ' + ((r.checkpoints || []).length) + ' checkpoint(s)</div>' +
-            '</div>' +
-            '<div class="reward-actions">' +
-            '<button onclick="openCheckpointManagerUI(\'' + r.id + '\')" class="btn-sm btn-sm-primary">➕ Add Checkpoint</button>' +
-            '<button onclick="openRewardSettingsUI(\'' + r.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button>' +
-            '<button onclick="deleteReward(\'' + r.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete Reward</button>' +
-            '</div></div>';
+        var pending = rewardLinkPending(r);
+        var cps = r.checkpoints || [];
+        var unready = r.notReady || [];
+        var unreadyIds = {};
+        unready.forEach(function (n) { unreadyIds[n.id] = n; });
+
+        html += '<div class="reward-card">';
+        html += '<div class="reward-info">';
+        html += '<div class="reward-name">🎁 ' + escapeHtml(r.name) + '</div>';
+
+        if (pending) {
+            // Never show a link that 404s. The old panel showed a base64 link
+            // built from localStorage, which worked only until the visitor's
+            // browser disagreed - and which anyone could edit into a free key.
+        } else {
+            html += '<div class="reward-link" title="' + escapeHtml(link) + '" onclick="copyText(\'' + link.replace(/'/g, "\\'") + '\')">🔗 ' + escapeHtml(link) + '</div>';
+        }
+
+        html += '<div class="reward-meta">🔑 ' + (r.keyDurationH || 1) + 'h keys · max ' + (r.maxKeys || 1) + ' key(s) · ' + cps.length + ' checkpoint(s)';
+        if (cps.length === 0) html += ' · <span style="color:#ffb020">no checkpoints yet, nobody can earn a key</span>';
+        html += '</div>';
+
+        if (unready.length) {
+            html += '<div class="warn" style="margin:8px 0 0">⚠️ ' + unready.length + ' checkpoint(s) cannot be completed: '
+                + unready.map(function (n) { return escapeHtml(providerName(n.provider) || n.provider); }).join(', ')
+                + '. Open each and paste its API key - until then no visitor can finish them.</div>';
+        }
+        html += '</div>';
+
+        html += '<div class="reward-actions">';
+        html += '<button onclick="openCheckpointManagerUI(\'' + r.id + '\')" class="btn-sm btn-sm-primary">➕ Add Checkpoint</button>';
+        html += '<button onclick="openRewardSettingsUI(\'' + r.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button>';
+        html += '<button onclick="deleteReward(\'' + r.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button>';
+        html += '</div></div>';
     });
     listEl.innerHTML = html;
+
+    // Rewards created before the config moved server-side have no rid, so they
+    // have no shareable link. Mint one now rather than leaving the owner to
+    // discover it when a visitor reports the link is dead.
+    if (d.rewards.some(function (r) { return !r.rid; })) {
+        shRewardMigrateAll().then(function (n) {
+            if (n) shNotify('Rewards Updated', n + ' reward link(s) regenerated. The old links no longer work - share the new ones.', 'warning', 9000);
+        });
+    }
 }
 
-// ---------- Create Reward ----------
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
 function openCreateRewardUI() {
     var projects = window.loadProjects ? window.loadProjects() : [];
     var projectOpts = projects.map(function (p) { return '<option value="' + p.id + '">' + p.name + '</option>'; }).join('') || '<option value="">(no projects)</option>';
@@ -156,7 +263,13 @@ function openCreateRewardUI() {
     document.body.appendChild(overlay);
 }
 
-function confirmCreateReward() {
+// Create a reward and push it to the worker.
+//
+// It is created on the worker FIRST, because the rid is what the share link is
+// made of. A reward that exists only in localStorage has no link to hand out -
+// which is precisely how the old flow ended up with a Start button pointing at
+// about:blank and no way for a visitor to earn anything.
+async function confirmCreateReward() {
     var name = document.getElementById('rewardName').value.trim();
     var dur = parseFloat(document.getElementById('rewardKeyDuration').value);
     var maxKeys = parseInt(document.getElementById('rewardMaxKeys').value, 10);
@@ -171,8 +284,9 @@ function confirmCreateReward() {
     }
     var blocked = [];
     var sel = document.getElementById('rewardBlockedCountries');
-    if (sel) for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].selected && sel.options[i].text !== 'Global') blocked.push(sel.options[i].text); }
-    d.rewards.push({
+    if (sel) for (var i = 0; i < sel.options.length; i++) if (sel.options[i].selected && sel.options[i].text !== 'Global') blocked.push(sel.options[i].text);
+
+    var reward = {
         id: 'rw_' + Date.now(),
         name: name,
         keyDurationH: dur,
@@ -180,36 +294,61 @@ function confirmCreateReward() {
         cooldownH: parseFloat(document.getElementById('rewardCooldown').value) || 0,
         maxHours: parseFloat(document.getElementById('rewardMaxHours').value) || 0,
         allowExtending: document.getElementById('rewardAllowExtending').checked,
-        allowForgetting: document.getElementById('rewardAllowForgetting').checked,
-        blockIncognito: document.getElementById('rewardBlockIncognito').checked,
-        blockVPNs: document.getElementById('rewardBlockVPNs').checked,
-        requireDiscord: document.getElementById('rewardRequireDiscord').checked,
-        blockedCountries: blocked,
-        projectId: document.getElementById('rewardProject').value,
         extHours: 6,
         checkpoints: [],
         createdAt: new Date().toISOString()
-    });
+    };
+
+    var out = await shRewardPersist(reward);
+    if (!out.ok) {
+        // Loudly. A reward that is not on the server cannot be shared, and a
+        // quiet failure here is how the owner ends up handing out a dead link.
+        shNotify('Not Saved', out.error === 'network'
+            ? 'Could not reach the reward server. Check your connection - nothing was created.'
+            : ('The reward server refused this reward: ' + out.error), 'error', 8000);
+        return;
+    }
+    d.rewards.push(reward);
     saveRewardsData(d);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     renderRewardsTab();
-    shNotify('Reward Created', 'Now add checkpoints to "' + name + '"!', 'success');
+    shNotify('Reward Created', 'Now add checkpoints to "' + name + '".', 'success', 6000);
 }
-
 function findReward(id) {
     var d = loadRewardsData();
     for (var i = 0; i < d.rewards.length; i++) { if (d.rewards[i].id === id) return { data: d, reward: d.rewards[i] }; }
     return null;
 }
 
-function deleteReward(id) {
-    if (!confirm('Delete this reward and all its checkpoints?')) return;
+async function deleteReward(id) {
+    if (!confirm('Delete this reward and all its checkpoints?\n\nAnyone holding the old link will stop earning keys.')) return;
     var d = loadRewardsData();
+    var target = null;
+    for (var i = 0; i < d.rewards.length; i++) if (d.rewards[i].id === id) target = d.rewards[i];
     d.rewards = d.rewards.filter(function (r) { return r.id !== id; });
+
+    // Removed from the SERVER first, and awaited.
+    //
+    // Dropping it from localStorage alone left the server copy live: the share
+    // link kept resolving, the checkpoints kept verifying, and the owner had
+    // every reason to believe the reward was gone. That is the same class of
+    // bug as the Start button - a control that only changed the panel.
+    var gone = false;
+    if (target && target.rid) {
+        try {
+            var res = await window.shOwnerApi('sh/reward/delete', { rid: target.rid });
+            gone = !!(res && res.ok);
+        } catch (e) { gone = false; }
+    } else { gone = true; }
+
     saveRewardsData(d);
     renderRewardsTab();
-    shNotify('Deleted', 'Reward deleted.', 'warning');
+    if (!gone) {
+        shNotify('Deleted Locally Only', 'The reward server did not confirm the delete, so the old link may still work. Try deleting it again.', 'error', 10000);
+        return;
+    }
+    shNotify('Deleted', 'Reward deleted. The old link no longer works.', 'warning');
 }
 
 // ---------- Reward Settings ----------
@@ -255,7 +394,7 @@ function openRewardSettingsUI(id) {
     document.body.appendChild(overlay);
 }
 
-function confirmRewardSettings(id) {
+async function confirmRewardSettings(id) {
     var found = findReward(id);
     if (!found) return;
     var r = found.reward;
@@ -271,10 +410,15 @@ function confirmRewardSettings(id) {
     r.blockVPNs = document.getElementById('editRewardVPNs').checked;
     r.requireDiscord = document.getElementById('editRewardDiscord').checked;
     r.projectId = document.getElementById('editRewardProject').value;
+    var out = await shRewardPersist(r);
     saveRewardsData(found.data);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     renderRewardsTab();
+    if (!out.ok) {
+        shNotify('Not Saved', 'The reward server refused this change' + (out.error ? ' (' + out.error + ')' : '') + '. Visitors still see the old settings.', 'error', 9000);
+        return;
+    }
     shNotify('Saved', 'Reward settings updated.', 'success');
 }
 
@@ -290,10 +434,13 @@ function openCheckpointManagerUI(id) {
     overlay.style.zIndex = '2000';
     var cpRows = '';
     (r.checkpoints || []).forEach(function (cp, i) {
-        var providerName = (REWARD_PROVIDERS.find(function (p) { return p.id === cp.provider; }) || {}).name || cp.provider;
+        var pname = providerName(cp.provider);
+        var bad = (r.notReady || []).filter(function (x) { return x.id === cp.id; });
         cpRows += '<div class="cp-row">' +
             '<span class="cp-order">' + (i + 1) + '</span>' +
-            '<span class="cp-name"><strong>' + providerName.toUpperCase() + ' ' + (cp.name || 'CHECKPOINT').toUpperCase() + '</strong><a class="cp-link" href="' + cp.shortUrl + '" target="_blank" rel="noopener">' + cp.shortUrl + '</a></span>' +
+            '<span class="cp-name"><strong>' + pname.toUpperCase() + ' ' + (cp.name || 'CHECKPOINT').toUpperCase() + '</strong>'
+            + (bad.length ? '<div style="color:#ffb020;font-size:11px;margin-top:2px">⚠️ Cannot be completed yet - ' + escapeHtml(providerReadyHint(cp.provider)) + '</div>' : '')
+            + '<a class="cp-link" href="' + escapeHtml(cp.shortUrl) + '" target="_blank" rel="noopener">' + escapeHtml(cp.shortUrl) + '</a></span>' +
             '<span class="cp-stats">' + (cp.completed || 0) + '/' + (cp.cancelled || 0) + '</span>' +
             '<span class="cp-avg">' + fmtAvgTime(cp.avgTimeSec) + '</span>' +
             '<span class="cp-move">' +
@@ -315,10 +462,11 @@ function openCheckpointManagerUI(id) {
             <hr style="border-color:rgba(255,255,255,0.08); margin:18px 0;">
             <h3 style="font-size:16px; color:#fff; margin:0 0 10px 0;">➕ Add Checkpoint</h3>
             <div class="form-group"><label>Checkpoint Name</label><input type="text" id="cpName" placeholder="Visitors will not see the name"></div>
-            <div class="form-group"><label>Short URL</label><input type="text" id="cpShortUrl" placeholder="https://direct-link.net/something"><div class="field-hint">You can get the URL from provider dashboard</div></div>
+            <div class="form-group"><label>Short URL (the ad link)</label><input type="text" id="cpShortUrl" placeholder="https://direct-link.net/something">
+                <div class="field-hint"><strong>This is where visitors are sent.</strong> Copy the short/ad link out of the provider's dashboard and paste it here.</div></div>
             <div class="form-group"><label>Select A Provider</label>
                 <select id="cpProvider" onchange="renderProviderSettings()">${providerOpts}</select>
-                <div class="field-hint">Each provider has their own money per click rate. To suggest a new provider, talk to Scripter in discord.</div>
+                <div class="field-hint">Each provider pays differently and verifies clicks differently. Pick one you have an account for, then paste its API key below - without it the checkpoint cannot be completed.</div>
             </div>
             <div id="cpProviderSettings"></div>
             <button onclick="confirmAddCheckpoint('${id}')" class="btn btn-primary" style="width:100%; margin-top:10px;">➕ Add Checkpoint</button>
@@ -333,58 +481,27 @@ function fmtAvgTime(sec) {
     return Math.floor(sec / 60) + ' min. ' + Math.round(sec % 60) + ' sec.';
 }
 
-var CP_PROVIDER_INFO = {
-    test: 'You can use this page to test how it will work. It is an example ad page without any real ads.<br>To use, you must put <b>https://ads.luarmor.net/testpage</b> as the URL above.',
-    admint: 'Multiple payout options, ultra low minimums, and flexible withdrawals via Crypto, PayPal, or Bank Transfer. See how AdMint works at <a href="https://admint.club" target="_blank" rel="noopener" style="color:#66ccff;">admint.club</a>',
-    linkvertise: 'See how linkvertise works at <a href="https://linkvertise.com" target="_blank" rel="noopener" style="color:#66ccff;">linkvertise.com</a>',
-    workink: 'See how work.ink works at <a href="https://work.ink" target="_blank" rel="noopener" style="color:#66ccff;">work.ink</a>',
-    lootlabs: 'One of the best-paying providers. See how Lootlabs works on <a href="https://lootlabs.gg/" target="_blank" rel="noopener" style="color:#66ccff;">their site</a>.',
-    shrtfly: 'See how ShrtFly works on <a href="https://www.shrtfly.com/" target="_blank" rel="noopener" style="color:#66ccff;">their site</a>.',
-    shrinkearn: 'See how ShrinkEarn works on <a href="https://shrinkearn.com/" target="_blank" rel="noopener" style="color:#66ccff;">their site</a>.',
-    kicia: 'This is a private ad provider, not for public use.',
-    rinku: 'Rinku.pro'
-};
-
+//
+// It used to render the same shape for every provider - a one-line description
+// pointing at the provider's website, plus whichever of anti-bypass / API key /
+// postback fields that provider happened to use, with nothing saying which
+// field was mandatory. The reported symptom was "you never added a provider of
+// where it leads": the owner could not tell, from this dialog, what the
+// checkpoint would do or what they still had to do.
+//
+// It now says, per provider: what it is, exactly which credential it needs,
+// where that credential comes from, and - for providers this build cannot
+// verify - that plainly, rather than letting the owner wire up something that
+// silently never completes.
 function renderProviderSettings() {
     var box = document.getElementById('cpProviderSettings');
     var sel = document.getElementById('cpProvider');
     if (!box || !sel) return;
     var p = sel.value;
     if (!p) { box.innerHTML = ''; return; }
-    var info = CP_PROVIDER_INFO[p] || '';
-    var html = '<div class="provider-panel"><div class="provider-desc">' + info + '</div>';
-    if (p === 'test') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpExampleT1"> Example Setting Toggle = Example description.</label></div>' +
-            '<div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="cpExampleT2"> Example Setting Toggle = Example description.</label></div>' +
-            '<div class="form-group"><label>Example Setting Field = Example description.</label><input type="text" id="cpExampleF1"></div>';
-    } else if (p === 'admint') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpAntiBypass" checked> 🛡️ Anti Bypass = Generates encrypted target URLs per visitor to make it harder to bypass.</label></div>' +
-            '<div class="form-group"><label>API Key</label><input type="text" id="cpApiKey" placeholder="Get your AdMint API key from admint.club/dashboard/settings"></div>';
-    } else if (p === 'linkvertise') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpAntiBypass" checked> 🛡️ Anti Bypass = You must enable ANTI BYPASS in linkvertise settings before using this feature.</label></div>' +
-            '<div class="form-group"><label>Auth Token</label><input type="text" id="cpAuthToken" placeholder="Only required if anti bypass is enabled - get it in linkvertise settings"></div>';
-    } else if (p === 'workink') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpAntiBypass" checked> 🛡️ Anti Bypass = Uses encrypted redirect URLs to be unique for every visitor.</label></div>' +
-            '<div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="cpAdvAntiBypass"> 🚀 Advanced Anti-Bypass = Performs advanced checks to detect bypasses (undocumented API, thanks to Work.Ink devs).</label></div>' +
-            '<div class="form-group"><label>API Key</label><input type="text" id="cpApiKey" placeholder="Only if anti-bypass is enabled - generate at dashboard.work.ink/developer"></div>';
-    } else if (p === 'lootlabs') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpAntiBypass" checked> 🛡️ Anti Bypass = Generates encrypted target URLs per visitor. Enter your API token in the next box to use this feature.</label></div>' +
-            '<div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="cpAdvAntiBypass"> 🚀 Advanced Anti-Bypass = Detects certain bypasses through a lootlabs postback API.</label></div>' +
-            '<div class="form-group"><label>API Key</label><input type="text" id="cpApiKey" placeholder="creators.lootlabs.gg/profile after logging in"></div>' +
-            '<div class="form-group"><label>Postback URL</label><input type="text" id="cpPostbackUrl" placeholder="For Advanced Anti Bypass - put this on your lootlabs dashboard (advanced). Do not share!"></div>';
-    } else if (p === 'shrtfly' || p === 'shrinkearn') {
-        var name = p === 'shrtfly' ? 'ShrtFly' : 'ShrinkEarn';
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpDynamicUrl" checked> 🔀 Dynamic URL = Generates single-use unique URLs for every visitor. Can be used as an anti-bypass feature (links are not auto-deleted from your dashboard).</label></div>' +
-            '<div class="form-group"><label>API Key</label><input type="text" id="cpApiKey" placeholder="Only required if dynamic URL is enabled (' + name + ' developer API page)"></div>';
-    } else if (p === 'kicia' || p === 'rinku') {
-        html += '<div class="form-group" style="margin-top:8px;"><label style="cursor:pointer;"><input type="checkbox" id="cpDynamicUrl" checked required> 🔀 Dynamic URL = Required.</label></div>' +
-            '<div class="form-group"><label>API Key = Required</label><input type="text" id="cpApiKey"></div>';
-    }
-    html += '</div>';
-    box.innerHTML = html;
+    box.innerHTML = providerFieldsHtml(p, {});
 }
-
-function confirmAddCheckpoint(id) {
+async function confirmAddCheckpoint(id) {
     var found = findReward(id);
     if (!found) return;
     var r = found.reward;
@@ -410,32 +527,45 @@ function confirmAddCheckpoint(id) {
     if (g('cpAuthToken')) settings.authToken = g('cpAuthToken');
     if (g('cpPostbackUrl')) settings.postbackUrl = g('cpPostbackUrl');
     r.checkpoints.push({ id: 'cp_' + Date.now(), name: name, shortUrl: shortUrl, provider: provider, settings: settings, completed: 0, cancelled: 0, avgTimeSec: 0 });
+    // A checkpoint that exists only in this tab cannot be completed by a
+    // visitor, because the worker has never heard of it. Persist before the
+    // dialog closes, and say plainly if it failed.
+    var out = await shRewardPersist(r);
     saveRewardsData(d);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
-    renderRewardsTab();
-    openCheckpointManagerUI(id);
-    shNotify('Checkpoint Added', '"' + name + '" added.', 'success');
+    if (!out.ok) {
+        shNotify('Not Saved', 'The reward server refused this checkpoint' + (out.error ? ' (' + out.error + ')' : '') + '. Visitors cannot use it until this saves.', 'error', 9000);
+        return;
+    }
+    var mine = (out.notReady || []).filter(function (x) { return x.id === r.checkpoints[r.checkpoints.length - 1].id; });
+    if (mine.length) {
+        shNotify('Added - But Not Usable Yet', 'Added, but it cannot be completed: ' + providerReadyHint(provider) + ' Edit it to paste the key.', 'warning', 10000);
+        return;
+    }
+    shNotify('Checkpoint Added', '"' + name + '" added and is ready.', 'success');
 }
 
-function moveCheckpoint(id, index, dir) {
+async function moveCheckpoint(id, index, dir) {
     var found = findReward(id);
     if (!found) return;
     var cps = found.reward.checkpoints;
     var ni = index + dir;
     if (ni < 0 || ni >= cps.length) return;
     var tmp = cps[index]; cps[index] = cps[ni]; cps[ni] = tmp;
+    await shRewardPersist(found.reward);
     saveRewardsData(found.data);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     openCheckpointManagerUI(id);
 }
 
-function deleteCheckpoint(id, index) {
+async function deleteCheckpoint(id, index) {
     if (!confirm('Delete this checkpoint?')) return;
     var found = findReward(id);
     if (!found) return;
     found.reward.checkpoints.splice(index, 1);
+    await shRewardPersist(found.reward);
     saveRewardsData(found.data);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
@@ -443,33 +573,41 @@ function deleteCheckpoint(id, index) {
     openCheckpointManagerUI(id);
     shNotify('Deleted', 'Checkpoint deleted.', 'warning');
 }
-
 function editCheckpointUI(id, index) {
     var found = findReward(id);
     if (!found) return;
     var r = found.reward;
     var cp = r.checkpoints[index];
     if (!cp) return;
-    var path = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
-    var verifyUrl = window.location.origin + path + 'checkpoint.html?r=' + encodeRewardCfg(r) + '&c=' + index;
     var overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
+
+    // The verify URL is the worker's own signed callback. It is only known once
+    // a visitor opens the reward, because the step token is minted per session -
+    // so the dialog shows how to get one rather than a URL that would be dead.
+    var pending = !r.rid;
     overlay.innerHTML = `
-        <div class="modal" style="max-width: 620px; padding: 28px; max-height:92vh; overflow-y:auto;">
+        <div class="modal" style="max-width: 660px; padding: 28px; max-height:92vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:20px; margin:0 0 10px 0;">✏️ Edit Checkpoint</h2>
             <div class="provider-panel">
-                <div class="field-hint">Copy this URL and paste it in the provider's dashboard as the target of the link you created. This is the URL that will be used to verify the completion of the checkpoint.</div>
-                <div style="display:flex; gap:8px; margin-top:10px;">
-                    <input type="text" value="${verifyUrl}" readonly style="flex:1; font-family:monospace; font-size:11px;">
-                    <button onclick="copyText('${verifyUrl}')" class="btn btn-primary">📋 Copy</button>
-                </div>
+                <div class="field-hint"><strong>Where this checkpoint goes:</strong> paste this checkpoint's own
+                verify URL into the provider's dashboard as the link target, and put your ad link in the
+                <em>Short URL</em> box below. The provider sends the visitor back to the verify URL when the ad
+                finishes, and the worker then checks with the provider's API that the click was real.</div>
+                ${pending ? '<div class="warn">This reward has not been saved to the reward server yet, so no verify URL exists. Press Save first.</div>' : ''}
             </div>
-            <div class="form-group" style="margin-top:14px;"><label>Checkpoint Name</label><input type="text" id="editCpName" value="${cp.name.replace(/"/g, '&quot;')}"></div>
-            <div class="form-group"><label>Short URL</label><input type="text" id="editCpUrl" value="${cp.shortUrl}"></div>
-            <div class="form-group"><label>Provider</label><input type="text" value="${(REWARD_PROVIDERS.find(function(p){return p.id===cp.provider;})||{}).name || cp.provider}" readonly></div>
+            <div class="form-group" style="margin-top:14px;"><label>Checkpoint Name</label>
+                <input type="text" id="editCpName" value="${(cp.name || '').replace(/"/g, '&quot;')}"></div>
+            <div class="form-group"><label>Short URL (the ad link visitors click)</label>
+                <input type="text" id="editCpUrl" value="${(cp.shortUrl || '').replace(/"/g, '&quot;')}">
+                <div class="field-hint">Visitors are sent here by the Start button.</div></div>
+            <div class="form-group"><label>Provider</label>
+                <input type="text" value="${escAttr(providerName(cp.provider))}" readonly>
+                <div class="field-hint">The provider cannot be changed after creation - it decides which API verifies the click. Delete the checkpoint and add a new one to switch.</div></div>
+            <div id="editCpProviderSettings"></div>
             <div style="display:flex; gap:8px; margin-top:14px;">
                 <button onclick="confirmEditCheckpoint('${id}',${index})" class="btn btn-primary" style="flex:1;">💾 Save</button>
                 <button onclick="clearCheckpointStats('${id}',${index})" class="btn btn-close-dropdown" style="flex:1;">🧹 Clear Stats</button>
@@ -477,37 +615,164 @@ function editCheckpointUI(id, index) {
         </div>
     `;
     document.body.appendChild(overlay);
+
+    // Render the provider's own fields into the placeholder, pre-filled.
+    var box = document.getElementById('editCpProviderSettings');
+    box.innerHTML = providerFieldsHtml(cp.provider, cp.settings || {});
+    wireProviderFields(box, cp.provider, cp.settings || {});
 }
 
-function confirmEditCheckpoint(id, index) {
+function providerName(pid) {
+    var p = REWARD_PROVIDERS.find(function (x) { return x.id === pid; });
+    return p ? p.name : pid;
+}
+
+function escAttr(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+}
+
+// The credential each provider actually needs, stated plainly, because the old
+// dialog showed a generic description and a single empty field regardless of
+// provider - so the most common mistake was putting a Linkvertise auth token
+// somewhere it was never read.
+var PROVIDER_SETUP = {
+    test: {
+        desc: 'A built-in test page. No account, no API key. Use it to check the flow end to end before wiring a real provider.',
+        needs: 'none',
+        note: 'The visitor presses Verify themselves, so this proves nothing against a motivated bypasser. It proves the plumbing works.'
+    },
+    linkvertise: {
+        desc: 'High CPM and widely recognised. Linkvertise must have <strong>Anti Bypassing</strong> enabled in Settings &rarr; Account, which issues the API token.',
+        needs: 'authToken',
+        note: 'Anti-Bypass is REQUIRED. Without it Linkvertise cannot tell us who clicked, and this checkpoint will never complete.'
+    },
+    lootlabs: {
+        desc: 'Pays well and has cash-out options. API token is on your <strong>Profile</strong> page.',
+        needs: 'apiKey',
+        note: 'Put the same URL as the link target on their dashboard. LootLabs appends the click id for us.'
+    },
+    workink: {
+        desc: 'Developer API key from <strong>dashboard.work.ink &rarr; Developer</strong>. Supports a click-id macro in the target URL.',
+        needs: 'apiKey',
+        note: 'Enable <strong>Advanced Anti-Bypass</strong> on their dashboard and set the postback there too, or clicks will not be confirmed.'
+    },
+    admint: {
+        desc: 'Low minimum payouts, crypto/PayPal/bank withdrawal.',
+        needs: 'apiKey',
+        note: 'Not yet wired to a confirmation API - this checkpoint cannot complete until it is.'
+    },
+    shrtfly: { desc: 'ShrtFly publisher API token.', needs: 'apiKey', note: 'Not yet wired to a confirmation API - this checkpoint cannot complete until it is.' },
+    shrinkearn: { desc: 'ShrinkEarn API token.', needs: 'apiKey', note: 'Not yet wired to a confirmation API - this checkpoint cannot complete until it is.' },
+    kicia: { desc: 'Private ad provider.', needs: 'apiKey', note: 'Not yet wired to a confirmation API.' },
+    rinku: { desc: 'Rinku.pro.', needs: 'apiKey', note: 'Not yet wired to a confirmation API.' }
+};
+
+// Which providers the WORKER can actually verify right now. Anything else is
+// refused rather than completed on a timer, which is the whole point of the
+// anti-bypass feature.
+var VERIFIABLE = { test: 1, linkvertise: 1, lootlabs: 1, workink: 1 };
+
+function providerFieldsHtml(provider, st) {
+    var spec = PROVIDER_SETUP[provider] || { desc: '', needs: 'apiKey', note: '' };
+    var html = '<div class="provider-panel"><div class="provider-desc">' + spec.desc + '</div>';
+    if (!VERIFIABLE[provider]) {
+        html += '<div class="warn">This provider is not wired to a confirmation API yet, so a visitor can never '
+            + 'complete this checkpoint. It is listed for completeness only.</div>';
+    }
+    if (spec.needs === 'authToken') {
+        html += '<div class="form-group"><label>API Token</label>'
+            + '<input type="text" id="cpAuthToken" value="' + escAttr(st.authToken || '') + '" placeholder="Linkvertise Settings &rarr; Account &rarr; Anti Bypassing">'
+            + '<div class="field-hint">Stored on the server only. It is never included in the share link.</div></div>';
+    } else if (spec.needs === 'apiKey') {
+        html += '<div class="form-group"><label>API Key</label>'
+            + '<input type="text" id="cpApiKey" value="' + escAttr(st.apiKey || '') + '" placeholder="Provider developer dashboard">'
+            + '<div class="field-hint">Stored on the server only. It is never included in the share link.</div></div>';
+    } else {
+        html += '<div class="field-hint">' + spec.note + '</div>';
+    }
+    if (spec.note && spec.needs !== 'none') {
+        html += '<div class="field-hint" style="margin-top:8px">' + spec.note + '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+// Keep the checkbox/toggle ids unique to the dialog they live in, so the
+// create dialog and the edit dialog cannot read each other's fields.
+function wireProviderFields() { /* ids are already scoped by id; nothing to wire */ }
+// Save an edited checkpoint, provider settings included.
+//
+// The settings are read back out of the dialog by the same ids the provider
+// form renders, and pushed to the worker with the rest of the reward. The old
+// version saved only the name and the URL - so the API token was neither
+// editable nor, as it turned out, ever transmitted.
+//
+// The save is AWAITED before the dialog closes. Closing first and syncing after
+// is how a token can silently fail to reach the server while the panel reports
+// a cheerful "Saved".
+async function confirmEditCheckpoint(id, index) {
     var found = findReward(id);
     if (!found) return;
     var cp = found.reward.checkpoints[index];
     if (!cp) return;
+
     cp.name = document.getElementById('editCpName').value.trim() || cp.name;
     cp.shortUrl = document.getElementById('editCpUrl').value.trim() || cp.shortUrl;
+
+    var g = function (i) { var el = document.getElementById(i); return el ? el.value.trim() : ''; };
+    cp.settings = cp.settings || {};
+    if (g('cpAuthToken') !== '') cp.settings.authToken = g('cpAuthToken');
+    if (g('cpApiKey') !== '') cp.settings.apiKey = g('cpApiKey');
+
+    var out = await shRewardPersist(found.reward);
     saveRewardsData(found.data);
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     renderRewardsTab();
     openCheckpointManagerUI(id);
+
+    if (!out.ok) {
+        shNotify('Not Saved', out.error === 'network'
+            ? 'Could not reach the reward server. Your change is in this tab only and the visitor link will not pick it up.'
+            : ('The reward server refused this: ' + out.error), 'error', 9000);
+        return;
+    }
+    var unready = (out.notReady || []).filter(function (n) { return n.id === cp.id; });
+    if (unready.length) {
+        shNotify('Saved - But Not Usable Yet',
+            'This checkpoint still cannot be completed: ' + providerReadyHint(unready[0].provider),
+            'warning', 9000);
+        return;
+    }
     shNotify('Saved', 'Checkpoint updated.', 'success');
 }
 
+// Why a provider cannot complete yet, in the owner's words.
+function providerReadyHint(provider) {
+    if (provider === 'linkvertise') return 'paste your Linkvertise Anti-Bypassing API token above.';
+    if (provider === 'lootlabs') return 'paste your LootLabs API token above.';
+    if (provider === 'workink') return 'paste your Work.Ink API key above.';
+    return 'that provider is not wired to a confirmation API yet, so no visitor can complete it.';
+}
 function clearCheckpointStats(id, index) {
     var found = findReward(id);
     if (!found) return;
     var cp = found.reward.checkpoints[index];
     if (!cp) return;
     cp.completed = 0; cp.cancelled = 0; cp.avgTimeSec = 0;
-    saveRewardsData(found.data);
-    var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
-    if (modal) modal.remove();
-    openCheckpointManagerUI(id);
-    shNotify('Stats Cleared', 'Checkpoint stats reset.', 'info');
+    // Cleared on the server too. The worker keeps its own tallies, and a panel
+    // that showed zeros while the server still counted them would report a
+    // checkpoint as failing when it was in fact converting normally.
+    shRewardPersist(found.reward).then(function () {
+        saveRewardsData(found.data);
+        var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+        if (modal) modal.remove();
+        openCheckpointManagerUI(id);
+        shNotify('Stats Cleared', 'Checkpoint stats reset.', 'info');
+    });
 }
-
-// expose to main.js inline onclick handlers
 window.renderRewardsTab = renderRewardsTab;
 window.openCreateRewardUI = openCreateRewardUI;
 window.openCheckpointManagerUI = openCheckpointManagerUI;
@@ -523,8 +788,6 @@ window.editCheckpointUI = editCheckpointUI;
 window.confirmEditCheckpoint = confirmEditCheckpoint;
 window.clearCheckpointStats = clearCheckpointStats;
 window.rewardLink = rewardLink;
-window.encodeRewardCfg = encodeRewardCfg;
-window.rewardHash = rewardHash;
 window.loadRewardsData = loadRewardsData;
 
 export { initRewards, renderRewardsTab, openCreateRewardUI };

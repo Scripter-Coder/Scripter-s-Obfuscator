@@ -1366,6 +1366,11 @@ async function shSyncLicenses() {
         const licenses = {};
         for (const k of (keyData.keys || [])) {
             licenses[k.key] = {
+                // The worker sanitizes scriptId, but a field that is absent is
+                // stored as ''. Sending it is what makes the panel show which
+                // script a key belongs to after a round trip - the server side
+                // of this was fixed and the client was still dropping it.
+                scriptId: k.scriptId || '',
                 hwid: k.hwid || '',
                 expiresAt: k.expires || 0,
                 banned: !!k.banned,
@@ -1955,21 +1960,36 @@ function loadKeys() {
     } catch (e) { return { keys: [], used: 0 }; }
 }
 
+// Saves locally, then mirrors to the worker's license DB.
+//
+// The mirror is what makes /sh/auth accept the key from an executor, so its
+// result is RETURNED rather than discarded. It used to be fired and forgotten
+// inside a try/catch that could not have caught a rejection anyway, and every
+// caller reported success regardless - which is how a key ends up on screen
+// that the script then refuses with `SHERR invalid`.
+//
+// Returns { ok, skipped }. `skipped` is for non-owner accounts, whose keys are
+// deliberately local-only, so a caller can tell "not applicable" from
+// "failed" - different problems with different fixes.
+//
+// The local write is never rolled back. Losing the owner's whole key list
+// because the network blipped would be far worse than a stale one.
 function saveKeys(keyData) {
     try {
         localStorage.setItem('keys_' + (currentUser ? currentUser.id : ''), JSON.stringify(keyData));
-    } catch (e) { console.error('Error saving keys:', e); }
-    // mirror to the worker's license DB (server-side auth). Fire-and-
-    // forget; /sh/auth only works once this sync has landed. The owner
-    // (Scripter) owns the licenses - everyone else stays local-only.
-    try {
-        if (currentUser && (currentUser.username === 'Scripter' || currentUser.isAdmin)) {
-            shSyncLicenses();
-        }
-    } catch (e) {}
+    } catch (e) {
+        console.error('Error saving keys:', e);
+        return Promise.resolve({ ok: false, error: 'local storage rejected the key list' });
+    }
+    if (!currentUser || !(currentUser.username === 'Scripter' || currentUser.isAdmin)) {
+        return Promise.resolve({ ok: true, skipped: true });
+    }
+    return Promise.resolve()
+        .then(function () { return shSyncLicenses(); })
+        .catch(function () { return { ok: false, error: 'network' }; });
 }
 
-function createKey(scriptId, keyType, expiresDays) {
+async function createKey(scriptId, keyType, expiresDays) {
     if (shRateGuard('key', SH_RATE.key.max, SH_RATE.key.window, 'Too Many Keys')) return;
     var limitErr = checkPlanLimit('keys');
     if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return null; }
@@ -1993,7 +2013,21 @@ function createKey(scriptId, keyType, expiresDays) {
     });
     keyData.keys.push(newKey);
     keyData.used = keyData.keys.filter(k => k.used).length;
-    saveKeys(keyData);
+    var sync = await saveKeys(keyData);
+    if (!sync || !sync.ok) {
+        // Still created and still shown - but say plainly that the executor
+        // will not accept it yet, because that is the state it is actually in.
+        showNotification('Key Created - NOT Synced',
+            'Key created: ' + newKey.key + '\n\nThe license server did not accept it, so scripts will reject it as an invalid key. Press Sync Keys to retry.',
+            'error', 12000);
+        return newKey;
+    }
+    if (sync && sync.skipped) {
+        showNotification('Key Created (Local Only)',
+            'Key created: ' + newKey.key + '\n\nOnly the owner account syncs keys to the license server; scripts will not accept this one.',
+            'warning', 12000);
+        return newKey;
+    }
     showNotification('Key Created', expires
         ? 'Key active for ' + days + ' day(s): ' + newKey.key
         : 'Unlimited key created: ' + newKey.key, 'success', 6000);
@@ -2257,7 +2291,7 @@ function openAddUserUI() {
     document.body.appendChild(overlay);
 }
 
-function confirmAddUserUI() {
+async function confirmAddUserUI() {
     var limitErr = checkPlanLimit('keys');
     if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var note = document.getElementById('addUserNote').value.trim();
@@ -2280,13 +2314,35 @@ function confirmAddUserUI() {
     });
     keyData.keys.push(newKey);
     keyData.used = keyData.keys.filter(k => k.used).length;
-    saveKeys(keyData);
+
+    // WAIT for the server before claiming success.
+    //
+    // This is the reported bug. The key appeared in the list and the panel said
+    // "User Added", but nothing had confirmed the worker had it - so if the
+    // sync failed, the executor answered `SHERR invalid` and there was no signal
+    // on screen that anything had gone wrong. The two outcomes are now
+    // distinguishable, and the failure says what to do about it.
+    var sync = await saveKeys(keyData);
+
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     userKeysState.listVisible = true;
     refreshStatsUI();
     renderKeys();
-    showNotification('User Added', 'Key created: ' + newKey.key, 'success', 6000);
+
+    if (sync && sync.skipped) {
+        showNotification('Key Created (Local Only)',
+            'Key created: ' + newKey.key + '\n\nThis account is not the owner, so the key was not sent to the license server and scripts will NOT accept it.',
+            'warning', 12000);
+        return;
+    }
+    if (!sync || !sync.ok) {
+        showNotification('Key Created - NOT Synced',
+            'Key created: ' + newKey.key + '\n\nThe license server did not accept it, so scripts will reject it as an invalid key. It is saved in this browser only. Press Sync Keys to retry.',
+            'error', 14000);
+        return;
+    }
+    showNotification('User Added', 'Key created and synced: ' + newKey.key, 'success', 6000);
 }
 
 // ---- Users Keys Settings (mass ops) ----

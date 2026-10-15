@@ -3,231 +3,363 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScripterHub Reward</title>
+    <meta name="robots" content="noindex, nofollow">
+    <title>Reward</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0a0a0f; color: #fff; min-height: 100vh; display: flex; justify-content: center; padding: 30px 16px; }
+        body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: #0a0a0f; color: #fff; min-height: 100vh; display: flex; justify-content: center; padding: 30px 16px; }
         .wrap { width: 100%; max-width: 720px; }
         .card { background: rgba(20,20,35,0.8); border: 1px solid rgba(255,255,255,0.07); border-radius: 16px; padding: 26px; margin-bottom: 18px; }
         h1 { font-size: 24px; }
-        .sub { color: #8888aa; font-size: 13px; margin-top: 6px; }
-        .progress-row { display: flex; align-items: center; gap: 16px; margin-top: 18px; }
-        .progress-bar { flex: 1; height: 12px; background: rgba(255,255,255,0.07); border-radius: 8px; overflow: hidden; }
+        h2 { font-size: 17px; }
+        .sub { color: #8888aa; font-size: 13px; margin-top: 6px; line-height: 1.6; }
+        .progress-row { display: flex; align-items: center; gap: 16px; margin-top: 18px; flex-wrap: wrap; }
+        .progress-bar { flex: 1; height: 12px; min-width: 140px; background: rgba(255,255,255,0.07); border-radius: 8px; overflow: hidden; }
         .progress-fill { height: 100%; background: linear-gradient(90deg, #66ff66, #00cc44); border-radius: 8px; transition: width .6s; }
         .progress-label { color: #8888aa; font-size: 13px; white-space: nowrap; }
         .btn { border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-family: inherit; transition: all .2s; }
-        .btn-start { padding: 12px 34px; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); }
-        .btn-start.done { background: transparent; border: 2px solid #66ff66; color: #66ff66; }
-        .btn-start:disabled { opacity: 0.35; cursor: not-allowed; }
-        .btn-key { width: 100%; padding: 14px; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); margin-top: 16px; }
-        .btn-key:disabled { opacity: 0.35; cursor: not-allowed; background: #333; }
-        .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; background: rgba(108,59,255,0.25); color: #8a6bff; border: 1px solid rgba(108,59,255,0.35); cursor: pointer; }
+        .btn-primary { color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); }
+        .btn-primary:hover { filter: brightness(1.15); }
+        .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; background: rgba(108,59,255,0.25); color: #a78bfa; border: 1px solid rgba(108,59,255,0.35); cursor: pointer; }
         .btn-sm:hover { background: rgba(108,59,255,0.5); color: #fff; }
         .btn-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+        .btn-start { padding: 12px 30px; font-size: 15px; }
+        .btn-start.done { background: transparent; border: 2px solid #66ff66; color: #66ff66; }
+        .btn-key { width: 100%; padding: 14px; font-size: 15px; color: #fff; background: linear-gradient(135deg, #6c3bff, #00bfff); margin-top: 16px; }
+        .btn-key:disabled { opacity: 0.35; cursor: not-allowed; background: #333; }
         table { width: 100%; border-collapse: collapse; margin-top: 14px; }
         th { text-align: left; color: #8888aa; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
         td { padding: 10px 8px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .keymono { font-family: monospace; color: #66ccff; word-break: break-all; }
+        .keymono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #66ccff; word-break: break-all; }
         .status-active { color: #66ff66; } .status-expired { color: #ff6b6b; }
         .notif { position: fixed; top: 20px; right: 20px; left: 20px; background: linear-gradient(135deg, #0ca84c, #66ff66); color: #fff; padding: 14px 20px; border-radius: 12px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.5); opacity: 0; transform: translateY(-20px); transition: all .35s; z-index: 100; text-align: center; }
         .notif.show { opacity: 1; transform: translateY(0); }
         .cooldown-note { color: #ffd700; font-size: 13px; margin-top: 12px; text-align: center; }
-        .err { text-align: center; color: #ff4444; font-size: 22px; font-weight: 700; padding: 80px 0; }
+        .err { text-align: center; color: #ff4444; font-size: 20px; font-weight: 700; padding: 60px 0; }
+        .steps { margin-top: 14px; }
+        .step { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 7px 0; color: #8888aa; }
+        .step .n { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; background: rgba(255,255,255,0.07); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+        .step.done { color: #66ff66; } .step.done .n { background: rgba(0,204,68,0.25); }
+        .step.now { color: #fff; font-weight: 600; } .step.now .n { background: linear-gradient(135deg,#6c3bff,#00bfff); color: #fff; }
+        .warn { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: rgba(255,180,0,0.1); border: 1px solid rgba(255,180,0,0.3); color: #ffd700; font-size: 12px; line-height: 1.6; }
+        .big { font-size: 52px; text-align: center; line-height: 1; }
+        .center { text-align: center; }
+        code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #66ccff; }
     </style>
 </head>
 <body>
-    <div class="notif" id="notif">Key Created Successfully</div>
+    <div class="notif" id="notif">Done</div>
     <div class="wrap" id="app"><div class="err">Loading reward...</div></div>
 <script>
 (function () {
-    function b64d(s) {
-        s = s.replace(/-/g, '+').replace(/_/g, '/');
-        while (s.length % 4) s += '=';
-        return decodeURIComponent(escape(atob(s)));
+    'use strict';
+
+    // ---------------------------------------------------------------- worker --
+    // The reward config, the visitor's progress and the keys they earn all live
+    // on the worker. This page holds none of it.
+    //
+    // It used to: the whole config rode in the URL as base64, progress rode in
+    // localStorage, and the key was generated here with Math.random(). Every
+    // one of those was editable by the visitor, so the reward paid out on
+    // demand - rewrite the config to a single about:blank checkpoint, append
+    // ?done=0, and a key appeared.
+    var W = (function () {
+        var s = document.querySelector('script[data-sh-endpoint]');
+        if (s && s.getAttribute('data-sh-endpoint')) return s.getAttribute('data-sh-endpoint').replace(/\/+$/, '');
+        var m = /[?&]w=([^&]+)/.exec(location.search);
+        if (m) return decodeURIComponent(m[1]).replace(/\/+$/, '');
+        return '';
+    })();
+
+    // A stable-per-browser value. This is ONE HALF of the ban key (the IP is the
+    // other), so it is not a security boundary - it is a second handle for the
+    // same visitor. It is hashed so the raw signals never leave the page.
+    function fingerprint() {
+        var bits = [];
+        try { bits.push(navigator.userAgent); } catch (e) {}
+        try { bits.push(navigator.language); } catch (e) {}
+        try { bits.push(String(screen.width) + 'x' + String(screen.height) + 'x' + String(screen.colorDepth)); } catch (e) {}
+        try { bits.push(String(new Date().getTimezoneOffset())); } catch (e) {}
+        try { bits.push(String(navigator.hardwareConcurrency || 0)); } catch (e) {}
+        try { bits.push(String(navigator.maxTouchPoints || 0)); } catch (e) {}
+        try {
+            var c = document.createElement('canvas');
+            var g = c.getContext('2d');
+            if (g) {
+                g.textBaseline = 'top'; g.font = '14px Arial';
+                g.fillStyle = '#f60'; g.fillRect(0, 0, 8, 8);
+                g.fillStyle = '#069'; g.fillText('scripterhub', 2, 2);
+                bits.push(c.toDataURL().slice(-64));
+            }
+        } catch (e) {}
+        var s = bits.join('|');
+        var h1 = 0x811c9dc5, h2 = 0x01000193;
+        for (var i = 0; i < s.length; i++) {
+            h1 = (h1 ^ s.charCodeAt(i)) >>> 0; h1 = (h1 * 16777619) >>> 0;
+            h2 = (h2 + s.charCodeAt(i) * (i + 7)) >>> 0; h2 = (h2 * 2654435761) >>> 0;
+        }
+        return 'fp' + h1.toString(36) + h2.toString(36);
     }
-    function hash(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 999999937; return h; }
-    function ls(k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
-    function lss(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-    function genKey() {
-        var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-        var s = '';
-        for (var i = 0; i < 25; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
-        return s;
+
+    var FP = fingerprint();
+    var rid = new URLSearchParams(location.search).get('rid') || '';
+
+    function api(path, opts) {
+        if (!W) return Promise.resolve({ ok: false, error: 'This page is not connected to the reward server.' });
+        var o = opts || {};
+        var url = W + path;
+        var init = { method: o.method || 'GET', headers: {} };
+        if (o.body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(o.body); }
+        return fetch(url, init).then(function (r) {
+            return r.json().catch(function () { return { ok: false, error: 'Server replied in a way this page could not read (' + r.status + ').' }; });
+        }).catch(function () {
+            return { ok: false, error: 'Could not reach the reward server. Check your connection and try again.' };
+        });
+    }
+
+    // ----------------------------------------------------------------- utils --
+    var app = document.getElementById('app');
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
     }
     function notify(msg) {
         var n = document.getElementById('notif');
-        n.textContent = msg;
-        n.classList.add('show');
+        n.textContent = msg; n.classList.add('show');
         setTimeout(function () { n.classList.remove('show'); }, 3500);
     }
     function fmtLeft(ms) {
         if (ms <= 0) return 'Expired';
         var h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
-        if (h >= 24) { var d = Math.floor(h / 24); return d + 'd ' + (h % 24) + 'h'; }
+        if (h >= 24) return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
         return h + 'h ' + m + 'm';
     }
 
-    var q = new URLSearchParams(location.search);
-    var rStr = q.get('r');
-    if (!rStr) { document.getElementById('app').innerHTML = '<div class="err">Invalid reward link</div>'; return; }
-    var cfg;
-    try { cfg = JSON.parse(b64d(rStr)); } catch (e) { document.getElementById('app').innerHTML = '<div class="err">Invalid reward link</div>'; return; }
-    if (!cfg || !cfg.n) { document.getElementById('app').innerHTML = '<div class="err">Reward not found</div>'; return; }
+    // ------------------------------------------------------------------ state --
+    var cfg = null;      // public reward config from the worker
+    var state = null;    // progress + earned keys from the worker
+    var step = null;     // the checkpoint we were last given
 
-    // owner-side visitor counting (local fallback when no worker is configured;
-    // with a worker configured, visitors are counted server-side instead)
-    try {
-        if (!cfg.w && !sessionStorage.getItem('sh_visited_' + hash(rStr))) {
-            sessionStorage.setItem('sh_visited_' + hash(rStr), '1');
-            for (var oi = 0; oi < localStorage.length; oi++) {
-                var ok = localStorage.key(oi);
-                if (ok && ok.indexOf('sh_rewards_') === 0) {
-                    var od = JSON.parse(localStorage.getItem(ok));
-                    var changed = false;
-                    (od.rewards || []).forEach(function (rw) {
-                        if (rw.name === cfg.n && rw.keyDurationH === cfg.d && (rw.checkpoints || []).length === (cfg.cps || []).length) {
-                            od.visitors = (od.visitors || 0) + 1;
-                            changed = true;
-                        }
-                    });
-                    if (changed) localStorage.setItem(ok, JSON.stringify(od));
+    function fatal(msg, detail) {
+        app.innerHTML = '<div class="card center"><div class="big">⚠️</div>'
+            + '<h1 style="margin-top:12px; font-size:19px;">' + esc(msg) + '</h1>'
+            + (detail ? '<p class="sub">' + esc(detail) + '</p>' : '')
+            + '</div>';
+    }
+
+    function render() {
+        if (!cfg || !state) return;
+        var total = cfg.total || 0;
+        var done = state.done || 0;
+        var complete = total > 0 && done >= total;
+        var keys = state.keys || [];
+        var maxed = keys.length >= (cfg.maxKeys || 1);
+        var cooldownUntil = state.cooldownUntil || 0;
+        var inCooldown = cooldownUntil > Date.now();
+        var canClaim = complete && !maxed && !inCooldown;
+
+        var html = '';
+
+        // ---- progress card ----
+        html += '<div class="card">';
+        html += '<h1>🎁 ' + esc(cfg.name) + '</h1>';
+        html += '<p class="sub">Complete all ' + total + ' checkpoint' + (total === 1 ? '' : 's')
+            + ' to earn a ' + (cfg.keyDurationH || 1) + ' hour key.</p>';
+        html += '<div class="progress-row">';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + (total ? done / total * 100 : 0) + '%"></div></div>';
+        html += '<span class="progress-label">Progress: ' + done + '/' + total + '</span>';
+        html += '</div>';
+
+        if (total === 0) {
+            // The old build fell through to `|| 'about:blank'` here, which is
+            // exactly what "the Start button just leads me to about:blank" was.
+            // A reward with no checkpoints can never be completed, so it says
+            // so instead of offering a button that goes nowhere.
+            html += '<div class="warn">This reward has no checkpoints yet, so there is nothing to complete '
+                + 'and no key can be earned from it. The owner needs to add a checkpoint in the Rewards tab.</div>';
+        } else if (complete) {
+            html += '<div class="warn" style="background:rgba(0,204,68,0.1);border-color:rgba(0,204,68,0.3);color:#66ff66">'
+                + '✅ All checkpoints complete. Claim your key below.</div>';
+        } else {
+            // The Start button. It was missing from the first version of this
+            // page, which rendered the progress bar and nothing to act on it -
+            // caught by tools/reward_flow_test.mjs, which asserts a button
+            // exists before clicking it.
+            html += '<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">'
+                + '<button class="btn btn-primary btn-start" id="startBtn">'
+                + (step && step.i === 0 ? 'Start' : (done > 0 ? 'Next Checkpoint' : 'Start'))
+                + '</button>'
+                // Verify is separate from Start on purpose. Start opens the ad;
+                // Verify is what comes back afterwards and asks the worker
+                // whether it counts. Folding them into one button is what let
+                // the old flow complete a checkpoint on a timer.
+                + (step ? '<button class="btn btn-primary btn-start" id="verifyBtn">✅ I Have Finished This One</button>' : '')
+                + '</div>';
+            if (step) {
+                html += '<div class="warn" style="background:rgba(108,59,255,0.1);border-color:rgba(108,59,255,0.3);color:#a78bff">'
+                    + 'Next up: <strong>' + esc(step.name) + '</strong> (' + esc(step.provider) + ')'
+                    + (step.ready ? '. Click Start, complete the ad, then come back and press Verify.'
+                        : '. This checkpoint cannot be verified yet - the owner has not finished setting up ' + esc(step.provider) + '.')
+                    + '</div>';
+                if (!step.ready) {
+                    html += '<div class="warn">The owner still needs to finish configuring this provider. '
+                        + 'Completing it is not possible until they do, and pretending otherwise would pay out for an ad that never ran.</div>';
                 }
             }
         }
-    } catch (e) {}
-
-    var H = 'shrw_' + hash(rStr);
-    var progress = ls(H + '_p', { done: [], started: 0 });
-    var keys = ls(H + '_k', []);
-    var blacklist = ls('sh_blacklist', { strikes: 0, until: 0 });
-
-    // visitor limit check against the Cloudflare Worker (when configured)
-    if (cfg.w) {
-        try {
-            fetch(cfg.w + '/visitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(function () {});
-            if (cfg.mv > 0) {
-                fetch(cfg.w + '/v3/realtime_stats').then(function (r) { return r.json(); }).then(function (d) {
-                    if (d && typeof d.totalVisitors === 'number' && d.totalVisitors > cfg.mv) {
-                        document.getElementById('app').innerHTML = '<div class="card" style="text-align:center;"><div class="big">🚫</div><h1 style="color:#ff4444; margin-top:12px;">Visitor Limit Reached</h1><p class="sub" style="margin-top:8px;">This reward reached its maximum registered visitors (' + cfg.mv + ').</p></div>';
-                    }
-                }).catch(function () {});
-            }
-        } catch (e) {}
-    }
-
-    if (blacklist.until && blacklist.until > Date.now()) {
-        document.getElementById('app').innerHTML = '<div class="card" style="text-align:center;"><div style="font-size:56px;">⛔</div><h1 style="color:#ff4444; margin-top:12px;">You are blacklisted for ' + fmtLeft(blacklist.until - Date.now()) + '</h1><p class="sub" style="margin-top:8px;">because you tried to bypass a checkpoint</p></div>';
-        return;
-    }
-
-    var total = (cfg.cps || []).length;
-    var doneCount = progress.done.filter(function (i) { return i < total; }).length;
-    var complete = total > 0 && doneCount >= total;
-    var cooldownEnd = (progress.lastCompletion || 0) + (cfg.cd || 0) * 3600000;
-    var inCooldown = cfg.cd > 0 && cooldownEnd > Date.now();
-
-    function saveAll() { lss(H + '_p', progress); lss(H + '_k', keys); }
-
-    function render() {
-        doneCount = progress.done.filter(function (i) { return i < total; }).length;
-        complete = total > 0 && doneCount >= total;
-        var activeKeys = keys.filter(function (k) { return k.expires > Date.now() || k.renewed; });
-        var html = '';
-        html += '<div class="card">';
-        html += '<h1>🎁 ' + cfg.n + '</h1>';
-        html += '<p class="sub">Complete all checkpoints to earn a key (' + (cfg.d || 1) + ' hour key)</p>';
-        html += '<div class="progress-row">';
-        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + (total ? doneCount / total * 100 : 0) + '%"></div></div>';
-        html += '<span class="progress-label">Progress: ' + doneCount + '/' + total + '</span>';
-        html += '<button class="btn btn-start' + (complete ? ' done' : '') + '" id="startBtn">' + (complete ? 'DONE' : (doneCount > 0 ? 'Next' : 'Start')) + '</button>';
-        html += '</div>';
-        if (inCooldown && complete) html += '<div class="cooldown-note">❄️ Cooldown active - you can complete this reward again in ' + fmtLeft(cooldownEnd - Date.now()) + '</div>';
+        if (inCooldown && complete) {
+            html += '<div class="cooldown-note">❄️ Cooldown - you can complete this reward again in ' + fmtLeft(cooldownUntil - Date.now()) + '</div>';
+        }
         html += '</div>';
 
-        html += '<div class="card">';
-        html += '<h2 style="font-size:17px;">🔑 Your Keys (' + keys.length + '/' + (cfg.mk || 1) + ')</h2>';
-        if (keys.length === 0) {
-            html += '<p class="sub" style="margin-top:10px;">No keys yet - complete all checkpoints, then click "Get A New Key".</p>';
+        // ---- checkpoint list ----
+        if (total > 0) {
+            html += '<div class="card"><h2>🛤️ Checkpoints</h2><div class="steps">';
+            (cfg.steps || []).forEach(function (s, i) {
+                var cls = (state.doneList && state.doneList.indexOf(i) !== -1) ? 'step done'
+                    : (step && step.i === i ? 'step now' : 'step');
+                var mark = (state.doneList && state.doneList.indexOf(i) !== -1) ? '✓' : String(i + 1);
+                html += '<div class="' + cls + '"><span class="n">' + mark + '</span>'
+                    + '<span>' + esc(s.name) + ' <span style="opacity:.6">· ' + esc(s.provider) + '</span></span></div>';
+            });
+            html += '</div></div>';
+        }
+
+        // ---- keys ----
+        html += '<div class="card"><h2>🔑 Your Keys (' + keys.length + '/' + (cfg.maxKeys || 1) + ')</h2>';
+        if (!keys.length) {
+            html += '<p class="sub" style="margin-top:10px">No keys yet - complete all checkpoints, then press the button below.</p>';
         } else {
-            html += '<table><tr><th>Key</th><th>Time Left</th><th>Status</th><th>Actions</th></tr>';
-            keys.forEach(function (k, i) {
+            html += '<table><tr><th>Key</th><th>Time Left</th><th>Status</th></tr>';
+            keys.forEach(function (k) {
                 var expired = k.expires <= Date.now();
-                html += '<tr>';
-                html += '<td class="keymono">' + k.key + '</td>';
-                html += '<td>' + fmtLeft(k.expires - Date.now()) + '</td>';
-                html += '<td class="' + (expired ? 'status-expired' : 'status-active') + '">' + (expired ? 'expired' : 'active') + '</td>';
-                html += '<td>';
-                if (expired) html += '<button class="btn-sm" onclick="renewKey(' + i + ')">🔄 Renew</button> ';
-                if (cfg.ext) html += '<button class="btn-sm" onclick="extendKey(' + i + ')" ' + (expired ? 'disabled' : '') + '> +' + (cfg.eh || 6) + 'H</button>';
-                html += '</td>';
-                html += '</tr>';
+                html += '<tr><td class="keymono">' + esc(k.key) + '</td>'
+                    + '<td>' + fmtLeft(k.expires - Date.now()) + '</td>'
+                    + '<td class="' + (expired ? 'status-expired' : 'status-active') + '">'
+                    + (expired ? 'expired' : 'active') + '</td></tr>';
             });
             html += '</table>';
         }
-        var maxed = keys.length >= (cfg.mk || 1);
-        var keyBtnDisabled = !complete || maxed;
-        html += '<button class="btn btn-key" id="newKeyBtn" ' + (keyBtnDisabled ? 'disabled' : '') + '>🔑 Get A New Key</button>';
-        if (!complete && total > 0) html += '<p class="sub" style="text-align:center; margin-top:8px;">Complete All Checkpoints First</p>';
-        if (maxed && complete) html += '<p class="sub" style="text-align:center; margin-top:8px;">You\'ve hit your max key limit (' + (cfg.mk || 1) + ')</p>';
+        html += '<button class="btn btn-key" id="claimBtn" ' + (canClaim ? '' : 'disabled') + '>🔑 Get A New Key</button>';
+        if (total > 0 && !complete) html += '<p class="sub" style="text-align:center;margin-top:8px">Complete all checkpoints first.</p>';
+        if (maxed) html += '<p class="sub" style="text-align:center;margin-top:8px">You\'ve reached the key limit (' + (cfg.maxKeys || 1) + ').</p>';
         html += '</div>';
-        document.getElementById('app').innerHTML = html;
 
+        app.innerHTML = html;
+        wire();
+    }
+
+    function wire() {
         var startBtn = document.getElementById('startBtn');
-        if (startBtn) startBtn.onclick = function () {
-            if (complete) { notify('All checkpoints completed! Use the buttons below.'); return; }
-            progress.started = progress.started || Date.now();
-            saveAll();
-            var next = 0;
-            for (var i = 0; i < total; i++) { if (progress.done.indexOf(i) === -1) { next = i; break; } }
-            var url = (cfg.cps[next] && cfg.cps[next].u) || 'about:blank';
-            lss(H + '_t', Date.now());
-            location.href = url;
-        };
-        var keyBtn = document.getElementById('newKeyBtn');
-        if (keyBtn) keyBtn.onclick = function () {
-            if (!complete || keys.length >= (cfg.mk || 1)) return;
-            keys.push({ key: genKey(), expires: Date.now() + (cfg.d || 1) * 3600000, created: Date.now() });
-            saveAll();
-            notify('Key Created Successfully');
+        if (startBtn) startBtn.onclick = onStart;
+        var verifyBtn = document.getElementById('verifyBtn');
+        if (verifyBtn) verifyBtn.onclick = onVerify;
+        var claimBtn = document.getElementById('claimBtn');
+        if (claimBtn) claimBtn.onclick = onClaim;
+    }
+
+    function setAction(label, disabled) {
+        var b = document.getElementById('startBtn');
+        if (!b) return;
+        b.textContent = label;
+        b.disabled = !!disabled;
+    }
+
+    // Open the ad link. A popup rather than a navigation, so this page keeps
+    // the visitor's place and the progress bar does not have to survive a
+    // round trip through an advertiser's domain.
+    function onStart() {
+        setAction('Opening...', true);
+        api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (r) {
+            if (!r.ok) { return handleErr(r); }
+            step = r.step;
+            if (r.complete) { refresh(); setAction('Done', true); return; }
+            if (!step || !step.target) { setAction('Start', false); return; }
+            var w = window.open(step.target, '_blank', 'noopener');
+            if (!w) location.href = step.target;
             render();
-        };
+        });
     }
 
-    window.renewKey = function (i) {
-        if (!keys[i]) return;
-        keys[i].expires = Date.now() + (cfg.d || 1) * 3600000;
-        keys[i].renewed = true;
-        saveAll();
-        notify('Key Renewed - Reactivated');
-        render();
-    };
-    window.extendKey = function (i) {
-        if (!keys[i]) return;
-        var maxMs = (cfg.mh || 0) * 3600000;
-        var add = (cfg.eh || 6) * 3600000;
-        var base = Math.max(keys[i].expires, Date.now());
-        var newExp = base + add;
-        if (maxMs > 0 && newExp - Date.now() > maxMs) { notify('Max hours limit reached (' + cfg.mh + 'h)'); return; }
-        keys[i].expires = newExp;
-        keys[i].renewed = false;
-        saveAll();
-        notify('+' + (cfg.eh || 6) + ' Hours Added');
-        render();
-    };
-
-    // returning from a checkpoint? checkpoint.html redirects back with ?r=...&done=N
-    var doneParam = q.get('done');
-    if (doneParam !== null) {
-        var idx = parseInt(doneParam, 10);
-        if (!isNaN(idx) && progress.done.indexOf(idx) === -1 && idx < total) {
-            progress.done.push(idx);
-            if (progress.done.filter(function (i) { return i < total; }).length >= total) progress.lastCompletion = Date.now();
-            saveAll();
+    // Come back from the ad and let the worker decide whether it counts.
+    // For the test provider the worker is told `confirmed=1`; for a real
+    // provider the provider itself has already called the callback URL with a
+    // click id, and this simply re-reads the result.
+    function onVerify() {
+        setAction('Verifying...', true);
+        if (step && step.provider === 'test' && step.verifyUrl) {
+            location.href = step.verifyUrl + (step.verifyUrl.indexOf('?') > -1 ? '&' : '?') + 'confirmed=1';
+            return;
         }
-        history.replaceState(null, '', location.pathname + '?r=' + rStr);
+        refresh();
     }
 
-    render();
+    function onClaim() {
+        var b = document.getElementById('claimBtn');
+        if (b) b.disabled = true;
+        api('/sh/reward/claim', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (r) {
+            if (!r.ok) { return handleErr(r); }
+            notify('Key Created Successfully');
+            refresh();
+        });
+    }
+
+    function handleErr(r) {
+        if (r.error === 'blacklisted') return showBan(r);
+        if (r.error === 'cooldown') { notify('Cooldown active - try again later.'); return refresh(); }
+        notify(r.error || 'Something went wrong.');
+        refresh();
+    }
+
+    function showBan(r) {
+        app.innerHTML = '<div class="card center"><div class="big">⛔</div>'
+            + '<h1 style="margin-top:12px;font-size:20px;color:#ff4444">You are blacklisted for ' + fmtLeft((r.until || 0) - Date.now()) + '</h1>'
+            + '<p class="sub">' + esc(r.reason || 'because you tried to bypass a checkpoint') + '</p>'
+            + '<p class="sub">Repeat attempts double the penalty (2h → 4h → 8h → ...). '
+            + 'This is tied to your browser and your connection, so clearing site data or switching networks will not clear it.</p>'
+            + '</div>';
+    }
+
+    function refresh() {
+        return api('/sh/reward/state?rid=' + encodeURIComponent(rid) + '&fp=' + encodeURIComponent(FP))
+            .then(function (r) {
+                if (!r.ok) { return handleErr(r); }
+                state = r;
+                // Rebuild the current step view from the worker's answer.
+                if (r.complete) { step = null; }
+                render();
+            });
+    }
+
+    function boot() {
+        if (!rid) {
+            fatal('This reward link is incomplete',
+                'It does not contain a reward id. Ask the owner for the current link - links made before this page was updated no longer work.');
+            return;
+        }
+        api('/sh/reward/pub?rid=' + encodeURIComponent(rid) + '&fp=' + encodeURIComponent(FP)).then(function (r) {
+            if (!r.ok) { fatal(r.error || 'This reward link is not valid.'); return; }
+            if (r.blacklisted) { showBan(r); return; }
+            cfg = r.public;
+            if (!cfg.total) {
+                // Still render, so the owner (testing their own link) sees WHY.
+                state = { done: 0, keys: [], doneList: [] };
+                render();
+                return;
+            }
+            refresh().then(function () {
+                if (state && !state.complete) {
+                    api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (s) {
+                        if (s.ok && s.step) step = s.step;
+                        render();
+                    });
+                }
+            });
+        });
+    }
+
+    boot();
 })();
 </script>
 </body>

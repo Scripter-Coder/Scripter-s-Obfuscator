@@ -1030,6 +1030,26 @@ function newId(prefix) {
     return prefix + s;
 }
 
+// The visitor's session id is DERIVED, not stored.
+//
+// The client sends only its fingerprint; the worker combines that with the IP
+// and signs it into a stable id. Two consequences, both wanted:
+//
+//   * Clearing localStorage does not hand out a fresh session. A visitor who is
+//     mid-way through a reward, or who has been banned, cannot reset their way
+//     out by clearing site data - which is exactly the move the ban exists to
+//     stop, and exactly what the old localStorage session id allowed.
+//   * Closing the tab and coming back later resumes the same session, so a
+//     visitor who finished an ad on their phone and reopened the link on a
+//     desktop on the same network keeps their progress.
+//
+// It is a capability for THIS reward only: the reward id is inside the signed
+// material, so a session id cannot be lifted onto a different reward.
+async function deriveSesId(secret, rid, fp, ip) {
+    const material = rid + '|' + String(fp || '') + '|' + String(ip || '');
+    return 's' + (await hmacHex(secret, material)).slice(0, 24);
+}
+
 // ---------------------------------------------------------------------------
 // blacklist: fingerprint + IP, held server-side so clearing site data does
 // not clear the ban.
@@ -1264,7 +1284,10 @@ async function issueRewardKey(env, reward, ses) {
     };
     await saveLicenses(env, map);
 
-    ses.issued = (ses.issued || []).concat([{ key: key, at: now }]);
+    // expires is carried on the entry as well as in the license record, because
+    // the visitor's table renders it and re-reading sh_licenses for one row would
+    // be a second round trip on the one request that must feel instant.
+    ses.issued = (ses.issued || []).concat([{ key: key, at: now, expires: now + hours * 3600000 }]);
     await saveSes(env, ses);
     return key;
 }
@@ -7263,9 +7286,21 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             }
 
             const now = Date.now();
-            let ses = sid ? await loadSes(env, rid, sid) : null;
+            // Derived, not accepted from the client. A client-supplied sid is
+            // ignored entirely, because the whole point is that it cannot be
+            // reset by clearing storage.
+            const secret0 = await grantSecret(env);
+            const mySid = await deriveSesId(secret0, rid, fp, ip);
+            let ses = await loadSes(env, rid, mySid);
             if (!ses) {
-                ses = { rid: rid, sid: newId('s'), fp: fp, ip: ip, ua: reqUa(request), done: [], issued: [], startedAt: now, stepIndex: -1, stepAt: 0, nonces: {} };
+                ses = { rid: rid, sid: mySid, fp: fp, ip: ip, ua: reqUa(request), done: [], issued: [], startedAt: now, stepIndex: -1, stepAt: 0, nonces: {} };
+            }
+            if (sid && sid !== mySid) {
+                // A stale or forged sid. Not fatal on its own - the derived one
+                // wins - but recorded, because a client that keeps sending one is
+                // either mid-migration from the old localStorage scheme or up to
+                // no good.
+                S.events.push({ t: now, executor: 'reward-sid-mismatch' });
             }
             // A session is bound to the fingerprint that opened it. Handing the
             // sid to someone else must not transfer their progress.
@@ -7321,7 +7356,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     // than a silent stall.
                     ready: need.ok, notReady: need.ok ? '' : need.reason
                 },
-                done: doneCount, total: total,
+                done: doneCount, total: total, doneList: ses.done || [],
                 complete: false,
                 keys: ses.issued || [],
                 stepExpired: !!next.expired
@@ -7342,12 +7377,18 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const bl = await blacklistGet(env, fp, ip);
             if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
 
-            const ses = await loadSes(env, rid, sid);
+            // Same derivation as /sh/reward/start, so a visitor who cleared
+            // localStorage still sees their own progress and their own keys.
+            const sid0 = await deriveSesId(await grantSecret(env), rid, fp, ip);
+            const ses = await loadSes(env, rid, sid0);
             if (!ses) return jsonResponse({ ok: true, sid: '', done: 0, total: (r.checkpoints || []).length, keys: [], complete: false });
             const total = (r.checkpoints || []).length;
             const done = (ses.done || []).length;
             return jsonResponse({
-                ok: true, sid: ses.sid, done: done, total: total,
+                // doneList travels alongside the count because the visitor's page
+                // renders a per-checkpoint checklist, and a bare count cannot
+                // tell it WHICH ones are ticked.
+                ok: true, sid: ses.sid, done: done, total: total, doneList: ses.done || [],
                 complete: total > 0 && done >= total,
                 keys: ses.issued || [],
                 cooldownUntil: (ses.lastCompletion || 0) + (r.cooldownH || 0) * 3600000
@@ -7372,7 +7413,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const bl = await blacklistGet(env, fp, ip);
             if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
 
-            const ses = await loadSes(env, rid, sid);
+            const sid0 = await deriveSesId(await grantSecret(env), rid, fp, ip);
+            const ses = await loadSes(env, rid, sid0);
             if (!ses) return jsonResponse({ ok: false, error: 'No session - open the reward first.' }, 400);
             if (ses.fp && fp && ses.fp !== fp) return jsonResponse({ ok: false, error: 'blacklisted' }, 403);
 
