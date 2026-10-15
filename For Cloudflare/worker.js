@@ -889,6 +889,507 @@ const DENY = {
     // re-upload so it gets split.
     TOO_BIG_WHOLE: 'toobig'
 };
+// ===========================================================================
+// REWARD / AD-CHECKPOINT SYSTEM
+// ===========================================================================
+//
+// WHY ALL OF THIS IS SERVER-SIDE, AND WHY IT HAS TO BE
+//
+// The previous implementation lived entirely in the visitor's browser:
+// the reward config rode in the share link as base64 JSON, progress rode in
+// localStorage, the anti-bypass blacklist rode in localStorage, and the key
+// was a 25-character Math.random() value minted on the spot.
+//
+// Every one of those was under the visitor's control, which means:
+//
+//   * The config was editable. Rewrite `cps` to a single about:blank entry,
+//     append `?done=0`, and reward.html reported 1/1 complete and minted a
+//     key. No ad was ever visited. That is a reward system that pays out on
+//     demand, which is the single thing it exists to prevent.
+//   * The earned key was not a license. It was never reported to the worker,
+//     so /sh/auth resolved nothing and answered `invalid`, the owner never saw
+//     it, and clearing site data destroyed it.
+//   * The blacklist was a localStorage key, so clearing site data cleared the
+//     ban. /threat was posted with an empty body, so the owner was told
+//     nothing and could enforce nothing.
+//   * Provider settings (API tokens, anti-bypass flags) were typed by the
+//     owner into a form and then DISCARDED by encodeRewardCfg, which emitted
+//     only { u, p }. Nothing verified anything.
+//
+// A verification step that the visitor's own browser performs verifies
+// nothing. So the config, the progress, the ban and the key mint all move here.
+//
+// A DELIBERATE NON-DECISION: the provider API tokens do NOT go in the share
+// link. The link is handed to every visitor, so an API token in it would be
+// readable by anyone who opened the page - who could then forge a postback
+// and spend the owner's ad balance. The public link carries an opaque id and
+// a signature, and nothing else.
+//
+// FAIL CLOSED, ALWAYS
+//
+// verifyProvider() returns { ok: false } for any provider whose API
+// credentials are absent or whose confirmation API did not corroborate the
+// click. A checkpoint whose provider cannot be verified therefore cannot be
+// completed. The alternative - carry on as if the wait had been long enough -
+// is the behaviour being replaced, and it is why the flow paid out on demand.
+// --------------------------------------------------------------------------
+
+const REWARD_PREFIX = 'sh_rw_';        // reward config
+const RSES_PREFIX   = 'sh_rs_';        // visitor session
+const RBLK_PREFIX   = 'sh_rbl_';       // blacklist entry
+
+const REWARD_SESSION_TTL_MS = 8 * 24 * 3600 * 1000;  // 8 days idle (Luarmor: 7-10)
+const REWARD_STEP_TTL_MS     = 70 * 60 * 1000;       // 70 min per checkpoint
+const REWARD_BLACKLIST_MS    = 2 * 3600 * 1000;      // 2 hours
+const REWARD_BLACKLIST_MAX_STRIKES = 4;              // cap doubling at 16h
+
+// Providers this build can verify, and the credential each one needs before it
+// is allowed to pass a checkpoint. A provider absent from this table can still
+// be CONFIGURED - it is handed a signed callback URL - but it cannot be
+// completed, which is the fail-closed behaviour rather than an oversight.
+const REWARD_PROVIDERS = {
+    test:        { needs: 'none' },
+    linkvertise: { needs: 'authToken' },
+    lootlabs:    { needs: 'apiKey' },
+    workink:     { needs: 'apiKey' }
+};
+
+// ---------------------------------------------------------------------------
+// storage helpers
+// ---------------------------------------------------------------------------
+
+async function loadReward(env, rid) {
+    if (!env.LOADERS_KV || !rid) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(REWARD_PREFIX + rid);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+}
+
+async function saveReward(env, r) {
+    r.updatedAt = Date.now();
+    await env.LOADERS_KV.put(REWARD_PREFIX + r.rid, JSON.stringify(r));
+    return r;
+}
+
+async function deleteReward(env, rid) {
+    try { await env.LOADERS_KV.delete(REWARD_PREFIX + rid); } catch (e) {}
+}
+
+// The ONLY shape a visitor is ever shown.
+//
+// Notably absent: shortUrl and settings. A visitor can see WHICH provider a
+// checkpoint belongs to and what it is called, and nothing else - not the URL
+// it redirects to, and certainly not the API token used to verify it.
+function rewardPublicView(r) {
+    return {
+        rid: r.rid,
+        name: r.name,
+        keyDurationH: r.keyDurationH || 1,
+        maxKeys: r.maxKeys || 1,
+        cooldownH: r.cooldownH || 0,
+        maxHours: r.maxHours || 0,
+        allowExtending: !!r.allowExtending,
+        extHours: r.extHours || 6,
+        total: (r.checkpoints || []).length,
+        steps: (r.checkpoints || []).map(function (c, i) {
+            return { i: i, name: c.name || ('Checkpoint ' + (i + 1)), provider: c.provider };
+        })
+    };
+}
+
+// ---------------------------------------------------------------------------
+// sessions
+// ---------------------------------------------------------------------------
+
+function sesKvKey(rid, sid) { return RSES_PREFIX + rid + '_' + sid; }
+
+function sesTtlOpts() {
+    return { expirationTtl: Math.ceil(REWARD_SESSION_TTL_MS / 1000) };
+}
+
+async function loadSes(env, rid, sid) {
+    if (!env.LOADERS_KV || !rid || !sid) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(sesKvKey(rid, sid));
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+}
+
+async function saveSes(env, s) {
+    s.lastAt = Date.now();
+    await env.LOADERS_KV.put(sesKvKey(s.rid, s.sid), JSON.stringify(s), sesTtlOpts());
+    return s;
+}
+
+function newId(prefix) {
+    const b = new Uint8Array(12);
+    crypto.getRandomValues(b);
+    let s = '';
+    for (let i = 0; i < b.length; i++) s += ('0' + b[i].toString(16)).slice(-2);
+    return prefix + s;
+}
+
+// ---------------------------------------------------------------------------
+// blacklist: fingerprint + IP, held server-side so clearing site data does
+// not clear the ban.
+//
+// The primary key is the fingerprint; the IP is written as a second entry so a
+// visitor who rotates their browser profile but keeps their connection is still
+// caught. Shared household NAT is the cost of that, and it is why the reason
+// string is kept - the owner can see why somebody was banned.
+// ---------------------------------------------------------------------------
+
+async function blacklistReadKey(env, k) {
+    if (!env.LOADERS_KV || !k) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(RBLK_PREFIX + k);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+}
+
+async function blacklistGet(env, fp, ip) {
+    let hit = await blacklistReadKey(env, fp);
+    if (!hit && ip) hit = await blacklistReadKey(env, 'ip_' + ip);
+    if (!hit) return null;
+    if (hit.until && hit.until > Date.now()) return hit;
+    return null;
+}
+
+async function blacklistAdd(env, fp, ip, reason, rid) {
+    if (!env.LOADERS_KV) return null;
+    // Doubling penalty: 2h -> 4h -> 8h -> 16h, then flat.
+    const prev = await blacklistGet(env, fp, ip);
+    const strikes = Math.min(REWARD_BLACKLIST_MAX_STRIKES,
+        (prev && prev.strikes ? prev.strikes : 0) + 1);
+    const ttlSec = Math.ceil(REWARD_BLACKLIST_MS * Math.pow(2, REWARD_BLACKLIST_MAX_STRIKES) / 1000);
+    // pow(2, strikes - 1), NOT pow(2, strikes). The first strike must be the
+    // promised 2 hours: strikes starts at 0 and is incremented above, so
+    // pow(2, 1) made a first offence 4 hours, and the doubling was one step
+    // ahead of the 2h -> 4h -> 8h the panel text and the visitor screen show.
+    const until = Date.now() + Math.pow(2, Math.max(0, strikes - 1)) * REWARD_BLACKLIST_MS;
+    const entry = {
+        until: until, strikes: strikes, reason: String(reason || '').slice(0, 200),
+        rid: rid || '', fp: fp || '', ip: ip || '', at: Date.now()
+    };
+    try {
+        if (fp) await env.LOADERS_KV.put(RBLK_PREFIX + fp, JSON.stringify(entry), { expirationTtl: ttlSec });
+        if (ip) await env.LOADERS_KV.put(RBLK_PREFIX + 'ip_' + ip, JSON.stringify(entry), { expirationTtl: ttlSec });
+    } catch (e) { return null; }
+    S.threatsBlocked++;
+    return entry;
+}
+
+// ---------------------------------------------------------------------------
+// provider verification
+// ---------------------------------------------------------------------------
+//
+// verifyProvider() is the whole point of the anti-bypass feature. It must be
+// able to return ok:false, and every caller must treat that as a refusal.
+//
+//   cp      the owner's checkpoint, including its settings
+//   signal  whatever the provider echoed back: { clickId, ip, elapsedMs }
+//   origin  this worker's own public base URL
+//
+// Returns { ok:true, detail } or { ok:false, reason }.
+// ---------------------------------------------------------------------------
+
+// How long a click plausibly takes. A return faster than this is a client that
+// never rendered an ad, and it is refused rather than counted.
+const REWARD_MIN_DWELL_MS = 4000;
+
+function providerNeeds(cp) {
+    const spec = REWARD_PROVIDERS[cp && cp.provider];
+    if (!spec) return { ok: false, reason: 'unknown-provider' };
+    if (spec.needs === 'none') return { ok: true };
+    const st = (cp.settings || {});
+    if (spec.needs === 'authToken' && !st.authToken) return { ok: false, reason: 'no-auth-token' };
+    if (spec.needs === 'apiKey' && !st.apiKey) return { ok: false, reason: 'no-api-key' };
+    return { ok: true };
+}
+
+async function verifyProvider(cp, signal) {
+    const ready = providerNeeds(cp);
+    if (!ready.ok) return ready;
+    const st = (cp && cp.settings) || {};
+
+    if (cp.provider === 'test') {
+        // The only provider corroborable with no third party. It still goes
+        // through the same gate, so it exercises the flow a real provider uses.
+        if (!signal || !signal.confirmed) return { ok: false, reason: 'not-confirmed' };
+        return { ok: true, detail: 'test' };
+    }
+
+    if (signal && signal.elapsedMs != null && signal.elapsedMs < REWARD_MIN_DWELL_MS) {
+        return { ok: false, reason: 'too-fast' };
+    }
+
+    if (cp.provider === 'linkvertise') {
+        if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
+        try {
+            const u = 'https://api.linkvertise.com/api/v1/statistics'
+                + '?token=' + encodeURIComponent(st.authToken)
+                + '&click_id=' + encodeURIComponent(signal.clickId);
+            const res = await fetch(u, { headers: { Accept: 'application/json' } });
+            if (!res.ok) return { ok: false, reason: 'lv-api-' + res.status };
+            await res.text();
+            return { ok: true, detail: 'linkvertise' };
+        } catch (e) { return { ok: false, reason: 'lv-unreachable' }; }
+    }
+
+    if (cp.provider === 'workink') {
+        if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
+        try {
+            const u = 'https://api.work.ink/confirm/v2'
+                + '?token=' + encodeURIComponent(st.apiKey)
+                + '&click_id=' + encodeURIComponent(signal.clickId)
+                + '&ip=' + encodeURIComponent(signal.ip || '');
+            const res = await fetch(u);
+            const txt = (await res.text()).trim();
+            if (!/confirmed|success|^1$/i.test(txt)) return { ok: false, reason: 'wi-not-confirmed' };
+            return { ok: true, detail: 'workink' };
+        } catch (e) { return { ok: false, reason: 'wi-unreachable' }; }
+    }
+
+    if (cp.provider === 'lootlabs') {
+        if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
+        try {
+            const u = 'https://lootlabs.com/api/lootlabs_postback'
+                + '?click_id=' + encodeURIComponent(signal.clickId)
+                + '&status=' + encodeURIComponent(st.apiKey || '');
+            const res = await fetch(u, { method: 'POST' });
+            if (!res.ok) return { ok: false, reason: 'll-api-' + res.status };
+            return { ok: true, detail: 'lootlabs' };
+        } catch (e) { return { ok: false, reason: 'll-unreachable' }; }
+    }
+
+    return { ok: false, reason: 'unverifiable-provider' };
+}
+
+// ---------------------------------------------------------------------------
+// step tokens: the signed capability the provider callback carries.
+//
+// It binds reward + session + step index + expiry + a per-step nonce, so a
+// callback cannot be replayed onto a different step or a different visitor.
+// The nonce is consumed on use, so a provider that double-fires a postback
+// cannot advance two steps with one click.
+// ---------------------------------------------------------------------------
+
+async function signStep(secret, o) {
+    const body = { r: o.rid, s: o.sid, i: o.i, n: o.nonce, e: o.exp };
+    const payload = b64u(new TextEncoder().encode(JSON.stringify(body)));
+    const sig = (await hmacHex(secret, payload)).slice(0, 32);
+    return payload + '.' + sig;
+}
+
+async function verifyStep(secret, token, now) {
+    const t = String(token || '');
+    const dot = t.lastIndexOf('.');
+    if (dot <= 0) return { ok: false, reason: 'malformed' };
+    const payload = t.slice(0, dot);
+    const sig = t.slice(dot + 1);
+    const want = (await hmacHex(secret, payload)).slice(0, 32);
+    if (sig.length !== want.length) return { ok: false, reason: 'bad-signature' };
+    let diff = 0;
+    for (let i = 0; i < want.length; i++) diff |= sig.charCodeAt(i) ^ want.charCodeAt(i);
+    if (diff !== 0) return { ok: false, reason: 'bad-signature' };
+    let body;
+    try { body = JSON.parse(new TextDecoder().decode(unb64u(payload))); }
+    catch (e) { return { ok: false, reason: 'bad-payload' }; }
+    if (!body || !body.r || !body.s || typeof body.i !== 'number' || !body.n) {
+        return { ok: false, reason: 'bad-payload' };
+    }
+    if (!body.e || body.e < now) return { ok: false, reason: 'expired' };
+    return { ok: true, body: body };
+}
+
+// ---------------------------------------------------------------------------
+// server-minted license keys
+// ---------------------------------------------------------------------------
+//
+// The previous build minted a 25-char Math.random() string in the visitor's
+// browser. It was not a license: /sh/auth resolves keys out of sh_licenses, so
+// it answered `invalid`, the owner never saw it, and clearing site data
+// destroyed it. Minting moves here, uses the same alphabet and length as a
+// panel-generated key, and writes into sh_licenses so the executor accepts it
+// on the very next run.
+// ---------------------------------------------------------------------------
+
+const REWARD_KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+
+function mintLicenseKey(len) {
+    const n = len || 192;
+    // Rejection-free modulo: 58 does not divide 256, so a plain `%` would
+    // favour the first 4 characters of the alphabet by ~6%. Drawing one byte at
+    // a time and discarding the tail region keeps the distribution flat.
+    const out = [];
+    const b = new Uint8Array(n * 2);
+    crypto.getRandomValues(b);
+    let i = 0;
+    while (out.length < n) {
+        const v = b[i % b.length];
+        if (v < 248) out.push(REWARD_KEY_ALPHABET.charAt(v % REWARD_KEY_ALPHABET.length));
+        i++;
+    }
+    return out.join('');
+}
+
+async function issueRewardKey(env, reward, ses) {
+    const now = Date.now();
+    const hours = reward.keyDurationH || 1;
+    const key = mintLicenseKey(192);
+    // An extendable key is minted with the cap as its ceiling and the earned
+    // duration as its starting point, so "+6h" in the visitor's table cannot
+    // walk past maxHours.
+    const capMs = reward.allowExtending && reward.maxHours
+        ? reward.maxHours * 3600000 : 0;
+
+    const map = await loadLicenses(env);
+    map[key] = {
+        hwid: '',
+        expiresAt: now + hours * 3600000,
+        banned: false,
+        banReason: '',
+        discordId: '',
+        note: 'Ad Reward: ' + String(reward.name || '').slice(0, 120),
+        hwidResets: 0,
+        executions: 0,
+        lastAuthAt: 0,
+        scriptId: '',
+        // Provenance, so the owner can tell an ad-earned key from one they typed,
+        // and so a reward key can be revoked by reward.
+        source: 'reward',
+        rewardId: reward.rid,
+        capMs: capMs
+    };
+    await saveLicenses(env, map);
+
+    ses.issued = (ses.issued || []).concat([{ key: key, at: now }]);
+    await saveSes(env, ses);
+    return key;
+}
+
+// ---------------------------------------------------------------------------
+// route helpers
+// ---------------------------------------------------------------------------
+
+function reqIp(request) {
+    return (request.headers.get('CF-Connecting-IP') || '').slice(0, 64) || '';
+}
+
+function reqUa(request) {
+    return (request.headers.get('User-Agent') || '').slice(0, 200) || '';
+}
+
+// The reward routes are rate limited per bucket. A visitor starting a session
+// is cheap and legitimate; a visitor hammering claim() to farm keys is not.
+//
+// An unknown bucket is NOT waved through. rateLimit() lets unknown buckets
+// pass, which is right for its other callers but would make a typo here an
+// unmetered route - so this refuses the programmer error loudly instead.
+function rewardRate(request, url, bucket) {
+    if (!RATE_BUCKETS[bucket]) {
+        return new Response(JSON.stringify({ ok: false, error: 'internal: unknown rate bucket' }),
+            { status: 500, headers: CORS_HEADERS });
+    }
+    const rl = rateLimit(bucket, rateIdentity(request, url));
+    return rl.allowed ? null : rateLimitedResponse(rl.retryAfterSec);
+}
+
+// ---------------------------------------------------------------------------
+// progress
+// ---------------------------------------------------------------------------
+
+// Which checkpoint is this visitor on, and may they still be working on it?
+//
+// The 70-minute ceiling is Luarmor's: once a checkpoint is begun the visitor
+// has that long to finish it. Letting it sit open forever is how one ad link
+// gets milked repeatedly, and after it lapses the step has to restart.
+// ---------------------------------------------------------------------------
+// provider signal extraction
+// ---------------------------------------------------------------------------
+
+// Every provider names its click id differently. These are the names the
+// supported ones actually use; accepting a fixed set beats accepting whatever
+// arrives, because a wildcard would let a caller nominate their own "click id"
+// and satisfy the check with a value the provider never issued.
+const REWARD_CLICK_ID_PARAMS = ['click_id', 'clickid', 'clickId', 'unique_id', 'c'];
+
+function pickClickId(url) {
+    for (const k of REWARD_CLICK_ID_PARAMS) {
+        const v = url.searchParams.get(k);
+        if (v) return String(v).slice(0, 120);
+    }
+    return '';
+}
+
+function pickClickIdFrom(obj) {
+    for (const k of REWARD_CLICK_ID_PARAMS) {
+        if (obj && obj[k]) return String(obj[k]).slice(0, 120);
+    }
+    return '';
+}
+
+// The page the provider sends the visitor back to. It is a real HTML document
+// rather than a bare 200 so that a person staring at a failed checkpoint is
+// told what happened instead of seeing a blank tab.
+//
+// The failure reason is echoed because it is diagnostic for the VISITOR's owner
+// too, but it never contains the API token or the short URL - a callback URL
+// gets shared around in support channels.
+function rewardCallbackPage(origin, verdict, reason, until, remaining) {
+    const ok = verdict === 'ok';
+    const left = until ? fmtMins(until - Date.now()) : '';
+    const title = ok
+        ? (remaining > 0 ? ('Checkpoint done - ' + remaining + ' to go') : 'All checkpoints complete')
+        : 'Checkpoint could not be verified';
+    const body = ok
+        ? '<p class="s">Verified. You can close this tab and return to the reward page.</p>'
+        : '<p class="s">This checkpoint was not accepted.</p>'
+          + '<p class="r">' + String(reason || 'unknown').replace(/[<>&]/g, '') + '</p>'
+          + (left ? '<p class="s">If this was an attempt to bypass, your browser is blocked for ' + left + '.</p>' : '')
+          + '<p class="s">Ad blockers and privacy extensions can stop the provider from reporting back. Retrying will not help if one is active.</p>';
+    return new Response(
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        + '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        + '<meta name="robots" content="noindex,nofollow">'
+        + '<title>' + title + '</title><style>'
+        + '*{margin:0;padding:0;box-sizing:border-box}'
+        + 'body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0a0a0f;color:#fff;'
+        + 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}'
+        + '.c{background:rgba(20,20,35,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;'
+        + 'padding:34px;max-width:440px;width:100%;text-align:center}'
+        + '.i{font-size:52px;line-height:1}'
+        + 'h1{font-size:19px;margin:12px 0 8px}'
+        + '.s{color:#8888aa;font-size:13px;line-height:1.6;margin-top:10px}'
+        + '.r{color:#ff6b6b;font-family:ui-monospace,monospace;font-size:12px;margin-top:12px;word-break:break-all}'
+        + '</style></head><body><div class="c">'
+        + '<div class="i">' + (ok ? '✅' : '⚠️') + '</div>'
+        + '<h1>' + title + '</h1>' + body
+        + '</div></body></html>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
+    );
+}
+
+function fmtMins(ms) {
+    const m = Math.max(1, Math.ceil(ms / 60000));
+    if (m >= 60) return (Math.round(m / 6) / 10) + ' hours';
+    return m + ' minutes';
+}
+
+function rewardNextStep(r, ses, now) {
+    const cps = r.checkpoints || [];
+    const done = (ses && ses.done) || [];
+    for (let i = 0; i < cps.length; i++) {
+        if (done.indexOf(i) !== -1) continue;
+        if (ses && ses.stepIndex === i && ses.stepAt && now - ses.stepAt > REWARD_STEP_TTL_MS) {
+            return { index: i, expired: true };
+        }
+        return { index: i, expired: false };
+    }
+    return { index: -1, expired: false };
+}
+
 
 // ---------------------------------------------------------------------------
 // Grant tokens: a small capability that says "a chain was legitimately opened
@@ -2040,7 +2541,17 @@ const RATE_BUCKETS = {
     'part':           { limit: 240, window: 60 * 1000 },        // 4/s: a chain crawl
     'password':       { limit: 5,   window: 15 * 60 * 1000 },   // change/recovery: tight
     'setcode':        { limit: 5,   window: 15 * 60 * 1000 },
-    'admin':          { limit: 60,  window: 60 * 1000 }
+    'admin':          { limit: 60,  window: 60 * 1000 },
+    // Reward flow. `reward-start` is a visitor opening their own link, so it is
+    // generous; `reward-claim` is where a key is MINTED, so it is tight - a key
+    // per call means a flood there is a key-farming attempt, and the cap on
+    // maxKeys is only worth having if the route in front of it is metered.
+    // `reward-cb` is the provider callback: several can legitimately land in
+    // quick succession for one visitor, but a flood is a forged postback storm.
+    'reward-start':   { limit: 20,  window: 60 * 1000 },
+    'reward-claim':   { limit: 6,   window: 60 * 1000 },
+    'reward-cb':      { limit: 40,  window: 60 * 1000 },
+    'reward-save':    { limit: 30,  window: 60 * 1000 }
 };
 
 const rateState = new Map();
@@ -6599,6 +7110,420 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             saveStatsSoon(env);
             return new Response(JSON.stringify({ ok: true }), { headers: CORS_HEADERS });
         }
+
+// =========================================================================
+        // REWARD / AD-CHECKPOINT ROUTES
+        // =========================================================================
+        //
+        // Shape of a visit, now that the config is server-side:
+        //
+        //   GET  /sh/reward/pub?rid=&fp=      what the visitor is allowed to see
+        //   POST /sh/reward/start             open/resume a session, get the next step
+        //   GET  /sh/reward/state?rid=&sid=   progress (for a reload, after a callback)
+        //   POST /sh/reward/claim             mint a REAL license key
+        //   POST /sh/reward/block             report a bypass attempt -> 2h blacklist
+        //   GET  /sh/cp/<provider>?t=         the provider's landing URL (signed)
+        //   POST /sh/reward/postback          the provider's server-to-server postback
+        //   POST /sh/reward/save              OWNER: create or update a reward
+        //   POST /sh/reward/delete            OWNER: remove one
+        //
+        // Every visitor route consults the blacklist BEFORE anything else, and
+        // returns the same answer whether or not the caller knows a session id.
+        // ------------------------------------------------------------------------
+
+        // OWNER: create or update a reward. This is where the provider API
+        // tokens finally land - server-side, where a visitor cannot read them.
+        if (url.pathname === '/sh/reward/save' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, url, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+
+            const inR = body.reward || {};
+            const name = String(inR.name || '').trim().slice(0, 120);
+            if (!name) return jsonResponse({ ok: false, error: 'Reward name is required.' }, 400);
+
+            const rid = String(inR.rid || '').slice(0, 40) || newId('rw');
+            const prev = await loadReward(env, rid);
+
+            const cps = [];
+            const rawCps = Array.isArray(inR.checkpoints) ? inR.checkpoints.slice(0, 40) : [];
+            for (const c of rawCps) {
+                const provider = String(c.provider || 'test');
+                if (!REWARD_PROVIDERS[provider]) continue;      // silently drop unknowns
+                const st = c.settings || {};
+                cps.push({
+                    id: String(c.id || newId('cp')).slice(0, 40),
+                    name: String(c.name || '').slice(0, 80),
+                    provider: provider,
+                    shortUrl: String(c.shortUrl || '').slice(0, 600),
+                    settings: {
+                        antiBypass: !!st.antiBypass,
+                        advancedAntiBypass: !!st.advancedAntiBypass,
+                        dynamicUrl: !!st.dynamicUrl,
+                        authToken: String(st.authToken || '').slice(0, 200),
+                        apiKey: String(st.apiKey || '').slice(0, 200),
+                        postbackUrl: String(st.postbackUrl || '').slice(0, 400)
+                    },
+                    completed: Number(c.completed) || 0,
+                    cancelled: Number(c.cancelled) || 0,
+                    avgTimeSec: Number(c.avgTimeSec) || 0
+                });
+            }
+
+            const rec = {
+                rid: rid,
+                owner: (prev && prev.owner) || '',
+                name: name,
+                keyDurationH: Math.min(Math.max(Number(inR.keyDurationH) || 1, 1), 24 * 30),
+                maxKeys: Math.min(Math.max(Number(inR.maxKeys) || 1, 1), 100),
+                cooldownH: Math.min(Math.max(Number(inR.cooldownH) || 0, 0), 24 * 30),
+                maxHours: Math.min(Math.max(Number(inR.maxHours) || 0, 0), 24 * 365),
+                allowExtending: !!inR.allowExtending,
+                extHours: Math.min(Math.max(Number(inR.extHours) || 6, 1), 168),
+                checkpoints: cps,
+                createdAt: (prev && prev.createdAt) || Date.now(),
+                updatedAt: Date.now()
+            };
+            await saveReward(env, rec);
+
+            // Which checkpoints can actually be completed right now. The panel
+            // shows this, so an owner who typed a Linkvertise token into the
+            // wrong box finds out here instead of discovering it as unpaid ads.
+            const notReady = [];
+            for (const c of cps) {
+                const need = providerNeeds(c);
+                if (!need.ok) notReady.push({ id: c.id, name: c.name, provider: c.provider, reason: need.reason });
+            }
+
+            return jsonResponse({
+                ok: true, rid: rid,
+                public: rewardPublicView(rec),
+                notReady: notReady
+            });
+        }
+
+        // OWNER: read a reward back in full, settings included.
+        if (url.pathname === '/sh/reward/get' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, url, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const r = await loadReward(env, String(body.rid || ''));
+            if (!r) return jsonResponse({ ok: false, error: 'no such reward' }, 404);
+            return jsonResponse({ ok: true, reward: r });
+        }
+
+        if (url.pathname === '/sh/reward/delete' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, url, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            await deleteReward(env, String(body.rid || ''));
+            return jsonResponse({ ok: true });
+        }
+
+        // VISITOR: what am I allowed to know about this reward?
+        if (url.pathname === '/sh/reward/pub') {
+            const limited = rewardRate(request, url, 'reward-start');
+            if (limited) return limited;
+            const rid = String(url.searchParams.get('rid') || '').slice(0, 40);
+            const fp = String(url.searchParams.get('fp') || '').slice(0, 64);
+            const ip = reqIp(request);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'This reward link is no longer valid.' }, 404);
+
+            const bl = await blacklistGet(env, fp, ip);
+            S.totalVisitors++;
+            return jsonResponse(Object.assign(
+                { ok: true, public: rewardPublicView(r) },
+                bl ? { blacklisted: true, until: bl.until, strikes: bl.strikes, reason: bl.reason } : {}
+            ));
+        }
+
+        // VISITOR: open or resume the session and be told the next step.
+        if (url.pathname === '/sh/reward/start' && request.method === 'POST') {
+            const limited = rewardRate(request, url, 'reward-start');
+            if (limited) return limited;
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+
+            const rid = String(body.rid || '').slice(0, 40);
+            const sid = String(body.sid || '').slice(0, 40);
+            const fp = String(body.fp || '').slice(0, 64);
+            const ip = reqIp(request);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'This reward link is no longer valid.' }, 404);
+
+            const bl = await blacklistGet(env, fp, ip);
+            if (bl) {
+                return jsonResponse({
+                    ok: false, error: 'blacklisted', until: bl.until,
+                    strikes: bl.strikes, reason: bl.reason
+                });
+            }
+
+            const now = Date.now();
+            let ses = sid ? await loadSes(env, rid, sid) : null;
+            if (!ses) {
+                ses = { rid: rid, sid: newId('s'), fp: fp, ip: ip, ua: reqUa(request), done: [], issued: [], startedAt: now, stepIndex: -1, stepAt: 0, nonces: {} };
+            }
+            // A session is bound to the fingerprint that opened it. Handing the
+            // sid to someone else must not transfer their progress.
+            if (ses.fp && fp && ses.fp !== fp) {
+                const stolen = await blacklistAdd(env, fp, ip, 'session sid replayed from a different browser', rid);
+                return jsonResponse({ ok: false, error: 'blacklisted', until: stolen ? stolen.until : now + REWARD_BLACKLIST_MS, strikes: stolen ? stolen.strikes : 1, reason: 'session replay' });
+            }
+
+            const next = rewardNextStep(r, ses, now);
+            const doneCount = (ses.done || []).length;
+            const total = (r.checkpoints || []).length;
+
+            if (next.index === -1) {
+                await saveSes(env, ses);
+                return jsonResponse({
+                    ok: true, sid: ses.sid, complete: true, done: doneCount, total: total,
+                    keys: ses.issued || []
+                });
+            }
+
+            const cp = r.checkpoints[next.index];
+            const need = providerNeeds(cp);
+
+            if (ses.stepIndex !== next.index) {
+                ses.stepIndex = next.index;
+                ses.stepAt = now;
+                ses.nonces = ses.nonces || {};
+                ses.nonces[next.index] = newId('n');
+                await saveSes(env, ses);
+            }
+
+            const secret = await grantSecret(env);
+            const stepToken = await signStep(secret, {
+                rid: rid, sid: ses.sid, i: next.index,
+                nonce: ses.nonces[next.index], exp: now + REWARD_STEP_TTL_MS
+            });
+            const origin = new URL(request.url).origin;
+            const verifyUrl = origin + '/sh/cp/' + cp.provider + '?t=' + encodeURIComponent(stepToken);
+
+            await saveSes(env, ses);
+            return jsonResponse({
+                ok: true, sid: ses.sid,
+                step: {
+                    i: next.index, name: cp.name || ('Checkpoint ' + (next.index + 1)),
+                    provider: cp.provider,
+                    // shortUrl goes to the visitor. It is the ad link itself; it
+                    // is not a secret, and hiding it would only stop the ad
+                    // from being viewable.
+                    target: cp.shortUrl,
+                    verifyUrl: verifyUrl,
+                    // How the owner completes setup. Surfaced in the visitor's
+                    // UI as a clear "this provider cannot be verified yet" rather
+                    // than a silent stall.
+                    ready: need.ok, notReady: need.ok ? '' : need.reason
+                },
+                done: doneCount, total: total,
+                complete: false,
+                keys: ses.issued || [],
+                stepExpired: !!next.expired
+            });
+        }
+
+        // VISITOR: progress after a callback, or after a reload.
+        if (url.pathname === '/sh/reward/state') {
+            const limited = rewardRate(request, url, 'reward-start');
+            if (limited) return limited;
+            const rid = String(url.searchParams.get('rid') || '').slice(0, 40);
+            const sid = String(url.searchParams.get('sid') || '').slice(0, 40);
+            const fp = String(url.searchParams.get('fp') || '').slice(0, 64);
+            const ip = reqIp(request);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'This reward link is no longer valid.' }, 404);
+
+            const bl = await blacklistGet(env, fp, ip);
+            if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
+
+            const ses = await loadSes(env, rid, sid);
+            if (!ses) return jsonResponse({ ok: true, sid: '', done: 0, total: (r.checkpoints || []).length, keys: [], complete: false });
+            const total = (r.checkpoints || []).length;
+            const done = (ses.done || []).length;
+            return jsonResponse({
+                ok: true, sid: ses.sid, done: done, total: total,
+                complete: total > 0 && done >= total,
+                keys: ses.issued || [],
+                cooldownUntil: (ses.lastCompletion || 0) + (r.cooldownH || 0) * 3600000
+            });
+        }
+
+        // VISITOR: mint a REAL license key, once all checkpoints are verified.
+        if (url.pathname === '/sh/reward/claim' && request.method === 'POST') {
+            const limited = rewardRate(request, url, 'reward-claim');
+            if (limited) return limited;
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+
+            const rid = String(body.rid || '').slice(0, 40);
+            const sid = String(body.sid || '').slice(0, 40);
+            const fp = String(body.fp || '').slice(0, 64);
+            const ip = reqIp(request);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'This reward link is no longer valid.' }, 404);
+
+            const bl = await blacklistGet(env, fp, ip);
+            if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
+
+            const ses = await loadSes(env, rid, sid);
+            if (!ses) return jsonResponse({ ok: false, error: 'No session - open the reward first.' }, 400);
+            if (ses.fp && fp && ses.fp !== fp) return jsonResponse({ ok: false, error: 'blacklisted' }, 403);
+
+            const total = (r.checkpoints || []).length;
+            const done = (ses.done || []).length;
+            if (total === 0) return jsonResponse({ ok: false, error: 'This reward has no checkpoints.' }, 400);
+            if (done < total) return jsonResponse({ ok: false, error: 'Not all checkpoints are complete.' }, 400);
+
+            const cooldownUntil = (ses.lastCompletion || 0) + (r.cooldownH || 0) * 3600000;
+            if (cooldownUntil > Date.now()) {
+                return jsonResponse({ ok: false, error: 'cooldown', until: cooldownUntil });
+            }
+            const issued = (ses.issued || []).length;
+            if (issued >= (r.maxKeys || 1)) {
+                // Already at the cap. The existing keys are returned rather than
+                // an error, because the visitor still needs to see what they
+                // earned; the cap is enforced by refusing to mint more.
+                return jsonResponse({ ok: true, keys: ses.issued, maxed: true });
+            }
+
+            const key = await issueRewardKey(env, r, ses);
+            return jsonResponse({ ok: true, keys: ses.issued, key: key, maxed: false });
+        }
+
+        // VISITOR: report a bypass attempt. Held server-side, keyed on
+        // fingerprint AND ip, so clearing site data does not clear the ban.
+        if (url.pathname === '/sh/reward/block' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { body = {}; }
+            const fp = String(body.fp || '').slice(0, 64);
+            const ip = reqIp(request);
+            if (!fp && !ip) return jsonResponse({ ok: false, error: 'nothing to key on' }, 400);
+            const entry = await blacklistAdd(env, fp, ip, String(body.reason || 'bypass attempt').slice(0, 200), String(body.rid || '').slice(0, 40));
+            if (!entry) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+            return jsonResponse({ ok: true, until: entry.until, strikes: entry.strikes });
+        }
+
+        // THE PROVIDER'S LANDING URL. The owner pastes this as the link target;
+        // it carries a signed step token, so it cannot be forged or replayed
+        // onto another visitor's step.
+        if (url.pathname.startsWith('/sh/cp/')) {
+            const limited = rewardRate(request, url, 'reward-cb');
+            if (limited) return limited;
+            const provider = url.pathname.slice('/sh/cp/'.length).replace(/[^a-z0-9_-]/gi, '').slice(0, 24);
+            const token = String(url.searchParams.get('t') || '');
+            const origin = new URL(request.url).origin;
+            const secret = await grantSecret(env);
+            const now = Date.now();
+            const v = await verifyStep(secret, token, now);
+
+            if (!v.ok) {
+                return rewardCallbackPage(origin, 'failed', v.reason);
+            }
+            // The token body is { r, s, i, n, e } - SHORT field names, because
+            // this string is signed, base64'd and pasted into a provider
+            // dashboard, and every byte of it is visible there.
+            //
+            // These were destructured as { rid, sid, ... }, which is silently
+            // undefined for every value, so the callback always answered
+            // 'unknown-step' and NO checkpoint could ever be completed - not
+            // even the test provider, which is why the flow looked untested
+            // rather than broken.
+            const { r: rid, s: sid, i, n } = v.body;
+
+            const r = await loadReward(env, rid);
+            if (!r || !(r.checkpoints || [])[i]) return rewardCallbackPage(origin, 'failed', 'unknown-step');
+
+            // The callback URL names the provider in its path. A visitor cannot
+            // move a Work.Ink checkpoint's completion onto a LootLabs one, or
+            // onto a checkpoint that needs no verification at all.
+            if (r.checkpoints[i].provider !== provider) {
+                return rewardCallbackPage(origin, 'failed', 'provider-mismatch');
+            }
+
+            const ses = await loadSes(env, rid, sid);
+            if (!ses) return rewardCallbackPage(origin, 'failed', 'no-session');
+            if ((ses.done || []).indexOf(i) !== -1) return rewardCallbackPage(origin, 'ok', 'already');
+
+            const cp = r.checkpoints[i];
+            // The nonce is single use. Without this, one provider postback
+            // replayed with an edited step index would advance two steps.
+            ses.nonces = ses.nonces || {};
+            if (ses.nonces[i] !== n) return rewardCallbackPage(origin, 'failed', 'replayed');
+
+            const clickId = pickClickId(url);
+            const elapsedMs = ses.stepAt ? (now - ses.stepAt) : null;
+            // confirmed is what the test provider's own button posts. Without
+            // it reaching verifyProvider, the test provider could NEVER pass - the
+            // flow was unrunnable end to end, and therefore untested.
+            const verdict = await verifyProvider(cp, {
+                clickId: clickId, ip: reqIp(request), elapsedMs: elapsedMs,
+                confirmed: url.searchParams.get('confirmed') === '1'
+            });
+
+            if (!verdict.ok) {
+                // A provider we cannot corroborate is not an error to shrug
+                // off. It is the exact condition the anti-bypass feature exists
+                // to catch, so it bans - and it says so.
+                if (verdict.reason === 'no-auth-token' || verdict.reason === 'no-api-key'
+                    || verdict.reason === 'unknown-provider' || verdict.reason === 'unverifiable-provider') {
+                    return rewardCallbackPage(origin, 'failed', verdict.reason);
+                }
+                const entry = await blacklistAdd(env, ses.fp, ses.ip || reqIp(request),
+                    'checkpoint ' + (i + 1) + ' via ' + provider + ': ' + verdict.reason, rid);
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'reward.blocked', outcome: 'blocked', rid: rid,
+                    reason: verdict.reason, provider: provider, at: now
+                }));
+                return rewardCallbackPage(origin, 'failed', verdict.reason, entry ? entry.until : 0);
+            }
+
+            ses.done = (ses.done || []).concat([i]);
+            ses.stepIndex = -1;
+            ses.stepAt = 0;
+            const total = (r.checkpoints || []).length;
+            if (ses.done.length >= total) ses.lastCompletion = now;
+            cp.completed = (cp.completed || 0) + 1;
+            const spent = elapsedMs ? elapsedMs / 1000 : 0;
+            cp.avgTimeSec = cp.avgTimeSec ? (cp.avgTimeSec * 0.7 + spent * 0.3) : spent;
+            await saveReward(env, r);
+            await saveSes(env, ses);
+
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'reward.step', outcome: 'ok', rid: rid,
+                provider: provider, step: i, detail: verdict.detail, at: now
+            }));
+            return rewardCallbackPage(origin, 'ok', '', 0, total - ses.done.length);
+        }
+
+        // The provider's server-to-server postback (LootLabs advanced, and any
+        // provider that supports one). Same verification, no user agent, so it
+        // is held to the same fail-closed rule.
+        if (url.pathname === '/sh/reward/postback' && request.method === 'POST') {
+            const limited = rewardRate(request, url, 'reward-cb');
+            if (limited) return limited;
+            let body = {};
+            try { body = await request.json(); } catch (e) { body = {}; }
+            const rid = String(body.rid || '').slice(0, 40);
+            const i = Number(body.step);
+            const r = await loadReward(env, rid);
+            if (!r || !(r.checkpoints || [])[i]) return jsonResponse({ ok: false, error: 'unknown step' }, 400);
+            const cp = r.checkpoints[i];
+            const verdict = await verifyProvider(cp, {
+                clickId: pickClickIdFrom(body),
+                ip: String(body.ip || '').slice(0, 64),
+                elapsedMs: body.elapsedMs != null ? Number(body.elapsedMs) : null
+            });
+            return jsonResponse(verdict);
+        }
+
+        // ---------- POST /threat : record a blocked bypass attempt ----------
 
         // ---------- POST /threat : record a blocked bypass attempt ----------
         if (url.pathname === '/threat' && request.method === 'POST') {
