@@ -5881,6 +5881,10 @@ function confirmCreateScript(projectId) {
         });
         renderProjects();
     }).catch(function(e) {
+        // The overlay is z-index 99999 with a full-screen backdrop, so the
+        // notification below renders BEHIND it. Without this the user is left
+        // looking at a stuck 'Waiting for the host...' with no visible reason.
+        shProgressHide();
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
         showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });
@@ -6181,6 +6185,26 @@ function shObfuscateOnHost(code, options) {
         return shMintHostTicket(tok).then(function (ticket) {
             return shCompileDirect(ticket, code, options);
         });
+    // THE PANEL USED TO SURVIVE ANY FAILURE HERE.
+    //
+    // shProgressHide() was only called on the "no token" branch above. Every
+    // other failure - a refused ticket, an expired token the refresh could not
+    // replace, the network, a DNS failure - rejected the chain with nothing
+    // attached, so the overlay stayed up and the user was left reading:
+    //
+    //     Waiting for the host... (infinite time)
+    //
+    // which is not a status, it is a stuck dialog. Worse, the rejection was
+    // swallowed by the caller's `.then()` with no `.catch`, so no error was
+    // shown either: the page looked like it was working and was not.
+    //
+    // The one exception is a CANCEL, which hides the panel and stays quiet -
+    // that is the user's own action and has already been reported.
+    }).catch(function (err) {
+        var msg = (err && err.message) ? String(err.message) : 'the host compile could not start';
+        if (/cancel/i.test(msg)) { shProgressHide(); throw err; }
+        shProgressHide();
+        throw err;
     });
 }
 
@@ -6926,6 +6950,10 @@ function confirmEditScript(projectId, scriptId) {
         });
         renderProjects();
     }).catch(function(e) {
+        // The overlay is z-index 99999 with a full-screen backdrop, so the
+        // notification below renders BEHIND it. Without this the user is left
+        // looking at a stuck 'Waiting for the host...' with no visible reason.
+        shProgressHide();
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
         showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });

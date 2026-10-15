@@ -77,7 +77,8 @@
     "test:splitkeypersist": "node tools/splitkey_persistence_test.mjs",
     "test:hostsplitkey": "node tools/host_splitkey_test.mjs",
     "test:deviceauth": "node tools/device_auth_test.mjs",
-    "test:tokenexpiry": "node tools/token_expiry_test.mjs"
+    "test:tokenexpiry": "node tools/token_expiry_test.mjs",
+    "test:progressdismiss": "node tools/progress_dismiss_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"
