@@ -274,6 +274,33 @@ console.log('an earned key must be a real license');
     }
     void r;
 }
+console.log('the reward cannot be completed without doing the ads');
+// ---------------------------------------------------------------------------
+// The whole config - how many checkpoints exist, which provider, what URL -
+// travels in the URL as base64. Nothing in it is authenticated. So: take a
+// genuine 2-checkpoint reward, rewrite it to 1 checkpoint, and append
+// ?done=0, which reward.html accepts as proof of completion.
+{
+    const honest = { n: 'Ad Key', d: 1, mk: 1, cd: 0, mh: 0, ext: 0, eh: 6, mv: 0, w: 'https://worker.example',
+        cps: [{ u: 'https://direct-link.net/a', p: 'linkvertise' }, { u: 'https://direct-link.net/b', p: 'lootlabs' }] };
+    const tampered = { n: 'Ad Key', d: 1, mk: 1, cd: 0, mh: 0, ext: 0, eh: 6, mv: 0, w: 'https://worker.example',
+        cps: [{ u: 'about:blank', p: 'test' }] };
+
+    const { sandbox, made } = makeVisitorPage({ search: '?r=' + b64urlEncode(tampered) + '&done=0', store: {} });
+    vm.createContext(sandbox);
+    vm.runInContext(extractScript(rewardHtml, 'reward.html'), sandbox, { filename: 'reward.html' });
+
+    const html = String(sandbox.document.getElementById('app').innerHTML);
+    check('the attacker never visits a real ad link', honest.cps.length === 2,
+        'honest reward had ' + honest.cps.length + ' checkpoints; the tampered one had 1 and it was a no-op');
+    check('but the page already reports 1/1 complete', /Progress: 1\/1/.test(html),
+        'app html = ' + html.slice(0, 200));
+    check('and the key button is now enabled', !/id=.newKeyBtn.[^>]*disabled/.test(html),
+        'app html = ' + html.slice(0, 240));
+    const k = made.clicks.newKeyBtn;
+    check('so a key can be minted without a single ad', typeof k === 'function');
+    void honest;
+}
 console.log('anti-bypass blacklist must survive a localStorage wipe');
 // ---------------------------------------------------------------------------
 {
