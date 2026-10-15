@@ -45,6 +45,7 @@ import os
 import re
 import secrets
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -196,6 +197,45 @@ def start_named_tunnel(exe: str, name: str, hostname: str | None) -> subprocess.
     return proc
 
 
+def publish_to_worker() -> bool:
+    """Point the Cloudflare worker at the address this tunnel just obtained.
+
+    Delegates to publish_url.py rather than repeating the wrangler.toml edit and
+    the deploy. Two copies of that is how they drift: one learns about a setting
+    the other never sees, and the failure is a worker silently pointing at a
+    hostname that stopped resolving.
+
+    Returns True only when the worker was actually re-pointed. Never raises: the
+    keeper is already serving at this point, and refusing to start it because a
+    deploy failed would trade a small annoyance for scripts that stop
+    delivering.
+    """
+    script = HERE / "publish_url.py"
+    if not script.is_file():
+        log("could not find publish_url.py - run it by hand")
+        return False
+    if shutil.which("npx") is None:
+        log("npx not found - wrangler.toml was updated, deploy it by hand")
+        return False
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(HERE.parent), capture_output=True, text=True, timeout=300)
+    except Exception as e:                      # noqa: BLE001 - reported, not raised
+        log("publishing the address failed: %s" % (e,))
+        return False
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        log("publish_url.py failed (exit %s): %s" % (proc.returncode, out[-200:]))
+        return False
+    if "already current" in out:
+        log("the worker already points here")
+        return True
+    # wrangler.toml updated AND deployed
+    log("worker re-pointed at this address")
+    return True
+
+
 def verify_through_tunnel(base: str, token: str, timeout: int = READY_TIMEOUT) -> bool:
     """Fetch /v1/health over the PUBLIC address.
 
@@ -296,16 +336,40 @@ def main() -> int:
 
     URL_FILE.write_text(base + "\n", encoding="utf-8")
 
+    # ---- PUBLISH THE NEW ADDRESS TO THE WORKER, AUTOMATICALLY ---------------
+    #
+    # A quick tunnel gets a RANDOM hostname on every restart, so the worker's
+    # SH_STORE_URL goes stale the moment this launcher runs. That made
+    # `py publish_url.py` a required second step after every restart, and
+    # forgetting it presented as "Could not reach the host" from a worker that
+    # looked perfectly healthy - its health check simply could not reach the
+    # origin any more.
+    #
+    # It is done here, right after the address is verified, so ONE command
+    # leaves the whole system consistent.
+    #
+    # Deliberately NOT fatal. A deploy failure is announced with the exact
+    # command to run: refusing to start a working keeper over a deploy problem
+    # trades a small annoyance for scripts that stop delivering.
     print()
+    print("=" * 68)
+    print("  Publishing the new address to the Cloudflare worker...")
+    print("=" * 68)
+    published = publish_to_worker()
+    print()
+
     print("=" * 68)
     print("  Storage Keeper is live and reachable from anywhere.")
     print("=" * 68)
     print(f"  public address : {base}")
     print(f"  bearer token   : {token}")
     print()
-    print("  Set these on the Cloudflare worker:")
-    print(f"    SH_STORE_URL    (Text)    {base}")
-    print(f"    SH_STORE_TOKEN  (Secret)  {token}")
+    if published:
+        print("  The worker now points at this address. Nothing else to do.")
+    else:
+        print("  The worker still points at the PREVIOUS address, which is now dead.")
+        print("  Obfuscation and publishing will fail until you run:")
+        print('      py "Storage Keeper\\publish_url.py"')
     print()
     if args.mode == "quick":
         print("  WARNING - quick tunnel")

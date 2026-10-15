@@ -64,10 +64,10 @@
     "keeper:e2e": "node tools/keeper_public_e2e_test.mjs",
     "check:bom": "node tools/check_no_bom.mjs",
     "prebuild": "node tools/check_no_bom.mjs",
-    "keeper:test": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\"",
+    "keeper:test": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\" && py \"Storage Keeper/tests/test_tunnel_autopublish.py\"",
     "keeper:migrate": "py \"Storage Keeper/migrate.py\"",
-    "test:keeper": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && node tools/storage_keeper_test.mjs && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\"",
-    "test:storage": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && node tools/storage_keeper_test.mjs && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\"",
+    "test:keeper": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && node tools/storage_keeper_test.mjs && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\" && py \"Storage Keeper/tests/test_tunnel_autopublish.py\"",
+    "test:storage": "py \"Storage Keeper/tests/test_store.py\" && py \"Storage Keeper/tests/test_service.py\" && node tools/storage_keeper_test.mjs && py \"Storage Keeper/tests/test_compile_ticket.py\" && py \"Storage Keeper/tests/test_token_persistence.py\" && py \"Storage Keeper/tests/test_tunnel_autopublish.py\"",
     "test:partsizing": "node tools/delivery_part_size_test.mjs",
     "test:compileticket": "py \"Storage Keeper/tests/test_compile_ticket.py\"",
     "test:tokenpersist": "py \"Storage Keeper/tests/test_token_persistence.py\"",
@@ -78,7 +78,8 @@
     "test:hostsplitkey": "node tools/host_splitkey_test.mjs",
     "test:deviceauth": "node tools/device_auth_test.mjs",
     "test:tokenexpiry": "node tools/token_expiry_test.mjs",
-    "test:progressdismiss": "node tools/progress_dismiss_test.mjs"
+    "test:progressdismiss": "node tools/progress_dismiss_test.mjs",
+    "keeper:autopublish": "py \"Storage Keeper/tests/test_tunnel_autopublish.py\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

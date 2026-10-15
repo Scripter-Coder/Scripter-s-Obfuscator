@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -90,11 +91,26 @@ def main() -> int:
 
     # Deploy so the worker starts using it. A tunnel that is live but that the
     # worker has not been told about is still a broken configuration.
+    #
+    # RESOLVED THROUGH shutil.which FIRST. A bare "npx" raised FileNotFoundError
+    # on Windows even though npx was installed and "npx wrangler deploy" worked
+    # from a shell - it is npx.cmd, and a bare name does not reliably reach the
+    # shim when PATHEXT is not applied.
+    #
+    # The symptom was the worst kind: the URL was written, the deploy silently
+    # did not happen, and the operator was told "wrangler.toml updated" as if the
+    # job were finished. The tunnel was live and the worker was not, so every
+    # request failed against an address nobody had been told had changed.
+    npx = shutil.which("npx") or shutil.which("npx.cmd") or shutil.which("npx.bat")
+    if not npx:
+        print("npx not found - wrangler.toml updated; deploy the worker by hand:")
+        print("    npx wrangler deploy")
+        return 1
     try:
-        subprocess.run(["npx", "wrangler", "deploy"], cwd=str(ROOT), check=True)
+        subprocess.run([npx, "wrangler", "deploy"], cwd=str(ROOT), check=True)
     except FileNotFoundError:
-        print("npx not found - wrangler.toml updated; deploy the worker by hand")
-        return 0
+        print("npx found at %s but could not be executed" % npx)
+        return 1
     except subprocess.CalledProcessError as e:
         print("deploy failed (%s) - wrangler.toml updated, deploy by hand" % e.returncode)
         return 1
