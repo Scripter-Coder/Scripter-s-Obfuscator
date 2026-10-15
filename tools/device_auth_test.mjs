@@ -107,8 +107,11 @@ console.log('a fresh device can re-authenticate');
 // --- the order shEnsureUserToken uses --------------------------------------
 {
     const fn = (main.match(/async function shEnsureUserToken\([^]*?\n\}/) || [''])[0];
+    // The login call uses the RAW helper so it cannot re-enter the 401 retry and
+    // recurse. Matched on the argument rather than the fetch helper name, so the
+    // check survives either spelling of the call.
     check('shEnsureUserToken tries the stored value FIRST',
-        /shApi\('sh\/user-login'[^}]*password: stored/.test(fn),
+        /sh\/user-login'[\s\S]{0,120}password: stored/.test(fn),
         'it should not lead with the legacy decode');
     check('and falls back to the legacy decode when that is refused',
         /!d \|\| !d\.ok/.test(fn) && /shDecodeLegacyPassword/.test(fn));

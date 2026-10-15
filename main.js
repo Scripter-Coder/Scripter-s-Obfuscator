@@ -315,21 +315,15 @@ async function shUploadKeeper(o) {
         // 1) upload parts sequentially (progress via console + optional callback)
         for (let i = 0; i < n; i++) {
             const part = o.obfCode.slice(i * SH_KEEPER_PART_SIZE, (i + 1) * SH_KEEPER_PART_SIZE);
-            const res = await fetch(SH_STATS_ENDPOINT + 'sh/kb-put', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: o.token, userToken: o.userToken, id: id, part: i, content: part })
-            });
-            const d = await res.json();
+            // Through shApi, so an expired cached token is refreshed and the part retried
+            // instead of failing the whole upload on part 1 of N.
+            const d = await shApi('sh/kb-put', { token: o.token, userToken: o.userToken, id: id, part: i, content: part });
             if (!d.ok) return { ok: false, error: 'Storage Keeper part ' + (i + 1) + '/' + n + ' failed: ' + (d.error || 'unknown') };
             try { console.log('[Storage Keeper] part ' + (i + 1) + '/' + n + ' uploaded'); } catch (e) {}
             if (typeof window.__shGhProgress === 'function') { try { window.__shGhProgress(i + 1, n); } catch (e) {} }
         }
         // 2) finalize: register loader meta + optional web-view cipher tail
-        const fres = await fetch(SH_STATS_ENDPOINT + 'sh/kb-finalize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        const fd = await shApi('sh/kb-finalize', {
                 token: o.token, userToken: o.userToken, id: id, n: n, len: o.obfCode.length,
                 name: o.name, user: o.user,
                 keyless: !!o.keyless, webKey: !!o.cipher, keyHash: o.keyHash || '',
@@ -340,9 +334,7 @@ async function shUploadKeeper(o) {
                 authRequired: !!o.requireAuth,
                 replaces: o.replaces || '',
                 normalCode: (o.normalCode && o.normalCode.length < 7 * 1024 * 1024) ? o.normalCode : ''
-            })
-        });
-        const fd = await fres.json();
+            });
         if (!fd.ok) return { ok: false, error: 'Storage Keeper finalize failed: ' + (fd.error || 'unknown') };
         return { ok: true, id: fd.id, loadstring: fd.loadstring, storage: 'keeper', parts: n };
     } catch (e) {
@@ -452,6 +444,34 @@ function shStoredPassword(rec) {
     return (rec && typeof rec.password === 'string') ? rec.password : '';
 }
 
+// Drop a cached token that the server has already refused.
+//
+// WITHOUT THIS, AN EXPIRED TOKEN IS PERMANENT.
+//
+// The worker issues user tokens with a short TTL - SH_URL_TOKEN_TTL_SECONDS is
+// 15 minutes - and the client cached one in localStorage with no expiry and no
+// validation. shEnsureUserToken() returned whatever it found there without ever
+// asking the server, so once the token aged out every authenticated call 401'd
+// and the only way out was to sign in again by hand.
+//
+// It read as "it worked yesterday and today it fails to obfuscate", and as two
+// separate faults, because host obfuscation and cloud refresh both authenticate
+// with the same string. Both were one expired token.
+function shInvalidateUserToken() {
+    // Delegates rather than repeating the two removeItem calls. A second copy
+    // is how "sign out" and "the token expired" drift apart - one gets updated
+    // to clear a third store, the other keeps working with two.
+    shClearUserToken();
+}
+
+// Discard the cached token and mint a new one, ignoring the cache entirely.
+// Resolves to null when there is no way to get one, so the caller can report the
+// ORIGINAL failure rather than a vaguer one.
+function shForceUserToken() {
+    shInvalidateUserToken();
+    return shEnsureUserToken(true);
+}
+
 // Devices that logged in before this fix hold base64. Their record is not
 // corrupt, so it is accepted on a fallback and MIGRATED once it works - a
 // device that cannot be repaired by signing in again is exactly the device that
@@ -471,20 +491,23 @@ function shDecodeLegacyPassword(stored) {
     } catch (e) { return null; }
 }
 
-async function shEnsureUserToken() {
-    var existing = shGetUserToken();
+async function shEnsureUserToken(force) {
+    // `force` ignores the cache. Needed because the cache can hold a token the
+    // server has already expired, and returning it unchecked is what made an
+    // aged-out token permanent.
+    var existing = force ? null : shGetUserToken();
     if (existing) return existing;
     if (!currentUser) { shEnsureUserTokenReason = 'no account is signed in on this device'; return null; }
     var u = users[currentUser.email];
     var stored = shStoredPassword(u);
     if (!stored) { shEnsureUserTokenReason = 'this device holds no stored password for ' + currentUser.email + ' - sign in again'; return null; }
     try {
-        var d = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: stored });
+        var d = await shApiRaw('sh/user-login', { emailOrUsername: currentUser.email, password: stored });
         // The legacy fallback. One extra request, only when the first is refused,
         // and only for records written by the old build.
         if ((!d || !d.ok) && shDecodeLegacyPassword(stored)) {
             var legacy = shDecodeLegacyPassword(stored);
-            var d2 = await shApi('sh/user-login', { emailOrUsername: currentUser.email, password: legacy });
+            var d2 = await shApiRaw('sh/user-login', { emailOrUsername: currentUser.email, password: legacy });
             if (d2 && d2.ok && d2.token) {
                 // Migrate, so the next call costs one request instead of two.
                 u.password = legacy;
@@ -597,12 +620,9 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         if (keyless && obfLen > GH_SWITCH) {
             return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, splitKey: splitKey || null, replaces: replaces || '', normalCode: normalCode || '' });
         }
-        const res = await fetch(SH_STATS_ENDPOINT + 'sh/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const d = await res.json();
+        // Through shApi: same reason. An expired token used to fail the upload
+        // outright, after the whole artifact had been compiled.
+        const d = await shApi('sh/upload', payload);
         if (!d.ok && /author/i.test(d.error || '')) {
             // token expired -> re-login once, retry (SAME id + flags so
             // the baked-in key URL + auth requirements stay valid)
@@ -649,6 +669,14 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
 // indistinguishable from a rejected password. So: read as TEXT, parse
 // defensively, and keep the status. This mirrors shApiGet.
 function shApi(endpoint, body) {
+    return shApiRaw(endpoint, body).then(function (d) {
+        return shRetryOnceAfter401(d, function () { return shApiRaw(endpoint, body); });
+    });
+}
+
+// The raw call, with no recovery. shApi wraps this so the retry has somewhere
+// to go back to without recursing.
+function shApiRaw(endpoint, body) {
     return fetch(SH_STATS_ENDPOINT + endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -664,6 +692,48 @@ function shApi(endpoint, body) {
     }).catch(function () { return { ok: false, status: 0, error: 'network' }; });
 }
 
+// ONE retry after a 401, because an EXPIRED CACHED TOKEN MUST NOT BE FATAL.
+//
+// The worker issues a user token with a short TTL - SH_URL_TOKEN_TTL_SECONDS is
+// 15 minutes - and the client cached it in localStorage with no expiry and no
+// validation. shEnsureUserToken() returned whatever was cached without ever
+// asking the server whether it still worked. So:
+//
+//   * works right after sign-in
+//   * 401s on everything once the token ages out
+//   * never recovers, because the only way to get a new token was to sign in
+//     again, and the cached one shadowed it
+//
+// Reported as "it worked yesterday and today it fails to obfuscate", which is
+// exactly what a 15-minute TTL looks like. Two different features failed at once
+// (host obfuscation and cloud refresh) because both authenticate with the same
+// token, which made it read like two problems rather than one expired string.
+//
+// The retry is bounded at ONE, and only on 401. A genuine authorisation failure
+// costs one extra request and then reports exactly as it did before.
+var shRefreshingToken = false;
+function shRetryOnceAfter401(first, retryFn) {
+    if (!first || first.status !== 401) return first;
+    // Belt and braces. The login call inside shForceUserToken deliberately uses
+    // the RAW helper so it cannot recurse, but a guard here means no future edit
+    // to that path can turn a 401 into an unbounded loop - which would hang the
+    // page instead of reporting the failure.
+    if (shRefreshingToken) return first;
+    shRefreshingToken = true;
+    return shForceUserToken().then(function (fresh) {
+        if (!fresh) return first;               // no way to get a new token; report the original
+        return retryFn().then(function (second) {
+            return second || first;
+        });
+    }).then(function (r) {
+        shRefreshingToken = false;
+        return r;
+    }, function (e) {
+        shRefreshingToken = false;
+        return first;                           // never turn a refresh failure into a hang
+    });
+}
+
 // A GET with query parameters, and a body read as TEXT.
 //
 // shApi is POST-only, so the token-authenticated /sh/user-me read had nowhere to
@@ -673,6 +743,12 @@ function shApi(endpoint, body) {
 // status is kept, because 403 (disabled) and 404 (no such account) mean very
 // different things and only one of them is a decision the server actually made.
 function shApiGet(endpoint, params) {
+    return shApiGetRaw(endpoint, params).then(function (d) {
+        return shRetryOnceAfter401(d, function () { return shApiGetRaw(endpoint, params); });
+    });
+}
+
+function shApiGetRaw(endpoint, params) {
     var q = [];
     for (var k in (params || {})) {
         if (params[k] === null || params[k] === undefined || params[k] === '') continue;
@@ -6114,15 +6190,13 @@ function shObfuscateOnHost(code, options) {
 // it does NOT proxy the compile, because a 100-second subrequest is what
 // produced the HTTP 520 the user saw.
 function shMintHostTicket(tok) {
-    return fetch(SH_STATS_ENDPOINT + 'sh/obfuscate-ticket', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-SH-User-Token': tok },
-        body: JSON.stringify({ userToken: tok })
-    }).then(function (r) {
-        return r.json().then(function (d) {
-            if (!r.ok || !d || !d.ok) throw new Error('The site would not authorise a host compile (HTTP ' + r.status + ').');
-            return d;
-        });
+    // Sent through shApi so it gets the same one-retry-after-401 recovery as
+    // every other authenticated call. This one used a raw fetch, which is why
+    // obfuscation kept failing while the rest of the app recovered: it was the
+    // one authenticated request with no way to notice an expired token.
+    return shApi('sh/obfuscate-ticket', { userToken: tok }).then(function (d) {
+        if (!d || !d.ok) throw new Error('The site would not authorise a host compile' + (d && d.status ? ' (HTTP ' + d.status + ')' : '') + (d && d.error ? ': ' + d.error : '') + '.');
+        return d;
     });
 }
 
@@ -7113,11 +7187,7 @@ function updateScriptVisibility(projectId, scriptId) {
     var payload = { id: loaderId, visibility: serverVisibility };
     payload.userToken = shGetUserToken();
     if (!payload.userToken) payload.token = shOwnerToken();
-    fetch(SH_STATS_ENDPOINT + 'sh/visibility', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    }).then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
+    shApi('sh/visibility', payload).then(function (d) { return { status: d.status, d: d }; })
       .then(function (res) {
           if (res.d && res.d.ok) {
               showNotification('Success', 'Visibility updated on the server.', 'success');

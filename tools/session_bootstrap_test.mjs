@@ -30,7 +30,13 @@ const ok = m => console.log('  OK   ' + m);
 const no = m => { fail++; console.log('  FAIL ' + m); };
 
 // the helper itself must still exist and still do the real work
-if (/async function shEnsureUserToken\(\)/.test(main)) ok('shEnsureUserToken still exists');
+//
+// The signature gained a `force` parameter: a cached token that the server has
+// already expired has to be replaceable, and a parameterless helper can only
+// ever return what is cached. Matching the old exact signature made this fail on
+// the fix rather than on the defect.
+if (/async function shEnsureUserToken\(\s*force\s*\)/.test(main)) ok('shEnsureUserToken still exists, and can be forced past a stale cache');
+else if (/async function shEnsureUserToken\(\)/.test(main)) ok('shEnsureUserToken still exists');
 else no('shEnsureUserToken is gone');
 
 // 1. shOwnerApi must mint its own credential, not trust the caller

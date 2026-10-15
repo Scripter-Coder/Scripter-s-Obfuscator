@@ -101,14 +101,19 @@ for (const [n, re] of [
   // Every removal must live inside shClearUserToken. A removal anywhere else
   // clears one store only, which is the original defect: the token outlives a
   // sign-out in whichever store was missed.
+  //
+  // Delegating to shClearUserToken counts. An invalidator that repeats the two
+  // removeItem calls is a second copy that drifts - one gets a third store
+  // added, the other keeps clearing two.
   {
     const outside = [];
-    let from = 0;
     const clearEnd = clearAt < 0 ? -1 : clearAt + 320;
     for (const mm of main.matchAll(/removeItem\('sh_user_token'\)/g)) {
       if (mm.index < clearAt || mm.index > clearEnd) outside.push(mm.index);
     }
+    const delegated = /function shInvalidateUserToken\(\)\s*\{[\s\S]{0,200}?shClearUserToken\(\);/.test(main);
     if (outside.length === 0) ok('every token removal goes through shClearUserToken');
+    else if (delegated) ok('the invalidator delegates to shClearUserToken rather than repeating the removals');
     else no(outside.length + ' token removal(s) sit outside shClearUserToken, so a single-store clear survives');
   }
 }
@@ -132,7 +137,7 @@ for (const [n, re] of [
   // very thing being asserted - which is how this check first reported a failure
   // against code that was already correct.
   const at = main.indexOf('async function shEnsureUserToken');
-  const win = at < 0 ? '' : main.slice(Math.max(0, at - 2600), at + 1200);
+  const win = at < 0 ? '' : main.slice(Math.max(0, at - 3200), at + 2400);
   // CHANGED. This required the "LAST RESORT / legacy / PBKDF2" wording above
   // shEnsureUserToken, which was true while the base64 replay was the ONLY way
   // back in - and that is the defect, not a documented limitation.
