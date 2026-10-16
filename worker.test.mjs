@@ -14,12 +14,37 @@ import { DatabaseSync } from 'node:sqlite';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
 
 // ---- mock KV ----
+//
+// `list` is here because the user store is a set of per-account keys now
+// (sh_user_<email>), so every read of the user table is a prefix scan. Without
+// it the mock answered `list is not a function`, the worker logged it and
+// carried on with an EMPTY user table - and the failure surfaced a long way
+// from its cause, as "plan change must sync" failing with a 500. A mock that
+// omits a method the real binding has does not test the path; it hides it.
+//
+// Paging is honoured (cursor in, list_complete out) because the worker loops
+// on it and stops after 20 pages. A mock that always reports one complete page
+// would let an infinite cursor loop pass.
 function makeKV() {
     const store = new Map();
     return {
         async get(key) { return store.has(key) ? store.get(key) : null; },
         async put(key, value, opts) { store.set(key, String(value)); },
         async delete(key) { store.delete(key); },
+        async list(opts = {}) {
+            const prefix = String(opts.prefix || '');
+            const limit = Math.max(1, Number(opts.limit) || 1000);
+            const names = [...store.keys()].filter(k => k.startsWith(prefix)).sort();
+            const start = opts.cursor ? names.indexOf(String(opts.cursor)) : 0;
+            const from = start < 0 ? 0 : start;
+            const slice = names.slice(from, from + limit);
+            const next = from + limit;
+            return {
+                keys: slice.map(name => ({ name })),
+                list_complete: next >= names.length,
+                cursor: next >= names.length ? null : names[next]
+            };
+        },
         _store: store
     };
 }
@@ -146,6 +171,18 @@ console.log('[W3] KEYLESS upload with cipher+plainCode stores webKey meta...');
 let KEYLESS_ID = '';
 {
     const login = await sharedOwnerToken();
+    // A keyless build STILL ships a split key.
+    //
+    // This fixture used to omit it, and the worker started refusing the upload
+    // with "this build has no server-held key". The refusal is correct and is
+    // deliberate: since D29 every build, keyless included, is compiled with a
+    // serverKey, so the artifact's last layer is encrypted with a key that is
+    // never in the file. Publishing without one produces a loadstring that
+    // uploads cleanly and then fails on every user's machine with an error that
+    // names nothing. The client sends `splitKey` on this path (see
+    // shServerKeyOpts), so the fixture was the stale half of the pair.
+    const t0 = Date.now();
+    const padded = [9, 8, 7, 6, 5, 4, 3, 2];
     const d = await j('POST', '/sh/upload', {
         token: login,
         name: 'FreeScript',
@@ -154,10 +191,16 @@ let KEYLESS_ID = '';
         plainCode: '-- obfuscated executor blob (fake)',
         cipher: 'U0hPS0Zha2VDaXBoZXI=', // "SHOKFakeCipher" b64
         keyHash: 'deadbeef',
-        normalCode: 'print("hi")'
+        normalCode: 'print("hi")',
+        splitKey: { paddedKey: padded, t0: t0, chk: 321 }
     });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     assert.strictEqual(d.keyless, true);
+    // and the server-held key really is stored, because the artifact cannot
+    // execute without it.
+    const skey = JSON.parse(KV._store.get('sh_skey_' + d.id));
+    assert.ok(skey && Array.isArray(skey.paddedKey) && skey.paddedKey.length === padded.length,
+        'a keyless upload with no stored split key is a script that cannot run');
     // The loader prefers `request` and falls back to game:HttpGet, because
             // game:HttpGet throws on at least one executor in circulation. Assert what
             // the loader MEANS rather than the formatting it used to have.
@@ -217,7 +260,15 @@ console.log('[W5] keyless loader: BROWSER gets a metadata page with no cipher...
 console.log('[W6] keyless with no cipher: browser still gets the same metadata page...');
 {
     const login = await sharedOwnerToken();
-    const d = await j('POST', '/sh/upload', { token: login, name: 'OldFree', user: 't', keyless: true, plainCode: '-- legacy blob' });
+    const d = await j('POST', '/sh/upload', {
+        token: login, name: 'OldFree', user: 't', keyless: true,
+        plainCode: '-- legacy blob',
+        // Same reason as W3: a keyless build still carries a server-held key,
+        // and the worker refuses one without it rather than publishing a
+        // script that cannot execute.
+        splitKey: { paddedKey: [5, 5, 5, 5], t0: Date.now(), chk: 111 }
+    });
+    assert.strictEqual(d.ok, true, 'the upload was refused, so this URL is a 404 rather than a page: ' + JSON.stringify(d));
     const r = await call('GET', '/sh/' + d.id, null, BROWSER_UA);
     const text = await r.text();
     assert.strictEqual(r.status, 200);
@@ -725,7 +776,11 @@ console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
         name: 'LegacyIdScript', user: 'tester',
         cipher: 'U0hPS0Zha2U=', keyHash: 'cafe', plainCode: 'print(1)',
         wantId: LEGACY_ID,
-        keyless: true
+        keyless: true,
+        // Since D29 a keyless build still ships a server-held key, so the
+        // worker refuses one without it rather than publishing a script that
+        // cannot execute. See W3.
+        splitKey: { paddedKey: [3, 1, 4, 1, 5, 9], t0: Date.now(), chk: 202 }
     });
     assert.ok(up.ok, 'a 13-digit id must be accepted at upload: ' + JSON.stringify(up).slice(0, 200));
 
@@ -740,8 +795,12 @@ console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
     assert.notStrictEqual(got.text.slice(0, 6), 'SHERR',
         'the gate must NOT refuse a legacy id, got: ' + got.text.slice(0, 80));
     assert.strictEqual(got.status, 200, 'the gate must deliver: ' + got.text.slice(0, 120));
-    assert.ok(got.text.startsWith('SHL\n') || got.text.startsWith('SHK\n'),
+    assert.ok(got.text.startsWith('SHL\n') || got.text.startsWith('SHK\n') || got.text.startsWith('SHX\n'),
         'a keyed or keyless delivery must come back, got: ' + got.text.slice(0, 60));
+    // SHX is the KEYLESS envelope: since D29 a free script also gets a
+    // server-only layer, so its delivery carries the key line rather than being
+    // a plain SHL body. It is not spelled SHK because a keyless bootstrap never
+    // runs DEC, and handing it "ciphertext follows" would skip decryption.
 
     // A malformed wantId must NOT be honoured.
     //
@@ -763,7 +822,8 @@ console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
     ]) {
         const r = await j('POST', '/sh/upload', {
             token, name: 'x', user: 'u', cipher: 'U0hPS0Zha2U=',
-            keyHash: 'cafe', plainCode: 'print(1)', wantId: bad, keyless: true
+            keyHash: 'cafe', plainCode: 'print(1)', wantId: bad, keyless: true,
+            splitKey: { paddedKey: [1, 2, 3], t0: Date.now(), chk: 303 }
         });
         assert.ok(r.ok, bad + ' should still upload (the id is just ignored), got: ' + JSON.stringify(r).slice(0, 140));
         assert.notStrictEqual(r.id, bad, bad + ' was HONOURED - that is a KV key traversal (' + why + ')');
@@ -775,7 +835,8 @@ console.log('[W20] LEGACY IDS: a 13-digit id must publish and deliver...');
     for (const good of ['ScripterHub1234567890', 'ScripterHub1234567890123456']) {
         const r = await j('POST', '/sh/upload', {
             token, name: 'x', user: 'u', cipher: 'U0hPS0Zha2U=',
-            keyHash: 'cafe', plainCode: 'print(1)', wantId: good, keyless: true
+            keyHash: 'cafe', plainCode: 'print(1)', wantId: good, keyless: true,
+            splitKey: { paddedKey: [4, 5, 6], t0: Date.now(), chk: 404 }
         });
         assert.ok(r.ok, good + ' must be accepted: ' + JSON.stringify(r).slice(0, 120));
         assert.strictEqual(r.id, good, good + ' is a valid id and must be honoured verbatim, got ' + r.id);

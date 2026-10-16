@@ -72,6 +72,15 @@ const SPOOFED_UA = 'Roblox/570 Delta Executor';
 const ID = 'ScripterHub1234567890';
 const ID2 = 'ScripterHub0987654321';
 
+// A keyless build STILL ships a server-held key (D29 / the SHX envelope).
+//
+// Every keyless upload in this file used to omit it, and the worker - correctly -
+// refuses an upload that has no server-held key, because such a script cannot
+// execute once published. So those gates failed at "upload rejected (400)" and
+// the properties they exist to audit (identity binding, id ownership, webhook
+// leakage) were never reached. A gate that cannot set itself up is not a gate.
+const KEYLESS_SPLIT = { paddedKey: [11, 22, 33, 44, 55], t0: 1700000000, chk: 4242 };
+
 function makeEnv(opts = {}) {
   const env = {
     LOADERS_KV: makeKV(),
@@ -581,16 +590,20 @@ gate('G13', 'Stored credentials are not recoverable from state', 'pass', async (
   const su = await call(env, 'POST', '/sh/user-signup', { email: 'a@t.com', username: 'Alice', password: pw }, BROWSER_UA,
     { 'CF-Connecting-IP': '198.51.100.1' });
   need(su.status === 200, `signup rejected (${su.status})`);
-  // the users map lives under sh_users_db, not sh_users
-  const raw = env.LOADERS_KV._store.get('sh_users_db');
-  need(typeof raw === 'string' && raw.length > 0, 'no user map was written, so nothing was actually inspected');
+  // Each account is its own KV key now (sh_user_<lowercased email>), not one
+  // shared map. Reading `sh_users_db` here returned undefined, and a gate that
+  // cannot find the state it is auditing is not auditing anything - it just
+  // reported a setup failure, which reads nothing like a credential leak.
+  const userKey = (email) => 'sh_user_' + String(email).trim().toLowerCase();
+  const raw = env.LOADERS_KV._store.get(userKey('a@t.com'));
+  need(typeof raw === 'string' && raw.length > 0, 'no user record was written, so nothing was actually inspected');
   if (raw.includes(Buffer.from(pw, 'utf8').toString('base64'))) {
     throw new Error('password is recoverable from state — it is base64-encoded, not hashed');
   }
   if (raw.includes(pw)) throw new Error('the plaintext password appears in stored state');
 
   // The stored value must be a real KDF record, not merely "not base64".
-  const rec = JSON.parse(raw)['a@t.com'];
+  const rec = JSON.parse(raw);
   need(rec && typeof rec.password === 'string', 'no password field on the record');
   if (!/^pbkdf2\$\d+\$/.test(rec.password)) {
     throw new Error(`stored credential is not a PBKDF2 record: ${rec.password.slice(0, 24)}...`);
@@ -605,8 +618,8 @@ gate('G13', 'Stored credentials are not recoverable from state', 'pass', async (
       { 'CF-Connecting-IP': '198.51.100.7' });
     need(s.status === 200, `second signup rejected (${s.status})`);
   }
-  const map2 = JSON.parse(env2.LOADERS_KV._store.get('sh_users_db'));
-  const hx = map2['x@t.com'].password, hy = map2['y@t.com'].password;
+  const hx = JSON.parse(env2.LOADERS_KV._store.get(userKey('x@t.com'))).password;
+  const hy = JSON.parse(env2.LOADERS_KV._store.get(userKey('y@t.com'))).password;
   if (hx === hy) throw new Error('two identical passwords produced identical records — the salt is not per-user');
 
   // A correct password must still log in, and a wrong one must not. The gate
@@ -637,8 +650,8 @@ gate('G19', 'Session tokens are signed, not self-certifying', 'pass', async () =
   need(typeof token === 'string' && token.length > 20, 'no token issued');
 
   // 1. it must not embed the credential in any decodable form
-  const mapRaw = env.LOADERS_KV._store.get('sh_users_db') || '';
-  const storedHash = (JSON.parse(mapRaw)['s@t.com'] || {}).password || '';
+  // (the account is its own key now - see G13)
+  const storedHash = (JSON.parse(env.LOADERS_KV._store.get('sh_user_' + 's@t.com') || '{}').password) || '';
   need(storedHash.length > 0, 'could not read the stored hash to check for leakage');
   const decoded = Buffer.from(token, 'base64').toString('utf8');
   if (decoded.includes(storedHash)) throw new Error('the session token contains the stored password hash');
@@ -649,7 +662,7 @@ gate('G19', 'Session tokens are signed, not self-certifying', 'pass', async () =
   if (!sig) throw new Error('the token is not signed (no signature segment)');
   const tamperedBody = Buffer.from(JSON.stringify({ kind: 'user', e: 's@t.com', t: Date.now(), pwd: 'x' })).toString('base64url');
   const forged = tamperedBody + '.' + sig;
-  const r = await call(env, 'POST', '/sh/upload', { userToken: forged, name: 'x', plainCode: 'p', keyless: true }, BROWSER_UA,
+  const r = await call(env, 'POST', '/sh/upload', { userToken: forged, name: 'x', plainCode: 'p', keyless: true, splitKey: KEYLESS_SPLIT }, BROWSER_UA,
     { 'CF-Connecting-IP': '198.51.100.11' });
   if (r.status === 200) throw new Error('a token with a swapped payload was accepted — the signature is not covering the body');
 });
@@ -658,7 +671,7 @@ gate('G12', 'body.user must match the authenticated identity', 'pass', async () 
   const env = makeEnv();
   const tok = await loginUserToken(env, 'owner@t.com', 'ownpass123');
   const r = await call(env, 'POST', '/sh/upload', {
-    userToken: tok, name: 'x', user: 'somebody-else', plainCode: 'print(1)', keyless: true
+    userToken: tok, name: 'x', user: 'somebody-else', plainCode: 'print(1)', keyless: true, splitKey: KEYLESS_SPLIT
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.2' });
   need(r.status === 200, `upload rejected (${r.status}) — cannot test impersonation if the upload itself fails`);
   let d; try { d = JSON.parse(r.body); } catch (e) { throw new Error('gate setup: upload body was not JSON'); }
@@ -682,7 +695,7 @@ gate('G11', 'A user cannot overwrite another user\'s script id', 'pass', async (
 
   // 1. the cross-user overwrite must be refused outright
   const r = await call(env, 'POST', '/sh/upload', {
-    userToken: tok, name: 'evil', user: 'mallory@t.com', wantId: victim, plainCode: 'OVERWRITTEN', keyless: true
+    userToken: tok, name: 'evil', user: 'mallory@t.com', wantId: victim, plainCode: 'OVERWRITTEN', keyless: true, splitKey: KEYLESS_SPLIT
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
   if (env.LOADERS_KV._store.get('sh_loader_' + victim) !== 'VICTIM PAYLOAD') {
     throw new Error('a different user overwrote an existing script by supplying its wantId');
@@ -700,12 +713,12 @@ gate('G11', 'A user cannot overwrite another user\'s script id', 'pass', async (
   // 2. re-publishing to your OWN existing id must still work, or this gate
   //    would pass by breaking the republish flow the split-key URL depends on
   const mine = await call(env, 'POST', '/sh/upload', {
-    userToken: tok, name: 'mine', user: 'mallory@t.com', plainCode: 'V1', keyless: true
+    userToken: tok, name: 'mine', user: 'mallory@t.com', plainCode: 'V1', keyless: true, splitKey: KEYLESS_SPLIT
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
   need(mine.status === 200, `own upload failed (${mine.status}) — legitimate publishing is broken`);
   const myId = JSON.parse(mine.body).id;
   const again = await call(env, 'POST', '/sh/upload', {
-    userToken: tok, name: 'mine', user: 'mallory@t.com', wantId: myId, plainCode: 'V2', keyless: true
+    userToken: tok, name: 'mine', user: 'mallory@t.com', wantId: myId, plainCode: 'V2', keyless: true, splitKey: KEYLESS_SPLIT
   }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.3' });
   if (again.status !== 200) throw new Error(`re-uploading to your own id was refused (${again.status}) — split-key republish would break`);
   if (env.LOADERS_KV._store.get('sh_loader_' + myId) !== 'V2') {
@@ -919,7 +932,7 @@ gate('G15', 'Webhook carries metadata only (no source, no license keys)', 'pass'
     const tok = await loginUserToken(env, 'leaker@t.com', 'leakpass123');
     const source = 'local SECRET_MARKER = "TOP_SECRET_SOURCE_LINE"';
     const up = await call(env, 'POST', '/sh/upload', {
-      userToken: tok, name: 'leaky', user: 'leaker', plainCode: source, keyless: true
+      userToken: tok, name: 'leaky', user: 'leaker', plainCode: source, keyless: true, splitKey: KEYLESS_SPLIT
     }, BROWSER_UA, { 'CF-Connecting-IP': '198.51.100.5' });
     need(up.status === 200, `upload rejected (${up.status}) — the source-leak half of this gate never ran`);
     // and an auth event, which is where license keys used to be logged
@@ -1227,7 +1240,7 @@ gate('G23', 'The /sh/k compatibility window is opt-in and re-opens only what is 
   }
 });
 
-gate('G24', 'A keyless delivery body is pure Lua and never carries a key line', 'pass', async () => {
+gate('G24', 'A keyless delivery is the artifact, and its key line is metadata, not Lua', 'pass', async () => {
 
   // The suite had no gate that compared an envelope's declared type against its
 
@@ -1281,27 +1294,73 @@ gate('G24', 'A keyless delivery body is pure Lua and never carries a key line', 
 
   const d1 = await get(env, `/sh/a/${ID2}?s=${p1[1]}&n=${p1[2]}`, SPOOFED_UA);
 
-  if (d1.body.slice(0, 4) !== 'SHL\n') {
+  // A keyless delivery may now carry a key line: since D29 a free script gets a
 
-    throw new Error('a keyless script did not get an SHL envelope: ' + JSON.stringify(d1.body.slice(0, 40)));
+  // server-only layer too, so the envelope is SHX (SHL only for artifacts stored
+
+  // with no key, which is how already-published scripts keep running).
+
+  //
+
+  // What it must NEVER do is present bytes the loader will hand to the parser as
+
+  // Lua. The key line is metadata on its own line; everything after it must be the
+
+  // artifact, exactly, with nothing spliced in. That is the property this gate
+
+  // was written for, and it is unchanged by the envelope rename.
+
+  const isSHL = d1.body.slice(0, 4) === 'SHL\n';
+
+  const isSHX = d1.body.slice(0, 4) === 'SHX\n';
+
+  if (!isSHL && !isSHX) {
+
+    throw new Error('a keyless script got neither an SHL nor an SHX envelope: ' + JSON.stringify(d1.body.slice(0, 40)));
 
   }
 
-  if (d1.body !== 'SHL\n' + lua) {
+  const nl1 = isSHL ? 3 : d1.body.indexOf('\n', 4);
 
-    throw new Error('a KEYLESS delivery body is not exactly SHL\\n + artifact.\n'
+  const after1 = nl1 < 0 ? '' : d1.body.slice(nl1 + 1);
+
+  if (after1 !== lua) {
+
+    throw new Error('a KEYLESS delivery body is not exactly the envelope + artifact.\n'
 
       + '         It carries extra bytes, which the loader feeds to the parser as Lua.\n'
 
-      + '         body after the header: ' + JSON.stringify(d1.body.slice(4, 90)));
+      + '         body after the header: ' + JSON.stringify(after1.slice(0, 90)));
 
   }
 
-  // and specifically: no key line, even though one exists in KV
+  // and when there IS a key line it holds the real t0/chk - the artifact cannot
 
-  if (d1.body.includes(String(sk.t0)) || d1.body.includes(String(sk.chk))) {
+  // run without it, and its absence is the "[ScripterHub] Key response too short"
 
-    throw new Error('a KEYLESS delivery leaked the split-key line (t0/chk) into the artifact');
+  // failure D29 was written against.
+
+  if (isSHX) {
+
+    const keyline1 = d1.body.slice(4, nl1);
+
+    if (keyline1.indexOf(String(sk.t0)) < 0 || keyline1.indexOf(String(sk.chk)) < 0) {
+
+      throw new Error('a KEYLESS (SHX) delivery lost its key line.\n'
+
+        + '         envelope head: ' + JSON.stringify(d1.body.slice(0, 120)));
+
+    }
+
+  }
+
+  // and the numbers stay in the key line: a stale key record must never leak
+
+  // into the Lua the parser actually sees.
+
+  if (after1.indexOf(String(sk.t0)) >= 0 || after1.indexOf(String(sk.chk)) >= 0) {
+
+    throw new Error('a KEYLESS delivery leaked the split-key line (t0/chk) into the artifact itself');
 
   }
 

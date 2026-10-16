@@ -271,19 +271,26 @@ SH_URL_TOKEN_TTL_SECONDS = "15"       # the weaker HttpGet fallback path
 SH_SESSION_TTL_SECONDS = "45"         # primary request() path
 
 # ---- STORAGE KEEPER: where generated script BYTES live ----
-# Both of these must be set or the backend is inert. With them unset, storeConfigured()
-# is false and every byte falls back to Cloudflare KV - which looks like a working site
-# while quietly using the storage this change was meant to free.
+# OFF. Nothing is stored on the owner's PC, and nothing is uploaded to it.
 #
-# The URL is the address tunnel.py printed when you started the service.
-# The token is NOT here on purpose: set it with
-#     npx wrangler secret put SH_STORE_TOKEN
-# so it never lands in git. It must match Storage Keeper/data/token.txt.
+# With SH_STORE_URL unset, storeConfigured() is false and the worker never
+# contacts the PC: publishing, delivery and downloads all go to Cloudflare
+# (KV, or R2 for large artifacts), which is why the site keeps serving every
+# script while this PC is off, asleep or mid-reboot. That was the whole point
+# of removing the Keeper from the script path.
 #
-# A QUICK TUNNEL (cloudflared tunnel --url) gets a RANDOM address that CHANGES ON EVERY
-# RESTART. If you set one here, the next reboot makes every script fail at once while
-# your PC still looks healthy - update this value at the same time as you restart.
-SH_STORE_URL = "https://sandwich-neutral-interviews-antiques.trycloudflare.com"
+# To turn the PC backend back on you need BOTH of these, and the URL must be
+# the address tunnel.py printed at start - a `cloudflared tunnel --url` address
+# is RANDOM and CHANGES ON EVERY RESTART, so a restart otherwise takes every
+# script offline at once while the PC still looks healthy:
+#     SH_STORE_URL = "https://<your-tunnel-host>.trycloudflare.com"
+# and, in a terminal (never in git):
+#     npx wrangler secret put SH_STORE_TOKEN     # must match Storage Keeper/data/token.txt
+#
+# BEFORE re-enabling it: anything stored ONLY on the PC stops being served the
+# moment this is unset, because the worker can no longer ask for it. Move those
+# scripts back through the panel first.
+# SH_STORE_URL = "https://sandwich-neutral-interviews-antiques.trycloudflare.com"
 
 # Your telemetry webhook. Set this HERE or in the dashboard — the dashboard is
 # usually easier, and a Text variable keeps the value visible so a typo is

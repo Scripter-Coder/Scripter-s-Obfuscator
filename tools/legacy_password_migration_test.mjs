@@ -19,6 +19,23 @@ function makeKV() {
         async get(k) { return store.has(k) ? store.get(k) : null; },
         async put(k, v) { store.set(k, String(v)); },
         async delete(k) { store.delete(k); },
+        // The user table is a set of per-account keys now, so every read of it
+        // is a prefix scan. Without this the worker logged "list is not a
+        // function", carried on with an EMPTY user table, and this test
+        // reported it as a migration that did not happen.
+        async list(opts = {}) {
+            const prefix = String(opts.prefix || '');
+            const limit = Math.max(1, Number(opts.limit) || 1000);
+            const names = [...store.keys()].filter(k => k.startsWith(prefix)).sort();
+            const from = opts.cursor ? Math.max(0, names.indexOf(String(opts.cursor))) : 0;
+            const slice = names.slice(from, from + limit);
+            const next = from + limit;
+            return {
+                keys: slice.map(name => ({ name })),
+                list_complete: next >= names.length,
+                cursor: next >= names.length ? null : names[next]
+            };
+        },
         _store: store
     };
 }
@@ -36,10 +53,27 @@ async function call(env, method, path, body, ip) {
     return { status: r.status, ...json };
 }
 
+// One account, one key: sh_user_<lowercased email>.
+//
+// These tests used to seed and read `sh_users_db`, a single map. That key is
+// gone, so every read returned null and every write went nowhere - the suite
+// went on reporting a migration failure that was really a harness reading a
+// store that no longer exists.
+const userKey = email => 'sh_user_' + String(email).trim().toLowerCase();
+
+function seedUser(env, email, rec) {
+    env.LOADERS_KV._store.set(userKey(email), JSON.stringify({ ...rec, email }));
+}
+
 function readRec(env, email) {
-    const raw = env.LOADERS_KV._store.get('sh_users_db');
+    const raw = env.LOADERS_KV._store.get(userKey(email));
     if (!raw) return null;
-    return JSON.parse(raw)[email] || null;
+    return JSON.parse(raw);
+}
+
+// every stored byte for this account, for the "the old value is GONE" check
+function readRaw(env, email) {
+    return env.LOADERS_KV._store.get(userKey(email)) || '';
 }
 
 let pass = 0, fail = 0;
@@ -53,8 +87,7 @@ console.log('[M1] a legacy btoa record is replaced in place on successful login.
     const EMAIL = 'legacy@t.com', PW = 'legacyPass123';
 
     // Seed exactly what the pre-Phase-1 worker wrote.
-    const map = { [EMAIL]: { id: 'user_legacy', email: EMAIL, username: 'Legacy', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString(), stats: { projects: { used: 0, max: 1 } } } };
-    env.LOADERS_KV._store.set('sh_users_db', JSON.stringify(map));
+    seedUser(env, EMAIL, { id: 'user_legacy', email: EMAIL, username: 'Legacy', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString(), stats: { projects: { used: 0, max: 1 } } });
 
     // Sanity: the credential really is recoverable BEFORE the migration.
     const before = readRec(env, EMAIL).password;
@@ -70,9 +103,9 @@ console.log('[M1] a legacy btoa record is replaced in place on successful login.
     else bad('rehash', 'stored value is not a PBKDF2 record: ' + stored.slice(0, 40));
 
     // THE POINT: the legacy value must be gone, not shadowed.
-    const raw = env.LOADERS_KV._store.get('sh_users_db');
-    if (!raw.includes(b64(PW))) ok('the legacy base64 value is GONE from storage (not shadowed)');
-    else bad('shadowing', 'the legacy base64 value is still present in the users map');
+    const raw = readRaw(env, EMAIL);
+    if (raw && !raw.includes(b64(PW))) ok('the legacy base64 value is GONE from storage (not shadowed)');
+    else bad('shadowing', 'the legacy base64 value is still present in the account record');
 
     if (!JSON.stringify(after).includes(PW)) ok('the plaintext password appears nowhere in the record');
     else bad('plaintext', 'the plaintext password is present in the stored record');
@@ -83,8 +116,7 @@ console.log('[M2] a WRONG password must not trigger the migration...');
 {
     const env = { LOADERS_KV: makeKV(), SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev', SH_SESSION_SECRET: 'pepper' };
     const EMAIL = 'legacy2@t.com', PW = 'correctPass123';
-    const map = { [EMAIL]: { id: 'u2', email: EMAIL, username: 'L2', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() } };
-    env.LOADERS_KV._store.set('sh_users_db', JSON.stringify(map));
+    seedUser(env, EMAIL, { id: 'u2', email: EMAIL, username: 'L2', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() });
 
     const li = await call(env, 'POST', '/sh/user-login', { emailOrUsername: EMAIL, password: 'wrongPass123' }, '198.51.100.2');
     if (!li.ok) ok('a wrong password is rejected'); else bad('auth', 'a wrong password was accepted');
@@ -98,8 +130,7 @@ console.log('[M3] the migrated account still works on subsequent logins...');
 {
     const env = { LOADERS_KV: makeKV(), SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev', SH_SESSION_SECRET: 'pepper' };
     const EMAIL = 'legacy3@t.com', PW = 'thirdPass123';
-    const map = { [EMAIL]: { id: 'u3', email: EMAIL, username: 'L3', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() } };
-    env.LOADERS_KV._store.set('sh_users_db', JSON.stringify(map));
+    seedUser(env, EMAIL, { id: 'u3', email: EMAIL, username: 'L3', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() });
 
     await call(env, 'POST', '/sh/user-login', { emailOrUsername: EMAIL, password: PW }, '198.51.100.3');
     const second = await call(env, 'POST', '/sh/user-login', { emailOrUsername: EMAIL, password: PW }, '198.51.100.3');
@@ -109,8 +140,8 @@ console.log('[M3] the migrated account still works on subsequent logins...');
     if (!third.ok) ok('a wrong password is still rejected after migration');
     else bad('post-migration auth', 'a wrong password was accepted after migration');
 
-    const raw = env.LOADERS_KV._store.get('sh_users_db');
-    if (!raw.includes(b64(PW))) ok('the legacy value never reappears');
+    const raw = readRaw(env, EMAIL);
+    if (raw && !raw.includes(b64(PW))) ok('the legacy value never reappears');
     else bad('resurrect', 'the legacy base64 value reappeared in storage');
 }
 
@@ -120,8 +151,7 @@ console.log('[M4] the other password-gated routes migrate too...');
     for (const route of ['/sh/user-get', '/sh/user-sync']) {
         const env = { LOADERS_KV: makeKV(), SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev', SH_SESSION_SECRET: 'pepper' };
         const EMAIL = 'lg' + route.replace(/\W/g, '') + '@t.com', PW = 'routePass123';
-        const map = { [EMAIL]: { id: 'u4', email: EMAIL, username: 'L4', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() } };
-        env.LOADERS_KV._store.set('sh_users_db', JSON.stringify(map));
+        seedUser(env, EMAIL, { id: 'u4', email: EMAIL, username: 'L4', password: b64(PW), plan: 'Basic', createdAt: new Date().toISOString() });
 
         const body = route === '/sh/user-get'
             ? { email: EMAIL, password: PW }
@@ -139,8 +169,7 @@ console.log('[M5] a password change writes PBKDF2 and never base64...');
 {
     const env = { LOADERS_KV: makeKV(), SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev', SH_SESSION_SECRET: 'pepper' };
     const EMAIL = 'chg@t.com', OLD = 'oldPass123', NEW = 'newPass456';
-    const map = { [EMAIL]: { id: 'u5', email: EMAIL, username: 'L5', password: b64(OLD), plan: 'Basic', createdAt: new Date().toISOString() } };
-    env.LOADERS_KV._store.set('sh_users_db', JSON.stringify(map));
+    seedUser(env, EMAIL, { id: 'u5', email: EMAIL, username: 'L5', password: b64(OLD), plan: 'Basic', createdAt: new Date().toISOString() });
 
     const badPw = await call(env, 'POST', '/sh/user-password', { email: EMAIL, oldPassword: 'wrongOld1', newPassword: NEW }, '198.51.100.5');
     if (!badPw.ok) ok('a wrong current password cannot change it'); else bad('change auth', 'the password was changed with a wrong current password');

@@ -241,17 +241,29 @@ console.log('[W] the cap covers every image field, in one list');
 
 console.log('[W] the oversized-map repair actually makes it smaller');
 {
+  // There is no oversized map to repair any more. Accounts are written as
+  // individual `sh_user_<email>` keys (putUserRecord -> storageSafeUser), so no
+  // single KV value can approach the 25MB cap no matter how many users or
+  // images exist - which is a stronger property than the drop-images loop this
+  // block used to require, and the loop is gone with the map it existed for.
   const fn = functionBody(cssWorker, 'saveUsersMap') || '';
   if (!fn) {
     no('saveUsersMap is gone or unreadable');
   } else {
-    const drops = (fn.match(/u\[k\] = ''/g) || []).length;
-    if (drops > 0) {
-      ok('saveUsersMap has a step that DROPS images outright, not just re-caps them');
+    if (/putUserRecord\(/.test(fn) && !/LOADERS_KV\.put\([^)]*'sh_users_db'/.test(fn)) {
+      ok('saveUsersMap writes ONE KEY PER ACCOUNT, so the 25MB value cap cannot be reached by user count');
     } else {
-      no('saveUsersMap only re-caps images. Its second pass was a byte-for-byte repeat of the first, so a map full of under-cap images still overflows the 25MB KV limit and the PUT throws');
+      no('saveUsersMap does not write per-account keys - a single value can still grow without bound');
     }
-    if (/console\.warn/.test(fn)) ok('dropping server-side images is logged, so the loss is not silent');
+    const safe = functionBody(cssWorker, 'storageSafeUser') || '';
+    if (/capImageFields|SH_IMAGE_FIELDS/.test(safe)) {
+      ok('every stored record still goes through the per-image cap');
+    } else {
+      no('a stored record can carry an unbounded image field');
+    }
+    // and the loss is never silent: a picture vanishing from someone's profile
+    // is exactly the kind of thing that has to be said out loud.
+    if (/console\.warn/.test(safe)) ok('dropping an oversized image at write time is logged');
     else no('server-side image loss would happen with no log line');
   }
 }

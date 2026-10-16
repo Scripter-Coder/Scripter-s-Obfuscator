@@ -40,8 +40,26 @@ function makeD1() {
     db.exec(fs.readFileSync(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'));
     return db;
 }
-const KV = makeKV();
-const env = {
+// The part size, read from the worker rather than written here.
+//
+// These tests used to say "30MB -> 2 chunks", which was true while a chunk was
+// a whole 25MB KV value. Storage now splits on CHUNK_DELIVERY_MAX - the size
+// one delivery RESPONSE can carry - so the same artifact is 6 parts. A test
+// that hardcodes a number the implementation is free to choose fails on the
+// next unrelated size change, and a test people learn to ignore stops testing
+// anything. Deriving it means this block now asserts the actual rule: the
+// artifact is split into length/part-size parts, and they reassemble exactly.
+const CHUNK_PART_BYTES = (() => {
+    const src = fs.readFileSync(new URL('./For Cloudflare/worker.js', import.meta.url), 'utf8');
+    const inline = /const INLINE_DELIVERY_MAX\s*=\s*([0-9_]+)\s*;/.exec(src);
+    if (!inline) throw new Error('could not read INLINE_DELIVERY_MAX from worker.js');
+    if (!/const CHUNK_DELIVERY_MAX\s*=\s*INLINE_DELIVERY_MAX\s*;/.test(src)) {
+        throw new Error('CHUNK_DELIVERY_MAX is no longer the inline cap; this test must follow it');
+    }
+    return Number(inline[1].replace(/_/g, ''));
+})();
+
+const KV = makeKV();const env = {
     LOADERS_KV: KV,
     SH_SETUP_TOKEN: 'TESTTOKEN123',
     SH_BASE_URL: 'https://test.workers.dev',
@@ -103,7 +121,11 @@ console.log('[C1] small keyless script stays on the single-value path...');
     const d = await j('POST', '/sh/upload', {
         token, name: 'Small', user: 't', keyless: true,
         plainCode: '-- small script', cipher: 'U0hPS01BTEw=',
-        wantId: 'ScripterHub0000000001'
+        wantId: 'ScripterHub0000000001',
+        // A keyless build still ships a server-held key since D29 (SHX). The
+        // worker refuses one without it rather than publishing a script that
+        // cannot execute, so the fixture sends what the client sends.
+        splitKey: { paddedKey: [7, 7, 7, 7], t0: 1700000000, chk: 606 }
     });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     assert.ok(KV._store.has('sh_loader_ScripterHub0000000001'), 'legacy single KV value');
@@ -118,7 +140,11 @@ console.log('[C1] small keyless script stays on the single-value path...');
     const g = await call('GET', `/sh/a/ScripterHub0000000001?s=${p[1]}&n=${p[2]}`, null, EXECUTOR_UA);
     const body = await g.text();
     assert.strictEqual(g.status, 200);
-    assert.ok(body.startsWith('SHL\n'), 'a keyless delivery is SHL, got: ' + body.slice(0, 40));
+    // SHX, not SHL: a keyless script gets a server-only layer too, so its
+    // delivery carries the key line. SHL remains for artifacts stored with no
+    // key at all, which is how already-published scripts keep running.
+    assert.ok(body.startsWith('SHX\n'), 'a keyless delivery with a server key is SHX, got: ' + body.slice(0, 40));
+    assert.ok(body.split('\n')[1] === '1700000000 606 7 7 7 7', 'the key line follows, got: ' + JSON.stringify(body.slice(0, 80)));
     assert.ok(body.includes('-- small script'), 'the gated delivery must contain the artifact');
     console.log('    OK: small scripts take the single-value path, delivered inline by the gate');
 }
@@ -126,17 +152,22 @@ console.log('[C1] small keyless script stays on the single-value path...');
 console.log('[C2] LARGE keyless script chunks across KV and serves intact...');
 {
     const token = await login();
-    // build a ~30MB plain blob (over the 25MB KV value cap -> 2 chunks)
+    // build a ~30MB plain blob (over the 6MB delivery part size -> several chunks)
     const big = ('-- big script\n').padEnd(30 * 1024 * 1024, 'a');
+    const wantChunks = Math.ceil(big.length / CHUNK_PART_BYTES);
     const d = await j('POST', '/sh/upload', {
         token, name: 'Big', user: 't', keyless: true,
         plainCode: big,
-        wantId: 'ScripterHub0000000002'
+        wantId: 'ScripterHub0000000002',
+        // see C1: a keyless build carries a server-held key too
+        splitKey: { paddedKey: [11, 22, 33, 44], t0: 1700000001, chk: 707 }
     });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     // chunked storage: meta + chunks, no legacy single value
     const cmeta = JSON.parse(KV._store.get('sh_cmeta_sh_loader_ScripterHub0000000002'));
-    assert.strictEqual(cmeta.n, 2, '30MB -> 2 chunks');
+    assert.ok(cmeta.n > 1, 'a 30MB artifact must be chunked, got ' + cmeta.n);
+    assert.strictEqual(cmeta.n, wantChunks,
+        'the chunk count is the artifact length over the delivery part size, nothing else');
     assert.strictEqual(cmeta.len, big.length);
     assert.ok(!KV._store.has('sh_loader_ScripterHub0000000002'), 'no single value for chunked scripts');
 
@@ -148,7 +179,7 @@ console.log('[C2] LARGE keyless script chunks across KV and serves intact...');
 
     // the gate opens a chain rather than inlining 30MB
     const chain = await openChain('ScripterHub0000000002');
-    assert.strictEqual(chain.n, 2, 'chain reports 2 parts');
+    assert.strictEqual(chain.n, wantChunks, 'the chain reports every part');
     assert.strictEqual(chain.root, '/sh/c/ScripterHub0000000002', 'chain root');
 
     // and the parts reassemble exactly, in order
@@ -159,7 +190,7 @@ console.log('[C2] LARGE keyless script chunks across KV and serves intact...');
         stitched += await c.text();
     }
     assert.strictEqual(stitched, big, 'chunks must reassemble to the exact original');
-    console.log('    OK: 30MB -> 2 chunks, perfect reassembly through the gate');
+    console.log(`    OK: 30MB -> ${wantChunks} chunks, perfect reassembly through the gate`);
 }
 
 console.log('[C3] /sh/c needs a grant, and the chain is forward-only...');
@@ -283,9 +314,14 @@ console.log('[C6] the session bootstrap RUNS the full flow in Lua...');
         parts.push(await c.text());
     }
     assert.strictEqual(parts.join('').length, 30 * 1024 * 1024, 'every artifact byte was delivered');
-    // exactly what the gate returned on the wire: the SHG header, then the
-    // (absent, because this is keyless) key line
-    const gateBody = 'SHG ' + chain.n + ' ' + chain.root + ' ' + chain.grant + '\n';
+    // Exactly what the gate returned on the wire: the SHG header, then the key
+    // line. A large keyless script CHAINED rather than inlined, and a chain
+    // carries the key whenever one exists - keyless or not. That rule was the
+    // bug D30's sibling fixed: the inline path sent the key line and the chain
+    // path did not, so every large free script left without its key and died
+    // with "[ScripterHub] Key response too short".
+    const gateBody = 'SHG ' + chain.n + ' ' + chain.root + ' ' + chain.grant + '\n'
+        + '1700000001 707 11 22 33 44\n';
 
     // 2. run the shipped bootstrap in fengari with a canned transport
     const L = lauxlib.luaL_newstate();
@@ -347,7 +383,8 @@ console.log('[C7] replacing a chunked loader deletes all its chunks...');
         token, name: 'Big2', user: 't', keyless: true,
         plainCode: big,
         wantId: 'ScripterHub0000000004',
-        replaces: 'ScripterHub0000000002'
+        replaces: 'ScripterHub0000000002',
+        splitKey: { paddedKey: [5, 6, 7, 8], t0: 1700000002, chk: 808 }
     });
     assert.strictEqual(d.ok, true, JSON.stringify(d));
     assert.ok(!KV._store.has('sh_chunk_sh_loader_ScripterHub0000000002_0'), 'old chunks deleted');
@@ -365,7 +402,8 @@ console.log('[C8] honest 413 above the platform ceiling (~70MB cipher / 50MB scr
     const d = await j('POST', '/sh/upload', {
         token, name: 'TooBig', user: 't', keyless: true,
         plainCode: tooBig,
-        wantId: 'ScripterHub0000000005'
+        wantId: 'ScripterHub0000000005',
+        splitKey: { paddedKey: [1, 1, 1], t0: 1700000003, chk: 909 }
     });
     assert.strictEqual(d.ok, false);
     assert.strictEqual(d.status, 413);

@@ -1,8 +1,8 @@
 // WORKER RESILIENCE tests (the loadstring-outage root causes):
 //   R1: signup with a HUGE base64 profile image never breaks the KV
-//       write (images are capped server-side; the map is repaired)
-//   R2: a users map that would exceed the KV 25MB cap is auto-repaired
-//       (images stripped) instead of throwing a blank 500
+//       write (oversized images are dropped server-side)
+//   R2: twenty accounts with huge images all survive, and every one of them
+//       can still log in
 //   R3: any uncaught worker error still returns JSON WITH CORS headers
 //       (browsers used to swallow the blank 500 as "fetch failed")
 //   R4: user-signup + user-login return readable JSON errors on failure
@@ -45,52 +45,77 @@ async function j(method, path, body, ua) {
     catch (e) { return { status: r.status, acao: r.headers.get('Access-Control-Allow-Origin'), ok: false, _text: text }; }
 }
 
-console.log('[R1] signup survives a huge base64 profile image in the map...');
+// ACCOUNTS ARE SEPARATE KEYS NOW, NOT ONE MAP.
+//
+// R1 and R2 used to read `sh_users_db` - a single map every account shared, so
+// one enormous profile image could push the whole table over the KV value cap
+// and take every login with it. Each account is now its own `sh_user_<email>`
+// key, so the question changed shape rather than disappearing:
+//
+//   * one huge account can no longer affect a different account's signup, and
+//   * an oversized image is dropped at write time (capImageFields), so the
+//     record still fits and the account still works.
+//
+// The assertions below check those two properties directly. Reading a map that
+// no longer exists could only ever assert `undefined.length`, which is how this
+// block was silently measuring nothing.
+const USER_PREFIX = 'sh_user_';
+function userRecords(KV) {
+    return [...KV._store.entries()].filter(([k]) => k.startsWith(USER_PREFIX));
+}
+
+console.log('[R1] a huge profile image is dropped, and cannot affect another account...');
 {
-    // KV capped at 1MB to force the repair path quickly
+    // KV capped at 1MB, the same trick the original test used to force the
+    // failure quickly. Real Cloudflare allows 25MB per value.
     const KV = makeCappedKV(1_000_000);
     const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev' };
     const req = (p, b) => worker.fetch(new Request('https://t.workers.dev' + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }), env, { waitUntil: () => {} });
 
-    // seed an existing user with a GIANT image (2.5MB base64) via the
-    // owner upsert path
+    // 2.5 MB of base64 - over the 2 MB per-image cap, so it must be dropped
+    // rather than written. The cap is enforced at write, so the account is
+    // created and simply has no image.
     const big = 'A'.repeat(2_500_000);
-    const ownerUpsert = await (async () => {
-        // use /sh/user-sync (new-record migration path)
-        const r = await req('/sh/user-sync', { email: 'big@t.com', password: 'pass1234', user: { username: 'Big', profileImage: big } });
-        return r.status;
-    })();
-    // now a fresh signup: the map already holds the huge image -> the
-    // put would exceed the cap without the repair logic
+    await req('/sh/user-signup', { email: 'big@t.com', username: 'Big', password: 'pass1234', user: { profileImage: big } });
+
     const su = await (async () => {
         const r = await req('/sh/user-signup', { email: 'fresh@t.com', username: 'Fresh', password: 'pass1234' });
         const text = await r.text();
         let d; try { d = JSON.parse(text); } catch (e) { d = { ok: false, _raw: text.slice(0, 100) }; }
         return { status: r.status, ok: d.ok, error: d.error, acao: r.headers.get('Access-Control-Allow-Origin') };
     })();
-    assert.strictEqual(su.ok, true, 'signup must succeed even with a bloated existing map (error: ' + su.error + ')');
+    assert.strictEqual(su.ok, true, 'signup must succeed alongside a bloated account (error: ' + su.error + ')');
     assert.strictEqual(su.acao, '*', 'CORS header on the response');
-    // the stored map must be under the cap
-    const stored = KV._store.get('sh_users_db');
-    assert(stored.length <= 1_000_000, 'stored map fits the KV cap');
-    console.log('    OK: signup survived; map auto-repaired to', stored.length, 'bytes');
+
+    // every stored record fits, and the oversized image is gone from it
+    const recs = userRecords(KV);
+    assert.ok(recs.length >= 2, 'both accounts exist as their own keys, got ' + recs.length);
+    for (const [key, val] of recs) {
+        assert.ok(val.length <= 1_000_000, key + ' fits the KV cap (' + val.length + ')');
+        const rec = JSON.parse(val);
+        assert.ok(!rec.profileImage, key + ' kept a 2.5 MB image that should have been dropped');
+    }
+    console.log('    OK: signup survived; image dropped, ' + recs.length + ' records, all under the cap');
 }
 
-console.log('[R2] the stored map is repaired (images dropped, records intact)...');
+console.log('[R2] twenty accounts with huge images all survive, and all still log in...');
 {
-    const KV = makeCappedKV(120_000); // tiny cap
+    const KV = makeCappedKV(1_000_000);
     const env = { LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev' };
-    // This block exercises KV map repair, not the signup flood guard. The
-    // worker deliberately answers 429 after SIGNUP_FLOOD_LIMIT (10) signups
-    // per minute from one CF-Connecting-IP, and this loop fires 20 in a tight
-    // burst, so every signup after the tenth would be rejected before the
-    // repair logic ever ran. Give each signup its own source IP so the two
-    // features do not mask each other. The production limit is unchanged.
+    // This block exercises the image cap, not the signup flood guard. The worker
+    // deliberately answers 429 after SIGNUP_FLOOD_LIMIT (10) signups per minute
+    // from one CF-Connecting-IP, and this loop fires 20 in a tight burst, so
+    // every signup after the tenth would be rejected before any write. Give each
+    // signup its own source IP so the two features do not mask each other. The
+    // production limit is unchanged.
     const reqFrom = (ip) => (p, b) => worker.fetch(new Request('https://t.workers.dev' + p, { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip }, body: JSON.stringify(b) }), env, { waitUntil: () => {} });
     const req = reqFrom('203.0.113.7');
-    // 20 users with ~100KB images each = ~2MB total (over the 120KB cap)
+    // 20 users, each carrying an image over the per-field cap
     for (let i = 0; i < 20; i++) {
-        const r = await reqFrom('203.0.113.' + (100 + i))('/sh/user-signup', { email: 'u' + i + '@t.com', username: 'U' + i, password: 'pass1234' });
+        const r = await reqFrom('203.0.113.' + (100 + i))('/sh/user-signup', {
+            email: 'u' + i + '@t.com', username: 'U' + i, password: 'pass1234',
+            user: { profileImage: 'A'.repeat(2_500_000) }
+        });
         assert.strictEqual(r.status, 200, 'signup ' + i + ' must not 500');
     }
     // login still works for every one of them (passwords intact)
@@ -99,12 +124,17 @@ console.log('[R2] the stored map is repaired (images dropped, records intact)...
         const t = await r.text();
         return { status: r.status, ok: JSON.parse(t).ok };
     })();
-    assert.strictEqual(li.ok, true, 'logins keep working after repairs');
-    const stored = KV._store.get('sh_users_db');
-    assert(stored.length <= 120_000, 'map fits cap after repairs');
-    const map = JSON.parse(stored);
-    assert.strictEqual(Object.keys(map).length, 20, 'all 20 records kept (only images dropped)');
-    console.log('    OK: 20 users, map =', stored.length, 'bytes, all records alive');
+    assert.strictEqual(li.ok, true, 'logins keep working after oversized images are dropped');
+    const recs = userRecords(KV);
+    assert.strictEqual(recs.length, 20, 'all 20 records kept (only images dropped)');
+    for (const [key, val] of recs) assert.ok(val.length <= 1_000_000, key + ' fits the KV cap');
+    // and every one of them can still log in, not just one
+    for (let i = 0; i < 20; i++) {
+        const r = await req('/sh/user-login', { emailOrUsername: 'U' + i, password: 'pass1234' });
+        const d = JSON.parse(await r.text());
+        assert.strictEqual(d.ok, true, 'U' + i + ' must still be able to log in');
+    }
+    console.log('    OK: 20 accounts, all records alive, all logins work');
 }
 
 console.log('[R3] uncaught worker errors return JSON + CORS (no blank 500)...');

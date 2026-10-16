@@ -2228,9 +2228,27 @@ function publicUser(u) {
 }
 // full record for STORAGE: trim oversized images too (they would kill
 // the next KV put), keep everything else intact
+//
+// The drop is LOGGED, because it is the user's picture silently disappearing.
+// capImageFields itself is called on read paths too, where the image was
+// already trimmed, so it must stay quiet; saying it here means the log line
+// lands exactly on the write that lost the field.
+//
+// It still delegates to capImageFields rather than repeating the field list.
+// An inline loop here looked equivalent and was not: it is the second
+// hand-written copy of SH_IMAGE_FIELDS, and tools/cloud_refresh_test.mjs
+// fails on exactly that - it is the whole reason the single list exists.
 function storageSafeUser(u) {
     if (!u || typeof u !== 'object') return u;
-    return capImageFields({ ...u });
+    const before = {};
+    for (const k of SH_IMAGE_FIELDS) before[k] = u[k];
+    const out = capImageFields({ ...u });
+    for (const k of SH_IMAGE_FIELDS) {
+        if (before[k] && !out[k]) {
+            console.warn('[ScripterHub] dropped an oversized ' + k + ' (' + String(before[k]).length + ' bytes > ' + SH_IMAGE_CAP + ') when storing ' + (u.email || u.id || 'a user'));
+        }
+    }
+    return out;
 }
 // save the users map WITHOUT ever throwing a blank 500: oversized maps
 // are repaired by dropping image payloads (in size order) until the
@@ -4765,14 +4783,23 @@ async function handleRequest(request, env, ctx) {
                         return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
                     }
                 }
-                await maybeReplaceOld(env, body.replaces);
+                // Report what actually happened.
+                //
+                // This discarded the result and answered `replaced: false`
+                // unconditionally, while the keyed branch a few lines below
+                // returns the real value. So a keyless EDIT - the common case -
+                // told the panel the previous loader was still live, moments
+                // after this same function deleted it. The client keeps its own
+                // record of the old loaderId, so the two disagreed about whether
+                // the user's old loadstring still worked.
+                const replaced = await maybeReplaceOld(env, body.replaces);
                 ctx.waitUntil(notifyScriptDiscord(env, {
                     event: 'script.published', outcome: 'ok',
                     scriptId: id, userRef: await telemetryRef('user', user),
                     at: Date.now(), bytes: plainCode.length
                 }));
                 const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-                return jsonResponse({ ok: true, id, replaced: false, keyless: true, loadstring: shLoader(base, id) });
+                return jsonResponse({ ok: true, id, replaced, keyless: true, loadstring: shLoader(base, id) });
             }
             // ---- keyed scripts: ENCRYPTED with the Special Key ----
             const cipher = String(body.cipher || '');

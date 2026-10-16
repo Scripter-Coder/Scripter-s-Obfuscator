@@ -6242,18 +6242,21 @@ function shProgressHide() {
     if (el && el.parentNode) el.parentNode.removeChild(el);
 }
 
-// Above this the browser is sent to the owner's machine instead.
+// The size past which a build is no longer comfortable in a tab.
 //
-// Measured expansion through the bytecode VM is ~195x, so a 6000-line script
-// (~300-480 KB of source) wants 58-93 MB of output plus the AST, the IR and
-// the instruction stream, all live at once in one tab. The tab dies and the
-// user is told "Obfuscation Failed", which reads as "my script is too big"
-// rather than "the tab is too small".
+// THIS NO LONGER DECIDES WHERE A SCRIPT IS BUILT. Every source is built in the
+// browser now; this number is what the UI says when a build genuinely will not
+// fit, and what the host-rescue path is for.
 //
-// 60 KB is chosen from the measured curve, not taste: 60 KB -> ~12 MB, which
-// is comfortable in a tab, and anything past it goes to the host. Below the
-// threshold the browser is faster than a round trip, so the host is pure
-// overhead there.
+// It used to be a routing switch: anything this size was handed to the owner's
+// machine, so a large script only obfuscated while that PC was awake. The
+// reason for the switch has since been fixed where it actually lived. The
+// bytecode VM was what exhausted the tab - measured expansion is 36.9x the
+// source, so a 302 KB script wanted ~45 MB of output plus the AST, the IR and
+// the instruction stream live at once - and custom-obfuscator.js now picks the
+// strongest tier that FITS (bytecode VM -> vm lite -> no VM) instead of always
+// taking the VM. A source past this size builds in the tab at the no-VM tier
+// in roughly its own size, so there is nothing left for the PC to do.
 var SH_HOST_MIN_SOURCE = 60 * 1024;
 
 // Is the owner's machine available to compile?
@@ -6401,19 +6404,46 @@ function shCompileDirect(ticket, code, options) {
 
 // Run applyCustomObfuscator, showing live progress.
 //
-// A big script goes to the owner's machine; a small one runs here in a Worker,
-// which is faster than a round trip. The threshold is SH_HOST_MIN_SOURCE.
+// EVERY script is built here, in this browser. Past SH_HOST_MIN_SOURCE it used
+// to go to the owner's machine instead, which made the product's largest
+// scripts unavailable whenever that PC was asleep, rebooting or mid-restart -
+// and it did not need to: the tier picker in custom-obfuscator.js drops the
+// bytecode VM on a source that size, which is exactly what was exhausting the
+// tab. A 302 KB source now builds here at ~1.3 MB of output.
 //
 // The ETA is derived from INPUT SIZE against real build timings from this
 // project's own benchmark (tools/bench/size-perf.mjs): roughly linear, ~1.0 s
 // per 100 KB on SECURE plus ~1.5 s fixed. It is an ESTIMATE and the UI says so.
 function shObfuscateInWorker(code, engine, options) {
-    // Large scripts cannot be compiled here at all - the tab runs out of heap -
-    // so this is not an optimisation, it is the only path that works.
-    if (code.length >= SH_HOST_MIN_SOURCE) {
-        return shObfuscateOnHost(code, options);
-    }
-    return shObfuscateLocally(code, engine, options);
+    return shObfuscateLocally(code, engine, options).catch(function (err) {
+        // A browser that genuinely ran out of memory is the one case worth a
+        // round trip to the owner's machine - and only if that machine is
+        // awake. Failing with the real reason beats a spinner that never
+        // resolves, and beats reporting "the host is unreachable" for a build
+        // the host was never asked about.
+        if (!shIsOutOfMemory(err)) throw err;
+        return shHostReady().then(function (ready) {
+            if (!ready) {
+                throw new Error('This browser ran out of memory building a ' + Math.round(code.length / 1024) +
+                    ' KB script, and no host is running to finish it. Split the script into modules, or turn the ' +
+                    'bytecode VM off in the protection options so it builds smaller.');
+            }
+            return shObfuscateOnHost(code, options);
+        });
+    });
+}
+
+// Did this build fail because the tab ran out of memory, or for an ordinary reason?
+//
+// Narrow on purpose, and deliberately blind to a syntax error. A source that
+// does not parse fails identically on the owner's machine, so retrying it there
+// would spend a round trip to report the same message - and would report it as
+// an out-of-memory problem, which is the one thing it is not. Parse failures
+// say "unexpected symbol" / "Expected identifier" / "parse", none of which are
+// matched here.
+function shIsOutOfMemory(err) {
+    var m = (err && (err.message || err.name)) ? String(err.message || err.name) : String(err || '');
+    return /out of memory|memory access out of bounds|allocation failed|allocating memory|heap (limit|out)|terminated/i.test(m);
 }
 
 function shObfuscateLocally(code, engine, options) {

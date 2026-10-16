@@ -1,17 +1,20 @@
-// End-to-end test for the local Storage Keeper backend.
+// The owner's PC must NOT be in the publishing path.
 //
-// This is the test that matters for the change, because it is the only one that
-// exercises the seam with BOTH halves real: an actual Python process on disk, and the
-// actual worker. Everything else in the suite runs the worker against a mocked KV and
-// would pass whether or not the storage service worked at all.
+// This file used to assert the opposite: that an upload with SH_STORE_URL bound
+// puts the BYTES on the PC, that expiry is the service's timer, and that a
+// large script is stored as parts on the owner's disk. Every one of those was
+// the Storage Keeper as the script store - and that is exactly what was
+// reverted, because it made the catalogue depend on one machine being awake.
+// tools/pc_off_test.mjs and tools/r2_artifact_test.mjs cover the NEW contract.
 //
-// What it pins:
-//   - an upload with SH_STORE_URL bound puts the BYTES on the PC, not in KV
-//   - delivery returns exactly those bytes
-//   - an expired script is refused server-side, with no timer running in the browser
-//   - a missing script and an expired script are the same answer
-//   - the loader turns that answer into the required sentence
-//   - concurrent deliveries behave
+// What is left here is the thing only this file can answer, because it runs a
+// real Python process on disk: a bound, HEALTHY, reachable PC must still not be
+// written to. Asserting that against a dead service proves very little - the
+// old code simply fell back to KV - so the service is started and left UP.
+//
+// Also kept: the service's own guarantees (a bad token is refused, nothing
+// internal leaks through a delivery response, the token never reaches its own
+// logs), which are properties of the service rather than of where scripts live.
 //
 // Run: node tools/storage_keeper_test.mjs
 import assert from 'assert';
@@ -157,13 +160,31 @@ async function publishKeyless(env, token, id, code, extra) {
         // assertion about "the file for ID" checks a script that was never created -
         // which reads as a broken storage backend rather than a broken test.
         wantId: id,
+        // A keyless build still ships a server-held key since D29 (SHX). The
+        // worker refuses an upload without one rather than publishing a script
+        // that cannot execute, so this has to be here for "the upload was
+        // accepted" to mean anything.
+        splitKey: { paddedKey: [3, 1, 4, 1, 5, 9, 2, 6], t0: 1700000000, chk: 5150 },
     }, extra || {}), BROWSER_UA);
     if (r.ok && r.id !== id) throw new Error('worker minted ' + r.id + ' instead of ' + id);
     return r;
 }
 
-async function deliver(env, id, lic) {
-    const r1 = await worker.fetch(new Request('https://test.workers.dev/sh/session', {
+// Ask the running service about one object, WITHOUT assuming it answers JSON.
+//
+// The service answers a MISSING object with the plain text "SHERR gone" - which
+// is the point of it. Calling .json() on that throws a SyntaxError and takes
+// the whole test process down, which is how a "did it get written to the PC?"
+// check took the suite with it.
+async function ask(svc, id) {
+    const res = await fetch(`${svc.base}/v1/objects/${id}/meta`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    const txt = (await res.text()).trim();
+    let json = null;
+    try { json = JSON.parse(txt); } catch (e) { /* not JSON - a refusal, not a record */ }
+    return { status: res.status, text: txt, json };
+}
+
+async function deliver(env, id, lic) {    const r1 = await worker.fetch(new Request('https://test.workers.dev/sh/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'User-Agent': EXECUTOR_UA },
         body: JSON.stringify({ id, k: lic || 'TESTLIC', h: 'HW' }),
@@ -205,145 +226,126 @@ group('the change is inert when the backend is NOT configured');
     else no('KV delivery changed: ' + JSON.stringify(d).slice(0, 160));
 }
 
-group('with the backend bound, BYTES go to the PC and not to KV');
+
+group('with the backend bound AND RUNNING, the PC is still not written to');
 const ID = 'ScripterHub9000000002';
-const CODE = 'print("served from the windows pc")';
+const CODE = 'print("served from cloudflare, not the pc")';
 {
+    // The service is UP for this whole block. That is the point: the old code
+    // wrote here whenever it could reach here, so testing against a dead
+    // service only proves the fallback works.
     const r = await publishKeyless(env, token, ID, CODE);
     assert.strictEqual(r.ok, true, 'upload must succeed: ' + JSON.stringify(r).slice(0, 300));
     ok('the keyless upload was accepted');
 
-    if (!env._KV._store.has('sh_loader_' + ID)) ok('the script body is NOT in Cloudflare KV - the storage goal');
-    else no('the body is still in KV; the change did not move bytes');
+    if (env._KV._store.has('sh_loader_' + ID)) ok('the script body is in Cloudflare, so it survives this PC being off');
+    else no('the body is not in KV - the PC is back in the script path');
 
-    if (env._KV._store.has('sh_meta_' + ID)) ok('the metadata stays in KV, which is what the gate authorizes against');
+    if (env._KV._store.has('sh_meta_' + ID)) ok('the metadata is in KV, which is what the gate authorizes against');
     else no('metadata disappeared from KV - the delivery gate would refuse everything');
 
-    // Confirm independently, over HTTP, that the service really holds it.
-    const meta = await (await fetch(`${svc.base}/v1/objects/${ID}/meta`, {
-        headers: { Authorization: 'Bearer ' + TOKEN },
-    })).json();
-    if (meta && meta.id === ID && meta.size === CODE.length) ok(`the service holds ${meta.size} bytes under ${meta.id}`);
-    else no('the service does not report the object: ' + JSON.stringify(meta));
+    // The independent check: ask the running service directly.
+    //
+    // The service answers a MISSING object with the plain text "SHERR gone",
+    // not JSON - which is the whole point of it. Calling .json() on that throws
+    // a SyntaxError and takes the test process down with it, so the text is
+    // read first and only parsed when it really is JSON.
+    const onPC = await ask(svc, ID);
+    if (!onPC.json || onPC.json.id !== ID) ok('the running PC holds no copy of it - nothing was uploaded to the owner');
+    else no('the script was written to the owner\'s PC: ' + onPC.text.slice(0, 120));
 }
 
-group('delivery serves the bytes from the PC');
+group('delivery serves the artifact from Cloudflare while the PC is up');
 {
     const d = await deliver(env, ID);
-    if (d.stage === 'deliver' && d.text.startsWith('SHL\n') && d.text.includes(CODE)) {
-        ok('the executor received SHL\\n followed by the exact uploaded source');
+    // SHX, not SHL: a keyless build carries a server-held key (D29). The body
+    // after the key line must be the exact uploaded source.
+    const body = String(d.text);
+    if (d.stage === 'deliver' && (body.startsWith('SHX\n') || body.startsWith('SHL\n')) && body.includes(CODE)) {
+        ok('the executor received the envelope plus the exact uploaded source');
     } else {
-        no('delivery did not serve the PC copy: ' + JSON.stringify(d).slice(0, 200));
+        no('delivery did not serve the artifact: ' + JSON.stringify(d).slice(0, 200));
     }
 }
 
-group('expiry is enforced by the server, not by a browser countdown');
-const SHORT = 'ScripterHub9000000003';
+group('a LARGE artifact is chunked in Cloudflare, never sent to the PC');
 {
-    // A two second lifetime. Nothing in this test sleeps longer than that, so the
-    // refusal can only come from the service deciding for itself.
-    const r = await publishKeyless(env, token, SHORT, 'print("short lived")', {
-        expiresAt: Date.now() + 2000,
-    });
-    assert.strictEqual(r.ok, true, 'a timed upload must be accepted: ' + JSON.stringify(r).slice(0, 200));
-
-    // The stored expiry must be in SECONDS and roughly where it was asked to be. A
-    // millisecond value here would be clamped to the one-year cap and turn this 2-second
-    // timer into a 1-year one - which passes every "it works" check while the feature is
-    // completely inert.
-    const asStored = await (await fetch(`${svc.base}/v1/objects/${SHORT}/meta`, {
-        headers: { Authorization: 'Bearer ' + TOKEN },
-    })).json();
-    if (asStored.has_timer && asStored.expires_at < 1e11 && asStored.expires_at > Date.now() / 1000) {
-        ok('the requested timer was stored in seconds, near where it was asked for');
+    const BIG_ID = 'ScripterHub9000000010';
+    const big = ('-- big\n').padEnd(12 * 1024 * 1024, 'b');
+    const r = await publishKeyless(env, token, BIG_ID, big);
+    assert.strictEqual(r.ok, true, 'a large upload must succeed: ' + JSON.stringify(r).slice(0, 200));
+    if (env._KV._store.has('sh_cmeta_sh_loader_' + BIG_ID)) {
+        ok('12MB is stored as parts in Cloudflare, not as one object on the PC');
     } else {
-        no('the stored expiry is wrong: has_timer=' + asStored.has_timer
-            + ' expires_at=' + asStored.expires_at + ' (now=' + Math.floor(Date.now() / 1000) + ')');
+        no('no chunk metadata - the artifact went somewhere else');
     }
-
-    const live = await deliver(env, SHORT);
-    if (live.stage === 'deliver' && live.text.includes('short lived')) ok('before expiry it delivers normally');
-    else no('a live timed script did not deliver: ' + JSON.stringify(live).slice(0, 160));
-
-    await new Promise(r => setTimeout(r, 2600));
-
-    const dead = await deliver(env, SHORT);
-    // The refusal can arrive at the session mint or at delivery, depending on whether the
-    // metadata or the bytes are what is missing. Both must say the same thing.
-    if (String(dead.text).includes('SHERR gone')) {
-        ok('after expiry the gate refuses with SHERR gone');
-    } else {
-        no('an expired script was not refused: ' + JSON.stringify(dead).slice(0, 200));
-    }
-
-    // The metadata endpoint must not confirm it still exists, or the UI would keep
-    // counting down on a script that is already dead.
-    const meta = await fetch(`${svc.base}/v1/objects/${SHORT}/meta`, {
-        headers: { Authorization: 'Bearer ' + TOKEN },
-    });
-    if (meta.status === 404) ok('meta reports 404 for the expired script, so no countdown lies');
-    else no('meta still reports the expired script: HTTP ' + meta.status);
-
-    // And the bytes are actually gone from disk.
-    const files = fs.existsSync(path.join(dataRoot, 'scripts'))
-        ? fs.readdirSync(path.join(dataRoot, 'scripts'))
-        : [];
-    if (!files.some(f => f.startsWith(SHORT))) ok('the expired file was removed from disk');
-    else no('the expired file is still on disk: ' + files.join(', '));
+    const onPC = await ask(svc, BIG_ID);
+    if (!onPC.json || onPC.json.id !== BIG_ID) ok('and the PC still holds nothing');
+    else no('a 12MB artifact was written to the owner\'s PC');
 }
 
-group('a missing script and an expired script are the same answer');
+group('the parts route exists, but publishing does not use it');
+{
+    // /sh/kb-put is still routed, for scripts already on the PC from before the
+    // move. What matters is that /sh/upload no longer reaches for it.
+    const r = await j(env, 'POST', '/sh/kb-put', { token, id: 'ScripterHub9000000011', part: 0, content: 'x' }, BROWSER_UA);
+    if (r.ok === true || r.status === 400) ok('the legacy part route still answers (' + r.status + ') instead of being a dead path');
+    else no('the legacy part route is unclassifiable: HTTP ' + r.status);
+
+    // and the retired GitHub byte-storage is genuinely gone, not merely unused
+    for (const p of ['/sh/gh-put', '/sh/gh-finalize']) {
+        const r410 = await worker.fetch(new Request('https://test.workers.dev' + p, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': BROWSER_UA },
+            body: JSON.stringify({ token, id: ID, part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'tester' }),
+        }), env, { waitUntil: () => {} });
+        if (r410.status === 410) ok(`${p} -> 410 Gone`);
+        else no(`${p} -> HTTP ${r410.status}, expected 410 (a silent accept would put scripts back in the repo)`);
+    }
+}
+
+group('a missing script is refused, and the same refusal is used for a dead one');
 {
     const missing = await deliver(env, 'ScripterHub9000000009');
     if (String(missing.text).includes('SHERR gone')) ok('a never-published id is refused with SHERR gone');
     else no('a missing id behaved differently: ' + JSON.stringify(missing).slice(0, 160));
-    ok('identical to the expired case, so the endpoint is not an existence oracle');
+    ok('identical wording for "never existed" and "expired", so the endpoint is not an existence oracle');
 }
 
-group('the loader prints the required sentence');
+group('the loader prints the required sentence for that refusal');
 {
-    // The two halves of the contract, checked together: the service emits SHERR gone,
-    // and the worker's DENYMSG maps `gone` to the required wording.
     const src = fs.readFileSync(path.join(ROOT, 'For Cloudflare/worker.js'), 'utf8');
     const m = /if r=="gone" then return "([^"]+)"/.exec(src);
     if (m && m[1] === REQUIRED) ok(`DENYMSG(gone) == ${JSON.stringify(m[1])}`);
     else no('DENYMSG(gone) is ' + JSON.stringify(m && m[1]) + ', wanted ' + JSON.stringify(REQUIRED));
 
-    const r = await fetch(`${svc.base}/v1/objects/ScripterHub9000000009`, {
+    const r = await fetch(svc.base + '/v1/objects/ScripterHub9000000009', {
         headers: { Authorization: 'Bearer ' + TOKEN },
     });
     if ((await r.text()) === 'SHERR gone') ok('the service emits exactly "SHERR gone" for a dead script');
     else no('the service did not emit SHERR gone');
 }
 
-group('a re-upload does not extend the one-year ceiling');
+group('a timed upload is accepted and serves normally while it is live');
+const SHORT = 'ScripterHub9000000003';
 {
-    const ID2 = 'ScripterHub9000000004';
-    await publishKeyless(env, token, ID2, 'print("v1")');
-    const first = await (await fetch(`${svc.base}/v1/objects/${ID2}/meta`, {
-        headers: { Authorization: 'Bearer ' + TOKEN },
-    })).json();
-    await new Promise(r => setTimeout(r, 1100));
-    await publishKeyless(env, token, ID2, 'print("v2")');
-    const second = await (await fetch(`${svc.base}/v1/objects/${ID2}/meta`, {
-        headers: { Authorization: 'Bearer ' + TOKEN },
-    })).json();
-    if (second.created_at === first.created_at) ok('created_at is preserved across a re-upload');
-    else no(`a re-upload reset the age: ${first.created_at} -> ${second.created_at}`);
-    if (second.hard_cap_at === first.hard_cap_at) ok('the one-year cap is not pushed back by re-publishing');
-    else no('the cap moved on re-upload');
-    const d = await deliver(env, ID2);
-    if (d.stage === 'deliver' && d.text.includes('print("v2")')) ok('but the new content is delivered');
-    else no('the re-uploaded content is not served: ' + JSON.stringify(d).slice(0, 160));
-}
+    // The old version of this group published a TWO SECOND lifetime, waited, and
+    // expected a refusal. That worked while the owner's PC held the script,
+    // because the service kept a second-precision timer. It cannot work now, and
+    // pretending otherwise would be a test that passes for the wrong reason:
+    // lifetime is the KV TTL, whose shortest value is 60 seconds, so nothing can
+    // be made to expire on a 2-second timescale. There is no per-script expiry
+    // field to inspect either - a keyless publish stores the loader under
+    // LOADER_TTL. What is asserted is the part that is still ours: the request is
+    // accepted and the script serves.
+    const r = await publishKeyless(env, token, SHORT, 'print("short lived")', {
+        expiresAt: Date.now() + 2 * 60 * 60 * 1000,   // 2 hours
+    });
+    assert.strictEqual(r.ok, true, 'a timed upload must be accepted: ' + JSON.stringify(r).slice(0, 200));
 
-group('an unreachable service is NOT reported as "your script is gone"');
-{
-    const dead = makeEnv('http://127.0.0.1:1');  // nothing listens here
-    const t = await ownerToken(dead);
-    const r = await publishKeyless(dead, t, 'ScripterHub9000000005', 'print("x")');
-    if (r.ok === false) ok('an upload fails loudly when storage is unreachable (ok:false)');
-    else no('an upload claimed success while storage was unreachable - that publishes a dead loadstring');
+    const live = await deliver(env, SHORT);
+    if (live.stage === 'deliver' && String(live.text).includes('short lived')) ok('a live timed script delivers normally');
+    else no('a live timed script did not deliver: ' + JSON.stringify(live).slice(0, 160));
 }
 
 group('concurrent deliveries');
@@ -351,103 +353,57 @@ group('concurrent deliveries');
     const CID = 'ScripterHub9000000006';
     await publishKeyless(env, token, CID, 'print("shared")');
     const results = await Promise.all([1, 2, 3, 4, 5, 6].map(() => deliver(env, CID)));
-    const delivered = results.filter(r => r.stage === 'deliver' && r.text.includes('print("shared")'));
+    const delivered = results.filter(r => r.stage === 'deliver' && String(r.text).includes('print("shared")'));
     if (delivered.length === 6) ok('six concurrent deliveries all received the body');
     else no(`${delivered.length}/6 concurrent deliveries got the body: ` +
         results.map(r => r.stage + ':' + String(r.text).slice(0, 40)).join(' | '));
 }
 
-group('deletion removes it from the PC and stops delivery');
+group('an edit retires the old loader id, exactly as the panel does it');
 {
-    const DID = 'ScripterHub9000000007';
-    await publishKeyless(env, token, DID, 'print("bye")');
-    const r = await fetch(`${svc.base}/v1/objects/${DID}`, {
-        method: 'DELETE', headers: { Authorization: 'Bearer ' + TOKEN },
-    });
-    if (r.ok) ok('the service accepted the delete');
-    else no('delete refused: HTTP ' + r.status);
+    // There is no delete-a-script route, and there never was one on the worker.
+    // An edit publishes under a NEW id and passes the old one as `replaces`,
+    // which is what kills the previous loadstring (main.js confirmEditScript).
+    //
+    // The first version of this group published to the SAME id with
+    // `replaces` pointing at itself. maybeReplaceOld then deleted the artifact
+    // that had just been written, and the test reported "a deleted script still
+    // delivers" - which reads like a security hole and was a fixture that asked
+    // the worker to delete itself.
+    const OLD_ID = 'ScripterHub9000000012';
+    const NEW_ID = 'ScripterHub9000000013';
+    await publishKeyless(env, token, OLD_ID, 'print("first version")');
+    const first = await deliver(env, OLD_ID);
+    if (String(first.text).includes('first version')) ok('the original script is what is served');
+    else no('the original publish did not deliver: ' + JSON.stringify(first).slice(0, 160));
 
-    const after = await deliver(env, DID);
-    // A deleted script can be refused at either stage: the session mint refuses when the
-    // metadata is gone, and the delivery route refuses when the bytes are. Both produce
-    // the same SHERR gone, which is the property that matters.
-    if (String(after.text).includes('SHERR gone')) ok('a deleted script is refused with SHERR gone');
-    else no('a deleted script still delivers: ' + JSON.stringify(after).slice(0, 160));
+    const edited = await publishKeyless(env, token, NEW_ID, 'print("second version")', { replaces: OLD_ID });
+    assert.strictEqual(edited.ok, true, 'the edit must publish: ' + JSON.stringify(edited).slice(0, 200));
+    if (edited.replaced === true) ok('the worker confirms it retired the previous loader');
+    else no('the worker did not report a replacement: ' + JSON.stringify(edited).slice(0, 160));
+
+    const second = await deliver(env, NEW_ID);
+    if (String(second.text).includes('second version')) ok('the new id serves the new source');
+    else no('the re-published script did not deliver: ' + JSON.stringify(second).slice(0, 200));
+
+    const old = await deliver(env, OLD_ID);
+    if (String(old.text).includes('SHERR gone')) ok('the old id is gone, so a loadstring copied before the edit stops working');
+    else no('the old loader id still delivers after being replaced: ' + JSON.stringify(old).slice(0, 200));
 }
 
-group('a LARGE script is stored as parts on the PC, not in a GitHub repo');
-const PART_ID = 'ScripterHub9000000010';
+group('an unreachable PC does not stop anything');
 {
-    // The whole point of the change: a script too big for one object must land on the
-    // owner's disk. Before this, /sh/gh-put wrote it to a private GitHub repository.
-    const parts = ['print("part one")', 'print("part two")', 'print("part three")'];
-    let uploaded = 0;
-    for (let i = 0; i < parts.length; i++) {
-        const r = await j(env, 'POST', '/sh/kb-put', { token, id: PART_ID, part: i, content: parts[i] }, BROWSER_UA);
-        if (r.ok) uploaded++;
-        else no(`part ${i} refused: ` + JSON.stringify(r).slice(0, 160));
-    }
-    if (uploaded === parts.length) ok('all three parts were accepted by the service');
-    else no(`only ${uploaded}/${parts.length} parts were accepted`);
-
-    // Finalizing must verify against the SERVICE, not the index: a chain that opens with
-    // a part the service does not hold fails halfway through a run, not at publish time.
-    const bad = await j(env, 'POST', '/sh/kb-finalize', { token, id: PART_ID, n: 5, len: 99, name: 'x', user: 'tester', keyless: true }, BROWSER_UA);
-    if (bad.ok === false && /part/i.test(String(bad.error))) ok('finalize refuses a count the service cannot back: ' + String(bad.error).slice(0, 60));
-    else no('finalize accepted a part count with no bytes behind it: ' + JSON.stringify(bad).slice(0, 160));
-
-    const fin = await j(env, 'POST', '/sh/kb-finalize', {
-        token, id: PART_ID, n: parts.length, len: parts.join('').length,
-        name: 'big', user: 'tester', keyless: true,
-    }, BROWSER_UA);
-    if (fin.ok && fin.parts === parts.length) ok('finalize registered the script with the right part count');
-    else no('finalize failed: ' + JSON.stringify(fin).slice(0, 200));
-
-    // The index record must not contain the bytes. It is an index.
-    const rec = JSON.parse(env._KV._store.get('sh_kb_' + PART_ID) || '{}');
-    if (rec.n === parts.length && !JSON.stringify(rec).includes('part one')) ok('the index holds only a count, never script bytes');
-    else no('the index is carrying data it should not: ' + JSON.stringify(rec).slice(0, 160));
-
-    // Delivery must open a chain pointing at the keeper part route.
-    const d = await deliver(env, PART_ID);
-    const head = String(d.text);
-    if (head.startsWith('SHG ') && head.includes('/sh/kb/' + PART_ID)) ok('delivery opens a chain at /sh/kb/ for a part-stored script');
-    else no('expected an SHG chain at /sh/kb/, got: ' + JSON.stringify(head).slice(0, 160));
-
-    if (!head.includes('/sh/g/')) ok('the chain does not point at the retired GitHub route');
-    else no('the chain still points at GitHub: ' + head.slice(0, 120));
-
-    // A part is served only to a session that already spent a delivery.
-    const r = await worker.fetch(new Request(`https://test.workers.dev/sh/kb/${PART_ID}/0`, {
-        headers: { 'User-Agent': BROWSER_UA },
-    }), env, { waitUntil: () => {} });
-    if (r.status !== 200) ok('a browser UA cannot fetch a part directly -> ' + r.status);
-    else no('a part was served to a browser User-Agent');
-}
-
-group('the GitHub byte-storage path is retired, not merely unused');
-{
-    for (const p of ['/sh/gh-put', '/sh/gh-finalize']) {
-        const r = await j(env, 'POST', p, { token, id: PART_ID, part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'tester' }, BROWSER_UA);
-        const r410 = await worker.fetch(new Request('https://test.workers.dev' + p, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'User-Agent': BROWSER_UA },
-            body: JSON.stringify({ token, id: PART_ID, part: 0, content: 'x', n: 1, len: 1, name: 'x', user: 'tester' }),
-        }), env, { waitUntil: () => {} });
-        if (r410.status === 410) ok(`${p} -> 410 Gone`);
-        else no(`${p} -> HTTP ${r410.status}, expected 410 (a silent accept would put scripts back in the repo)`);
-    }
-}
-
-group('deleting a part-stored script frees every part on the PC');
-{
-    const before = await j(env, 'POST', '/sh/kb-delete', { token, id: PART_ID }, BROWSER_UA);
-    if (before.ok && before.partsFreed === 3) ok('the service confirmed all three parts were removed');
-    else no('kb-delete did not free the parts: ' + JSON.stringify(before).slice(0, 160));
-
-    const after = await deliver(env, PART_ID);
-    if (String(after.text).includes('SHERR gone')) ok('a deleted part-stored script is refused with SHERR gone');
-    else no('a deleted part-stored script still delivers: ' + JSON.stringify(after).slice(0, 160));
+    // The dead-service case, kept because it is a different failure: a refused
+    // fetch rather than an unused one. Neither may take a script offline.
+    const dead = makeEnv('http://127.0.0.1:1');  // nothing listens here
+    const t = await ownerToken(dead);
+    const id = 'ScripterHub9000000005';
+    const r = await publishKeyless(dead, t, id, 'print("x")');
+    if (r.ok === true) ok('an upload succeeds with the PC unreachable');
+    else no('an upload failed while storage on the PC was unreachable: ' + JSON.stringify(r).slice(0, 160));
+    const d = await deliver(dead, id);
+    if (d.stage === 'deliver' && String(d.text).includes('print("x")')) ok('and the script still delivers with the PC off');
+    else no('a script stopped working because the owner\'s PC was off: ' + JSON.stringify(d).slice(0, 200));
 }
 
 group('the service refuses a caller with the wrong token');
