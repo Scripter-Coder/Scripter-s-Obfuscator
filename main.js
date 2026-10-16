@@ -596,6 +596,17 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // requireAuth (Luarmor model): the split key is only served
             // after a valid license key + HWID auth against /sh/auth
             if (requireAuth) payload.authRequired = true;
+            // The owning project, so a license can be bound to it.
+            //
+            // Without this the gate cannot tell which project a script
+            // belongs to, so a key bound to a project has nothing to be
+            // compared against and the binding silently does nothing - the
+            // same failure as a decorative field, which is exactly what this
+            // option exists to avoid being.
+            if (window.__shUploadProject) {
+                payload.projectId = String(window.__shUploadProject.id || '');
+                payload.projectName = String(window.__shUploadProject.name || '');
+            }
         }
         if (splitKey) {
             // server-key-split: worker holds the missing final-layer key
@@ -1371,6 +1382,11 @@ async function shSyncLicenses() {
                 // script a key belongs to after a round trip - the server side
                 // of this was fixed and the client was still dropping it.
                 scriptId: k.scriptId || '',
+                // Empty or 'all' means every project. Every key issued before this
+                // existed sends nothing, so the installed base is unaffected and
+                // only keys the owner deliberately narrows are restricted.
+                projectId: k.projectId || 'all',
+                projectName: k.projectName || '',
                 hwid: k.hwid || '',
                 expiresAt: k.expires || 0,
                 banned: !!k.banned,
@@ -2267,6 +2283,25 @@ function toggleUserKeysList() {
 }
 
 // ---- Add User ----
+// Projects a key can be bound to.
+//
+// Only projects containing at least one script with the key system ON are
+// listed. Binding a key to a project with no gated script produces a key that
+// opens nothing, and offering it invites an owner to "secure" a key that
+// secures nothing - which is a worse outcome than the one this option exists to
+// fix.
+function shKeyProjectOptions() {
+    var opts = '<option value="all">All projects (works everywhere)</option>';
+    try {
+        (loadProjects() || []).forEach(function (p) {
+            var gated = (p.scripts || []).filter(function (s) { return s.requireKey && !s.freeForEveryone; });
+            if (!gated.length) return;
+            opts += '<option value="' + p.id + '">' + escapeHtml(p.name) + ' (' + gated.length + ' key-system script' + (gated.length === 1 ? '' : 's') + ')</option>';
+        });
+    } catch (e) { /* projects unavailable - All projects is still valid */ }
+    return opts;
+}
+
 function openAddUserUI() {
     if (shRateGuard('useradd', SH_RATE.useradd.max, SH_RATE.useradd.window, 'Too Many Users')) return;
     var overlay = document.createElement('div');
@@ -2281,7 +2316,12 @@ function openAddUserUI() {
             <div class="form-group"><label>User Note</label><input type="text" id="addUserNote" placeholder="Reminder note (optional)"><div class="field-hint">e.g. Ad Reward, Friend, Buyer...</div></div>
             <div class="form-group"><label>Discord ID</label><input type="text" id="addUserDiscord" placeholder="Discord ID (optional)"><div class="field-hint">Needed for /resethwid command (bot coming soon). User can also link their discord with /redeem [code]</div></div>
             <div class="form-group"><label>Identifier (HWID)</label><input type="text" id="addUserHwid" placeholder="HWID (optional)"><div class="field-hint">If no hwid specified, it will automatically get assigned when executed with the key.</div></div>
-            <div class="form-group"><label>Days</label><input type="number" id="addUserDays" min="0" placeholder="Days (optional)"><div class="field-hint">Days will start running out once the key has been redeemed. Leave blank for infinite days.</div></div>
+            <div class="form-group"><label>Project This Key Is For</label>
+                <select id="addUserProject">${shKeyProjectOptions()}</select>
+                <div class="field-hint">A key bound to a project will only open that project's key-system scripts.
+                Choose <b>All projects</b> for a key that works everywhere. Scripts published before this
+                option existed have no project recorded, so a bound key will not open them.</div></div>
+            <div class="form-group"><label>Days</label><input type="number" id="addUserDays" min="0" placeholder="Days (optional)"><div class="field-hint">Days start running out once the key is redeemed. Leave blank for infinite days.</div></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
                 <button onclick="confirmAddUserUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">➕ Add User</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
@@ -2297,6 +2337,14 @@ async function confirmAddUserUI() {
     var note = document.getElementById('addUserNote').value.trim();
     var discordId = document.getElementById('addUserDiscord').value.trim();
     var hwid = document.getElementById('addUserHwid').value.trim();
+    var projectSel = document.getElementById('addUserProject');
+    var projectId = projectSel ? projectSel.value : 'all';
+    var projectName = 'All projects';
+    if (projectId && projectId !== 'all') {
+        for (var pi = 0; pi < (loadProjects() || []).length; pi++) {
+            if (loadProjects()[pi].id === projectId) { projectName = loadProjects()[pi].name; break; }
+        }
+    }
     var daysRaw = document.getElementById('addUserDays').value.trim();
     var days = daysRaw === '' ? null : parseInt(daysRaw, 10);
     if (days !== null && (isNaN(days) || days < 0)) { showNotification('Error', 'Invalid days.', 'error'); return; }
@@ -2305,6 +2353,8 @@ async function confirmAddUserUI() {
         id: 'key_' + Date.now(),
         key: generateKey(),
         scriptId: 'all',
+        projectId: projectId || 'all',
+        projectName: projectName || 'All projects',
         type: days ? 'premium' : 'lifetime',
         expires: days ? Date.now() + days * 86400000 : null,
         days: days,
@@ -5908,6 +5958,8 @@ function confirmCreateScript(projectId) {
         refreshStatsUI();
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
+        // The owning project travels with the upload so a license can be bound to it.
+        window.__shUploadProject = { id: projectId, name: projects[projectIndex].name };
         shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless, requireKey).then(function(d) {
             if (d.ok) {
                 try {
@@ -6572,6 +6624,8 @@ function generateLoadstring(projectId, scriptId) {
     } else {
         uploadArg = script.code;
     }
+    window.__shUploadProject = { id: projectId, name: (project && project.name) || '' };
+    window.__shUploadProject = { id: projectId, name: (project && project.name) || '' };
     shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless, !!script.requireKey).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);

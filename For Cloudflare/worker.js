@@ -873,6 +873,8 @@ const DENY = {
     BANNED:      'banned',
     EXPIRED:     'expired',
     HWID:        'hwid',        // locked to different hardware
+    // The key is real, unexpired and unlocked, but belongs to another project.
+    PROJECT:     'project',
     HIDDEN:      'hidden',      // visibility forbids this caller
     NO_SESSION:  'nosession',   // sid unknown, spent, or revoked
     BAD_NONCE:   'nonce',       // nonce unknown, spent, or wrong session
@@ -1521,10 +1523,17 @@ function classifyAuthorization(o) {
     if (o.authRequired) {
         if (!o.key) return DENY.NEEDS_KEY;
         // re-uses the worker's classifyLicense contract: { code }
-        const v = o.classify(o.key, o.hwid, o.now);
+        const v = o.classify(o.key, o.hwid, o.now, o.scriptProjectId);
         if (v.code === 'banned') return DENY.BANNED;
         if (v.code === 'expired') return DENY.EXPIRED;
         if (v.code === 'hwid') return DENY.HWID;
+        // Its OWN code, not NEEDS_KEY.
+        //
+        // Reporting "invalid" for a key that exists and is simply bound
+        // elsewhere sends the owner looking for a typo in a key that is
+        // perfectly fine. The visitor gets a different message for a different
+        // problem, and the owner gets one that names the cause.
+        if (v.code === 'project') return DENY.PROJECT;
         if (v.code !== 'ok') return DENY.NEEDS_KEY;
     }
     return null;   // null == authorised
@@ -3089,6 +3098,15 @@ async function scriptAuthz(env, id) {
         user: String((meta && meta.user) || ''),
         keyless: !!(meta && meta.keyless === true),
         authRequired: !!(meta && meta.authRequired === true),
+        // The owning project, recorded at upload time.
+        //
+        // It was absent because nothing ever wrote it: the worker's model of a
+        // script was flat - exists, name, user, keyless, authRequired,
+        // visibility - and there was nowhere to hang "which project is this".
+        // That is also why a license could not be bound to one project, and why
+        // the key panel's scriptId field was never read by anything.
+        projectId: String((meta && meta.projectId) || ''),
+        projectName: String((meta && meta.projectName) || ''),
         visibility: String((meta && meta.visibility) || 'anyone'),
         raw: meta || {}
     };
@@ -3594,11 +3612,26 @@ async function isKillswitchOn(env) {
     } catch (e) { return false; }
 }
 // auth decision for one license key at hwid; mutates nothing
-function classifyLicense(rec, hwid, now) {
+function classifyLicense(rec, hwid, now, projectId) {
     if (!rec) return { code: 'invalid' };                      // no such key
     if (rec.banned) return { code: 'banned', reason: rec.banReason }; // blacklisted
     if (rec.expiresAt && rec.expiresAt <= now) return { code: 'expired' }; // expired
     if (rec.hwid && rec.hwid !== hwid) return { code: 'hwid' }; // shared key
+    // A key bound to a project only opens scripts in that project.
+    //
+    // Only when the caller knows which project it is asking about. An empty
+    // rec.projectId means "every project", which is what a key created before
+    // this existed - or one the owner left on All - means. And an empty
+    // projectId on the SCRIPT side must not fail closed: a script published
+    // before this change carries no project, and refusing those would lock
+    // every already-published key-system script out of every already-issued
+    // key. That is the whole installed base, so it is checked explicitly
+    // rather than assumed.
+    const bound = String(rec.projectId || '');
+    const asked = String(projectId || '');
+    if (bound && bound !== 'all' && asked && bound !== asked) {
+        return { code: 'project', reason: 'this key is for another project' };
+    }
     return { code: 'ok', rec: rec };
 }
 // ---------------------------------------------------------------------------
@@ -4619,7 +4652,9 @@ async function handleRequest(request, env, ctx) {
                     name, user, at: Date.now(), keyHash,
                     keyless: true,
                     visibility: readVisibility(body),
-                    webKey: !!cipher
+                    webKey: !!cipher,
+                    projectId: String(body.projectId || '').slice(0, 60),
+                    projectName: String(body.projectName || '').slice(0, 120)
                 }), { expirationTtl: LOADER_TTL });
                 mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: false });
                 if (cipher) {
@@ -4661,7 +4696,17 @@ async function handleRequest(request, env, ctx) {
             // authRequired: this script demands a valid license key + HWID
             // on EVERY run (Luarmor model) - the split key is never served
             // without a short-lived /sh/auth token
-            await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({ name, user, at: Date.now(), keyHash, authRequired: body.authRequired === true, visibility: readVisibility(body) }), { expirationTtl: LOADER_TTL });
+            await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
+                name, user, at: Date.now(), keyHash,
+                authRequired: body.authRequired === true,
+                visibility: readVisibility(body),
+                // The owning project. Without it here a key bound to a
+                // project has nothing to be compared against and the binding
+                // silently does nothing on exactly the scripts it was meant
+                // to protect - the key-system ones.
+                projectId: String(body.projectId || '').slice(0, 60),
+                projectName: String(body.projectName || '').slice(0, 120)
+            }), { expirationTtl: LOADER_TTL });
             mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: body.authRequired === true });
             // optional: kill an OLD loader (key rotation / re-upload on edit)
             let replaced = await maybeReplaceOld(env, body.replaces);
@@ -4728,6 +4773,11 @@ async function handleRequest(request, env, ctx) {
             }
 
             meta.visibility = vis;
+            // Carried through explicitly. JSON.stringify keeps whatever is in
+            // the object, but relying on that for a field the whole key
+            // binding depends on is how it disappears on the next edit.
+            if (meta.projectId === undefined) meta.projectId = String(body.projectId || '').slice(0, 60);
+            if (meta.projectName === undefined) meta.projectName = String(body.projectName || '').slice(0, 120);
             await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify(meta), { expirationTtl: LOADER_TTL });
             mirrorScript(env, id, {
                 user: owner, name: meta.name,
@@ -5565,6 +5615,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     banned: !!r.banned,
                     banReason: String(r.banReason || '').slice(0, 300),
                     discordId: String(r.discordId || '').slice(0, 64),
+                    // The project a key is bound to. Empty or "all" means every
+                    // project, which is what every key issued before this
+                    // change means - so the installed base keeps working and only
+                    // keys the owner deliberately narrows are restricted.
+                    projectId: String(r.projectId || '').slice(0, 60),
+                    projectName: String(r.projectName || '').slice(0, 120),
                     note: String(r.note || '').slice(0, 300),
                     hwidResets: Number(r.hwidResets) || 0,
                     executions: Number(r.executions) || 0,
@@ -6041,7 +6097,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 try { meta = JSON.parse((await env.LOADERS_KV.get(KV_META_PREFIX + id)) || '{}'); } catch (e) {}
                 if (meta.authRequired === true) {
                     const lic = await loadLicenses(env);
-                    const verdict = classifyLicense(lic[key], hwid, Date.now());
+                    // The project this script belongs to, so a key bound to a
+                    // different one is refused here as well as at the gate.
+                    // Both paths classify, and a binding enforced in only one of
+                    // them is a binding with a hole in it.
+                    const verdict = classifyLicense(lic[key], hwid, Date.now(), meta.projectId);
                     if (verdict.code === 'ok') {
                         // first run locks the key to this hardware
                         if (!lic[key].hwid) { lic[key].hwid = hwid; }
@@ -6378,7 +6438,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // request: an isolate outlives many requests and a stale map
                 // would be a stale authorization decision.
                 const licensesCache = await loadLicenses(env);
-                const classify = (k, h, at) => classifyLicense(licensesCache[k], h, at);
+                const classify = (k, h, at, pid) => classifyLicense(licensesCache[k], h, at, pid);
                 const verdict = classifyAuthorization({
                     noState: false,
                     scriptExists: !!script,
@@ -6387,6 +6447,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     isOwner: userEmail.toLowerCase() === OWNER_EMAIL,
                     userId,
                     authRequired: script.authRequired,
+                    scriptProjectId: script.projectId,
                     key, hwid, classify, now
                 });
                 if (verdict) return deny(verdict);
@@ -6916,12 +6977,13 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     const licenses = await loadLicenses(env);
                     const licKey = String(url.searchParams.get('k') || '').slice(0, 200);
                     const licHwid = String(url.searchParams.get('h') || '').slice(0, 300);
-                    const v = classifyLicense(licenses[licKey], licHwid, now);
+                    const v = classifyLicense(licenses[licKey], licHwid, now, script.projectId);
                     // G05/G06 close here: this is a LIVE check, not the token.
                     if (v.code !== 'ok') {
                         return refuse(v.code === 'banned' ? DENY.BANNED
                             : v.code === 'expired' ? DENY.EXPIRED
-                                : v.code === 'hwid' ? DENY.HWID : DENY.NEEDS_KEY);
+                                : v.code === 'hwid' ? DENY.HWID
+                                    : v.code === 'project' ? DENY.PROJECT : DENY.NEEDS_KEY);
                     }
                 }
                 const body = 'SHK ' + sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ');

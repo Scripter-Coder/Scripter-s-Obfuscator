@@ -142,7 +142,20 @@ console.log('the key-creating paths wait for the sync and say so');
 // ---------------------------------------------------------------------------
 {
     const norm = main.replace(/\r\n/g, '\n');
-    const addUser = norm.slice(norm.indexOf('async function confirmAddUserUI'), norm.indexOf('async function confirmAddUserUI') + 2600);
+    // Extract the WHOLE function rather than a fixed character window.
+    //
+    // The window was 2600 chars, and adding a project picker to this
+    // function pushed 'NOT Synced' past it - so the check failed on
+    // correct code. A fixed window is a test that fails whenever the
+    // function grows, which is a test that fails for reasons unrelated to
+    // what it checks.
+    function grabFn(name) {
+        const start = norm.indexOf('async function ' + name);
+        if (start < 0) return '';
+        const close = norm.indexOf('\n}', start);
+        return close < 0 ? norm.slice(start, start + 8000) : norm.slice(start, close + 2);
+    }
+    const addUser = grabFn('confirmAddUserUI');
 
     check('Add User awaits the sync', /await saveKeys\(/.test(addUser),
         'without an await it cannot know whether the server has the key');
@@ -151,7 +164,7 @@ console.log('the key-creating paths wait for the sync and say so');
         'the success notification must be conditional on the sync result');
     check('a local-only key says so', addUser.includes('Local Only'));
 
-    const ck = norm.slice(norm.indexOf('async function createKey'), norm.indexOf('async function createKey') + 2200);
+    const ck = grabFn('createKey');
     check('createKey awaits the sync too', /await saveKeys\(/.test(ck));
     check('and distinguishes local-only from failed', ck.includes('Local Only') && ck.includes('NOT Synced'));
 }
