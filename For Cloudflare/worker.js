@@ -1950,7 +1950,46 @@ const EXECUTOR_UA = /Roblox|RBX|Synapse|Krnl|Script[- ]?Ware|Fluxus|Electron|Oxy
 const MAX_CIPHER_LEN = 72_000_000;  // ~70 MB of cipher text (was 4.5 MB)
 const KV_MAX_VALUE = 25_000_000;    // Cloudflare KV hard per-value limit
 const CHUNK_THRESHOLD = KV_MAX_VALUE - 1000; // chunk when bigger than one safe KV value
-const MAX_CHUNKS = 20;              // 20 * ~25MB = ~50MB blob ceiling
+const MAX_CHUNKS = 20;              // 20 chunks x 6MB (CHUNK_DELIVERY_MAX) = ~120MB
+
+// ---------------------------------------------------------------------------
+// WHICH BACKEND HOLDS A SCRIPT
+// ---------------------------------------------------------------------------
+//
+// KV FIRST, KEEPER ONLY WHEN KV CANNOT HOLD IT.
+//
+// This inverts what the backend was introduced to do. The Keeper was chosen so
+// that script BYTES would not sit on Cloudflare - the reasoning was that a
+// private GitHub repo was still "Cloudflare-adjacent hosting". But the choice
+// had a consequence nobody weighed: with the Keeper bound, the worker's
+// delivery path asked the PC first and the fallback could never be reached,
+// because nothing ever wrote the KV copy. Binding SH_STORE_URL therefore made
+// EVERY script depend on a PC being awake, and the site went dark whenever the
+// owner slept, rebooted or restarted a tunnel.
+//
+// The KV path was already complete - putBlob chunks, /sh/c/<id>/<i> serves the
+// chunks, the chain head points at /sh/c/ - and it was simply never used
+// alongside the Keeper.
+//
+// So: whatever KV can hold goes to KV and works with the PC off. The Keeper is
+// reserved for what KV genuinely cannot take, and for owners who want an
+// off-Cloudflare copy of those.
+//
+// THIS IS A REAL TRADEOFF, NOT A FREE WIN. After this change the bytes of a
+// script up to this ceiling live in the worker's KV namespace. An owner who
+// wants them on their own disk must disable the Keeper binding AND accept the
+// size ceiling below.
+function kvCanHold(len) {
+    // CHUNK_DELIVERY_MAX is what putBlob actually splits on, so this is the
+    // real ceiling - not KV's 25MB per-value limit, which putBlob never
+    // approaches because it chunks far below it.
+    return Number(len) <= MAX_CHUNKS * CHUNK_DELIVERY_MAX;
+}
+
+// The Keeper is used ONLY for a blob KV cannot take.
+function keeperNeededFor(env, len) {
+    return storeConfigured(env) && !kvCanHold(len);
+}
 
 // Artifacts at or below this are returned INLINE by the single delivery gate: one atomic
 // consume, one response, nothing left to fetch. That is the strong case and the common
@@ -4631,7 +4670,7 @@ async function handleRequest(request, env, ctx) {
                 // body was never stored - the alternative is a loadstring that 404s later,
                 // which is the exact "works until someone runs it" class of bug.
                 try {
-                    if (storeConfigured(env)) {
+                    if (keeperNeededFor(env, plainCode.length)) {
                         // await matters: expiresAtForUpload is async, and without the await
                         // the promise is stringified into the query string as
                         // expires_at=[object Promise], which the service correctly refuses.
@@ -4639,6 +4678,7 @@ async function handleRequest(request, env, ctx) {
                         if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
                         if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
                     } else {
+                        // KV. The script then runs with the owner's PC off.
                         await putBlob(env, id, KV_PREFIX, plainCode);
                     }
                 } catch (e) {
@@ -4662,7 +4702,7 @@ async function handleRequest(request, env, ctx) {
                     try {
                         // 'web' is a separate object from 'artifact'. Sharing a slot would
                         // let the browser preview replace the executor's copy.
-                        if (storeConfigured(env)) await storePut(env, id, 'web', cipher, await expiresAtForUpload(env, body, id));
+                        if (keeperNeededFor(env, cipher.length)) await storePut(env, id, 'web', cipher, await expiresAtForUpload(env, body, id));
                         else await putBlob(env, id, KV_WEB_PREFIX, cipher);
                     } catch (e) {
                         return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
@@ -4683,11 +4723,13 @@ async function handleRequest(request, env, ctx) {
             if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare: KV values cap at 25MB and request bodies at ~100MB). Reduce the script or split it into modules.' }, 413);
             const keyHash = String(body.keyHash || ''); // optional SHA-256 hex
             try {
-                if (storeConfigured(env)) {
+                if (keeperNeededFor(env, cipher.length)) {
                     const put = await storePut(env, id, 'artifact', cipher, await expiresAtForUpload(env, body, id));
                     if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
                     if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
                 } else {
+                    // KV: chunks if needed, and /sh/c/<id>/<i> serves them. The
+                    // script runs with the PC off.
                     await putBlob(env, id, KV_PREFIX, cipher);
                 }
             } catch (e) {
