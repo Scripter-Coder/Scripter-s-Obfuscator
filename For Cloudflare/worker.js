@@ -1680,11 +1680,16 @@ const SPLITKEY_GENV = '__SH_SPLITKEY';
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-SH-Token, X-SH-User-Token, X-SH-Ticket',
+    // Accept is sent by the download fetch.
+    'Access-Control-Allow-Headers': 'Content-Type, X-SH-Token, X-SH-User-Token, X-SH-Ticket, Accept',
     // Lets the diagnostics panel and the owner panel read the status off a
     // cross-origin response. Without it the status is invisible in the browser,
     // which is the other half of why this took so long to find.
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Type, X-SH-Token',
+    // Content-Disposition and X-Download-Expires are how the dashboard learns
+    // what the file is called and how long its link lives. Without exposing
+    // them a cross-origin response hides them, and every download lands as
+    // "script.lua" with no expiry shown.
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Type, X-SH-Token, Content-Disposition, X-Download-Expires',
     'Content-Type': 'application/json'
 };
 
@@ -2622,7 +2627,11 @@ const RATE_BUCKETS = {
     'reward-start':   { limit: 20,  window: 60 * 1000 },
     'reward-claim':   { limit: 6,   window: 60 * 1000 },
     'reward-cb':      { limit: 40,  window: 60 * 1000 },
-    'reward-save':    { limit: 30,  window: 60 * 1000 }
+    'reward-save':    { limit: 30,  window: 60 * 1000 },
+    // A download link is a bearer token for the whole artifact, so a flood
+    // against one is either scraping or a shared link running away. Tight
+    // enough to stop a scraper walking every published id.
+    'download':      { limit: 20,  window: 60 * 1000 }
 };
 
 const rateState = new Map();
@@ -7667,6 +7676,116 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 elapsedMs: body.elapsedMs != null ? Number(body.elapsedMs) : null
             });
             return jsonResponse(verdict);
+        }
+
+        // =========================================================================
+        // FILE DOWNLOAD - "Generate Obfuscated Code"
+        // =========================================================================
+        //
+        // GET /sh/dl/<id>[?e=<unixSeconds>]
+        //
+        // Serves the stored artifact as a file attachment instead of as a
+        // loadstring. Aegis does this; the difference is that a loadstring is
+        // a bootstrap that FETCHES the code, while this IS the code.
+        //
+        // WHAT A DOWNLOAD IS, AND IS NOT
+        //
+        // The bytes are the same artifact an executor receives. There is no
+        // server in front of a downloaded file, so this is a DIFFERENT product
+        // from license-gated hosted delivery, not a second door into it. The
+        // link is a bearer token for the artifact.
+        //
+        // THE EXPIRY MUST NOT TOUCH HOSTED DELIVERY
+        //
+        // `?e=` governs THIS ROUTE ONLY. The hosted path is a different route
+        // with different state, so a download link dying cannot stop a
+        // published script from running. That is asserted in
+        // tools/download_test.mjs, because the obvious implementation - one
+        // expiry flag read by both - takes working scripts offline every time
+        // somebody's download lapses.
+        // ------------------------------------------------------------------------
+        {
+            const dlMatch = url.pathname.match(/^\/sh\/dl\/(ScripterHub[0-9]{6,16})$/);
+            if (dlMatch && (request.method === 'GET' || request.method === 'HEAD')) {
+                const limited = await guardRate(env, 'download', rateIdentity(request, url));
+                if (limited) return limited;
+
+                const id = dlMatch[1];
+                const meta = await scriptAuthz(env, id);
+                if (!meta) return new Response('This download link is not valid.', { status: 404, headers: CORS_HEADERS });
+
+                // ---- expiry, enforced HERE and nowhere else ----
+                const expRaw = url.searchParams.get('e');
+                let expiresAt = 0;
+                if (expRaw) {
+                    expiresAt = parseInt(expRaw, 10) || 0;
+                    if (!Number.isFinite(expiresAt) || expiresAt <= 0) expiresAt = 0;
+                    if (expiresAt && expiresAt < Math.floor(Date.now() / 1000)) {
+                        return new Response('This download link has expired. Generate a new one from your ScripterHub dashboard.',
+                            { status: 410, headers: CORS_HEADERS });
+                    }
+                }
+
+                // ---- the bytes ----
+                //
+                // Only a keyless artifact is downloadable as-is. A key-required
+                // script stores CIPHERTEXT (encrypted with the Special Key), and
+                // handing that over as "your obfuscated script" produces a file
+                // that cannot run and looks like a broken download. Refused here
+                // with the reason, instead of discovered by whoever opens it.
+                if (!meta.keyless) {
+                    return new Response(
+                        'This script is key-required, so its stored copy is encrypted and cannot be downloaded as a runnable file. '
+                        + 'Key-required download support is not enabled on this deployment yet.',
+                        { status: 501, headers: CORS_HEADERS });
+                }
+
+                const got = await getBlob(env, id, KV_PREFIX);
+                if (got === null || got === '') {
+                    return new Response('This script is not available for download.', { status: 404, headers: CORS_HEADERS });
+                }
+
+                // ---- filename ----
+                //
+                // SCRIPT NAMES ARE USER-CONTROLLED AND THIS GOES INTO A HEADER.
+                //
+                // CR or LF would inject headers; a double quote would truncate
+                // filename="..." and let the rest of the name become arbitrary
+                // header content. So this is a STRIP against a small allowlist,
+                // not a replace-with-underscore, and the result is length-capped.
+                //
+                // The control-character class is written ESCAPED. It was first
+                // written with literal control bytes, which put raw 0x00-0x1f
+                // characters into worker.js itself - caught by the repo's own
+                // control_chars gate, which is the only reason it was found.
+                const rawName = String(meta.name || 'script');
+                const clean = rawName
+                    .replace(/[\u0000-\u001f\u007f]/g, '')
+                    .replace(/[^A-Za-z0-9 _.-]/g, '')
+                    .trim()
+                    .replace(/\s+/g, ' ')
+                    .slice(0, 60) || 'script';
+                const num = (id.replace(/^ScripterHub/, '') || '').slice(0, 16);
+                const filename = clean + '-ScripterHub(' + num + ').lua';
+
+                const headers = {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    // ASCII fallback, plus RFC 5987 for non-ASCII that survives
+                    // the allowlist above (today none does, but widening the
+                    // allowlist must not silently corrupt every filename).
+                    'Content-Disposition': 'attachment; filename="' + filename + '"; '
+                        + "filename*=UTF-8''" + encodeURIComponent(filename),
+                    'Cache-Control': 'no-store',
+                    'Access-Control-Allow-Origin': '*'
+                };
+                if (expiresAt) headers['X-Download-Expires'] = String(expiresAt);
+
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'download.served', outcome: 'ok', scriptId: id,
+                    bytes: got.length, expiresAt: expiresAt || 0, at: Date.now()
+                }));
+                return new Response(got, { status: 200, headers: headers });
+            }
         }
 
         // ---------- POST /threat : record a blocked bypass attempt ----------

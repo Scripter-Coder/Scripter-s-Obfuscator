@@ -7182,6 +7182,7 @@ function openScriptSettings(projectId, scriptId) {
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
         + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">📜 No loadstring yet. Re-save the script (Edit) or generate one:</p>'
+        + '<button onclick="openGenerateCodeUI(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-primary">📦 Generate Obfuscated Code</button>'
         + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">⚡ Generate Loadstring</button>'
         + '</div>'
     );
@@ -7607,6 +7608,204 @@ window.confirmDeleteAccount = confirmDeleteAccount;
 window.openResetPasswordUI = openResetPasswordUI;
 window.handleResetPassword = handleResetPassword;
 window.openScriptRaw = openScriptRaw;
+// ============ GENERATE OBFUSCATED CODE (downloadable .lua) ============
+//
+// Sits next to "Generate Loadstring" rather than replacing it. They answer
+// different questions:
+//
+//   Generate Loadstring  -> "how do my users run this?"   (hosted, license-gated)
+//   Generate Obfuscated  -> "give me the .lua file"       (bearer token, expires)
+//
+// Replacing the loadstring button with this would quietly remove the only path
+// to licensed delivery, which is the part that is actually protected.
+//
+// THE LINK IS A BEARRIER TOKEN
+//
+// Whoever holds it has the script. There is no server in front of a downloaded
+// file, so this is a second PRODUCT, not a second door into the first. The UI
+// says so on the panel rather than leaving it to be discovered.
+//
+// EXPIRY IS AEGIS-STYLE AND LOCAL TO THE LINK
+//
+// 30m / 1h / 1d / 7d / permanent, passed to the worker as ?e=<unix>. The hosted
+// script is unaffected - that is asserted in tools/download_test.mjs, because
+// the obvious implementation shares one flag between both paths and takes
+// published scripts offline whenever a download lapses.
+function shDownloadUrl(loaderId, seconds) {
+    var base = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
+    if (!base || !loaderId) return '';
+    return base + '/sh/dl/' + loaderId + (seconds ? ('?e=' + seconds) : '');
+}
+
+function openGenerateCodeUI(projectId, scriptId) {
+    var projects = loadProjects();
+    var script = null;
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId && projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].id === scriptId) { script = projects[i].scripts[j]; break; }
+            }
+        }
+    }
+    if (!script) { showNotification('Error', 'Script not found.', 'error'); return; }
+
+    var loaderId = (script.loaderId && /^ScripterHub[0-9]{6,16}$/.test(script.loaderId)) ? script.loaderId : '';
+    if (!loaderId) {
+        showNotification('No Loadstring Yet',
+            'This script has not been published to the loader host, so there is nothing to download. Re-save the script (Edit) first.',
+            'warning', 8000);
+        return;
+    }
+
+    var isKeyless = !!script.keyless || !!script.freeForEveryone;
+    var num = loaderId.replace(/^ScripterHub/, '');
+    // Mirrors the worker's own filename rule. Shown here so the owner knows
+    // what a recipient will see before they send it to anyone.
+    var shownName = String(script.name || 'script')
+        .replace(/[^\x20-\x7E]/g, '').replace(/[^A-Za-z0-9 _.-]/g, '')
+        .trim().replace(/\s+/g, ' ').slice(0, 60) || 'script';
+
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 640px; padding: 28px; max-height: 92vh; overflow-y: auto;">
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 20px; margin: 0 0 4px 0;">📦 Generate Obfuscated Code</h2>
+            <p class="sub" style="margin: 0 0 14px 0;">Download the obfuscated <code>.lua</code> for
+                <strong>${escapeHtml(script.name || '')}</strong>.</p>
+
+            ${isKeyless ? '' : `
+            <div class="warn" style="background: rgba(255,180,0,0.10); border-color: rgba(255,180,0,0.35); color: #ffd700;">
+                This script is <strong>key-required</strong>, so the copy on the server is encrypted and cannot be
+                downloaded as a runnable file yet. Use <strong>Generate Loadstring</strong> for this one.</div>`}
+
+            <div class="form-group" style="margin-top: 14px;">
+                <label>Download link lifetime</label>
+                <select id="dlExpiry">
+                    <option value="1800">30 minutes</option>
+                    <option value="3600">1 hour</option>
+                    <option value="86400">1 day</option>
+                    <option value="604800">7 days</option>
+                    <option value="">Permanent (never expires)</option>
+                </select>
+                <div class="field-hint">When the link expires the download stops working. The
+                    <strong>hosted loadstring is not affected</strong> - your users keep running the script normally.</div>
+            </div>
+
+            <div class="form-group">
+                <label>Download link</label>
+                <input type="text" id="dlLink" readonly style="font-family: monospace; font-size: 11px;">
+                <div class="field-hint">Anyone with this link can download the file. Treat it like the file itself.</div>
+            </div>
+
+            <div class="form-group">
+                <label>File name</label>
+                <input type="text" id="dlName" readonly style="font-family: monospace; font-size: 11px;">
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-top: 16px;">
+                <button onclick="shDownloadNow('${projectId}','${scriptId}')" class="btn btn-primary" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>⬇️ Download</button>
+                <button onclick="shCopyDownloadLink('${projectId}','${scriptId}')" class="btn btn-edit" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>🔗 Copy Link</button>
+            </div>
+            <div id="dlStatus" style="margin-top: 10px; font-size: 12px; color: #8888aa; text-align: center;"></div>
+        </div>`;
+    document.body.appendChild(overlay);
+    shRefreshDownloadLink(projectId, scriptId);
+}
+
+function shDownloadState(projectId, scriptId) {
+    var projects = loadProjects();
+    var script = null;
+    for (var i = 0; i < projects.length; i++) {
+        if (projects[i].id === projectId && projects[i].scripts) {
+            for (var j = 0; j < projects[i].scripts.length; j++) {
+                if (projects[i].scripts[j].id === scriptId) { script = projects[i].scripts[j]; break; }
+            }
+        }
+    }
+    var loaderId = (script && script.loaderId && /^ScripterHub[0-9]{6,16}$/.test(script.loaderId)) ? script.loaderId : '';
+    var sel = document.getElementById('dlExpiry');
+    var secs = sel ? sel.value : '';
+    return { script: script, loaderId: loaderId, url: shDownloadUrl(loaderId, secs) };
+}
+
+function shRefreshDownloadLink(projectId, scriptId) {
+    var st = shDownloadState(projectId, scriptId);
+    var link = document.getElementById('dlLink');
+    if (link) link.value = st.url || '';
+    var nameEl = document.getElementById('dlName');
+    if (nameEl && st.loaderId) {
+        var clean = String((st.script && st.script.name) || 'script')
+            .replace(/[^\x20-\x7E]/g, '').replace(/[^A-Za-z0-9 _.-]/g, '')
+            .trim().replace(/\s+/g, ' ').slice(0, 60) || 'script';
+        nameEl.value = clean + '-ScripterHub(' + st.loaderId.replace(/^ScripterHub/, '') + ').lua';
+    }
+}
+
+function shCopyDownloadLink(projectId, scriptId) {
+    var st = shDownloadState(projectId, scriptId);
+    if (!st.url) { showNotification('Error', 'No download link available.', 'error'); return; }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(st.url);
+        } else {
+            var el = document.getElementById('dlLink');
+            el.removeAttribute('readonly'); el.select();
+            document.execCommand('copy'); el.setAttribute('readonly', 'readonly');
+        }
+        showNotification('Link Copied', 'Anyone with this link can download the file.', 'success', 6000);
+    } catch (e) {
+        showNotification('Error', 'Could not copy - select the link and copy it manually.', 'error');
+    }
+}
+
+function shDownloadNow(projectId, scriptId) {
+    var st = shDownloadState(projectId, scriptId);
+    if (!st.url) { showNotification('Error', 'No download link available.', 'error'); return; }
+    var status = document.getElementById('dlStatus');
+    if (status) status.textContent = 'Fetching...';
+    // fetch -> blob -> object URL rather than a plain navigation.
+    //
+    // A plain <a download> navigates, and if the worker answers 410 (expired)
+    // or 501 (key-required) the browser LEAVES THE DASHBOARD and shows a blank
+    // page with that error on it. The owner loses the modal and has to navigate
+    // back. Fetching keeps the failure on screen where it can be explained.
+    fetch(st.url, { headers: { 'Accept': 'text/plain' } }).then(function (res) {
+        if (!res.ok) {
+            return res.text().then(function (t) {
+                throw new Error(res.status === 410 ? 'That link has expired.' : (t || ('HTTP ' + res.status)));
+            });
+        }
+        var cd = res.headers.get('Content-Disposition') || '';
+        var name = (/filename="([^"]+)"/.exec(cd) || [])[1] || 'script.lua';
+        return res.blob().then(function (blob) { return { blob: blob, name: name }; });
+    }).then(function (got) {
+        var url = URL.createObjectURL(got.blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = got.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Revoked on a delay: revoking synchronously can cancel the download in
+        // some browsers before it has started reading the blob.
+        setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+        if (status) status.textContent = 'Saved as ' + got.name;
+        showNotification('Downloaded', got.name, 'success', 6000);
+    }).catch(function (e) {
+        if (status) status.textContent = e.message || String(e);
+        showNotification('Download Failed', e.message || String(e), 'error', 8000);
+    });
+}
+
+window.openGenerateCodeUI = openGenerateCodeUI;
+window.shRefreshDownloadLink = shRefreshDownloadLink;
+window.shCopyDownloadLink = shCopyDownloadLink;
+window.shDownloadNow = shDownloadNow;
+window.shDownloadUrl = shDownloadUrl;
+
 window.generateLoadstring = generateLoadstring;
 window.shUploadLoader = shUploadLoader;
 window.recordThreat = recordThreat;
