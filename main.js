@@ -615,22 +615,25 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         }
         // SIZE PRE-CHECK: the keeper path stores 256 parts of SH_KEEPER_PART_SIZE,
         // so that product is the real ceiling. Anything above it cannot be stored.
-        const approxBody = (payload.plainCode ? payload.plainCode.length : 0) + (payload.cipher ? payload.cipher.length : 0) + (payload.normalCode ? payload.normalCode.length : 0);
-        if (approxBody > 256 * SH_KEEPER_PART_SIZE) {
-            return { ok: false, error: 'too large: scripts cap at ' + Math.round(256 * SH_KEEPER_PART_SIZE / 1000000) + ' MB (256 delivery-sized parts). Split the script.' };
+        // The ceiling is now the worker's single-request body limit, not a
+        // keeper part count. Checked here so it fails BEFORE a long
+        // compilation rather than after it.
+        var SH_BODY_CAP = 68 * 1000 * 1000;
+        if (approxBody > SH_BODY_CAP) {
+            return { ok: false, error: 'too large: scripts cap at about ' + Math.round(SH_BODY_CAP / 1000000) + ' MB per upload (the HTTP body limit). Split the script into modules.' };
         }
-        // ---- STORAGE KEEPER (GitHub) path for obfuscated code > ~45MB ----
-        // Parts of 40MB stream to the worker (-> private GitHub repo),
-        // then one finalize call registers the loader. Small scripts keep
-        // the single-request KV path.
-        const GH_SWITCH = 45 * 1024 * 1024;
-        const obfLen = obfCode.length;
-        if (!keyless && obfLen > GH_SWITCH) {
-            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, requireAuth, splitKey: splitKey || null, replaces: replaces || '', normalCode: normalCode || '' });
-        }
-        if (keyless && obfLen > GH_SWITCH) {
-            return await shUploadKeeper({ token, userToken, name, user, obfCode, cipher, keyHash, keyless: true, splitKey: splitKey || null, replaces: replaces || '', normalCode: normalCode || '' });
-        }
+        // NO KEEPER ROUTING.
+        //
+        // Anything over 45MB used to stream to the owner's PC instead of the
+        // worker, which meant the script only ran while that PC was awake -
+        // asleep, rebooting or mid-tunnel-restart took the whole catalogue
+        // offline. The worker now stores large artifacts in R2, which has no
+        // ceiling a browser cares about, so there is nothing left to overflow
+        // into the Keeper and the switch has no reason to exist.
+        //
+        // Kept as an explicit no-op rather than deleted: shUploadKeeper is still
+        // declared, and silently dropping the branch would look like the size
+        // limit was simply forgotten.
         // Through shApi: same reason. An expired token used to fail the upload
         // outright, after the whole artifact had been compiled.
         const d = await shApi('sh/upload', payload);

@@ -81,13 +81,23 @@ console.log('the split key survives every upload path');
     check('the finalize call sends splitKey', /splitKey: o\.splitKey/.test(fin),
         'the worker stores it but the client never sends it');
 
-    // both keeper call sites
-    const calls = [...main.matchAll(/shUploadKeeper\(\{[^}]*\}/g)].map(m => m[0]);
-    check('found the shUploadKeeper call sites', calls.length >= 2, 'got ' + calls.length);
-    const withKey = calls.filter(c => /splitKey:/.test(c)).length;
-    check('EVERY keeper call site passes splitKey',
-        calls.length > 0 && withKey === calls.length,
-        `${withKey} of ${calls.length} pass it`);
+// NO keeper call sites, which is the point.
+//
+// This used to assert "at least 2 call sites and every one passes splitKey".
+// Both call sites were the GH_SWITCH branches that routed >45MB artifacts
+// to the owner's PC, and both were removed when large artifacts moved to R2.
+// The assertion then failed on the COUNT - reporting a regression when the
+// behaviour had in fact become stricter.
+//
+// The contract is now the inverse, and stronger: script uploads must not reach
+// the Keeper at all, so the split key can never be stranded on a machine that
+// is asleep.
+const calls = [...main.matchAll(/shUploadKeeper\(\{[^}]*\}/g)].map(m => m[0]);
+check('no script upload routes to the Storage Keeper', calls.length === 0,
+    calls.length + ' call site(s) remain');
+check('and the size-based keeper switch is gone', !/GH_SWITCH/.test(main),
+    'a keeper switch with no call sites is a confusing constant');
+check('the single upload path still sends splitKey', /payload\.splitKey = splitKey/.test(main));
 }
 
 // --- the delivery side agrees ----------------------------------------------

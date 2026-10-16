@@ -28,7 +28,33 @@
 #
 # 2. create the D1 database:
 #      wrangler d1 create scripterhub
-#    -> paste the returned database_id into [[d1_databases]] below
+#    -> paste the returned database_id into [[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "scripterhub-artifacts"
+# -----------------------------------------------------------------------------
+# ARTIFACT STORAGE - why this exists next to KV
+# -----------------------------------------------------------------------------
+# KV was holding every script BYTES. That is the wrong service for it:
+#
+#   KV   : 1 GB free storage, 1,000 writes/day, 1,000 READS/day
+#          and a 25 MB ceiling per value
+#   R2   : 10 GB free storage, no egress fees, 5 GB per object
+#
+# The read limit is the one that mattered. Every execution of a chunked
+# script reads its chunks, so a popular script burns the shared 1,000/day
+# and then the site is either billed or blocked. ~14 maximum-size scripts
+# fitted in the 1 GB before R2, which is not a catalogue anyone can run.
+#
+# THE SPLIT, WHICH IS DELIBERATE:
+#   small artifacts (<= INLINE_DELIVERY_MAX) stay in KV, untouched
+#   large artifacts go to R2 as ONE object, no chunking
+#
+# Most scripts are small, and the KV inline path is the strongest one
+# (one atomic consume, one response). Rewriting it for no benefit would
+# be churn in the only code path permitted to return artifact bytes.
+# R2 takes over exactly where KV stops being viable.
+
+[[d1_databases]] below
 #
 # 3. apply the schema:
 #      wrangler d1 execute scripterhub --file=migrations/0001_init.sql
@@ -266,7 +292,7 @@ SH_SESSION_TTL_SECONDS = "45"         # primary request() path
 # A QUICK TUNNEL (cloudflared tunnel --url) gets a RANDOM address that CHANGES ON EVERY
 # RESTART. If you set one here, the next reboot makes every script fail at once while
 # your PC still looks healthy - update this value at the same time as you restart.
-SH_STORE_URL = "https://provides-powered-far-member.trycloudflare.com"
+SH_STORE_URL = "https://sandwich-neutral-interviews-antiques.trycloudflare.com"
 
 # Your telemetry webhook. Set this HERE or in the dashboard — the dashboard is
 # usually easier, and a Text variable keeps the value visible so a typo is

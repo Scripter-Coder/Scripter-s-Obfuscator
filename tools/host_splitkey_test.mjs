@@ -79,9 +79,12 @@ console.log('the split key reaches the upload from every path');
     check('the upload attaches splitKey when present',
         /if \(splitKey\) \{/.test(main),
         'the split key is produced and then not sent');
-    check('both keeper call sites forward it',
-        (main.match(/shUploadKeeper\(\{[^}]*splitKey:/g) || []).length >= 2,
-        'a large script takes a keeper call site that drops it');
+    // Inverted: there are now NO keeper call sites (large artifacts go to R2),
+    // so the question is whether any remain - a leftover would strand the split
+    // key on a machine that is asleep.
+    check('no keeper call site can drop it',
+        (main.match(/shUploadKeeper\(\{[^}]*\}/g) || []).length === 0,
+        'a keeper call site that does not forward splitKey strands the key');
     check('kb-finalize receives it',
         /splitKey: o\.splitKey/.test(main));
 }

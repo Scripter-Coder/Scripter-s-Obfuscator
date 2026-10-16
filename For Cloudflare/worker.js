@@ -1984,6 +1984,15 @@ const MAX_CHUNKS = 20;              // 20 chunks x 6MB (CHUNK_DELIVERY_MAX) = ~1
 // script up to this ceiling live in the worker's KV namespace. An owner who
 // wants them on their own disk must disable the Keeper binding AND accept the
 // size ceiling below.
+// R2 bound? One binding decides where an artifact lives.
+//
+// Absent (a deployment that never created the bucket) every path below
+// falls back to KV exactly as before, so this is additive rather than a
+// migration: nothing is read back out of anywhere.
+function r2Configured(env) {
+    return !!(env && env.ARTIFACTS && typeof env.ARTIFACTS.put === 'function');
+}
+
 function kvCanHold(len) {
     // CHUNK_DELIVERY_MAX is what putBlob actually splits on, so this is the
     // real ceiling - not KV's 25MB per-value limit, which putBlob never
@@ -1993,6 +2002,10 @@ function kvCanHold(len) {
 
 // The Keeper is used ONLY for a blob KV cannot take.
 function keeperNeededFor(env, len) {
+    // With R2 bound the Keeper has no job at all: R2 has no size ceiling the
+    // browser cares about, so nothing overflows into it. The owner asked for
+    // the Keeper to be out of the loop for scripts entirely.
+    if (r2Configured(env)) return false;
     return storeConfigured(env) && !kvCanHold(len);
 }
 
@@ -3556,6 +3569,24 @@ const CHUNK_DELIVERY_MAX = INLINE_DELIVERY_MAX;
 
 async function putBlob(env, id, prefix, text) {
     const s = String(text);
+
+    // R2, for anything past the inline ceiling. ONE object - no chunking,
+    // no cmeta count to keep in step, and the 5 GB per-object ceiling is
+    // far above anything a browser can be handed in one response anyway.
+    //
+    // At-rest encryption is applied first, exactly as it is for KV, so R2 is
+    // not a plaintext-at-rest store that KV was not.
+    if (r2Configured(env) && s.length > INLINE_DELIVERY_MAX) {
+        const enc = !!kekConfigured(env);
+        const body = enc ? await encryptAtRest(env, s) : s;
+        await env.ARTIFACTS.put('a' + prefix + id, body);
+        // n:1 so the existing chain machinery serves it as a single part
+        // from /sh/c/<id>/0, and r2:1 so that part knows to read R2.
+        await env.LOADERS_KV.put(KV_CMETA_PREFIX + prefix + id,
+            JSON.stringify({ n: 1, len: s.length, enc: enc ? 1 : 0, r2: 1 }),
+            { expirationTtl: LOADER_TTL });
+        return { chunked: true, n: 1, len: s.length, encrypted: enc, r2: true };
+    }
     const enc = !!kekConfigured(env);
     if (s.length <= CHUNK_DELIVERY_MAX) {
         // One value, and it fits in one response. Nothing left to fetch.
@@ -3573,6 +3604,23 @@ async function putBlob(env, id, prefix, text) {
     return { chunked: true, n, len: s.length, encrypted: enc };
 }
 async function getBlob(env, id, prefix) {
+    // R2 first when bound. Checked BEFORE the KV single value because a
+    // script re-uploaded after R2 was enabled exists in R2 and not in KV,
+    // and the reverse would serve a stale KV copy forever.
+    if (r2Configured(env)) {
+        try {
+            const obj = await env.ARTIFACTS.get('a' + prefix + id);
+            if (obj) {
+                const text = await obj.text();
+                if (!isEncrypted(text)) return text;
+                const r = await tryDecryptAtRest(env, text);
+                if (!r.ok) { console.error('[ScripterHub] R2 decrypt failed: ' + r.error); return null; }
+                return r.text;
+            }
+        } catch (e) {
+            console.error('[ScripterHub] R2 read failed for ' + prefix + id + ': ' + (e && e.message));
+        }
+    }
     // legacy single value first
     const v = await env.LOADERS_KV.get(prefix + id);
     if (v !== null) {
@@ -7135,7 +7183,21 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (idx >= cmeta.n) { S.threatsBlocked++; return methodNotAllowed(); }
             const denied = await guardPartRequest(env, request, url, id, idx);
             if (denied) return denied;
-            const rawChunk = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + KV_PREFIX + id + '_' + idx);
+            // R2 artifact: ONE object serving index 0. No per-index chunk key
+            // exists, because R2 objects are not split.
+            let rawChunk;
+            if (cmeta.r2 === 1 && r2Configured(env)) {
+                if (idx !== 0) { S.threatsBlocked++; return methodNotAllowed(); }
+                try {
+                    const obj = await env.ARTIFACTS.get('a' + KV_PREFIX + id);
+                    rawChunk = obj ? await obj.text() : null;
+                } catch (e) {
+                    console.error('[ScripterHub] R2 part read failed for ' + id + ': ' + (e && e.message));
+                    rawChunk = null;
+                }
+            } else {
+                rawChunk = await env.LOADERS_KV.get(KV_CHUNK_PREFIX + KV_PREFIX + id + '_' + idx);
+            }
             if (rawChunk === null) return methodNotAllowed();
             let chunk = rawChunk;
             if (isEncrypted(rawChunk)) {
