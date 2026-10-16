@@ -29,35 +29,6 @@
 # 2. create the D1 database:
 #      wrangler d1 create scripterhub
 #    -> paste the returned database_id into [[r2_buckets]]
-binding = "ARTIFACTS"
-bucket_name = "scripterhub-artifacts"
-# -----------------------------------------------------------------------------
-# ARTIFACT STORAGE - why this exists next to KV
-# -----------------------------------------------------------------------------
-# KV was holding every script BYTES. That is the wrong service for it:
-#
-#   KV   : 1 GB free storage, 1,000 writes/day, 1,000 READS/day
-#          and a 25 MB ceiling per value
-#   R2   : 10 GB free storage, no egress fees, 5 GB per object
-#
-# The read limit is the one that mattered. Every execution of a chunked
-# script reads its chunks, so a popular script burns the shared 1,000/day
-# and then the site is either billed or blocked. ~14 maximum-size scripts
-# fitted in the 1 GB before R2, which is not a catalogue anyone can run.
-#
-# THE SPLIT, WHICH IS DELIBERATE:
-#   small artifacts (<= INLINE_DELIVERY_MAX) stay in KV, untouched
-#   large artifacts go to R2 as ONE object, no chunking
-#
-# Most scripts are small, and the KV inline path is the strongest one
-# (one atomic consume, one response). Rewriting it for no benefit would
-# be churn in the only code path permitted to return artifact bytes.
-# R2 takes over exactly where KV stops being viable.
-
-[[d1_databases]] below
-#
-# 3. apply the schema:
-#      wrangler d1 execute scripterhub --file=migrations/0001_init.sql
 #
 # 4. set the three secrets (see the block below for what each one does):
 #      wrangler secret put SH_SETUP_TOKEN"
@@ -210,6 +181,26 @@ id = "6473e0a2dcfc4dc5ab477512ce713a74"
 # script, license and key you have ever published becomes unreachable.
 # id = "PASTE_THE_NAMESPACE_ID_HERE"
 # preview_id = "PASTE_THE_PREVIEW_NAMESPACE_ID_OR_COMMENT_OUT"
+
+# -----------------------------------------------------------------------------
+# ARTIFACT STORAGE (R2) - OFF, because R2 is not enabled on this account yet.
+# -----------------------------------------------------------------------------
+# Large script artifacts belong here, not in KV:
+#
+#   KV : 1 GB storage, 1,000 writes/day, 1,000 reads/day, 25 MB per value
+#   R2 : 10 GB free, no egress fees, 5 GB per object
+#
+# With the binding absent, worker.js falls back to KV for everything (it checks
+# r2Configured(env) first), so nothing breaks until the lines below are
+# uncommented. To enable: turn R2 on in the Cloudflare dashboard, then
+#
+#     npx wrangler r2 bucket create scripterhub-artifacts
+#
+# and uncomment the two binding lines. worker.js needs no change.
+# [[r2_buckets]]
+# binding = "ARTIFACTS"
+# bucket_name = "scripterhub-artifacts"
+
 
 [[d1_databases]]
 binding = "SH_DB"
