@@ -378,7 +378,62 @@ console.log('owner routes are actually gated');
     check('delete without an owner credential is 401', r3.error === 'Not authorized.', JSON.stringify(r3));
 }
 
-console.log();
-console.log('REWARD ROUTES   ' + (fails ? fails + ' FAILED' : 'all checks passed'));
+// ---------------------------------------------------------------------------
+console.log('a bypass attempt bans the visitor without them asking');
+// ---------------------------------------------------------------------------
+// The reported bug was "bypassing the key system does not block me for two
+// hours". /sh/reward/block is a self-report and was already covered, so the
+// question this answers is different: does the worker ban by ITSELF when a
+// checkpoint callback fails verification? Everything below is the worker
+// acting alone - the visitor never posts a complaint.
+let RID2;
+{
+    const res = await call('POST', '/sh/reward/save', {
+        token: owner.token,
+        body: {
+            reward: {
+                name: 'Auto Ban',
+                keyDurationH: 1, maxKeys: 1, cooldownH: 0,
+                checkpoints: [
+                    { id: 't1', name: 'Test', provider: 'test', shortUrl: 'https://example.invalid/t' }
+                ]
+            }
+        }
+    });
+    const sv = await j(res);
+    RID2 = sv.rid || sv.id || (sv.reward && sv.reward.rid) || RID;
+    check('a reward to bypass exists', !!RID2, JSON.stringify(sv).slice(0, 160));
+}
+{
+    const IP = '7.7.7.7';
+    const start = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpAuto' } }));
+    check('the visitor can open a checkpoint', !!(start.step && start.step.verifyUrl), JSON.stringify(start).slice(0, 160));
+    const before = await j(await call('GET', '/sh/reward/pub?rid=' + RID2 + '&fp=fpAuto', { ip: IP }));
+    check('and is not banned yet', before.blacklisted !== true, JSON.stringify(before).slice(0, 140));
+
+    // The bypass: hit the provider callback without the confirmation the test
+    // provider requires. This is the whole attack - skip the ad, claim the
+    // checkpoint anyway.
+    const res = await worker.fetch(new Request(start.step.verifyUrl, {
+        headers: { 'CF-Connecting-IP': IP }
+    }), env, { waitUntil() {} });
+    const html = await res.text();
+    check('the bypassed checkpoint does not complete', cbReason(html) !== null,
+        'reason=' + cbReason(html));
+
+    // No self-report, no second request from the page. The worker decided.
+    const after = await j(await call('GET', '/sh/reward/pub?rid=' + RID2 + '&fp=fpAuto', { ip: IP }));
+    check('the worker banned the visitor on its own', after.blacklisted === true, JSON.stringify(after).slice(0, 160));
+    check('for about two hours', after.until > Date.now() + 1.9 * 3600e3, 'until=' + new Date(after.until).toISOString());
+
+    const blocked = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpAuto' } }));
+    check('and they cannot start another checkpoint', blocked.error === 'blacklisted', JSON.stringify(blocked).slice(0, 140));
+
+    // A different browser on the same connection is caught by the IP entry.
+    const other = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpOther' } }));
+    check('clearing cookies does not help', other.error === 'blacklisted', JSON.stringify(other).slice(0, 140));
+}
+
+console.log();console.log('REWARD ROUTES   ' + (fails ? fails + ' FAILED' : 'all checks passed'));
 void key;
 process.exit(fails ? 1 : 0);

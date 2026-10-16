@@ -45,13 +45,19 @@ function makeLocation(made, search, pathname) {
 // Drive reward.html the way a browser would, and record every network call and
 // every navigation.
 function loadPage({ search, worker, endpoints }) {
-    const made = { navigatedTo: null, elements: {}, clicks: {}, posts: [], gets: [] };
+    const made = { navigatedTo: null, elements: {}, clicks: {}, posts: [], gets: [], live: [] };
     const store = {};
     function el(id) {
         if (!made.elements[id]) {
             made.elements[id] = {
                 id, value: '', checked: false, disabled: false, textContent: '', className: '', style: {},
-                _html: '', _onclick: null,
+                _onclick: null, _attrs: {}, _parent: null,
+                setAttribute(k, v) { this._attrs[k] = String(v); },
+                _children: [],
+                getAttribute(k) { return this._attrs[k] != null ? this._attrs[k] : null; },
+                remove() { if (this._parent) this._parent.removeChild(this); },
+                appendChild(c) { c._parent = this; return c; },
+                removeChild(c) { const j = this._children.indexOf(c); if (j > -1) this._children.splice(j, 1); },
                 classList: { _s: new Set(), add(x) { this._s.add(x); }, remove(x) { this._s.delete(x); }, contains(x) { return this._s.has(x); } },
                 get innerHTML() { return this._html; },
                 set innerHTML(v) { this._html = String(v); present = new Set(String(v).match(/id="([a-zA-Z0-9_]+)"/g) || []);
@@ -78,7 +84,13 @@ function loadPage({ search, worker, endpoints }) {
         btoa: (x) => Buffer.from(x, 'binary').toString('base64'),
         escape, unescape, decodeURIComponent, encodeURIComponent, URLSearchParams,
         Math, Date, JSON, parseInt, parseFloat, isNaN, String, Number, Object, Array,
-        setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+        setTimeout: () => 0, clearTimeout: () => {},
+        // Intervals are tracked live. `setInterval: () => 0` made polling
+        // invisible: startPolling() saw a falsy timer, so its `if (pollTimer)
+        // return` guard never held, and clearInterval(0) could never be observed
+        // - the one thing the ban screen actually needs to get right.
+        setInterval: (fn, ms) => { made.live.push({ fn, ms, on: true }); return made.live.length; },
+        clearInterval: (h) => { if (made.live[h - 1]) made.live[h - 1].on = false; },
         navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120', language: 'en-US', languages: ['en-US'], hardwareConcurrency: 8, maxTouchPoints: 0 },
         screen: { width: 1920, height: 1080, colorDepth: 24 },
         location: makeLocation(made, search, '/reward.html'),
@@ -111,9 +123,23 @@ function loadPage({ search, worker, endpoints }) {
             if (String(sel).includes('data-sh-endpoint')) return { getAttribute: () => worker };
             return { remove() {}, style: {} };
         },
-        body: { appendChild() {} }
+        body: {
+            _children: [],
+            appendChild(c) { this._children.push(c); return c; },
+            removeChild(c) { const j = this._children.indexOf(c); if (j > -1) this._children.splice(j, 1); },
+            contains(c) { return this._children.indexOf(c) > -1; }
+        }
+    };
+    // The ban overlay lives on <body>, not in #app, so the lookup has to
+    // walk body children by their id property. Returning only #app-registered
+    // ids made the overlay unreachable to every assertion below.
+    const realGet = sb.document.getElementById;
+    sb.document.getElementById = (id) => {
+        for (const c of sb.document.body._children) if (c.id === id) return c;
+        return realGet(id);
     };
     vm.createContext(sb);
+    sb.__live = made.live;
     vm.runInContext(extractScript(rewardHtml, 'reward.html'), sb, { filename: 'reward.html' });
     return { sb, made };
 }
@@ -122,6 +148,11 @@ function loadPage({ search, worker, endpoints }) {
 const realEndpoint = (/data-sh-endpoint="([^"]+)"/.exec(rewardHtml) || [])[1] || '';
 const W = realEndpoint || 'https://worker.test';
 const tick = () => new Promise(r => setImmediate(() => setImmediate(() => setImmediate(r))));
+
+// True when the progress poll has been disarmed. Scoped to the 4000ms timer on
+// purpose: the ban screen runs its OWN 1s countdown that is meant to stay alive
+// for the whole ban, so asserting "no live intervals" would fail on correct code.
+const stopPolled = (sb) => sb.__live.filter(i => i.ms === 4000).every(i => !i.on);
 
 // ---------------------------------------------------------------------------
 console.log('the page takes its config from the worker, not from the URL');
@@ -180,11 +211,9 @@ console.log('a reward with no checkpoints explains itself instead of going blank
     });
     await tick();
     const html = String(made.elements.app.innerHTML);
-    check('it says the reward has no checkpoints', /no checkpoints/i.test(html), html.slice(0, 180));
-    check('and offers no Start button at all', !made.clicks.startBtn,
-        'a button whose only possible destination is nowhere is worse than no button');
-    check('and certainly does not navigate to about:blank', made.navigatedTo !== 'about:blank',
-        'navigated to ' + JSON.stringify(made.navigatedTo));
+    check('it explains the reward is empty', /no checkpoints/i.test(html), html.slice(0, 200));
+    check('and offers no Start button at all', !made.clicks.startBtn);
+    check('and certainly does not navigate to about:blank', !made.navigatedTo);
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +251,7 @@ console.log('the Start button goes to the ad link the worker chose');
 console.log('the blacklist is shown, not hidden');
 // ---------------------------------------------------------------------------
 {
-    const { made } = loadPage({
+    const { made, sb } = loadPage({
         search: '?rid=rwTEST1',
         worker: W,
         endpoints: {
@@ -230,12 +259,24 @@ console.log('the blacklist is shown, not hidden');
         }
     });
     await tick();
-    const html = String(made.elements.app.innerHTML);
-    check('the visitor is told they are banned', /blacklisted/i.test(html), html.slice(0, 160));
-    check('and for how long', /blacklisted for 2h/i.test(html), html.slice(0, 220));
-    check('and the reason', /no-click-id/.test(html));
-    check('and that clearing data will not help', /clearing site data/i.test(html));
+    // The ban is a sibling of #app on <body>, not markup written into #app. It
+    // used to be an in-flow card rendered ABOVE the progress and key sections,
+    // so a long page still showed earned keys underneath "you are banned".
+    const ov = sb.document.getElementById('shBanOverlay');
+    const html = String(ov ? ov.innerHTML : made.elements.app.innerHTML);
+    check('the ban is a full-screen overlay, not a card in the page flow',
+        !!ov && /position:fixed/.test(String(ov.style.cssText || '')), 'overlay=' + !!ov);
+    check('the visitor is told they are banned', /Temporarily Blacklisted/.test(html), html.slice(0, 200));
+    check('and that it is the reward session that is paused', /temporarily paused/i.test(html));
+    check('and how long is left', /2 hours 0 minutes/.test(html), html.slice(0, 240));
+    check('and what not to do', /do not bypass/i.test(html));
+    // The stored reason is an internal enum. Printing it tells a bypasser which
+    // check tripped and how to dodge the next one, so it is mapped to a sentence.
+    check('but does not leak the internal reason code', !/no-click-id/.test(html), html.slice(0, 240));
+    check('and states the reason in plain language', /bypassing the ad steps/.test(html));
     check('no Start button is offered while banned', !made.clicks.startBtn);
+    check('and it stops asking the worker for progress', stopPolled(sb),
+        'poll still armed');
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +398,45 @@ console.log('checkpoint.html no longer implements its own flow');
     check('it no longer counts down and self-verifies', !/Verify Checkpoint/.test(src));
     check('it points the visitor at the real reward page', /reward\.html|rid=/.test(checkpointHtml),
         'a redirect stub, not a second implementation');
+}
+
+console.log();
+console.log('progress advances without the visitor reloading the page');
+// ---------------------------------------------------------------------------
+// The reported bug: a checkpoint was completed on the WORKER, after the provider
+// callback sent the visitor away. Nothing re-read progress on their return, so
+// the page still said "0/1" and the visitor concluded the checkpoint had not
+// counted. It had. Polling is what closes that gap.
+{
+    let done = 0;
+    const { made, sb } = loadPage({
+        search: '?rid=rwTEST1',
+        worker: W,
+        endpoints: {
+            '/sh/reward/pub': () => ({ ok: true, public: { rid: 'rwTEST1', name: 'X', keyDurationH: 1, maxKeys: 1, total: 1, steps: [{ i: 0, name: 'A', provider: 'linkvertise' }] } }),
+            '/sh/reward/state': () => ({ ok: true, sid: 's1', done, total: 1, doneList: [], keys: [], complete: done >= 1 })
+        }
+    });
+    await tick();
+    let html = String(made.elements.app.innerHTML);
+    check('the page starts showing no progress', /Progress: 0\/1/.test(html), html.slice(0, 160));
+    const stateCalls = made.gets.filter(g => /\/sh\/reward\/state/.test(g.url)).length;
+
+    // The checkpoint completes on the worker while this tab sits idle - exactly
+    // what happens while the visitor is on the provider's page.
+    done = 1;
+    const poll = sb.__live.find(i => i.ms === 4000 && i.on);
+    check('a progress poll is armed while work is outstanding', !!poll);
+    if (poll) { poll.fn(); }
+    await tick();
+
+    html = String(made.elements.app.innerHTML);
+    check('the poll re-asks the worker on its own',
+        made.gets.filter(g => /\/sh\/reward\/state/.test(g.url)).length > stateCalls);
+    check('and the visitor now sees the checkpoint counted', /Progress: 1\/1/.test(html), html.slice(0, 200));
+    check('and is told the reward is complete', /All checkpoints complete/.test(html));
+    check('and the poll is disarmed now there is nothing left to watch', stopPolled(sb),
+        'poll still armed after completion');
 }
 
 console.log();

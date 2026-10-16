@@ -313,13 +313,74 @@
         refresh();
     }
 
+    // A full-screen overlay, not a card in the normal flow.
+    //
+    // A banned visitor must not be able to scroll past it. The previous version
+    // rendered into the app container, ABOVE the progress and key sections, so a
+    // long page still showed earned progress and keys underneath the ban - which
+    // reads as "banned, but here is everything anyway".
     function showBan(r) {
-        app.innerHTML = '<div class="card center"><div class="big">⛔</div>'
-            + '<h1 style="margin-top:12px;font-size:20px;color:#ff4444">You are blacklisted for ' + fmtLeft((r.until || 0) - Date.now()) + '</h1>'
-            + '<p class="sub">' + esc(r.reason || 'because you tried to bypass a checkpoint') + '</p>'
-            + '<p class="sub">Repeat attempts double the penalty (2h → 4h → 8h → ...). '
-            + 'This is tied to your browser and your connection, so clearing site data or switching networks will not clear it.</p>'
+        stopPolling();
+        var until = (r.until || 0);
+        var old = document.getElementById('shBanOverlay');
+        if (old) old.remove();
+        var ov = document.createElement('div');
+        ov.id = 'shBanOverlay';
+        ov.setAttribute('role', 'alertdialog');
+        ov.setAttribute('aria-modal', 'true');
+        ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0a0a0f;'
+            + 'display:flex;align-items:center;justify-content:center;padding:24px;';
+        ov.innerHTML =
+            '<div style="background:#171a2e;border:1px solid #2a2f4d;border-radius:10px;"'
+            + 'padding:44px 52px;max-width:560px;width:100%;text-align:center;"'
+            + 'box-shadow:0 24px 70px rgba(0,0,0,.6)">'
+            + '<div style="width:74px;height:74px;margin:0 auto 26px;border-radius:50%;"'
+            + 'border:3px solid #ff4d5e;display:flex;align-items:center;justify-content:center">'
+            + '<svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#ff4d5e" '
+            + 'stroke-width="2.4" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/>'
+            + '<line x1="19" y1="5" x2="5" y2="19"/></svg></div>'
+            + '<h1 style="font-family:Georgia,serif;font-size:30px;font-weight:700;"'
+            + 'color:#fff;margin:0 0 18px">Temporarily Blacklisted</h1>'
+            + '<p style="color:#c9cee0;font-size:15px;font-weight:600;line-height:1.6;margin:0 0 18px">'
+            + 'Your session for this reward has been temporarily paused due to '
+            + esc(shBanReason(r)) + '.</p>'
+            + '<p style="color:#8f97b3;font-size:14px;margin:0 0 14px">Do not bypass the ad steps.</p>'
+            + '<p style="color:#8f97b3;font-size:14px;margin:0" id="shBanCountdown">'
+            + 'You can continue in: ' + shBanLeft(until - Date.now()) + '.</p>'
             + '</div>';
+        document.body.appendChild(ov);
+        shStartCountdown(until);
+    }
+
+    // The stored reason is an internal enum (too-fast, replayed, no-click-id).
+    // Surfacing it verbatim tells a bypasser exactly which check tripped and how
+    // to avoid the next one, so every code maps to the same plain sentence.
+    // fmtLeft is terse ("2h 0m") because it is used inline in dense tables.
+    // The ban screen is a single sentence the visitor reads once, so it gets
+    // the spelled-out form instead.
+    function shBanLeft(ms) {
+        if (ms <= 0) return '0 minutes';
+        var h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+        if (h >= 24) return Math.floor(h / 24) + ' days ' + (h % 24) + ' hours';
+        if (h > 0) return h + ' hours ' + m + ' minutes';
+        return m + ' minutes';
+    }
+
+    function shBanReason(r) {
+        return 'bypassing the ad steps';
+    }
+
+    // Counts down in place. A static "2 hours" on a page that can stay open for
+    // an hour is a small lie, and this is the only part of the screen that moves.
+    function shStartCountdown(until) {
+        var el = document.getElementById('shBanCountdown');
+        if (!el) return;
+        var t = setInterval(function () {
+            if (!document.body.contains(el)) { clearInterval(t); return; }
+            var left = until - Date.now();
+            if (left <= 0) { clearInterval(t); location.reload(); return; }
+            el.textContent = 'You can continue in: ' + shBanLeft(left) + '.';
+        }, 1000);
     }
 
     function refresh() {
@@ -329,8 +390,34 @@
                 state = r;
                 // Rebuild the current step view from the worker's answer.
                 if (r.complete) { step = null; }
+                // Disarm the moment the worker says the reward is finished, not
+                // on the NEXT tick. Checking only inside the interval callback left
+                // the page polling for one more cycle after completion, so a tab
+                // left open overnight kept asking about a reward it already had.
+                if (r.complete) { stopPolling(); }
                 render();
             });
+    }
+
+    // Progress used to be re-read only on load, Start and Claim. Completing a
+    // checkpoint happens on the WORKER, after the provider callback, so the page
+    // that sent the visitor away is showing stale state when they come back -
+    // the checkpoint had been recorded and the UI said otherwise.
+    //
+    // Polling closes that gap. It stops as soon as the reward is complete or the
+    // visitor is banned, because neither changes again without their action, and
+    // a page left open should not keep asking.
+    var pollTimer = null;
+    function startPolling() {
+        if (pollTimer) return;
+        pollTimer = setInterval(function () {
+            if (!cfg || !state) return;
+            if (state.complete) { stopPolling(); return; }
+            refresh();
+        }, 4000);
+    }
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     }
 
     function boot() {
@@ -350,6 +437,7 @@
                 return;
             }
             refresh().then(function () {
+                if (state && !state.complete) startPolling();
                 if (state && !state.complete) {
                     api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (s) {
                         if (s.ok && s.step) step = s.step;
