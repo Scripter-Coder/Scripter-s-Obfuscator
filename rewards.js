@@ -26,9 +26,22 @@ function shPlan() {
     return pc[u.plan] || pc['Basic'] || { visitors: 10000, checkpoints: 10 };
 }
 
+// FORWARDED TO THE DASHBOARD NOTIFIER. It used to call shNotify(...) here - i.e.
+// itself - inside a window.showNotification guard, which is an unbounded
+// recursion the moment a dashboard provides showNotification. It stayed
+// dormant only because the guard was false in every context that mattered, and
+// the fallback console.log made it look harmless.
+//
+// The recursion became visible the moment rewards started calling shNotify for
+// ordinary outcomes ("Added - But Not Usable Yet", "Not Saved", migration
+// counts), which is this change. The stack trace pointed at rewards.js and said
+// nothing about the cause.
 function shNotify(title, msg, type, dur) {
-    if (window.showNotification) shNotify(title, msg, type, dur);
-    else console.log('[SH] ' + title + ': ' + msg);
+    if (typeof window.showNotification === 'function') {
+        window.showNotification(title, msg, type, dur);
+        return;
+    }
+    console.log('[SH] ' + title + ': ' + (msg || ''));
 }
 
 function loadRewardsData() {
@@ -126,7 +139,13 @@ async function shRewardMigrateAll() {
 function rewardLink(r) {
     if (!r.rid) return '';
     var path = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
-    return window.location.origin + path + 'reward.html?rid=' + encodeURIComponent(r.rid);
+    // ?w= is redundant with the tag in reward.html today, and that is the point:
+    // if the worker ever moves, links generated after the move work without the
+    // owner re-copying anything, and the tag only has to be corrected for links
+    // already in people's hands.
+    var w = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
+    return window.location.origin + path + 'reward.html?rid=' + encodeURIComponent(r.rid)
+        + (w ? '&w=' + encodeURIComponent(w) : '');
 }
 
 // A reward with no rid cannot be shared yet. The panel says so rather than
