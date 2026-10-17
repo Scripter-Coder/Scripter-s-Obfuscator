@@ -3815,26 +3815,46 @@ function renderUsersList() {
     for (var key in users) {
         var user = users[key];
         var match = false;
-        if (searchQuery === '') { match = true; } else if (searchType === 'username' && user.username.toLowerCase().includes(searchQuery)) { match = true; } else if (searchType === 'email' && user.email.toLowerCase().includes(searchQuery)) { match = true; }
+        // A record with a missing field must not take the panel down with it.
+        //
+        // This used to read user.username.charAt(0) and user.username.
+        // toLowerCase() directly, so ONE record without a username threw
+        // "Cannot read properties of undefined (reading 'charAt')" and the
+        // entire list rendered as nothing. The user then saw an empty panel and
+        // no users at all, which reads as "the database is gone" rather than
+        // "one row is malformed".
+        //
+        // Every field is coerced to a string first. The account is still
+        // rendered and still listed - it just shows the email or a '?' instead
+        // of a crash that hides the other 123 accounts.
+        var uname = String((user && user.username) || '');
+        var mail = String((user && user.email) || key || '');
+        if (searchQuery === '') { match = true; }
+        else if (searchType === 'username' && uname.toLowerCase().includes(searchQuery)) { match = true; }
+        else if (searchType === 'email' && mail.toLowerCase().includes(searchQuery)) { match = true; }
         if (match) { filteredUsers[key] = user; }
     }
     for (var key in filteredUsers) {
         count++;
         var user = filteredUsers[key];
+        var uname = String((user && user.username) || '');
+        var mail = String((user && user.email) || key || '');
         var isAdmin = user.isAdmin ? 'tag-admin' : 'tag-user';
         var isScripter = user.isScripter ? 'tag-creator' : '';
         var roleText = user.isScripter ? '⭐ Creator' : (user.isAdmin ? '👑 Admin' : '👤 User');
         var isSelected = (selectedUserEmail === key) ? 'selected' : '';
-        var avatarLetter = user.username.charAt(0).toUpperCase();
+        // A nameless account still gets a tile, with a letter taken from
+        // whatever it does have.
+        var avatarLetter = (uname || mail || '?').charAt(0).toUpperCase();
         var safeKey = key.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         html += `
             <div class="user-list-item ${isSelected}" onclick="selectUser('${safeKey}')">
                 <div class="user-info">
                     <div class="user-avatar">${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : avatarLetter}</div>
-                    <div class="user-details"><div class="name">${user.username}</div><div class="email">${user.email}</div></div>
+                    <div class="user-details"><div class="name">${uname || mail}</div><div class="email">${mail}</div></div>
                 </div>
                 <div class="user-tags">
-                    <span class="tag tag-plan">${user.plan}</span>
+                    <span class="tag tag-plan">${String((user && user.plan) || 'Basic')}</span>
                     <span class="tag ${isAdmin} ${isScripter}">${roleText}</span>
                 </div>
             </div>
