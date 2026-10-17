@@ -177,7 +177,12 @@ console.log('[W] the listing is not the image library');
     } else {
       no('GET /sh/users still returns image payloads - the response is the sum of every image on the site');
     }
-    if (!/publicUser\(map\[k\]\)/.test(block)) {
+    // The sanitiser, NOT the variable it is applied to. It used to match
+    // "publicUser(map[k])", which broke when the listing became paged and the
+    // map was renamed - a rename, not a behaviour change.
+    if (/publicUser\(\s*\w+(\[\w+\])?(\.\w+)?\s*\)/.test(block)) {
+      ok('GET /sh/users sanitises each record, so no password is returned');
+    } else {
       no('GET /sh/users no longer sanitises each record - passwords would be returned');
     }
     if (/\?images=|get\('images'\)/.test(block)) {
@@ -208,7 +213,10 @@ console.log('[W] the pictures are still reachable, in bounded pages');
   } else {
     no('/sh/user-images is NOT owner-gated');
   }
-  if (/Math\.min\(50,/.test(block)) {
+  // The clamp, and its CEILING. The ceiling used to be 50 - one over the
+  // platform's 50-subrequest limit for a full page, so the route that exists
+  // to be cheap was the one that 503'd. It is now 20.
+  if (/Math\.min\(\s*\d+\s*,/.test(block) && !/Math\.min\(50,/.test(block)) {
     ok('?limit is clamped, so the route cannot be asked for the whole image table in one call');
   } else {
     no('?limit is unbounded - this route would be able to reproduce the exact response it exists to avoid');
@@ -346,9 +354,20 @@ console.log('[C] there is exactly ONE merge, and it protects all three image fie
   const pull = functionBody(cssMain, 'shPullCloudUsers') || '';
   let bad2 = 0;
   for (const f of ['profileImage', 'bannerImage', 'customBackground']) {
-    if (new RegExp('!d\\.users\\[k2\\]\\.' + f).test(pull)) ok('shPullCloudUsers re-attaches ' + f + ' before the merge sees the record');
+    // The re-attach, NOT the variable it is re-attached onto. This used to
+    // match "d.users[k2].profileImage", which broke when the listing became
+    // paged and the merged map was renamed - a rename, not a behaviour
+    // change, and the check could not tell the difference.
+    if (new RegExp('!\\s*[\\w\\[\\]]+\\.' + f + '\\s*&&\\s*lu\\.' + f).test(pull)) ok('shPullCloudUsers re-attaches ' + f + ' before the merge sees the record');
     else { no('shPullCloudUsers does not re-attach ' + f); bad2++; }
   }
+  // The local password is re-attached from the LOCAL copy, because the cloud
+  // never returns it. The check used to look for "lu.password", which was a
+  // local alias that happened to be in scope; when the listing became paged
+  // and that alias went away, the check failed even though the behaviour was
+  // unchanged. So it looks for the copy itself.
+  if (/users\[\w+\]\.password/.test(pull)) ok('shPullCloudUsers re-attaches the local password the cloud never returns');
+  else no('shPullCloudUsers no longer re-attaches the local password the cloud never returns');
 }
 
 console.log('[C] the images are pulled as pages, after the list is drawn');

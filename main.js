@@ -1303,35 +1303,57 @@ function shReconcileWithCloud(cloud) {
 
 async function shPullCloudUsers() {
     try {
-        var d = await shOwnerApi('sh/users', null);
-        if (d.ok && d.users) {
-            // re-attach local passwords where we have them (panels need them
-            // for delete/edit flows; cloud never stores them in responses)
-            for (var k in d.users) {
-                if (users[k] && users[k].password) d.users[k].password = users[k].password;
-            }
-            // The image fields are ABSENT from the listing, not empty, and that is
-            // deliberate (see the worker). A record that arrives without them must
-            // not be written over the local one: users[k] is the copy the whole UI
-            // renders, so letting the listing's blank version win here is how an
-            // avatar or a full-page background disappears from the dashboard on the
-            // device that has it.
-            for (var k2 in d.users) {
-                if (users[k2]) {
-                    var lu = users[k2];
-                    if (!d.users[k2].profileImage && lu.profileImage) d.users[k2].profileImage = lu.profileImage;
-                    if (!d.users[k2].bannerImage && lu.bannerImage) d.users[k2].bannerImage = lu.bannerImage;
-                    if (!d.users[k2].customBackground && lu.customBackground) d.users[k2].customBackground = lu.customBackground;
+        // The listing is PAGED, and this loops until there is no next page.
+        //
+        // The server used to return every account in one response, which meant
+        // it had to READ every account - one request per account, and past 50
+        // accounts the platform killed the request with an empty 503. The
+        // admin panel simply stopped listing users, with no message about it.
+        //
+        // So the server returns a page and says whether more exist, and this
+        // walks the pages. The merged result is the same map the panel has
+        // always been given.
+        var all = {};
+        var total = null;
+        var offset = 0;
+        var guard = 0;
+        for (;;) {
+            var d = await shOwnerApi('sh/users?offset=' + offset + '&limit=25', null);
+            if (!d || !d.ok) {
+                if (!total) {
+                    return { ok: false, reason: (d && d.error) || 'the cloud returned no users and no error' };
                 }
+                // A page failed after some pages arrived. Return what we have
+                // and say so, rather than throwing away a list that is mostly
+                // there and reporting a total failure.
+                return { ok: true, users: all, count: Object.keys(all).length, total: total, partial: true, reason: (d && d.error) || 'a page of users could not be fetched' };
             }
-            return { ok: true, users: d.users, count: (typeof d.count === 'number' ? d.count : Object.keys(d.users).length) };
+            if (d.users) { for (var k in d.users) all[k] = d.users[k]; }
+            if (typeof d.total === 'number') total = d.total;
+            if (!d.hasMore) break;
+            offset = d.offset + d.limit;
+            if (++guard > 200) break;   // never loop forever
         }
-        // An HTTP error still RESOLVES, so it arrives here as data rather than
-        // as a throw. Returning null on both paths is what let the caller render
-        // a hardcoded "503, the users database may be too large" for any failure
-        // at all - an owner token that has not loaded, a worker that is not
-        // deployed, an offline client, a 401. The reason is carried through now.
-        return { ok: false, reason: (d && d.error) || 'the cloud returned no users and no error' };
+        // re-attach local passwords where we have them (panels need them
+        // for delete/edit flows; cloud never stores them in responses)
+        for (var k in all) {
+            if (users[k] && users[k].password) all[k].password = users[k].password;
+        }
+        // The image fields are ABSENT from the listing, not empty, and that is
+        // deliberate (see the worker). A record that arrives without them must
+        // not be written over the local one: users[k] is the copy the whole UI
+        // renders, so letting the listing's blank version win here is how an
+        // avatar or a full-page background disappears from the dashboard on the
+        // device that has it.
+        for (var k2 in all) {
+            if (users[k2]) {
+                var lu = users[k2];
+                if (!all[k2].profileImage && lu.profileImage) all[k2].profileImage = lu.profileImage;
+                if (!all[k2].bannerImage && lu.bannerImage) all[k2].bannerImage = lu.bannerImage;
+                if (!all[k2].customBackground && lu.customBackground) all[k2].customBackground = lu.customBackground;
+            }
+        }
+        return { ok: true, users: all, count: Object.keys(all).length, total: total };
     } catch (e) {
         return { ok: false, reason: 'could not reach the cloud: ' + ((e && e.message) || e) };
     }

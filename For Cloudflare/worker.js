@@ -2155,6 +2155,124 @@ async function loadUsersMap(env) {
     }
     return map;
 }
+
+// ONE ACCOUNT, NOT THE WHOLE TABLE.
+//
+// This is the difference between a route that works and a route that 503s.
+//
+// The user table is one KV key per account now, so reading the WHOLE table
+// costs ONE SUBREQUEST PER USER. A Worker on the free plan is allowed 50
+// subrequests per request, so from the 51st account onwards every route that
+// read the table stopped working - and it stopped SILENTLY, because the
+// platform kills the request before the worker can answer, so the user got
+// an empty 503 and no message at all.
+//
+// The live site has 120 accounts. /sh/user-get, /sh/user-sync, /sh/user-delete
+// and /sh/user-password were each reading all 120 of them to use ONE.
+//
+// So this reads the one key. The legacy blob is still consulted, because an
+// account that predates the per-account keys lives only there - and THAT read
+// is one subrequest, not one per user.
+//
+// It returns the record, or null. It does NOT touch D1: the caller mirrors
+// the record it actually changed, because mirroring the whole table on every
+// read is the other half of the same cost.
+async function loadUserByEmail(env, email) {
+    const key = userKvKey(email);
+    if (!env.LOADERS_KV) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(key);
+        if (raw) {
+            try { return JSON.parse(raw); } catch (e) {
+                console.error('[ScripterHub] unreadable user record ' + key + ': ' + (e && e.message));
+            }
+        }
+    } catch (e) { /* fall through to the legacy blob */ }
+    // The legacy blob: ONE read, and only when the per-account key is absent.
+    try {
+        const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+        if (raw) {
+            const legacy = JSON.parse(raw) || {};
+            const rec = legacy[email] || legacy[String(email || '').toLowerCase()];
+            if (rec) return rec;
+        }
+    } catch (e) { /* no legacy blob, or unreadable */ }
+    return null;
+}
+
+// Remove ONE account from the legacy blob, if it is there.
+//
+// The blob is one value, so removing an entry is a read-modify-write of that
+// value - but it is only done when the blob exists AND holds the account, so
+// the common case (a per-account key) costs nothing at all.
+async function removeUserFromLegacyBlob(env, email) {
+    if (!env.LOADERS_KV) return;
+    try {
+        const raw = await env.LOADERS_KV.get(USERS_KV_KEY);
+        if (!raw) return;
+        const legacy = JSON.parse(raw) || {};
+        const key = Object.keys(legacy).find(k => k.toLowerCase() === String(email || '').toLowerCase());
+        if (!key) return;
+        delete legacy[key];
+        await env.LOADERS_KV.put(USERS_KV_KEY, JSON.stringify(legacy));
+    } catch (e) {
+        console.error('[ScripterHub] legacy blob cleanup failed: ' + (e && e.message));
+    }
+}
+
+// THE NAMES OF EVERY ACCOUNT, AND NOTHING ELSE.
+//
+// One KV list() call per 1000 accounts, and a list returns KEY NAMES - not
+// records. So the whole account list costs ONE subrequest, however many
+// accounts there are, and the records are fetched only for the page that is
+// actually being served.
+//
+// This is the difference between the admin panel working and not. Reading the
+// RECORDS for every account costs one subrequest each, so at 51 accounts
+// (Workers on the free plan allow 50 subrequests per request) the platform
+// killed the request with an empty 503 and no message.
+async function listUserKeys(env) {
+    const names = [];
+    if (!env.LOADERS_KV) return names;
+    let cursor = null;
+    let guard = 0;
+    do {
+        const page = await env.LOADERS_KV.list({ prefix: USER_PREFIX, cursor: cursor || undefined, limit: USERS_LIST_MAX });
+        for (const k of (page.keys || [])) names.push(k.name);
+        cursor = page.list_complete ? null : page.cursor;
+        if (++guard > 20) { cursor = null; break; }   // never loop forever
+    } while (cursor);
+    return names;
+}
+
+// A PAGE OF ACCOUNT RECORDS.
+//
+// The names come from one list call; the records for the page come from one
+// get each. The page size is what keeps the subrequest count under the
+// platform's limit, so it is CLAMPED rather than trusted.
+//
+// This does NOT mirror to D1. A read that rewrites the whole table is the
+// other half of the same cost, and mirroring belongs on the paths that
+// actually changed something.
+async function loadUsersPage(env, offset, limit) {
+    const names = await listUserKeys(env);
+    const off = Math.max(0, offset | 0);
+    const lim = Math.max(1, Math.min(limit | 0 || 25, 25));
+    const users = {};
+    for (const name of names.slice(off, off + lim)) {
+        try {
+            const raw = await env.LOADERS_KV.get(name);
+            if (!raw) continue;
+            const rec = JSON.parse(raw);
+            const email = String((rec && (rec.email || rec.id)) || name.slice(USER_PREFIX.length));
+            if (email) users[email] = rec;
+        } catch (e) {
+            // ONE bad record must not cost the page.
+            console.error('[ScripterHub] unreadable user record ' + name + ': ' + (e && e.message));
+        }
+    }
+    return { users, total: names.length, offset: off, limit: lim, hasMore: off + lim < names.length };
+}
 // kill an OLD loader (key rotation / re-upload on edit); returns true if replaced
 async function maybeReplaceOld(env, replaces) {
     const rep = String(replaces || '');
@@ -5147,8 +5265,8 @@ if (existingRec) return jsonResponse({ ok: false, error: 'An account with this e
                 } catch (e) { tokenOk = false; }
             }
             if (!email || email.length > MAX_EMAIL_LEN || (!tokenOk && (!password || password.length > 500))) return jsonResponse({ ok: false, error: 'bad request' }, 400);
-            const map = await loadUsersMap(env);
-            const existing = map[email];
+            // ONE account, not the whole table. See loadUserByEmail.
+            const existing = await loadUserByEmail(env, email);
             if (existing) {
                 // must prove identity with the real password.
                 // PHASE 1: PBKDF2 (was: b64 comparison). A legacy record is
@@ -5160,11 +5278,10 @@ if (existingRec) return jsonResponse({ ok: false, error: 'An account with this e
                 if (v.needsRehash) {
                     try {
                         existing.password = await hashPassword(env, password);
-                        map[email] = storageSafeUser(existing);
-                        await saveUsersMap(env, map);
+                        // ONE key, not the whole table rewritten.
+                        await putUserRecord(env, storageSafeUser(existing));
                     } catch (e) { /* a failed upgrade must not block the sync */ }
-                }
-                const inc = sanitizeUserRecord(body.user || {});
+                }                const inc = sanitizeUserRecord(body.user || {});
                 // merge only profile fields - keep server plan/flags/password
                 const rec = { ...existing };
                 // customBackground is a DIFFERENT feature from bannerImage and
@@ -5181,12 +5298,11 @@ if (existingRec) return jsonResponse({ ok: false, error: 'An account with this e
                 for (const k of ['username', 'description', 'profileImage', 'bannerImage', 'customBackground', 'theme', 'stats', 'disabled', 'createdAt', 'id', 'twoStepEnabled', 'twoStepCode', 'twoStepExpires']) {
                     if (inc[k] !== undefined) rec[k] = inc[k];
                 }
-                map[email] = rec;
                 // ONE key - this route only ever touches the caller's own
                 // record, so there is nothing here that needs the whole table.
                 await putUserRecord(env, rec);
                 if (stateFor(env)) {
-                    try { await syncUsersToD1(env, (await loadUsersMap(env))); }
+                    try { await syncUsersToD1(env, { [String(email).toLowerCase()]: rec }); }
                     catch (e) { console.error('[ScripterHub] user sync to D1 failed: ' + (e && e.message)); }
                 }
                 return jsonResponse({ ok: true, user: publicUser(rec) });
@@ -5206,7 +5322,7 @@ if (existingRec) return jsonResponse({ ok: false, error: 'An account with this e
             if (!rec.password || rec.password === btoa('')) rec.password = btoa('sh_no_login_' + Date.now());
             await putUserRecord(env, rec);
             if (stateFor(env)) {
-                try { await syncUsersToD1(env, (await loadUsersMap(env))); }
+                try { await syncUsersToD1(env, { [String(email).toLowerCase()]: rec }); }
                 catch (e) { console.error('[ScripterHub] user sync to D1 failed: ' + (e && e.message)); }
             }
             return jsonResponse({ ok: true, user: publicUser(rec) });
@@ -5236,8 +5352,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
     const tok = url.searchParams.get('userToken') || url.searchParams.get('token') || '';
     const u = tok ? await verifyUserToken(tok, env) : null;
     if (!u || !u.email) return jsonResponse({ ok: false, error: 'no valid session' }, 401);
-    const map = await loadUsersMap(env);
-    const rec = map[String(u.email)] || map[String(u.email).toLowerCase()];
+    // ONE account, not the whole table. See loadUserByEmail.
+    const rec = await loadUserByEmail(env, u.email);
     if (!rec) return jsonResponse({ ok: false, error: 'no such account' }, 404);
     if (rec.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.', disabled: true }, 403);
     return jsonResponse({ ok: true, user: publicUser(rec) });
@@ -5247,8 +5363,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             const email = String(body.email || '').trim();
-            const map = await loadUsersMap(env);
-            const rec = map[email];
+            // ONE account, not the whole table. See loadUserByEmail.
+            const rec = await loadUserByEmail(env, email);
             // PHASE 1: PBKDF2 verification, not a base64 comparison. A legacy
             // base64 record is accepted once and upgraded in place, because the
             // correct password was just proven.
@@ -5259,8 +5375,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (verdict.needsRehash) {
                 try {
                     rec.password = await hashPassword(env, body.password);
-                    map[email] = storageSafeUser(rec);
-                    await saveUsersMap(env, map);
+                    // ONE key. The old call wrote the whole table back, which is
+                    // a write per account to upgrade one.
+                    await putUserRecord(env, rec);
                 } catch (e) { /* a failed upgrade must not block the read */ }
             }
             if (rec.disabled) return jsonResponse({ ok: false, error: 'This account is disabled.' }, 403);
@@ -5272,16 +5389,23 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             const email = String(body.email || '').trim();
-            const map = await loadUsersMap(env);
-            const existing = map[email];
+            // ONE account, not the whole table. See loadUserByEmail.
+            const existing = await loadUserByEmail(env, email);
             if (!existing) return jsonResponse({ ok: true }); // already gone
             // PHASE 1: PBKDF2 verification.
             const delV = await verifyPassword(env, existing.password, body.password);
             if (!delV.ok) {
                 return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
             }
-            delete map[email];
-            await saveUsersMap(env, map);
+            // Delete THIS account's key, and its entry in the legacy blob if it
+            // has one. The old code rewrote the whole table with the account
+            // removed, which is a write per account to delete one.
+            try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
+            await removeUserFromLegacyBlob(env, email);
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, {}); }
+                catch (e) { console.error('[ScripterHub] user delete mirror failed: ' + (e && e.message)); }
+            }
             return jsonResponse({ ok: true });
         }
 
@@ -5303,8 +5427,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const newPw = String(body.newPassword || '');
             if (!email || !oldPw || !newPw) return jsonResponse({ ok: false, error: 'email, oldPassword, newPassword required' }, 400);
             if (newPw.length < 6) return jsonResponse({ ok: false, error: 'New password must be at least 6 chars.' }, 400);
-            const map = await loadUsersMap(env);
-            const existing = map[email];
+            // ONE account, not the whole table. See loadUserByEmail.
+            const existing = await loadUserByEmail(env, email);
             if (!existing) return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
             // PHASE 1: PBKDF2 verification, and the new password is stored as
             // a PBKDF2 hash rather than btoa(). Because a session token binds
@@ -5314,8 +5438,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const chgV = await verifyPassword(env, existing.password, oldPw);
             if (!chgV.ok) return jsonResponse({ ok: false, error: 'Current password is incorrect.' }, 401);
             existing.password = await hashPassword(env, newPw);
-            map[email] = storageSafeUser(existing);
-            await saveUsersMap(env, map);
+            // ONE key, and ONE D1 row. The old call rewrote the whole table.
+            await putUserRecord(env, storageSafeUser(existing));
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, { [String(email).toLowerCase()]: existing }); }
+                catch (e) { console.error('[ScripterHub] password change mirror failed: ' + (e && e.message)); }
+            }
             return jsonResponse({ ok: true });
         }
 
@@ -5587,14 +5715,22 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // what it is missing - see /sh/user-images below.
         if (url.pathname === '/sh/users' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
-            const map = await loadUsersMap(env);
+            // A PAGE, not the whole table. See loadUsersPage.
+            //
+            // The old call read every account's RECORD to build the listing,
+            // which is one subrequest per account. Past 50 accounts the
+            // platform killed the request: an empty 503, no message, and an
+            // admin panel that had quietly stopped working.
+            const wantOffset = Math.max(0, parseInt((url && url.searchParams.get('offset')) || '0', 10) || 0);
+            const wantLimit = Math.min(25, Math.max(1, parseInt((url && url.searchParams.get('limit')) || '25', 10) || 25));
+            const page = await loadUsersPage(env, wantOffset, wantLimit);
             // ?images=1 restores the old shape. Kept so the owner, a script, or
             // cleanup-bots.mjs can still ask for everything in one call - and so the
             // default is a choice that can be undone, not a removal.
             const wantImages = ((url && url.searchParams.get('images')) || '') === '1';
             const out = {};
-            for (const k in map) {
-                const rec = publicUser(map[k]);
+            for (const k in page.users) {
+                const rec = publicUser(page.users[k]);
                 if (!wantImages) {
                     // Absent, not ''. A missing key and an empty value mean the
                     // same thing to the client here, and omitting them is what makes
@@ -5606,7 +5742,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 }
                 out[k] = rec;
             }
-            return jsonResponse({ ok: true, users: out, count: Object.keys(out).length, images: wantImages });
+            return jsonResponse({
+                ok: true, users: out, count: Object.keys(out).length,
+                total: page.total, offset: page.offset, limit: page.limit,
+                hasMore: page.hasMore, images: wantImages
+            });
         }
 
         // ---------- GET /sh/user-images : owner, the pictures, a page at a time ----------
@@ -5627,23 +5767,27 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // listing - this is the same data, so it gets the same gate.
         if (url.pathname === '/sh/user-images' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
-            const map = await loadUsersMap(env);
-            const keys = Object.keys(map).sort();
             // Clamped, not merely defaulted. An unbounded ?limit= is a request for
             // the entire image table, which is the exact response this route
             // exists to stop being.
-            const limit = Math.min(50, Math.max(1, parseInt((url && url.searchParams.get('limit')) || '8', 10) || 8));
+            //
+            // The ceiling is also the SUBREQUEST budget: one get per account in
+            // the page, and Workers on the free plan allow 50 per request. It
+            // used to be 50, which was one over the limit for a full page - the
+            // route that exists to be cheap was the one that 503'd.
+            const limit = Math.min(20, Math.max(1, parseInt((url && url.searchParams.get('limit')) || '8', 10) || 8));
             const offset = Math.max(0, parseInt((url && url.searchParams.get('offset')) || '0', 10) || 0);
-            const page = {};
-            for (let i = offset; i < Math.min(keys.length, offset + limit); i++) {
-                const rec = publicUser(map[keys[i]]);
-                page[keys[i]] = {
+            const page = await loadUsersPage(env, offset, limit);
+            const out = {};
+            for (const k in page.users) {
+                const rec = publicUser(page.users[k]);
+                out[k] = {
                     profileImage: rec.profileImage || '',
                     bannerImage: rec.bannerImage || '',
                     customBackground: rec.customBackground || ''
                 };
             }
-            return jsonResponse({ ok: true, total: keys.length, offset: offset, limit: limit, users: page });
+            return jsonResponse({ ok: true, total: page.total, offset: page.offset, limit: page.limit, hasMore: page.hasMore, users: out });
         }
 
         // ---------- POST /sh/users : owner upsert one user (PLAN CHANGES) ----------
@@ -5652,8 +5796,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             if (!body.email) return jsonResponse({ ok: false, error: 'email required' }, 400);
-            const map = await loadUsersMap(env);
-            const prev = map[body.email] || {};
+            // ONE account. See loadUserByEmail.
+            const prev = (await loadUserByEmail(env, body.email)) || {};
             // Owner-controlled upsert: plan, admin flags, disable, everything.
             //
             // The IMAGE fields are excluded on purpose. This route is reached from
@@ -5675,8 +5819,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 if (typeof next[k] !== 'string') next[k] = '';
                 next[k] = (typeof prev[k] === 'string') ? prev[k] : '';
             }
-            map[body.email] = next;
-            await saveUsersMap(env, map);
+            // ONE key, and ONE D1 row. The old call rewrote the whole table.
+            await putUserRecord(env, next);
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, { [String(body.email).toLowerCase()]: next }); }
+                catch (e) { console.error('[ScripterHub] owner upsert mirror failed: ' + (e && e.message)); }
+            }
             return jsonResponse({ ok: true, user: publicUser(next) });
         }
 
@@ -5685,9 +5833,16 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
-            const map = await loadUsersMap(env);
-            delete map[String(body.email || '')];
-            await saveUsersMap(env, map);
+            // Delete THIS account's key. Rewriting the whole table to remove one
+            // account is a write per account, and it read the whole table first -
+            // one subrequest per account, which is what made this route 503.
+            const email = String(body.email || '');
+            try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
+            await removeUserFromLegacyBlob(env, email);
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, {}); }
+                catch (e) { console.error('[ScripterHub] owner delete mirror failed: ' + (e && e.message)); }
+            }
             return jsonResponse({ ok: true });
         }
 
@@ -5697,14 +5852,23 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const keep = String(body.keep || '');
-            const map = await loadUsersMap(env);
-            const kept = {};
-            for (const k of (keep || '').split(',')) {
-                const e = k.trim();
-                if (e && map[e]) kept[e] = map[e];
+            // The NAMES, not the records. "Keep these, delete the rest" only
+            // needs to know which accounts exist, and one list call tells it.
+            // Reading every record to decide which to delete was one subrequest
+            // per account - the same 503 as everywhere else.
+            const names = await listUserKeys(env);
+            const keepSet = new Set((keep || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean));
+            let removed = 0;
+            for (const name of names) {
+                const email = name.slice(USER_PREFIX.length).toLowerCase();
+                if (keepSet.has(email)) continue;
+                try { await env.LOADERS_KV.delete(name); removed++; } catch (e) { /* already gone */ }
             }
-            await saveUsersMap(env, kept);
-            return jsonResponse({ ok: true });
+            if (stateFor(env)) {
+                try { await syncUsersToD1(env, {}); }
+                catch (e) { console.error('[ScripterHub] users-clear mirror failed: ' + (e && e.message)); }
+            }
+            return jsonResponse({ ok: true, removed });
         }
 
         // ================= OWNER LICENSE MANAGEMENT =================

@@ -47,8 +47,30 @@ function looksBot(u, email) {
     return false;
 }
 
-async function main() {
-    // 1. owner login (raw access code)
+// EVERY ACCOUNT, one page at a time.
+//
+// The listing is paged because the server cannot read every account in one
+// request: one key per account means one subrequest per account, and past 50
+// accounts the platform answers with an empty 503. Asking for one page and
+// following "hasMore" is the only way to see the whole table.
+async function pullAllUsers(token) {
+    const all = {};
+    let offset = 0;
+    for (let guard = 0; guard < 500; guard++) {
+        const r = await fetch(WORKER + '/sh/users?token=' + encodeURIComponent(token) + '&offset=' + offset + '&limit=25');
+        const data = await r.json();
+        if (!data.ok) {
+            if (Object.keys(all).length) return all;   // keep what we have
+            throw new Error('users pull failed: ' + (data.error || 'unknown'));
+        }
+        for (const k in (data.users || {})) all[k] = data.users[k];
+        if (!data.hasMore) break;
+        offset = data.offset + data.limit;
+    }
+    return all;
+}
+
+async function main() {    // 1. owner login (raw access code)
     const login = await (await fetch(WORKER + '/sh/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: 'ScripterHub' })
@@ -58,9 +80,13 @@ async function main() {
     console.log('owner token: OK');
 
     // 2. pull the users map
-    const data = await (await fetch(WORKER + '/sh/users?token=' + encodeURIComponent(token))).json();
-    if (!data.ok) throw new Error('users pull failed: ' + (data.error || 'unknown'));
-    const map = data.users;
+    //
+    // PAGED, like the panel. The listing used to return every account in one
+    // response, which meant the server had to READ every account - one
+    // request per account - and past 50 accounts the platform killed the
+    // request with an empty 503. This walks the pages instead, and returns
+    // the same map the panel gets.
+    const map = await pullAllUsers(token);
     const emails = Object.keys(map);
     console.log('accounts in cloud:', emails.length);
 
@@ -151,8 +177,8 @@ async function main() {
         console.log('==============================================');
     }
     // 8. final count
-    const after = await (await fetch(WORKER + '/sh/users?token=' + encodeURIComponent(token))).json();
-    if (after.ok) console.log('accounts after cleanup:', Object.keys(after.users).length);
+    const after = await pullAllUsers(token);
+    console.log('accounts after cleanup:', Object.keys(after).length);
 }
 
 main().catch(e => { console.error('CLEANUP FAILED:', e.message); process.exit(1); });
