@@ -582,6 +582,26 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         // SIZE PRE-CHECK: the ceiling is the worker's single-request body limit.
         // Checked here so it fails BEFORE a long compilation rather than after
         // it.
+        //
+        // THE SIZE IS MEASURED FROM THE PAYLOAD, HERE, FOR THE FIRST TIME.
+        //
+        // This used to read a variable named approxBody that had been deleted
+        // when the keeper part-count ceiling was replaced by the worker's body
+        // limit - the check was rewritten, the line that computed the number
+        // was not. Every upload then died with:
+        //
+        //     ReferenceError: approxBody is not defined
+        //
+        // and the panel reported it as "Loadstring Warning: Hidden host upload
+        // failed: approxBody is not defined (deploy the worker + KV first)",
+        // which blames the deployment for a fault in this file. The script was
+        // created and saved; the loadstring never was.
+        //
+        // It is computed from the payload that was actually built, so it
+        // measures what is really about to be sent.
+        const approxBody = (payload.plainCode ? payload.plainCode.length : 0)
+            + (payload.cipher ? payload.cipher.length : 0)
+            + (payload.normalCode ? payload.normalCode.length : 0);
         var SH_BODY_CAP = 68 * 1000 * 1000;
         if (approxBody > SH_BODY_CAP) {
             return { ok: false, error: 'too large: scripts cap at about ' + Math.round(SH_BODY_CAP / 1000000) + ' MB per upload (the HTTP body limit). Split the script into modules.' };
@@ -5954,7 +5974,15 @@ function confirmCreateScript(projectId) {
                 if (/too large|413/i.test(failMsg)) {
                     failMsg = 'Script too large for the cloud host (max ~50MB obfuscated - Cloudflare KV/request caps). Remove some code or split the script into parts.';
                 }
-                showNotification('Loadstring Warning', 'Hidden host upload failed: ' + failMsg + ' (deploy the worker + KV first)', 'warning', 9000);
+                // NAME THE REAL CAUSE, AND DO NOT BLAME THE DEPLOYMENT.
+                //
+                // This used to append "(deploy the worker + KV first)" to every
+                // failure, and to call the upload a "Hidden host upload". Both
+                // were wrong: the failure is usually in THIS BROWSER, and the
+                // advice sent people to redeploy a worker that was working
+                // perfectly. It is how a one-line ReferenceError in this file
+                // was reported for days as a deployment problem.
+                showNotification('Publish Failed', 'The script was created and saved, but its loadstring was not published: ' + failMsg, 'error', 12000);
             }
         });
         renderProjects();
