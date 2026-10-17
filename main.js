@@ -58,6 +58,42 @@ const PLAN_CONFIGS = {
 window.PLAN_CONFIGS = PLAN_CONFIGS;
 window.showNotification = showNotification;
 
+// THE AVATAR LETTER, FROM A RECORD THAT MAY HAVE NO NAME.
+//
+// Every avatar in the UI falls back to the first letter of the username when
+// there is no picture. That was written as
+//
+//     user.username.charAt(0).toUpperCase()
+//
+// in SIX places, none of them guarded, and a record with no username threw
+// "Cannot read properties of undefined (reading 'charAt')" - twice reported
+// from two different functions, because the fix was applied to the one the
+// report happened to point at rather than to the pattern.
+//
+// A throw here is not local. renderAdminUserListFull and renderUsersList build
+// every row into one string and inject it at the end, so a single bad record
+// discards the rows already built. The panel then renders EMPTY, which reads
+// as "all 124 accounts are gone" rather than "one row is malformed". That is
+// what the owner saw, twice.
+//
+// One helper, so there is no seventh place to get it wrong: prefer the
+// username, fall back to the email, then to '?'. The account still renders.
+function shAvatarLetter(rec) {
+    if (!rec) return '?';
+    var name = String(rec.username || '').trim();
+    if (name) return name.charAt(0).toUpperCase();
+    var mail = String(rec.email || '').trim();
+    return mail ? mail.charAt(0).toUpperCase() : '?';
+}
+// The same coercion for a displayed name: a nameless account shows its email
+// rather than printing "undefined" into the panel.
+function shDisplayName(rec, fallbackKey) {
+    if (!rec) return String(fallbackKey || '?');
+    var name = String(rec.username || '').trim();
+    if (name) return name;
+    return String(rec.email || fallbackKey || '?');
+}
+
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
@@ -2794,7 +2830,7 @@ function updateUIForUser(user) {
         if (user.profileImage) {
             avatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">';
         } else {
-            avatar.textContent = user.username.charAt(0).toUpperCase();
+            avatar.textContent = shAvatarLetter(user);
         }
     }
     if (userName) userName.textContent = user.username;
@@ -2848,7 +2884,7 @@ function updateUIForUser(user) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
         } else {
-            dashAvatar.textContent = user.username.charAt(0).toUpperCase();
+            dashAvatar.textContent = shAvatarLetter(user);
             dashAvatar.style.display = 'flex';
             dashAvatar.style.alignItems = 'center';
             dashAvatar.style.justifyContent = 'center';
@@ -3093,7 +3129,7 @@ function updateDashboardTab(user) {
         if (user.profileImage) {
             tabAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
         } else {
-            tabAvatar.textContent = user.username.charAt(0).toUpperCase();
+            tabAvatar.textContent = shAvatarLetter(user);
             tabAvatar.style.display = 'flex';
             tabAvatar.style.alignItems = 'center';
             tabAvatar.style.justifyContent = 'center';
@@ -3965,7 +4001,8 @@ function renderAdminUserListFull() {
     for (var key in users) {
         count++;
         var user = users[key];
-        var createdDate = new Date(user.createdAt).toLocaleDateString();
+        var createdRaw = String((user && user.createdAt) || '');
+        var createdDate = createdRaw ? new Date(createdRaw).toLocaleDateString() : '-';
         var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
         var isScripter = user.isScripter ? '⭐ Creator' : '';
         html += `
@@ -3973,9 +4010,9 @@ function renderAdminUserListFull() {
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #fff; overflow: hidden;">
-                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                            ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : shAvatarLetter(user)}
                         </div>
-                        <div><strong style="color: #ffffff;">${user.username}</strong><span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span></div>
+                        <div><strong style="color: #ffffff;">${shDisplayName(user, key)}</strong><span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span></div>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                         ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
@@ -4173,9 +4210,9 @@ function changeUserPlan(email) {
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
-                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : user.username.charAt(0).toUpperCase()}
+                    ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : shAvatarLetter(user)}
                 </div>
-                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${user.username} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
+                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${shDisplayName(user, key)} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
             </div>
             <div class="form-group"><label style="font-size: 14px;">Select New Plan</label><select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">${planOptions}</select></div>
             <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
@@ -4276,7 +4313,7 @@ function changeOwnPlan() {
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
-                    ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : currentUser.username.charAt(0).toUpperCase()}
+                    ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : shAvatarLetter(currentUser)}
                 </div>
                 <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Your Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">Current: <strong style="color: #8a6bff;">${currentUser.plan}</strong></p></div>
             </div>
