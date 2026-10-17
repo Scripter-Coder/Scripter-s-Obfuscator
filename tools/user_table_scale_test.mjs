@@ -232,11 +232,27 @@ console.log('a deleted account is gone from the gate, not just from KV');
     check('its record is out of the store', !KV._store.has('sh_user_' + email.toLowerCase()));
     check('and the GATE can no longer find it', Number(rowCount()) === 0, 'rows: ' + rowCount());
 
+    // The username has to come back too. putUserRecord reserves it on every
+    // save and nothing released it, so a deleted account's username stayed
+    // permanently taken - and the index still pointed at the deleted address,
+    // so username login for whoever took it next resolved to the dead record.
+    check('its username is free again', !KV._store.has('sh_uname_gone'),
+        'the index still reserves it: ' + (KV._store.has('sh_uname_gone') ? 'present' : 'absent'));
+    const again = await call(env, 'POST', '/sh/user-signup', {
+        email: 'gone' + (Date.now() + 1) + '@example.com', username: 'Gone', password: 'AnotherPass12345',
+    });
+    check('and it can be signed up with again', again.ok === true,
+        'signup refused it: ' + JSON.stringify(again).slice(0, 90));
+
     // The owner is not deletable, and a missing owner row would take the gate
     // with it, so the mirror refuses to remove it.
+    const workerSrc = await fs.promises.readFile(new URL('../For Cloudflare/worker.js', import.meta.url), 'utf8');
     check('the mirror never removes the owner row',
-        /id === d1UserId\(OWNER_EMAIL\)\) return;/.test(await fs.promises.readFile(new URL('../For Cloudflare/worker.js', import.meta.url), 'utf8')),
+        /id === d1UserId\(OWNER_EMAIL\)\) return;/.test(workerSrc),
         'the owner row is protected by an email comparison that is not there');
+    check('a bulk clear cannot remove the owner either',
+        /keepSet\.add\(d1UserId\(OWNER_EMAIL\)\)/.test(workerSrc),
+        'the bulk clear would leave the gate with no owner');
 }
 
 console.log('');

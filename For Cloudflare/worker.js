@@ -2200,6 +2200,61 @@ async function loadUserByEmail(env, email) {
     return null;
 }
 
+// Release ONE account's username, if the index entry still points at it.
+//
+// THE USERNAME INDEX OUTLIVED EVERY DELETE
+//
+// putUserRecord() writes sh_uname_<lowercased username> -> email on every
+// save, and that is what makes username sign-in one get instead of a scan.
+// Nothing removed it.
+//
+// So a deleted account kept its username RESERVED, permanently: signing up
+// again with it answered
+//
+//     This username is already taken.
+//
+// for an account that no longer exists. And because the entry still named the
+// old address, username login for the new person resolved to the DELETED
+// account's record.
+//
+// Deleting an account is supposed to make its username available again. The
+// index says otherwise.
+//
+// The entry is only removed if it still points at THIS account. If somebody
+// has since taken the username, their entry is not theirs to lose, and
+// deleting it would lock THEM out instead - trading one wrong answer for
+// another.
+async function releaseUsernameIndex(env, email, username) {
+    const un = String(username || '').trim();
+    if (!env.LOADERS_KV || !un) return;
+    const key = unameKvKey(un);
+    try {
+        const holder = await env.LOADERS_KV.get(key);
+        if (!holder) return;
+        if (String(holder).toLowerCase() !== String(email || '').toLowerCase()) return;
+        await env.LOADERS_KV.delete(key);
+    } catch (e) {
+        console.error('[ScripterHub] username index release failed: ' + (e && e.message));
+    }
+}
+
+// Delete ONE account: its record, its D1 row, its legacy entry and its
+// username. All four, because leaving any one behind is a row that says the
+// account still exists.
+async function deleteUserRecord(env, email, record) {
+    const id = d1UserId(email);
+    if (!id) return;
+    try { await env.LOADERS_KV.delete(userKvKey(id)); } catch (e) { /* already gone */ }
+    // The username comes from the record the caller already read. A delete with
+    // no record in hand (the owner's route) leaves the index entry alone
+    // rather than scanning the table for it - the cost of a scan is the whole
+    // thing this change exists to avoid, and a stale reservation is a smaller
+    // fault than a 503.
+    await releaseUsernameIndex(env, id, record && record.username);
+    await removeUserFromLegacyBlob(env, id);
+    await deleteUserFromD1(env, id);
+}
+
 // Remove ONE account from the legacy blob, if it is there.
 //
 // The blob is one value, so removing an entry is a read-modify-write of that
@@ -5440,18 +5495,12 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!delV.ok) {
                 return jsonResponse({ ok: false, error: 'Invalid email or password.' }, 401);
             }
-            // Delete THIS account's key, and its entry in the legacy blob if it
-            // has one. The old code rewrote the whole table with the account
-            // removed, which is a write per account to delete one.
-            try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
-            await removeUserFromLegacyBlob(env, email);
-            // The D1 row goes too, or the gate's live account check still finds
-            // an account that no longer exists. See deleteUserFromD1.
-            await deleteUserFromD1(env, email);
-            if (stateFor(env)) {
-                try { await syncUsersToD1(env, {}); }
-                catch (e) { console.error('[ScripterHub] user delete mirror failed: ' + (e && e.message)); }
-            }
+            // Delete THIS account and everything that still named it: the
+            // record, the D1 row the gate reads, the legacy entry, and the
+            // username it had reserved. The old code rewrote the whole table
+            // with the account removed, which is a write per account to delete
+            // one. See deleteUserRecord.
+            await deleteUserRecord(env, email, existing);
             return jsonResponse({ ok: true });
         }
 
@@ -5879,17 +5928,13 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             let body = {};
             try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
             if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
-            // Delete THIS account's key. Rewriting the whole table to remove one
-            // account is a write per account, and it read the whole table first -
-            // one subrequest per account, which is what made this route 503.
+            // The record is read first, for the username it had reserved. Rewriting
+            // the whole table to remove one account is a write per account,
+            // and reading the whole table first was one subrequest per
+            // account - which is what made this route 503.
             const email = String(body.email || '');
-            try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
-            await removeUserFromLegacyBlob(env, email);
-            await deleteUserFromD1(env, email);
-            if (stateFor(env)) {
-                try { await syncUsersToD1(env, {}); }
-                catch (e) { console.error('[ScripterHub] owner delete mirror failed: ' + (e && e.message)); }
-            }
+            const gone = await loadUserByEmail(env, email);
+            await deleteUserRecord(env, email, gone);
             return jsonResponse({ ok: true });
         }
 
@@ -5906,29 +5951,60 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const names = await listUserKeys(env);
             const keepSet = new Set((keep || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean));
             let removed = 0;
+            // The usernames of the accounts being removed, for the index. They
+            // are read here - while the record is in hand - rather than by the
+            // single-account delete, which does not always have one. Reading
+            // each removed record costs one subrequest each, which this route
+            // can afford ONLY because it is explicitly a bulk operation; that is
+            // still 50 accounts, so it is done in bounded batches and the
+            // batches stop at the platform's limit rather than being retried.
+            const toRemove = [];
             for (const name of names) {
                 const email = name.slice(USER_PREFIX.length).toLowerCase();
                 if (keepSet.has(email)) continue;
-                try { await env.LOADERS_KV.delete(name); removed++; } catch (e) { /* already gone */ }
+                toRemove.push({ name, email });
+            }
+            const BATCH = 40;
+            for (let i = 0; i < toRemove.length && i < BATCH; i++) {
+                const { name, email } = toRemove[i];
+                let username = null;
+                try { username = (JSON.parse(await env.LOADERS_KV.get(name)) || {}).username; } catch (e) { /* unreadable */ }
+                try { await env.LOADERS_KV.delete(name); } catch (e) { /* already gone */ }
+                await releaseUsernameIndex(env, email, username);
+                await removeUserFromLegacyBlob(env, email);
+                removed++;
             }
             // The D1 rows go in ONE statement, not one per account: a delete
             // per account is a subrequest per account, and this route exists to
             // remove a lot of them at once.
+            //
+            // The owner is added to the keep set by force. A clear that removed
+            // the owner row would leave the gate with no owner and the site
+            // with no way back in.
             try {
                 const state = stateFor(env);
                 if (state) {
+                    keepSet.add(d1UserId(OWNER_EMAIL));
                     const keptIds = [...keepSet].map(d1UserId).filter(Boolean).slice(0, 200);
                     if (keptIds.length) {
                         const ph = keptIds.map(() => '?').join(',');
                         await d1run(state._db, 'DELETE FROM users WHERE id NOT IN (' + ph + ')', ...keptIds);
-                    } else {
-                        await d1run(state._db, 'DELETE FROM users WHERE id != ?', d1UserId(OWNER_EMAIL));
                     }
                 }
             } catch (e) {
                 console.error('[ScripterHub] D1 users-clear failed: ' + (e && e.message));
             }
-            return jsonResponse({ ok: true, removed });
+            // Said plainly, because a silent cap is how "I cleared the users"
+            // comes to mean something else than it says.
+            const remaining = toRemove.length - removed;
+            return jsonResponse({
+                ok: true, removed,
+                truncated: remaining > 0,
+                remaining: remaining > 0 ? remaining : 0,
+                note: remaining > 0
+                    ? 'removed ' + removed + ', left ' + remaining + ' - a bulk clear may only touch ' + BATCH + ' accounts per call, so run it again'
+                    : 'removed ' + removed
+            });
         }
 
         // ================= OWNER LICENSE MANAGEMENT =================
