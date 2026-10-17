@@ -2426,6 +2426,33 @@ async function syncUsersToD1(env, map) {
     }
 }
 
+// Remove ONE account from the D1 mirror.
+//
+// syncUsersToD1 only ever adds or updates rows, so a deleted account kept
+// its row - and the gate's live account check is
+//
+//     EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.disabled = 0)
+//
+// which would still find it. The account is gone from KV, so it can no longer
+// sign in and its sessions do not verify, but a row that says the account
+// exists when it does not is exactly the kind of thing that makes a later
+// question ("is this account really deleted?") answer wrongly.
+//
+// The OWNER's row is never removed: the owner is not deletable, and a missing
+// owner row would take the whole gate with it.
+async function deleteUserFromD1(env, email) {
+    const state = stateFor(env);
+    if (!state) return;
+    const id = d1UserId(email);
+    if (!id) return;
+    if (id === d1UserId(OWNER_EMAIL)) return;
+    try {
+        await d1run(state._db, 'DELETE FROM users WHERE id = ?', id);
+    } catch (e) {
+        console.error('[ScripterHub] D1 user delete failed for ' + id + ': ' + (e && e.message));
+    }
+}
+
 // save the users map WITHOUT ever throwing a blank 500.
 //
 // THE WHOLE-TABLE PUT IS GONE, and that is the point of this change.
@@ -5112,6 +5139,22 @@ if (existingRec) return jsonResponse({ ok: false, error: 'An account with this e
                 // ONE key. Writing the whole table here is what made two
                 // signups inside the read cache erase each other.
                 await putUserRecord(env, rec);
+                // AND THE D1 MIRROR, here, not on some later request.
+                //
+                // The delivery gate re-checks the account live:
+                //
+                //     EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.disabled = 0)
+                //
+                // so an account in KV but not in D1 is an account the gate
+                // cannot find. The mirror only ran inside loadUsersMap(), so a
+                // brand-new account was invisible to the gate until an
+                // unrelated request read the whole table - and that read was
+                // the one that started 503ing at 51 accounts. So a new
+                // account could stay invisible for good.
+                if (stateFor(env)) {
+                    try { await syncUsersToD1(env, { [String(email).toLowerCase()]: rec }); }
+                    catch (e) { console.error('[ScripterHub] signup mirror to D1 failed: ' + (e && e.message)); }
+                }
     // A session token is issued HERE, at signup, rather than being fetched with a
     // second /sh/user-login call the client used to make purely to obtain one.
     //
@@ -5402,6 +5445,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // removed, which is a write per account to delete one.
             try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
             await removeUserFromLegacyBlob(env, email);
+            // The D1 row goes too, or the gate's live account check still finds
+            // an account that no longer exists. See deleteUserFromD1.
+            await deleteUserFromD1(env, email);
             if (stateFor(env)) {
                 try { await syncUsersToD1(env, {}); }
                 catch (e) { console.error('[ScripterHub] user delete mirror failed: ' + (e && e.message)); }
@@ -5839,6 +5885,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const email = String(body.email || '');
             try { await env.LOADERS_KV.delete(userKvKey(email)); } catch (e) { /* already gone */ }
             await removeUserFromLegacyBlob(env, email);
+            await deleteUserFromD1(env, email);
             if (stateFor(env)) {
                 try { await syncUsersToD1(env, {}); }
                 catch (e) { console.error('[ScripterHub] owner delete mirror failed: ' + (e && e.message)); }
@@ -5864,9 +5911,22 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 if (keepSet.has(email)) continue;
                 try { await env.LOADERS_KV.delete(name); removed++; } catch (e) { /* already gone */ }
             }
-            if (stateFor(env)) {
-                try { await syncUsersToD1(env, {}); }
-                catch (e) { console.error('[ScripterHub] users-clear mirror failed: ' + (e && e.message)); }
+            // The D1 rows go in ONE statement, not one per account: a delete
+            // per account is a subrequest per account, and this route exists to
+            // remove a lot of them at once.
+            try {
+                const state = stateFor(env);
+                if (state) {
+                    const keptIds = [...keepSet].map(d1UserId).filter(Boolean).slice(0, 200);
+                    if (keptIds.length) {
+                        const ph = keptIds.map(() => '?').join(',');
+                        await d1run(state._db, 'DELETE FROM users WHERE id NOT IN (' + ph + ')', ...keptIds);
+                    } else {
+                        await d1run(state._db, 'DELETE FROM users WHERE id != ?', d1UserId(OWNER_EMAIL));
+                    }
+                }
+            } catch (e) {
+                console.error('[ScripterHub] D1 users-clear failed: ' + (e && e.message));
             }
             return jsonResponse({ ok: true, removed });
         }

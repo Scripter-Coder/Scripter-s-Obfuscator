@@ -99,13 +99,14 @@ const ACCOUNT_COUNT = 120;
 async function buildEnv(accountCount) {
     const counter = { get: 0, put: 0, delete: 0, list: 0 };
     const KV = makeKV(counter);
+    const db = makeD1();
     const env = {
         LOADERS_KV: KV,
         SH_SETUP_TOKEN: 'T',
         SH_BASE_URL: 'https://t.workers.dev',
         SH_OWNER_CODE_HASH: OWNER_CODE_HASH,
         SH_SESSION_SECRET: 'test-secret',
-        SH_DB: makeD1(),
+        SH_DB: db,
     };
     for (let i = 0; i < accountCount; i++) {
         const email = 'user' + i + '@example.com';
@@ -114,7 +115,7 @@ async function buildEnv(accountCount) {
             plan: 'Basic', createdAt: new Date().toISOString(),
         }));
     }
-    return { env, KV, counter };
+    return { env, KV, counter, db };
 }
 
 console.log('[UT] the user table stays reachable as it grows');
@@ -205,6 +206,37 @@ console.log('the images route is bounded too');
     check('it answers', r.status === 200 && r.ok === true, 'HTTP ' + r.status);
     check('its page size is bounded', r.limit <= SUBREQUEST_BUDGET, 'limit ' + r.limit);
     check('and it reports the total', r.total === ACCOUNT_COUNT, 'total ' + r.total);
+}
+
+// --- a deleted account is gone from the GATE's mirror too ------------------
+// syncUsersToD1 only adds and updates rows, so deleting an account from KV
+// used to leave its row behind. The gate's live account check is
+//
+//     EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.disabled = 0)
+//
+// so the row that outlived the account was still answering for it.
+console.log('');
+console.log('a deleted account is gone from the gate, not just from KV');
+{
+    const { env, KV, db } = await buildEnv(ACCOUNT_COUNT);
+    const email = 'gone' + Date.now() + '@example.com';
+    const password = 'GonePass12345';
+    const su = await call(env, 'POST', '/sh/user-signup', { email, username: 'Gone', password });
+    check('the account was created', su.ok === true, JSON.stringify(su).slice(0, 80));
+
+    const rowCount = () => db.prepare('SELECT COUNT(*) AS n FROM users WHERE id = ?').get(email.toLowerCase()).n;
+    check('the gate can see the account', Number(rowCount()) === 1, 'rows: ' + rowCount());
+
+    const del = await call(env, 'POST', '/sh/user-delete', { email, password });
+    check('it can be deleted', del.ok === true, JSON.stringify(del).slice(0, 80));
+    check('its record is out of the store', !KV._store.has('sh_user_' + email.toLowerCase()));
+    check('and the GATE can no longer find it', Number(rowCount()) === 0, 'rows: ' + rowCount());
+
+    // The owner is not deletable, and a missing owner row would take the gate
+    // with it, so the mirror refuses to remove it.
+    check('the mirror never removes the owner row',
+        /id === d1UserId\(OWNER_EMAIL\)\) return;/.test(await fs.promises.readFile(new URL('../For Cloudflare/worker.js', import.meta.url), 'utf8')),
+        'the owner row is protected by an email comparison that is not there');
 }
 
 console.log('');
