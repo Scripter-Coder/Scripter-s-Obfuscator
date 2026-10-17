@@ -155,6 +155,18 @@ def write_url(url: str) -> bool:
 
     Only the SH_STORE_URL line is touched. The value is validated as an https URL first,
     so a corrupt or empty tunnel-url.txt cannot end up written into the deployment config.
+
+    THE PC BACKEND IS OFF, AND THIS REFUSES TO TURN IT BACK ON.
+
+    The line in wrangler.toml is commented out, so there is no active SH_STORE_URL to
+    rewrite - and that is deliberate, not an accident to be tidied up. The owner's
+    machine is no longer part of this product: the browser compiles every script, the
+    worker keeps the bytes in Cloudflare, and the catalogue does not go dark when a
+    laptop sleeps.
+
+    A tool that silently re-enabled it would undo that every time it ran, and it ran
+    at every logon. So when there is no active line, this says so and stops. It does
+    not "helpfully" add one, and it does not deploy.
     """
     if not url.startswith("https://"):
         log(f"refusing to write a non-https address into wrangler.toml: {url!r}")
@@ -169,8 +181,10 @@ def write_url(url: str) -> bool:
     import re
     pattern = re.compile(r"(?m)^(SH_STORE_URL\s*=\s*)(\"[^\"]*\"|'[^']*')")
     if not pattern.search(text):
-        log("wrangler.toml has no SH_STORE_URL line - add one under [vars] or deploy will")
-        log("silently fall back to Cloudflare KV and nothing will be stored on the PC.")
+        log("wrangler.toml has no ACTIVE SH_STORE_URL line - the PC backend is switched off.")
+        log("Nothing was changed and nothing was deployed. That is the intended state:")
+        log("the site compiles and serves every script without this machine.")
+        log("To turn the PC backend on again, uncomment SH_STORE_URL in wrangler.toml first.")
         return False
 
     updated = pattern.sub(lambda m: m.group(1) + '"' + url + '"', text, count=1)

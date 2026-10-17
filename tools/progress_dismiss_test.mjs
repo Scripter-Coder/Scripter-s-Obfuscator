@@ -33,20 +33,29 @@ function check(name, cond, detail) {
 
 console.log('a failed obfuscation always dismisses the overlay');
 
-// --- the host path ---------------------------------------------------------
+// --- the local build path ---------------------------------------------------
+//
+// The host path this file used to check (shObfuscateOnHost) is gone with the
+// rest of the PC path. The browser build has the SAME defect waiting in it -
+// a rejected build that leaves a full-screen overlay up - so the checks move
+// to the path that actually runs now. The overlay is z-indexed and nearly
+// opaque, so a failure report rendered behind it is invisible: the user gets a
+// stuck dialog and no reason.
 {
-    const fn = (main.match(/function shObfuscateOnHost\([^]*?\n\}/) || [''])[0];
-    check('shObfuscateOnHost exists', fn.length > 0);
-    check('it still hides on the no-token branch',
-        /if \(!tok\) \{[\s\S]{0,80}?shProgressHide\(\)/.test(fn));
-    check('AND it attaches a catch, which it did not',
-        /\.catch\(function\s*\(err\)/.test(fn),
-        'every failure other than "no token" rejected with the overlay still up');
-    check('that catch dismisses the overlay',
-        /\.catch\(function\s*\(err\)[\s\S]{0,600}?shProgressHide\(\)/.test(fn));
-    check('and still re-throws, so the caller can report it',
-        /\.catch\(function\s*\(err\)[\s\S]{0,800}?throw err/.test(fn),
-        'swallowing it would leave no reason anywhere');
+    const fn = (main.match(/function shObfuscateLocally\([^]*?\n\}\r?\n/) || [''])[0];
+    check('shObfuscateLocally exists', fn.length > 0);
+    check('it dismisses the overlay when the worker reports an error',
+        /if \(m\.type === 'error'\) \{ finish\(reject/.test(fn),
+        'a build that fails in the worker leaves the overlay up');
+    check('it dismisses the overlay when the worker itself dies',
+        /worker\.onerror = function \(err\) \{[\s\S]{0,200}?finish\(reject/.test(fn),
+        'a worker that throws leaves the overlay up');
+    check('and the finish helper hides it on every exit',
+        /function finish\(fn, arg\) \{[\s\S]{0,400}?shProgressHide\(\)/.test(fn),
+        'the overlay is not dismissed on the settled path');
+    check('and there is no host path left to get stuck',
+        !/shObfuscateOnHost/.test(main.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')),
+        'the host path is gone; a leftover would be a path that can still hang');
 }
 
 // --- every call site that owns a button ------------------------------------

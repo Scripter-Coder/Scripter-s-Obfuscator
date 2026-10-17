@@ -3,6 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- The page must never be served from cache.
+         It loads bare ES modules by relative URL, and a cached page can point
+         at a cached module. The fix for "the site behaves differently than it
+         did a minute ago" is to stop the browser from having an old copy to
+         begin with. -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Streaming Obfuscation System</title>
     <script>
         // Credits image fallback chain - inline so it exists before images load.
@@ -48,7 +56,7 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
             } catch (e) {}
         }
     </script>
-  <script type="module" crossorigin src="./assets/main-DERss__v.js"></script>
+  <script type="module" crossorigin src="./assets/main-CfvBxUJo.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/main-CLPdxdTl.css">
 </head>
 <body>
@@ -639,7 +647,16 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
          browser. The site serves source files as bare ES modules (no
          bundler), so load luaparse as a global BEFORE main.js.
          Lives in public/vendor/ so vite copies it into dist/ too. -->
-      <script src="public/vendor/luaparse.js" onerror="this.onerror=null;this.src='./vendor/luaparse.js'"></script>
+      <script src="public/vendor/luaparse.js" onerror="this.onerror=null;this.src='./vendor/luaparse.js'"></script>
+    <!-- CACHE BUSTING. The version below must change whenever main.js changes.
+         The site is served as bare ES modules straight from the repository, so
+         main.js has no hash in its URL and a browser is free to serve the copy
+         it has - and "the site is broken and I have not changed anything" is
+         what a stale main.js looks like to the person holding the PC. The
+         previous version of this file also had a second problem: the page
+         itself could be served from cache, so a fresh query string on a stale
+         page still fetched stale code. The no-store meta above is what stops
+         the page from being cached at all. -->
 <!-- Rewards: ad-link checkpoints. A module, because rewards.js ends in an
      `export { ... }` - so its functions are NOT global and cannot be called from
      an inline onclick. It puts the handful the markup needs on window itself. -->

@@ -78,8 +78,17 @@ console.log('the split key survives every upload path');
 {
     // kb-finalize's body
     const fin = main.slice(main.indexOf("'sh/kb-finalize'"), main.indexOf("'sh/kb-finalize'") + 1200);
-    check('the finalize call sends splitKey', /splitKey: o\.splitKey/.test(fin),
-        'the worker stores it but the client never sends it');
+    // The client used to call kb-finalize, and the check was that the call
+    // carried splitKey. The call is gone - it was the PC's upload path, and the
+    // PC is not part of this product any more - so the check is now the
+    // inverse. The worker's route still stores the key for a deployment that
+    // has the PC backend switched on; what matters is that the ONLY upload
+    // the client makes is /sh/upload, and that one sends the key (asserted
+    // below).
+    check('the client no longer calls kb-finalize', fin.length === 0 || !/shApi\('sh\/kb-finalize'/.test(fin),
+        'the client is still uploading to the owner\'s machine');
+    check('and it does not call kb-put either', !/shApi\('sh\/kb-put'/.test(main),
+        'the client is still streaming parts to the owner\'s machine');
 
 // NO keeper call sites, which is the point.
 //

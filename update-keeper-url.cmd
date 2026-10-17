@@ -61,9 +61,34 @@ if errorlevel 1 (
 )
 
 REM ---- 3. write it into wrangler.toml ----------------------------------------
-echo [3/4] updating wrangler.toml...
+REM
+REM THE PC BACKEND IS OFF, AND THIS REFUSES TO TURN IT BACK ON.
+REM
+REM SH_STORE_URL is commented out in wrangler.toml, so there is no active line to
+REM rewrite. That is the intended state, not an oversight: the owner's machine
+REM is no longer part of this product. The browser compiles every script, the
+REM worker keeps the bytes in Cloudflare, and the catalogue does not go dark
+REM when a laptop sleeps.
+REM
+REM This script used to "helpfully" add the line and deploy. It ran at every
+REM logon, so it undid that at every logon, and the first symptom anyone saw
+REM was a site that needed a PC. So: no active line means no change and no
+REM deploy.
+REM
+echo [3/4] checking whether the PC backend is enabled at all...
+findstr /b /c:"SH_STORE_URL" wrangler.toml >nul
+if errorlevel 1 (
+    echo.
+    echo [X] The PC backend is switched off - wrangler.toml has no active SH_STORE_URL.
+    echo     Nothing was changed and nothing was deployed. That is the intended state:
+    echo     the site compiles and serves every script without this machine.
+    echo.
+    echo     To turn it back on, uncomment the SH_STORE_URL line in wrangler.toml first.
+    exit /b 1
+)
+echo      an active SH_STORE_URL line is present, continuing...
 powershell -NoProfile -Command ^
-  "$p='wrangler.toml'; $t=[IO.File]::ReadAllText($p); $u='%NEWURL%'; $new=[regex]::Replace($t,'(?m)^SH_STORE_URL\s*=.*$','SH_STORE_URL = \"' + $u + '\"'); if ($new -eq $t) { Write-Host '      already correct' } else { [IO.File]::WriteAllText($p,$new); Write-Host ('      SH_STORE_URL = ' + $u) }"
+  "$p='wrangler.toml'; $t=[IO.File]::ReadAllText($p); $u='%NEWURL%'; $new=[regex]::Replace($t,'(?m)^(SH_STORE_URL\s*=\s*)(\"[^\"]*\"|''[^'']*'')','$1"' + $u + '"'); if ($new -eq $t) { Write-Host '      already correct' } else { [IO.File]::WriteAllText($p,$new); Write-Host ('      SH_STORE_URL = ' + $u) }"
 if errorlevel 1 (
     echo [X] Could not rewrite wrangler.toml.
     exit /b 1

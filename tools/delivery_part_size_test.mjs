@@ -63,6 +63,24 @@ function derivedOf(src, name) {
     return m ? m[1] : null;
 }
 
+// The code, without the prose.
+//
+// A grep over the raw file cannot tell a function from a comment about that
+// function, and main.js deliberately NAMES the removed host functions in its
+// comments - they record why the host path is gone, which is worth keeping.
+// So comments are stripped before the code is inspected.
+//
+// Only whole-line comments are removed. A trailing `//` on a line of code is
+// left alone, because stripping to the first `//` would eat a URL like
+// "https://..." and take the rest of the line with it.
+function codeOnly(src) {
+    return src
+        .split('\n')
+        .filter(line => !/^\s*\/\//.test(line))
+        .join('\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
 console.log('delivery part sizing');
 
 // --- worker: the two numbers that must not drift apart ---------------------
@@ -102,44 +120,60 @@ check('putBlob no longer splits on CHUNK_THRESHOLD',
 check('putBlob slice uses CHUNK_DELIVERY_MAX',
     /slice\(i \* CHUNK_DELIVERY_MAX/.test(putBlobBody));
 
-// --- main.js: the uploader's part size ------------------------------------
-const PART = constOf(main, 'SH_KEEPER_PART_SIZE');
-check('SH_KEEPER_PART_SIZE is defined', PART !== null, 'not found');
-check('SH_KEEPER_PART_SIZE is a readable number', Number.isFinite(PART), 'could not evaluate: ' + PART);
+// --- the part size lives in the WORKER now ---------------------------------
+//
+// It used to be SH_KEEPER_PART_SIZE in main.js, because the parts were stored
+// on the owner's PC. Nothing is stored there any more, so the client has no
+// part size to keep in step with anything - the worker owns it, as
+// CHUNK_DELIVERY_MAX, which is DERIVED from INLINE_DELIVERY_MAX (asserted
+// above, so there is still exactly one number).
+//
+// The property that matters is unchanged and is asserted against the worker:
+// a part must fit in ONE response, or the loader receives an HTML error page
+// and reports "Unrecognised delivery format".
+const WORKER_PART = INLINE;
+check('the worker defines CHUNK_DELIVERY_MAX', CHUNK_DELIVERY !== null || derivedOf(worker, 'CHUNK_DELIVERY_MAX') !== null, 'not found');
 check('a chain part fits in one response (<= inline cap)',
-    Number.isFinite(PART) && PART <= INLINE,
-    'part is ' + PART + ' bytes, inline cap is ' + INLINE + ' - this is the 524 bug');
-check('part size is not the old 40 MB value', PART !== 40 * 1024 * 1024, 'reverted to the 40 MB bug');
+    Number.isFinite(WORKER_PART) && WORKER_PART <= INLINE,
+    'part is ' + WORKER_PART + ' bytes, inline cap is ' + INLINE + ' - this is the 524 bug');
+check('part size is not the old 40 MB value', WORKER_PART !== 40 * 1024 * 1024, 'reverted to the 40 MB bug');
+check('the client has no part size of its own to drift',
+    constOf(main, 'SH_KEEPER_PART_SIZE') === null,
+    'the client still carries a part size, so the two can disagree again');
 
 // The concrete reported artifact, sliced the new way.
 const REPORTED = 18592590;
-const parts = Math.ceil(REPORTED / PART);
+const parts = Math.ceil(REPORTED / WORKER_PART);
 check('the reported 18.5 MB artifact now splits into a real chain',
     parts > 1, 'still n = 1, so there is no chain to fall back on');
 check('every part of that artifact is deliverable',
     REPORTED / parts <= INLINE,
     'largest part would be ' + Math.ceil(REPORTED / parts) + ' bytes');
 
-// --- the retired proxy must stay retired -----------------------------------
+// --- the whole host compile path is gone, in BOTH halves --------------------
+//
+// The client used to reach the owner's machine for a big script, and the
+// worker used to mint it a signed pass. Both are removed: a product that
+// compiles in the browser cannot be broken by a PC that is off, and a route
+// that hands out a pass to a machine is an attack surface with no user left
+// to serve it.
 check('the relaying /sh/obfuscate proxy is gone',
     !/fetch\(String\(env\.SH_STORE_URL\)[^)]*\/v1\/obfuscate/.test(worker),
     'a subrequest relay is back - a 100s compile through a Worker is the 520');
-check('the retired proxy answers immediately with a reload instruction',
+check('the host routes answer with a reload instruction, not a ticket',
     /reason: 'stale'/.test(worker) && /Reload it/.test(worker));
-
-// --- the browser must mint a ticket, not hold the permanent token ----------
-check('the worker mints a short-lived ticket', /\/sh\/obfuscate-ticket/.test(worker));
-check('the ticket is signed with the existing keeper secret',
-    /hmacHex\(String\(env\.SH_STORE_TOKEN\), payload\)/.test(worker));
-check('the browser posts straight to the keeper, with no proxy hop',
-    /ticket\.keeperUrl \+ '\/v1\/obfuscate'/.test(main));
-check('the browser sends the ticket header, not the keeper bearer token',
-    /'X-SH-Ticket': ticket\.ticket/.test(main) && !/'Authorization': 'Bearer '\s*\+\s*tok/.test(main));
-
-// --- the 401 that lied about being signed in -------------------------------
-check('the host path mints a token instead of only reading a cached one',
-    /shObfuscateOnHost[\s\S]{0,600}shEnsureUserToken\(\)/.test(main),
-    'shGetUserToken() returns empty for a signed-in owner with no cached token');
+check('the worker no longer mints a pass to the owner\'s machine',
+    !/hmacHex\(String\(env\.SH_STORE_TOKEN\), payload\)/.test(worker),
+    'a ticket route that outlives its caller is a door left open');
+check('the worker no longer probes the PC for health',
+    !/\/v1\/obfuscate\/health/.test(worker),
+    'the worker still asks the PC whether it is awake');
+check('the client has no host-compile path left',
+    !/shObfuscateOnHost|shHostReady|shMintHostTicket|shCompileDirect|shUploadKeeper/.test(codeOnly(main)),
+    'a function that can still reach for the PC is a function that will be used again');
+check('and no error message tells the user to start a service',
+    !/Start the Storage Keeper/i.test(codeOnly(main)),
+    'the message is the reason people believed the site needed their PC');
 
 // --- localStorage: sized before writing, not caught after ------------------
 // The fix is that the payload is measured and trimmed BEFORE the write, so the

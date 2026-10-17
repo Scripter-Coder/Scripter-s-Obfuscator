@@ -35,6 +35,26 @@ function check(name, cond, detail = '') {
 }
 
 const main = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
+const worker = fs.readFileSync(new URL('../For Cloudflare/worker.js', import.meta.url), 'utf8');
+
+// The code, without the prose.
+//
+// A grep over the raw file cannot tell a function from a comment about that
+// function, and this file's comments deliberately NAME the removed functions -
+// they record why the host path is gone, which is the part worth keeping. So
+// the comments are stripped before the code is inspected, and the prose is
+// checked separately where prose is what is being asserted.
+//
+// Only whole-line comments are removed. A trailing `//` on a line of code is
+// left alone, because stripping to the first `//` would eat a URL like
+// "https://..." and take the rest of the line with it.
+function codeOnly(src) {
+    return src
+        .split('\n')
+        .filter(line => !/^\s*\/\//.test(line))
+        .join('\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+}
 
 // ---------------------------------------------------------------------------
 // a Lua source of a target size, in the shape the repo's own benches use
@@ -79,7 +99,7 @@ function build(srcKB, cfg) {
 }
 
 // ===========================================================================
-console.log('the browser builds EVERY script, and asks the PC only as a rescue');
+console.log('the browser builds EVERY script, and there is no host path left');
 // ===========================================================================
 {
     // The dispatch function itself, so a routing branch added above it cannot
@@ -87,25 +107,32 @@ console.log('the browser builds EVERY script, and asks the PC only as a rescue')
     const fn = (main.match(/function shObfuscateInWorker\([^]*?\n\}\r?\n/) || [''])[0];
     check('shObfuscateInWorker exists', fn.length > 0);
 
-    check('it builds locally first, before anything else',
+    check('it builds locally, with no host branch at all',
         /shObfuscateLocally\(code, engine, options\)/.test(fn),
-        'the local build has to come before any host decision');
+        'the local build has to be the only build');
 
     check('it does NOT send a big source to the host',
         !/code\.length\s*>=\s*SH_HOST_MIN_SOURCE[\s\S]{0,200}shObfuscateOnHost/.test(fn),
         'a source over 60 KB is still routed to the owner\'s machine');
 
-    check('the host is reachable only from a rescue branch',
-        /shIsOutOfMemory\(err\)/.test(fn) && /shObfuscateOnHost\(code, options\)/.test(fn),
-        'no rescue path exists at all, so an OOM just fails');
+    // The host path is REMOVED, not merely unused.
+    //
+    // It used to be reachable as a rescue: a browser that ran out of memory
+    // would ask the owner\'s machine to finish the job. That is what made the
+    // product feel like it needed a PC - a big script on a small machine was
+    // told to go and start a service, which only the site owner can do and
+    // which no user can.
+    check('no host-compile function survives anywhere in the client',
+        !/shObfuscateOnHost|shHostReady|shMintHostTicket|shCompileDirect|shUploadKeeper/.test(codeOnly(main)),
+        'a function that can still reach for the PC is a function that will be used again');
 
-    check('and the rescue asks whether the PC is even up',
-        /shHostReady\(\)/.test(fn),
-        'an OOM with the PC asleep would otherwise hang on the tunnel');
+    check('and the worker no longer mints a pass to the owner\'s machine',
+        !/hmacHex\(String\(env\.SH_STORE_TOKEN\), payload\)/.test(codeOnly(worker)),
+        'the ticket route outlived its caller and is still handing out passes');
 
-    check('a non-memory failure is re-thrown, not retried on the PC',
-        /if \(!shIsOutOfMemory\(err\)\) throw err;/.test(fn),
-        'a parse error would be retried on the host and reported as OOM');
+    check('and nothing tells the user to start a service',
+        !/Start the Storage Keeper/i.test(codeOnly(main)),
+        'the message is the reason people believed the site needed their PC');
 
     // The threshold still exists as a named constant, so the "60 KB" the owner
     // was promised is one number rather than a comment that can drift.
@@ -123,6 +150,9 @@ console.log('\nan ordinary failure is not mistaken for an out-of-memory one');
     check('it does not match a syntax error',
         !/unexpected symbol|expected identifier|parse error/i.test(fn),
         'a source that does not parse fails the same way on the host');
+    check('and the OOM message tells the user what to do in the browser',
+        /Turn the bytecode VM off/.test(main) && /split the script/i.test(main),
+        'the message must be actionable without any other machine');
 }
 
 // ===========================================================================

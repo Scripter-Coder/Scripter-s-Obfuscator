@@ -6298,157 +6298,41 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // and it is the specific hole the audit recorded as G06.
         // ==================================================================
 
-        // ---------- POST /sh/obfuscate-ticket : a short-lived compile pass ----------
+        // ---------- THE HOST COMPILE PATH IS GONE ----------
         //
-        // THIS REPLACED A PROXY, AND THE PROXY WAS THE BUG.
+        // Three routes used to live here:
         //
-        // The first design had the browser POST the script to this worker and
-        // the worker relay it to the keeper. A 6000-line script takes 100+
-        // seconds on the owner's machine, and a Worker holding a subrequest
-        // open that long dies with HTTP 520 - which Cloudflare reports as
-        // "can't understand the response from your origin", naming nothing
-        // about the real problem. It looked like the host was broken; the host
-        // was fine and simply too slow to be proxied.
+        //   POST /sh/obfuscate-ticket  mint a signed pass to the owner's PC
+        //   POST /sh/obfuscate         relay a compile to it (already retired)
+        //   GET  /sh/obfuscate/health  ask whether it is awake
         //
-        // So the worker gets OUT OF THE WAY. It authenticates the user (fast,
-        // milliseconds), mints a ticket signed with the keeper's own secret,
-        // and hands the browser the keeper's address. The browser then compiles
-        // directly against the host, where there is no proxy to time out.
+        // All three existed for one reason: a browser tab could not obfuscate a
+        // large script, so large scripts were compiled on the owner's machine,
+        // through a cloudflared tunnel, and the product only worked while that
+        // machine was awake. It does not need to any more - the bytecode VM was
+        // what exhausted the tab, and custom-obfuscator.js now picks the
+        // strongest tier that FITS, so a big source builds in the browser at
+        // roughly its own size.
         //
-        // The keeper's permanent token STILL never leaves this worker: a
-        // ticket authorises one compile and expires. main.js is public, so a
-        // permanent token in the page would be a token anyone could read, and
-        // anyone holding it could spend the owner's machine and reach the
-        // stored scripts.
-        if (url.pathname === '/sh/obfuscate-ticket' && request.method === 'POST') {
-            if (!env.SH_STORE_URL || !env.SH_STORE_TOKEN) {
-                return jsonResponse({ ok: false, error: 'host not configured' }, 503);
-            }
-            let tok = '';
-            try {
-                const h = request.headers.get('X-SH-User-Token') || '';
-                if (h) tok = h;
-                else {
-                    const parsed = JSON.parse(await request.clone().text());
-                    tok = String(parsed.userToken || '');
-                }
-            } catch (e) { tok = ''; }
-            let user = null;
-            if (tok) { try { user = await verifyUserToken(tok, env); } catch (e) { user = null; } }
-            if (!user) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
-
-            const limited = await guardRate(env, 'obfuscate', rateIdentity(request, url));
-            if (limited) return limited;
-
-            // Signed with the SAME secret the keeper already has, so there is no
-            // second secret to configure and therefore none to forget. The
-            // signature covers the expiry, so a ticket cannot be extended by
-            // editing it.
-            const exp = Date.now() + 10 * 60 * 1000;   // 10 minutes
-            const payload = b64u(new TextEncoder().encode(JSON.stringify({ exp })));
-            const sig = await hmacHex(String(env.SH_STORE_TOKEN), payload);
+        // They are removed rather than left answering "host not configured",
+        // for two reasons. A route that can hand out a signed pass to the
+        // owner's machine is an attack surface with no user left to serve: the
+        // keeper's own token never leaves the worker, but a ticket does not
+        // carry it - and a ticket route that outlives its caller is exactly the
+        // kind of thing a future change finds and uses. And a route that
+        // answers "ready: false" is a route that keeps the word "host" in the
+        // product, which is the word that made people believe the site needed
+        // their PC.
+        //
+        // A tab still running the old main.js gets a sentence it can act on,
+        // not a bare 404.
+        if (url.pathname === '/sh/obfuscate' || url.pathname === '/sh/obfuscate-ticket' || url.pathname === '/sh/obfuscate/health') {
             return jsonResponse({
-                ok: true,
-                keeperUrl: String(env.SH_STORE_URL).replace(/\/+$/, ''),
-                ticket: payload + '.' + sig,
-                expiresAt: exp,
-                email: String(user.email || '')
-            });
+                ok: false,
+                reason: 'stale',
+                error: 'This page is running an older copy of the site. Reload it (Ctrl+F5), then obfuscate again.'
+            }, 410);
         }
-
-        // ---------- POST /sh/obfuscate : compile on the OWNER'S MACHINE ----------
-        //
-        // A browser tab cannot obfuscate a large script. A 6000-line Lua file
-        // expands ~195x through the obfuscator - measured 17 KB -> 3.5 MB up to
-        // 1501 KB -> 220 MB - and the tab holds the page, the AST, the IR and
-        // the emitted source at once, in a fraction of the heap Node has. The
-        // tab dies and the user is told "Obfuscation Failed", which reads as
-        // their script being too big rather than the tab being too small.
-        //
-        // So the compile runs on the owner's PC, which already runs the Storage
-        // Keeper over a cloudflared tunnel and already has Node. Verified end
-        // to end through that path: 47,264 lines / 1.28 MB in, 214.5 MB out.
-        //
-        // THE PROXY IS THE POINT, not a convenience.
-        //
-        // The keeper's bearer token must never reach a browser. main.js is
-        // public, so a token in it is a token anyone can read, and anyone who
-        // reads it can spend the owner's CPU and reach the stored scripts.
-        // Holding the token here means the browser authenticates to THIS
-        // worker with the account token it already has, and the keeper token
-        // never leaves the worker.
-        //
-        // It also removes the tunnel address from the browser's world
-        // entirely. A quick tunnel gets a new random hostname on every
-        // restart; only the worker needs to know the current one, and the
-        // browser keeps posting to a URL that never changes.
-        if (url.pathname === '/sh/obfuscate' && request.method === 'POST') {
-            // RETIRED, ON PURPOSE. IT WILL NOT COME BACK.
-            //
-            // This used to relay the compile to the keeper. It was the direct
-            // cause of the HTTP 520 the user hit on a 6000-line script: a
-            // Worker that holds a subrequest open across a 100-second Node
-            // compile is killed by Cloudflare, and 520 is reported as "can't
-            // understand the response from your origin" - which points at the
-            // owner's machine and hides that this file was the problem.
-            //
-            // The relay is now split in two fast steps (see /sh/obfuscate-ticket
-            // above): authenticate + mint a ticket here in milliseconds, then
-            // let the browser POST to the keeper directly, where there is no
-            // proxy to expire.
-            //
-            // The route is kept ONLY so that a browser tab still running the
-            // old main.js gets a sentence it can act on instead of a bare 404.
-            // It answers immediately and never opens a subrequest.
-            if (request.headers.get('X-SH-Refresh') !== '1') {
-                return jsonResponse({
-                    ok: false,
-                    reason: 'stale',
-                    error: 'This page is running an older copy of the site. Reload it (Ctrl+F5), then obfuscate again.'
-                }, 409);
-            }
-            return jsonResponse({ ok: false, error: 'unreachable' }, 400);
-        }
-
-        // ---------- GET /sh/obfuscate/health : can the host take work? ----------
-        //
-        // Unauthenticated on purpose and it answers only yes/no. The page polls
-        // this so it can say "waiting for host" BEFORE shipping a megabyte into
-        // a tunnel that will refuse it.
-        if (url.pathname === '/sh/obfuscate/health' && request.method === 'GET') {
-            if (!env.SH_STORE_URL) return jsonResponse({ ok: true, ready: false, reason: 'nohost' }, 200);
-            try {
-                // `cache` IS NOT AN OPTION HERE.
-                //
-                // This used to pass cache: 'no-store', and Workers does not
-                // implement that field on RequestInit - the fetch throws
-                // synchronously with:
-                //
-                //   The 'cache' field on 'RequestInitializerDict' is not implemented.
-                //
-                // Which the catch below reported as "hostdown", so the worker
-                // declared the owner's PC unreachable while it was sitting
-                // right there answering health checks. Verified by deploying a
-                // probe worker: the same fetch WITHOUT `cache` returns 200, and
-                // the same fetch WITH it throws.
-                //
-                // Bypassing the cache is already guaranteed elsewhere: the
-                // keeper sends Cache-Control: no-store on every response.
-                const probe = await fetch(String(env.SH_STORE_URL).replace(/\/+$/, '') + '/v1/obfuscate/health', {
-                    headers: { 'Authorization': 'Bearer ' + String(env.SH_STORE_TOKEN) }
-                });
-                const data = await probe.json().catch(() => null);
-                return jsonResponse({
-                    ok: true,
-                    ready: !!(data && data.ok),
-                    busy: !!(data && data.busy),
-                    node: !!(data && data.node)
-                }, 200);
-            } catch (e) {
-                return jsonResponse({ ok: true, ready: false, reason: 'hostdown' }, 200);
-            }
-        }
-
         // ---------- POST|GET /sh/session : MINT ----------
         // In:  id, k (license), h (hwid), u (account email, keyless scripts)
         // Out: "SHS <sid> <nonce> <expiresAtMs>"  or  "SHERR <reason>"

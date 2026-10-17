@@ -206,13 +206,21 @@ async function shLoginRaw() {
     }
 }
 
-// ---- STORAGE KEEPER big-script upload ----
-// Slices the obfuscated code into parts sized to fit ONE delivery response,
-// streams each to the worker (which forwards it to the owner's PC), then
-// finalizes. Executors later fetch the parts through the worker - the PC is
-// never exposed. See SH_KEEPER_PART_SIZE for why the part size is a delivery
-// limit and not a storage one.
-// Hard ceiling: 256 parts x 6 MB = ~1.5 GB per script.
+// ---- STORAGE KEEPER big-script upload: REMOVED ----
+//
+// This used to slice the obfuscated code into parts and stream them to the
+// owner's PC through the worker, so a large script only lived while that PC was
+// awake. It is gone, and so is the part size it needed (SH_KEEPER_PART_SIZE).
+//
+// Nothing calls this any more - the upload goes to the worker and the worker
+// keeps the bytes in Cloudflare - and the function is not left behind as a
+// door: a function that still reaches for the PC is a function that can be
+// reached for again, by a future change that does not know better. The
+// owner's machine is not part of this product any more.
+//
+// The script id generator that used to sit in the middle of this block is
+// still here, and still the only id source.
+//
 // A SCRIPT ID IS 10 RANDOM DIGITS, NOT A TIMESTAMP.
 //
 // It used to be String(Date.now()).slice(-10) - a clock reading, strictly
@@ -287,60 +295,18 @@ function shServerKeyOpts(keyless, wantId) {
     return { serverKey: { keyUrl: SH_STATS_ENDPOINT + 'sh/k', scriptRef: wantId } };
 }
 
-// A PART IS DELIVERED AS ONE HTTP RESPONSE. So its size is bounded by what one
-// response can carry, not by what the keeper will accept.
+// ---- STORAGE KEEPER upload path: REMOVED ----
 //
-// This was 40 MB, which is the same mistake as the old inline cap and has the
-// same failure. A part is fetched by the loader with a single GET, so a 40 MB
-// part is a 40 MB response: Cloudflare answers 524/502, the body arrives as an
-// HTML error page, and the bootstrap reports
+// shUploadKeeper and SH_KEEPER_PART_SIZE are gone with the rest of the PC
+// path. The upload goes to the worker, and the worker keeps the bytes in
+// Cloudflare.
 //
-//     [ScripterHub] Unrecognised delivery format.
-//
-// which names neither size nor timeout, so it reads as a corrupt script. Worse,
-// a 18 MB artifact under the old 40 MB size produced n = 1 - a "chunked"
-// script with exactly one part, so there was no chain to fall back on.
-//
-// It is now the same number the worker uses for an inline body
-// (INLINE_DELIVERY_MAX in worker.js), because the two are the same question:
-// what can one response reliably carry. Keep the two in step - a part larger
-// than the inline cap reintroduces this exact bug under a different name.
-const SH_KEEPER_PART_SIZE = 6 * 1000 * 1000;
-
-async function shUploadKeeper(o) {
-    try {
-        const id = shNewScriptId();
-        const n = Math.ceil(o.obfCode.length / SH_KEEPER_PART_SIZE);
-        if (n > 256) return { ok: false, error: 'script exceeds 10 GB (256 parts). Split it.' };
-        // 1) upload parts sequentially (progress via console + optional callback)
-        for (let i = 0; i < n; i++) {
-            const part = o.obfCode.slice(i * SH_KEEPER_PART_SIZE, (i + 1) * SH_KEEPER_PART_SIZE);
-            // Through shApi, so an expired cached token is refreshed and the part retried
-            // instead of failing the whole upload on part 1 of N.
-            const d = await shApi('sh/kb-put', { token: o.token, userToken: o.userToken, id: id, part: i, content: part });
-            if (!d.ok) return { ok: false, error: 'Storage Keeper part ' + (i + 1) + '/' + n + ' failed: ' + (d.error || 'unknown') };
-            try { console.log('[Storage Keeper] part ' + (i + 1) + '/' + n + ' uploaded'); } catch (e) {}
-            if (typeof window.__shGhProgress === 'function') { try { window.__shGhProgress(i + 1, n); } catch (e) {} }
-        }
-        // 2) finalize: register loader meta + optional web-view cipher tail
-        const fd = await shApi('sh/kb-finalize', {
-                token: o.token, userToken: o.userToken, id: id, n: n, len: o.obfCode.length,
-                name: o.name, user: o.user,
-                keyless: !!o.keyless, webKey: !!o.cipher, keyHash: o.keyHash || '',
-                // The split key travels with the finalize call, not /sh/kb-put.
-                // Omitting it published every LARGE script without the key its own
-                // artifact requires - see the note in kb-finalize.
-                splitKey: o.splitKey || null,
-                authRequired: !!o.requireAuth,
-                replaces: o.replaces || '',
-                normalCode: (o.normalCode && o.normalCode.length < 7 * 1024 * 1024) ? o.normalCode : ''
-            });
-        if (!fd.ok) return { ok: false, error: 'Storage Keeper finalize failed: ' + (fd.error || 'unknown') };
-        return { ok: true, id: fd.id, loadstring: fd.loadstring, storage: 'keeper', parts: n };
-    } catch (e) {
-        return { ok: false, error: 'Storage Keeper upload failed: ' + (e && e.message ? e.message : 'network') };
-    }
-}
+// The part size it needed was not a keeper limit but a DELIVERY one - a part
+// is fetched by the loader with a single GET, so a part larger than one
+// response can carry comes back as an HTML error page and the bootstrap
+// reports "[ScripterHub] Unrecognised delivery format." That limit now lives
+// in the worker, as CHUNK_DELIVERY_MAX, derived from INLINE_DELIVERY_MAX.
+// One number, in one place, where the delivery actually happens.
 
 // ============ USER SESSION TOKEN (worker /sh/user-login) ============
 // Lets ANY registered account claim loadstrings without the owner access
@@ -613,27 +579,28 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             payload.wantId = wantId;
             payload.splitKey = splitKey;
         }
-        // SIZE PRE-CHECK: the keeper path stores 256 parts of SH_KEEPER_PART_SIZE,
-        // so that product is the real ceiling. Anything above it cannot be stored.
-        // The ceiling is now the worker's single-request body limit, not a
-        // keeper part count. Checked here so it fails BEFORE a long
-        // compilation rather than after it.
+        // SIZE PRE-CHECK: the ceiling is the worker's single-request body limit.
+        // Checked here so it fails BEFORE a long compilation rather than after
+        // it.
         var SH_BODY_CAP = 68 * 1000 * 1000;
         if (approxBody > SH_BODY_CAP) {
             return { ok: false, error: 'too large: scripts cap at about ' + Math.round(SH_BODY_CAP / 1000000) + ' MB per upload (the HTTP body limit). Split the script into modules.' };
         }
-        // NO KEEPER ROUTING.
+        // NO KEEPER ROUTING, AND NO KEEPER FUNCTION.
         //
         // Anything over 45MB used to stream to the owner's PC instead of the
         // worker, which meant the script only ran while that PC was awake -
         // asleep, rebooting or mid-tunnel-restart took the whole catalogue
         // offline. The worker now stores large artifacts in R2, which has no
         // ceiling a browser cares about, so there is nothing left to overflow
-        // into the Keeper and the switch has no reason to exist.
+        // into the Keeper.
         //
-        // Kept as an explicit no-op rather than deleted: shUploadKeeper is still
-        // declared, and silently dropping the branch would look like the size
-        // limit was simply forgotten.
+        // The branch was kept as an explicit no-op for a while, on the grounds
+        // that deleting it would look like the size limit had simply been
+        // forgotten. That was the wrong reason to keep dead code. The keeper
+        // upload function has since been deleted along with the rest of the PC
+        // path, so this is now simply the only way an upload happens.
+        //
         // Through shApi: same reason. An expired token used to fail the upload
         // outright, after the whole artifact had been compiled.
         const d = await shApi('sh/upload', payload);
@@ -6244,9 +6211,8 @@ function shProgressHide() {
 
 // The size past which a build is no longer comfortable in a tab.
 //
-// THIS NO LONGER DECIDES WHERE A SCRIPT IS BUILT. Every source is built in the
-// browser now; this number is what the UI says when a build genuinely will not
-// fit, and what the host-rescue path is for.
+// THIS IS A MESSAGE, NOT A ROUTING SWITCH. Every source is built in this
+// browser, and this number is what the UI says when a build will not fit.
 //
 // It used to be a routing switch: anything this size was handed to the owner's
 // machine, so a large script only obfuscated while that PC was awake. The
@@ -6257,151 +6223,25 @@ function shProgressHide() {
 // strongest tier that FITS (bytecode VM -> vm lite -> no VM) instead of always
 // taking the VM. A source past this size builds in the tab at the no-VM tier
 // in roughly its own size, so there is nothing left for the PC to do.
+//
+// THE HOST PATH IS GONE ENTIRELY, and that is the point.
+//
+// shHostReady, shObfuscateOnHost, shMintHostTicket and shCompileDirect all
+// existed to reach the owner's machine, and every one of them had a way to
+// fail with a message that told the user to go and start the Storage Keeper:
+// "Could not reach the host. Start the Storage Keeper on the owner's PC and
+// check the tunnel is up."
+//
+// That message is the reason this product felt like it needed the owner's
+// machine. A build that cannot fit in a browser is a problem with the BUILD,
+// and the fix for it is a smaller build or a split script - both of which the
+// user can do from any device, with no PC, no tunnel and no service running.
+//
+// Leaving the code in place "just in case" would leave the door open: a
+// future change that reaches for the host would find working code and no
+// warning, and the first thing a user would see would be that message again.
+// So the path is deleted, not disabled.
 var SH_HOST_MIN_SOURCE = 60 * 1024;
-
-// Is the owner's machine available to compile?
-//
-// Asked BEFORE shipping the script, because the honest failure is "the host is
-// not running", and finding that out after uploading a megabyte is a worse
-// experience than being told up front.
-function shHostReady() {
-    return fetch(SH_STATS_ENDPOINT + 'sh/obfuscate/health')
-        .then(function (r) { return r.json(); })
-        .then(function (d) { return !!(d && d.ready); })
-        .catch(function () { return false; });
-}
-
-// Compile on the owner's machine, via the worker.
-//
-// The worker holds the keeper's credential and relays; the browser never sees
-// it. That is what lets this work from any device without handing a stranger
-// the token to the owner's PC.
-function shObfuscateOnHost(code, options) {
-    shProgressEnsure('Waiting for the host…');
-
-    // THE TOKEN MUST BE MINTED, NOT JUST READ.
-    //
-    // This read sessionStorage directly, and it is empty unless this tab has
-    // already uploaded something - the same trap that broke shOwnerApi, where
-    // an owner who was plainly signed in sent no credential and the worker
-    // answered 401 for a reason that had nothing to do with authorisation. The
-    // user saw "Sign in before obfuscating on the host." while sitting on their
-    // signed-in account.
-    //
-    // shEnsureUserToken() is the fix the owner panel already uses: read the
-    // cached token, and mint one from the stored credentials if there is none.
-    return shEnsureUserToken().then(function (tok) {
-        if (!tok) {
-            shProgressHide();
-            throw new Error('Sign in on this device first' +
-                (shEnsureUserTokenReason ? ' (' + shEnsureUserTokenReason + ')' : '') + '.');
-        }
-        return shMintHostTicket(tok).then(function (ticket) {
-            return shCompileDirect(ticket, code, options);
-        });
-    // THE PANEL USED TO SURVIVE ANY FAILURE HERE.
-    //
-    // shProgressHide() was only called on the "no token" branch above. Every
-    // other failure - a refused ticket, an expired token the refresh could not
-    // replace, the network, a DNS failure - rejected the chain with nothing
-    // attached, so the overlay stayed up and the user was left reading:
-    //
-    //     Waiting for the host... (infinite time)
-    //
-    // which is not a status, it is a stuck dialog. Worse, the rejection was
-    // swallowed by the caller's `.then()` with no `.catch`, so no error was
-    // shown either: the page looked like it was working and was not.
-    //
-    // The one exception is a CANCEL, which hides the panel and stays quiet -
-    // that is the user's own action and has already been reported.
-    }).catch(function (err) {
-        var msg = (err && err.message) ? String(err.message) : 'the host compile could not start';
-        if (/cancel/i.test(msg)) { shProgressHide(); throw err; }
-        shProgressHide();
-        throw err;
-    });
-}
-
-// Ask the worker for a short-lived pass to the host.
-//
-// Fast (milliseconds). The worker authenticates the account and signs a ticket;
-// it does NOT proxy the compile, because a 100-second subrequest is what
-// produced the HTTP 520 the user saw.
-function shMintHostTicket(tok) {
-    // Sent through shApi so it gets the same one-retry-after-401 recovery as
-    // every other authenticated call. This one used a raw fetch, which is why
-    // obfuscation kept failing while the rest of the app recovered: it was the
-    // one authenticated request with no way to notice an expired token.
-    return shApi('sh/obfuscate-ticket', { userToken: tok }).then(function (d) {
-        if (!d || !d.ok) throw new Error('The site would not authorise a host compile' + (d && d.status ? ' (HTTP ' + d.status + ')' : '') + (d && d.error ? ': ' + d.error : '') + '.');
-        return d;
-    });
-}
-
-// Compile directly against the keeper.
-//
-// No proxy in the path, so a slow compile is not a 520. The ticket is scoped to
-// this one request and expires in minutes.
-function shCompileDirect(ticket, code, options) {
-    var started = Date.now();
-    var ETA = Math.round(1500 + (code.length / 100000) * 1000 * 1.0);
-    shProgressUpdate(ETA, 0);
-    var tick = setInterval(function () { shProgressUpdate(ETA, Date.now() - started); }, 400);
-
-    return fetch(ticket.keeperUrl + '/v1/obfuscate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-SH-Ticket': ticket.ticket },
-        body: JSON.stringify({ code: code, options: options })
-    }).then(function (r) {
-        clearInterval(tick);
-        return r.text().then(function (t) {
-            var data;
-            try { data = JSON.parse(t); } catch (e) { data = { ok: false, error: 'the host sent an unreadable reply' }; }
-            if (!r.ok || !data || !data.ok) {
-                if (r.status === 429) throw new Error('The host is already compiling another script. Try again in a moment.');
-                if (r.status === 401) throw new Error('The host rejected the ticket. Restart the Storage Keeper and try again.');
-                throw new Error((data && data.error) || ('the host refused the script (HTTP ' + r.status + ')'));
-            }
-            shProgressDone();
-            showNotification('Script Created', 'Compiled on the host in ' + shFormatDuration(Date.now() - started) + '.', 'success', 6000);
-            shProgressHide();
-            // THE SPLIT KEY ARRIVES AT THE TOP LEVEL, NOT INSIDE dbgInfo.
-            //
-            // host_obfuscate.mjs emits `payload.splitKey` as a sibling of
-            // `payload.dbgInfo`, while the in-browser worker path puts it inside
-            // dbgInfo. This line took dbgInfo wholesale and dropped the sibling,
-            // so the host path - which is EVERY script over SH_HOST_MIN_SOURCE,
-            // i.e. exactly the large ones - always produced no split key.
-            //
-            // obfuscateScriptCode then took the `else` branch, resolve()d a bare
-            // string with no splitKey, and the upload carried none. The server's
-            // guard then refused it:
-            //
-            //     POST /sh/upload 400
-            //     this build has no server-held key
-            //
-            // which is a correct refusal of a correctly-detected broken build.
-            // Nothing was wrong with the guard; everything was wrong with what
-            // reached it. Small scripts compile in the worker, take the other
-            // shape, and were never affected - which is why this looked like
-            // "large scripts are broken" rather than "one field is dropped".
-            var dbgInfo = data.dbgInfo || {};
-            if (data.splitKey && !dbgInfo.splitKey) dbgInfo.splitKey = data.splitKey;
-            return { result: data.code, dbgInfo: dbgInfo, elapsedMs: data.elapsedMs };
-        });
-    }).catch(function (e) {
-        clearInterval(tick);
-        shProgressHide();
-        // A network-level failure reaching the tunnel is the "waiting for
-        // host" case, and it should say so rather than surfacing as a
-        // generic failure.
-        if (e && (e.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(String(e.message)))) {
-            throw new Error('Could not reach the host. Start the Storage Keeper on the owner\'s PC and check the tunnel is up.');
-        }
-        throw e;
-    });
-}
-
 // Run applyCustomObfuscator, showing live progress.
 //
 // EVERY script is built here, in this browser. Past SH_HOST_MIN_SOURCE it used
@@ -6416,31 +6256,32 @@ function shCompileDirect(ticket, code, options) {
 // per 100 KB on SECURE plus ~1.5 s fixed. It is an ESTIMATE and the UI says so.
 function shObfuscateInWorker(code, engine, options) {
     return shObfuscateLocally(code, engine, options).catch(function (err) {
-        // A browser that genuinely ran out of memory is the one case worth a
-        // round trip to the owner's machine - and only if that machine is
-        // awake. Failing with the real reason beats a spinner that never
-        // resolves, and beats reporting "the host is unreachable" for a build
-        // the host was never asked about.
+        // A browser that ran out of memory is a REAL limit and it is not
+        // something another machine can fix for the user: the script still has
+        // to be built somewhere, and the only somewhere is the machine that will
+        // run it.
+        //
+        // So the message says what the user can actually DO, from any device,
+        // with nothing running but a browser. It used to say "start the Storage
+        // Keeper on the owner's PC", which is advice that only the owner of the
+        // site can follow and which makes the product look broken to everyone
+        // else.
         if (!shIsOutOfMemory(err)) throw err;
-        return shHostReady().then(function (ready) {
-            if (!ready) {
-                throw new Error('This browser ran out of memory building a ' + Math.round(code.length / 1024) +
-                    ' KB script, and no host is running to finish it. Split the script into modules, or turn the ' +
-                    'bytecode VM off in the protection options so it builds smaller.');
-            }
-            return shObfuscateOnHost(code, options);
-        });
+        var kb = Math.round(code.length / 1024);
+        throw new Error('This browser ran out of memory building a ' + kb + ' KB script. ' +
+            'Turn the bytecode VM off in the protection options so it builds much smaller, ' +
+            'or split the script into modules and publish them separately. ' +
+            'No setup on any other machine is needed.');
     });
 }
 
 // Did this build fail because the tab ran out of memory, or for an ordinary reason?
 //
-// Narrow on purpose, and deliberately blind to a syntax error. A source that
-// does not parse fails identically on the owner's machine, so retrying it there
-// would spend a round trip to report the same message - and would report it as
-// an out-of-memory problem, which is the one thing it is not. Parse failures
-// say "unexpected symbol" / "Expected identifier" / "parse", none of which are
-// matched here.
+// Narrow on purpose. A source that does not parse must not be reported as an
+// out-of-memory problem: the two have nothing in common, and telling a user
+// their script is too big when it has a typo sends them off splitting a script
+// that never needed splitting. Parse failures say "unexpected symbol" /
+// "Expected identifier" / "parse", none of which are matched here.
 function shIsOutOfMemory(err) {
     var m = (err && (err.message || err.name)) ? String(err.message || err.name) : String(err || '');
     return /out of memory|memory access out of bounds|allocation failed|allocating memory|heap (limit|out)|terminated/i.test(m);
