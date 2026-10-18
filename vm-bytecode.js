@@ -2541,15 +2541,39 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         for (var dwi0 = 0; dwi0 < dnc0; dwi0++) drec0 = drec0.concat(u32(decoyVals0[rnd(decoyVals0.length)]));
         mainBlobRecords = mainBlobRecords.concat(drec0);
     }
+    // CHUNKED BLOB. The record stream is cut into segments, each with its own
+    // keystream, and each segment's key depends on the plaintext of the segment
+    // before it. The boot decoder must walk the segments in order, so no
+    // segment decodes on its own: an analyst who wants chunk 5 has to decode
+    // chunks 1-4 first. The cut is over bytes, not source lines, so a one-line
+    // script still gets several segments.
+    function blobSegments(n) {
+        if (n <= 0) return [];
+        if (n < 3) return [n];
+        var k = Math.min(48, Math.max(3, Math.ceil(n / 384)));
+        var segs = [];
+        for (var si = 0; si < k; si++) segs.push(Math.floor(n * (si + 1) / k) - Math.floor(n * si / k));
+        return segs;
+    }
+    function blobSegKey(key, si0, fb) {
+        return (Number(key) * 31 + (si0 + 1) * 2654435761 + fb) % 4294967296;
+    }
     function encryptBlob(records, key) {
-        var bytes = records.slice();
-        if (profileName === 'SECURE') bytes = compressBytes(bytes);
-        for (var bi0 = 0; bi0 < bytes.length; bi0++) {
-            var p0 = bi0 + 1;
-            var k0 = (((p0 * p0 * BP.a + p0 * BP.b + BP.c + Number(key)) % 4294967296) % 251) + 4;
-            bytes[bi0] = (bytes[bi0] ^ k0) % 256;
+        var plain = records.slice();
+        if (profileName === 'SECURE') plain = compressBytes(plain);
+        var segs = blobSegments(plain.length);
+        var out = [], start = 0, fb = 0;
+        for (var si = 0; si < segs.length; si++) {
+            var sk = blobSegKey(key, si, fb);
+            for (var q = 0; q < segs[si]; q++) {
+                var p0 = q + 1;
+                var k0 = (((p0 * p0 * BP.a + p0 * BP.b + BP.c + sk) % 4294967296) % 251) + 4;
+                out.push((plain[start + q] ^ k0) % 256);
+            }
+            for (var f = 0; f < segs[si]; f++) fb = (fb + plain[start + f]) % 4294967296;
+            start += segs[si];
         }
-        return { bytes: bytes, compressed: profileName === 'SECURE' };
+        return { bytes: out, compressed: profileName === 'SECURE', segs: segs };
     }
     var preBlob = encryptBlob(preBlobRecords, seed);
     var mainBlob = encryptBlob(mainBlobRecords, mainSeed);
@@ -2558,11 +2582,17 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         L.push('local ' + varName + '={}');
         L.push('do');
         L.push(' local src={' + packed.bytes.join(',') + '}');
-        L.push(' for i=1,#src do');
-        L.push('  local a=src[(i)] local _junk' + hex(3) + '=0 local b=((i*i*' + BP.a + '+i*' + BP.b + '+' + BP.c + '+(' + keyExpr + '))%4294967296)%251+4');
-        L.push('  local r,pw=0,1');
-        L.push('  for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
-        L.push('  ' + varName + '[i]=r');
+        L.push(' local segs={' + packed.segs.join(',') + '}');
+        L.push(' local pos=1 local fb=0');
+        L.push(' for si=1,#segs do');
+        L.push('  local sk=((' + keyExpr + ')*31+si*2654435761+fb)%4294967296 local st=pos');
+        L.push('  for lp=1,segs[si] do');
+        L.push('   local a=src[pos] local b=((lp*lp*' + BP.a + '+lp*' + BP.b + '+' + BP.c + '+sk)%4294967296)%251+4');
+        L.push('   local r,pw=0,1');
+        L.push('   for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
+        L.push('   ' + varName + '[pos]=r pos=pos+1');
+        L.push('  end');
+        L.push('  for q=st,pos-1 do fb=(fb+' + varName + '[q])%4294967296 end');
         L.push(' end');
         L.push('end');
         if (packed.compressed) {
