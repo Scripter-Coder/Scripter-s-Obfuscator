@@ -5,16 +5,28 @@
 // visitors' browsers read the config straight from the URL).
 // ============================================================
 
+// ONLY PROVIDERS THE WORKER ACTUALLY VERIFIES.
+//
+// This list used to offer nine. The worker has a REWARD_PROVIDERS table of
+// four, and /sh/reward/save drops anything not in it:
+//
+//     if (!REWARD_PROVIDERS[provider]) continue;      // silently drop unknowns
+//
+// So AdMint, ShrtFly, ShrinkEarn, Kicia and Rinku were selectable, savable in
+// the panel, and then SILENTLY DISCARDED on save. The owner configures a
+// five-checkpoint reward, the panel shows five, and the visitor gets fewer - so
+// the reward can never be completed, because the checkpoints that were quietly
+// deleted are the ones they cannot satisfy.
+//
+// Offering a provider the server cannot verify is worse than not offering it:
+// it looks configured and is not. Anything added here must ALSO be added to
+// REWARD_PROVIDERS in the worker AND given a branch in verifyProvider, or it
+// belongs in neither list.
 const REWARD_PROVIDERS = [
     { id: 'test', name: 'ScripterHub Default Test Page' },
-    { id: 'admint', name: 'AdMint' },
     { id: 'linkvertise', name: 'Linkvertise' },
     { id: 'workink', name: 'Work.Ink' },
-    { id: 'lootlabs', name: 'Lootlabs' },
-    { id: 'shrtfly', name: 'ShrtFly' },
-    { id: 'shrinkearn', name: 'ShrinkEarn' },
-    { id: 'kicia', name: 'Kicia.net' },
-    { id: 'rinku', name: 'Rinku.pro' }
+    { id: 'lootlabs', name: 'Lootlabs' }
 ];
 
 // safe accessors into main.js module scope (exposed on window)
@@ -100,16 +112,33 @@ async function shRewardPersist(r) {
     if (!out.ok) return out;
     r.rid = out.rid;
     r.notReady = out.notReady;
-    // Keep the worker's counters so the panel does not lose history by
-    // round-tripping through the browser on every edit.
-    if (out.public) {
-        var prevCps = (r.checkpoints || []).slice();
-        (out.public.steps || []).forEach(function (s, i) {
-            if (prevCps[i]) {
-                prevCps[i].completed = prevCps[i].completed || 0;
-                prevCps[i].cancelled = prevCps[i].cancelled || 0;
-                prevCps[i].avgTimeSec = prevCps[i].avgTimeSec || 0;
-            }
+    // ADOPT THE WORKER'S COUNTERS.
+    //
+    // This block used to be:
+    //
+    //     prevCps[i].completed = prevCps[i].completed || 0;
+    //
+    // which assigns each field to itself. It reads as though it were copying
+    // from `out.public.steps`, but out.public.steps carried no counters at all
+    // (only {i, name, provider}), so there was nothing to copy from even if it
+    // had.
+    //
+    // The server now returns them, and they are the authority - it also refuses
+    // to accept client-sent counters, so this is the only path by which the
+    // panel can learn the real numbers. Without this the "Completed" column is
+    // frozen forever, which is reported as checkpoints not counting.
+    //
+    // Matched on id, so reordering the panel does not move a checkpoint's
+    // history onto a different checkpoint.
+    if (out.public && out.public.steps) {
+        var byId = {};
+        (r.checkpoints || []).forEach(function (c) { if (c && c.id) byId[String(c.id)] = c; });
+        out.public.steps.forEach(function (s, i) {
+            var target = byId[String(s.id || '')] || (r.checkpoints || [])[i];
+            if (!target) return;
+            if (typeof s.completed === 'number') target.completed = s.completed;
+            if (typeof s.cancelled === 'number') target.cancelled = s.cancelled;
+            if (typeof s.avgTimeSec === 'number') target.avgTimeSec = s.avgTimeSec;
         });
     }
     return out;

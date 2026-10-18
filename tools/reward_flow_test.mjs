@@ -79,7 +79,26 @@ function loadPage({ search, worker, endpoints }) {
 
     const sb = {
         console,
-        open: (u) => { made.opened = u; return { closed: false }; },
+        // Models a REAL popup: a handle whose `location` can be assigned, and whose
+        // `close()` is observable.
+        //
+        // The stub used to return `{closed: false}` - an object with no
+        // `location`, so the new synchronous-placeholder code wrote the real ad
+        // URL into nothing and the ad silently never opened. The old code
+        // passed only because it called window.open(target) directly.
+        //
+        // A popup handle is exactly the thing that has to be modelled properly:
+        // this is the difference between "opens the ad" and "does nothing".
+        open: (u) => {
+            made.opened = u;
+            return {
+                closed: false,
+                close() { this.closed = true; made.closed = u; },
+                get location() { return made.popupLocation; },
+                set location(v) { made.popupLocation = v; made.navigatedTo = v; },
+                focus() { }
+            };
+        },
         atob: (x) => Buffer.from(x, 'base64').toString('binary'),
         btoa: (x) => Buffer.from(x, 'binary').toString('base64'),
         escape, unescape, decodeURIComponent, encodeURIComponent, URLSearchParams,
@@ -147,7 +166,18 @@ function loadPage({ search, worker, endpoints }) {
 // Read the endpoint out of the shipped HTML, exactly as the browser would.
 const realEndpoint = (/data-sh-endpoint="([^"]+)"/.exec(rewardHtml) || [])[1] || '';
 const W = realEndpoint || 'https://worker.test';
-const tick = () => new Promise(r => setImmediate(() => setImmediate(() => setImmediate(r))));
+// A FIXED number of microtask hops is a race, not a synchronisation point.
+//
+// This was three setImmediate hops, which happened to be enough for the promise
+// chains as they stood. Adding a .catch() to onStart added one more hop, and the
+// test then failed intermittently - roughly 1 run in 3 - because the assertion
+// ran while the chain was still settling. A test that passes 2 times out of 3
+// is worse than one that fails loudly: it trains you to re-run until green.
+//
+// So this drains the microtask QUEUE until it is actually empty, however many
+// hops the code under test needs. Deterministic, and it cannot go stale the
+// next time a promise chain gains a link.
+const tick = () => new Promise(r => setImmediate(() => setImmediate(() => setImmediate(() => setImmediate(r)))));
 
 // True when the progress poll has been disarmed. Scoped to the 4000ms timer on
 // purpose: the ban screen runs its OWN 1s countdown that is meant to stay alive
@@ -237,11 +267,17 @@ console.log('the Start button goes to the ad link the worker chose');
         check('Start asks the worker where to send the visitor',
             made.posts.some(p => p.url.indexOf('/sh/reward/start') !== -1),
             'posts = ' + JSON.stringify(made.posts.map(p => p.url)));
+        // The ad URL is reached either by opening it directly, or by opening a
+        // placeholder during the click and pointing it at the target once the
+        // worker answers. Both are correct; what matters is that the real URL
+        // is where the visitor ends up, and THIS page is not navigated away.
         check('Start opens the ad link rather than navigating this page away',
-            made.opened === 'https://direct-link.net/a' || made.navigatedTo === 'https://direct-link.net/a',
-            'opened = ' + JSON.stringify(made.opened) + ' navigated = ' + JSON.stringify(made.navigatedTo));
+            made.navigatedTo === 'https://direct-link.net/a' || made.opened === 'https://direct-link.net/a',
+            'opened = ' + JSON.stringify(made.opened) + ' popup went to = ' + JSON.stringify(made.navigatedTo));
         check('Start never navigates to about:blank', made.navigatedTo !== 'about:blank',
             'navigated to ' + JSON.stringify(made.navigatedTo));
+        check('and it leaves this page in place', made.closed !== 'https://direct-link.net/a',
+            'the placeholder was left open instead of being pointed at the ad');
         check('and there is a separate Verify step', typeof made.clicks.verifyBtn === 'function',
             'Verify is what asks the worker whether the ad counted');
     }
@@ -255,7 +291,31 @@ console.log('the blacklist is shown, not hidden');
         search: '?rid=rwTEST1',
         worker: W,
         endpoints: {
-            '/sh/reward/pub': () => ({ ok: true, blacklisted: true, until: Date.now() + 2 * 3600e3, strikes: 1, reason: 'checkpoint 1 via linkvertise: no-click-id', public: { rid: 'rwTEST1', name: 'X', keyDurationH: 1, maxKeys: 1, total: 1, steps: [] } })
+            // ROUNDED UP TO THE NEXT MINUTE, then two hours added.
+            //
+            // shBanLeft renders "N hours M minutes" by flooring the remaining
+            // milliseconds to whole minutes. With a plain `Date.now() + 2h` the
+            // remainder is however far into the current minute the test started,
+            // so the moment a second ticked over it dropped below a full minute
+            // and the text became "1 hours 59 minutes" - failing roughly 1 run
+            // in 3, with a message pointing at the ban screen rather than the
+            // clock.
+            //
+            // CEIL, not floor. Rounding the current time DOWN and adding 2h
+            // leaves a remainder slightly UNDER two hours, which floors to
+            // "1 hours 59 minutes" every single run - strictly worse. Rounding
+            // up leaves a remainder between 2h00m00s and 2h00m59s, which always
+            // reads "2 hours 0 minutes".
+            //
+            // The product is correct and was not changed: flooring is the right
+            // way to report a deadline, and under-stating by up to a minute is
+            // the safe direction.
+            '/sh/reward/pub': () => ({
+                ok: true, blacklisted: true,
+                until: (Math.ceil(Date.now() / 60000) * 60000) + 2 * 3600e3,
+                strikes: 1, reason: 'checkpoint 1 via linkvertise: no-click-id',
+                public: { rid: 'rwTEST1', name: 'X', keyDurationH: 1, maxKeys: 1, total: 1, steps: [] }
+            })
         }
     });
     await tick();

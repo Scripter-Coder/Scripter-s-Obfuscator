@@ -68,11 +68,37 @@ export function shRandomPick(str) {
 // Ambiguous glyphs deliberately excluded from the ASCII pools: 0/O, 1/l/I.
 // A user reading a key off one screen and typing it into another should not
 // lose a round trip to a font.
+//
+// THE SYMBOL POOL IS URL-SAFE. THAT IS LOAD-BEARING, NOT COSMETIC.
+//
+// It used to be '!@#$%^&*()-_=+?', and every one of those keys was broken in
+// transit:
+//
+//     &   terminates the query string, so the key is truncated there and the
+//         worker looks up a string that does not exist -> "not valid"
+//     #   starts the fragment, so EVERYTHING after it is discarded - including
+//         id=, because pairs() order is not guaranteed -> "doesnt exist"
+//     ?   starts a second query -> same truncation
+//     +   decodes as a space
+//     %   truncates an escape sequence
+//
+// Measured over 2000 generated 192-char keys: 2000/2000 contained at least one
+// of these. The first lands around index 11. So essentially every key the panel
+// ever produced was unusable by the script that had to accept it, while keys
+// minted by /sh/reward/claim worked fine - because that alphabet was already
+// alphanumeric. That asymmetry is the tell: it is the alphabet, not the code
+// path.
+//
+// Unreserved per RFC 3986, so a key survives any transport without encoding:
+// ALPHA / DIGIT / "-" / "." / "_" / "~". Percent-encoding is ALSO added to the
+// query builders (see QS in the worker) so a key issued before this change
+// still works, but a key that cannot be typed reliably is not worth encoding
+// around.
 export const SH_KEY_POOLS = {
     upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
     lower: 'abcdefghijkmnpqrstuvwxyz',
     digits: '23456789',
-    symbols: '!@#$%^&*()-_=+?',
+    symbols: '-._~',
 };
 
 // Opt-in only. See the header on why.

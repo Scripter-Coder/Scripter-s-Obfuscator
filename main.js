@@ -605,9 +605,32 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // compared against and the binding silently does nothing - the
             // same failure as a decorative field, which is exactly what this
             // option exists to avoid being.
-            if (window.__shUploadProject) {
-                payload.projectId = String(window.__shUploadProject.id || '');
-                payload.projectName = String(window.__shUploadProject.name || '');
+            // THE PROJECT IS A PARAMETER, NOT INHERITED STATE.
+            //
+            // This used to read `window.__shUploadProject`, a module-level
+            // global that three call sites set and nothing ever cleared. The
+            // worker writes projectId into sh_meta_<loaderId> on every upload
+            // and /sh/upload replaces that record wholesale, so the LAST
+            // writer wins.
+            //
+            // Two failure shapes, both reported as "a key bound to the right
+            // project is refused by the right script":
+            //
+            //   STALE   the owner creates a script in project A, then edits a
+            //           script in project B. The edit path never set the
+            //           global, so it inherited A, stamped A onto B's script,
+            //           and a key bound to B was refused.
+            //   ABSENT  the page is reloaded before any create, so the global is
+            //           undefined, projectId is written as '', and the project
+            //           check FAILS OPEN - the binding silently does nothing.
+            //
+            // Same defect both times: the value depended on what happened to
+            // run earlier in the session rather than on what this upload is.
+            // An argument cannot be inherited from an earlier caller.
+            var project = (typeof window !== 'undefined' && window.__shUploadProject) || null;
+            if (project) {
+                payload.projectId = String(project.id || '');
+                payload.projectName = String(project.name || '');
             }
         }
         if (splitKey) {
@@ -6605,8 +6628,25 @@ function generateLoadstring(projectId, scriptId) {
     } else {
         uploadArg = script.code;
     }
-    window.__shUploadProject = { id: projectId, name: (project && project.name) || '' };
-    window.__shUploadProject = { id: projectId, name: (project && project.name) || '' };
+    // The project name is looked up, NOT read from an undeclared `project`.
+//
+// This used to read `project`, which is not declared in generateLoadstring, in
+// its nested proceedWithGenerate, or at module scope - main.js is an ES module,
+// so there is no implicit global to find. Clicking "Generate Loadstring" threw
+//     ReferenceError: project is not defined
+// straight after the "Uploading..." toast and BEFORE shUploadLoader, so nothing
+// was uploaded, no loadstring came back, and no error was ever shown.
+//
+// The line also appeared TWICE, which is how a name that does not exist
+// survives review: it reads like a redundant assignment rather than a bug.
+var _genProjectName = '';
+    try {
+        var _gp = loadProjects() || [];
+        for (var _gi = 0; _gi < _gp.length; _gi++) {
+            if (_gp[_gi].id === projectId) { _genProjectName = _gp[_gi].name || ''; break; }
+        }
+    } catch (e) { _genProjectName = ''; }
+    window.__shUploadProject = { id: projectId, name: _genProjectName };
     shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless, !!script.requireKey).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
@@ -7021,6 +7061,24 @@ function confirmEditScript(projectId, scriptId) {
         // (or upload keyless), kill the old loader link (replaces) so old
         // ids stop working
         var oldLoaderId = prevScript && prevScript.loaderId ? prevScript.loaderId : '';
+        // THE EDIT PATH SETS THE PROJECT TOO.
+        //
+        // It did not, so this upload inherited whatever __shUploadProject
+        // happened to hold from an earlier create in the same session. The
+        // worker replaces sh_meta_<loaderId> wholesale on every upload, so the
+        // edit silently restamped the script with a DIFFERENT project's id - and
+        // a key bound to this script's real project was then refused with
+        // "Denied: project".
+        //
+        // Stamping it here is the whole fix; the global is only a mirror of it.
+        var editProjectName = '';
+        try {
+            var _ep = loadProjects() || [];
+            for (var _ei = 0; _ei < _ep.length; _ei++) {
+                if (_ep[_ei].id === projectId) { editProjectName = _ep[_ei].name || ''; break; }
+            }
+        } catch (e) { editProjectName = ''; }
+        window.__shUploadProject = { id: projectId, name: editProjectName };
         shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless, requireKey).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();

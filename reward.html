@@ -270,27 +270,75 @@
     // Open the ad link. A popup rather than a navigation, so this page keeps
     // the visitor's place and the progress bar does not have to survive a
     // round trip through an advertiser's domain.
+    //
+    // THE WINDOW IS OPENED SYNCHRONOUSLY, BEFORE THE FETCH.
+    //
+    // It used to be opened inside the .then(), which is outside the user-gesture
+    // stack in every modern browser: window.open returns null, and the fallback
+    // `location.href = step.target` DESTROYED this page on every checkpoint.
+    // The visitor lands on the advertiser, then has to navigate back and
+    // re-run boot() to find a Verify button that is still working - which is
+    // reported as the checkpoint not counting.
+    //
+    // A same-tab placeholder is opened first, because browsers will only honour
+    // a real popup opened during the click. Its location is replaced once the
+    // worker answers.
     function onStart() {
+        var target = step && step.target;
+        var w = null;
+        if (target) {
+            w = window.open('about:blank', '_blank', 'noopener');
+        }
         setAction('Opening...', true);
         api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (r) {
-            if (!r.ok) { return handleErr(r); }
+            if (!r.ok) {
+                if (w) w.close();
+                return handleErr(r);
+            }
             step = r.step;
-            if (r.complete) { refresh(); setAction('Done', true); return; }
-            if (!step || !step.target) { setAction('Start', false); return; }
-            var w = window.open(step.target, '_blank', 'noopener');
-            if (!w) location.href = step.target;
+            if (r.complete) {
+                if (w) w.close();
+                refresh(); setAction('Done', true); return;
+            }
+            if (!step || !step.target) {
+                if (w) w.close();
+                setAction('Start', false); return;
+            }
+            if (w) { try { w.location = step.target; } catch (e) { /* cross-origin, ignore */ } }
+            else { window.open(step.target, '_blank', 'noopener'); }
             render();
+        }).catch(function () {
+            if (w) w.close();
+            setAction('Start', false);
         });
     }
 
     // Come back from the ad and let the worker decide whether it counts.
-    // For the test provider the worker is told `confirmed=1`; for a real
-    // provider the provider itself has already called the callback URL with a
-    // click id, and this simply re-reads the result.
+    //
+    // THIS NOW RUNS FOR EVERY PROVIDER, not just `test`.
+    //
+    // It used to be:
+    //
+    //     if (step && step.provider === 'test' && step.verifyUrl) { navigate }
+    //     refresh();
+    //
+    // so for linkvertise, workink and lootlabs the button did nothing except
+    // re-read unchanged state. The only code path that records a completion is
+    // /sh/cp/<provider>, and nothing ever navigated there - a visitor could
+    // watch every ad, press the button every time, and stay at 0/N forever.
+    // That is reported as "checkpoints would not count as passed", and it was
+    // not a configuration mistake: the flow was unrunnable by construction.
+    //
+    // The worker decides whether the return counts. It holds the signed,
+    // single-use, per-step token and the server-side elapsed time, so this
+    // client cannot vouch for itself. Navigating away is deliberate - /sh/cp/
+    // answers with a verdict PAGE, so the visitor lands somewhere that tells
+    // them what happened.
     function onVerify() {
         setAction('Verifying...', true);
-        if (step && step.provider === 'test' && step.verifyUrl) {
-            location.href = step.verifyUrl + (step.verifyUrl.indexOf('?') > -1 ? '&' : '?') + 'confirmed=1';
+        if (step && step.verifyUrl) {
+            var sep = step.verifyUrl.indexOf('?') > -1 ? '&' : '?';
+            location.href = step.verifyUrl + sep + 'confirmed=1';
             return;
         }
         refresh();

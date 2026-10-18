@@ -994,8 +994,35 @@ function rewardPublicView(r) {
         allowExtending: !!r.allowExtending,
         extHours: r.extHours || 6,
         total: (r.checkpoints || []).length,
+        // THE LIVE COUNTERS COME BACK NOW.
+        //
+        // This view used to carry only {i, name, provider}. The panel's
+        // "Completed" column therefore had nothing to read, so it displayed
+        // whatever the browser's localStorage happened to hold - which is
+        // reported as "checkpoints would not count as passed", because the
+        // number in the panel never moved even while the server was counting
+        // completions perfectly.
+        //
+        // They are also returned per-step rather than as one aggregate, so the
+        // panel can show which checkpoint is failing rather than only a total.
+        //
+        // This is the OWNER-facing view (it already exposes config and, via
+        // /sh/reward/get, the provider links), not the visitor view, so no
+        // provider secret is exposed by adding three numeric fields.
         steps: (r.checkpoints || []).map(function (c, i) {
-            return { i: i, name: c.name || ('Checkpoint ' + (i + 1)), provider: c.provider };
+            return {
+                i: i,
+                // The stable id, so the panel can match a step back to its own
+                // checkpoint when it adopts the counters. Matching on array
+                // index instead would move a checkpoint's history onto its
+                // neighbour the moment the owner reorders the list.
+                id: c.id || '',
+                name: c.name || ('Checkpoint ' + (i + 1)),
+                provider: c.provider,
+                completed: Number(c.completed) || 0,
+                cancelled: Number(c.cancelled) || 0,
+                avgTimeSec: Number(c.avgTimeSec) || 0
+            };
         })
     };
 }
@@ -2856,6 +2883,21 @@ const RATE_BUCKETS = {
     // `reward-cb` is the provider callback: several can legitimately land in
     // quick succession for one visitor, but a flood is a forged postback storm.
     'reward-start':   { limit: 20,  window: 60 * 1000 },
+    // The progress POLL gets its own bucket.
+    //
+    // It used to share 'reward-start' with /sh/reward/pub and /sh/reward/start.
+    // reward.html refreshes every 4s, which is 15 requests a minute on its own,
+    // so a page open for two minutes exhausted the whole 20/min budget. After
+    // that /sh/reward/state answered 429, refresh() bailed out without updating
+    // state, and the progress bar froze mid-count.
+    //
+    // The symptom was exactly "the checkpoint finished but it would not count
+    // as passed" - the completion HAD been recorded server-side, and the page
+    // simply never displayed it. stopPolling() is only called on completion or
+    // ban, so the frozen tab kept hammering the dead endpoint too.
+    //
+    // Reads are cheap and idempotent. Writes stay on the tight budget.
+    'reward-state':   { limit: 120, window: 60 * 1000 },
     'reward-claim':   { limit: 6,   window: 60 * 1000 },
     'reward-cb':      { limit: 40,  window: 60 * 1000 },
     'reward-save':    { limit: 30,  window: 60 * 1000 },
@@ -7557,9 +7599,39 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
 
             const cps = [];
             const rawCps = Array.isArray(inR.checkpoints) ? inR.checkpoints.slice(0, 40) : [];
+            // The counters are SERVER STATE. The previous record is the authority.
+            //
+            // They used to be taken from the request body, which means the
+            // browser's copy won every save. Since the panel never read the
+            // live counters back (rewardPublicView did not include them), the
+            // browser's copy was always stale - so every owner edit RESET the
+            // completion history to whatever the localStorage mirror happened to
+            // hold.
+            //
+            // That is the same defect as the panel showing a frozen count, seen
+            // from the other side: the panel looked broken AND it was destroying
+            // the data. Completion is recorded in one place only, /sh/cp/, and
+            // it is not an editable field.
+            //
+            // Matched on the checkpoint's stable id, so reordering the list in
+            // the panel does not move a checkpoint's history onto another one.
+            const prevCps = ((prev && prev.checkpoints) || []);
+            const prevById = {};
+            for (const pc of prevCps) if (pc && pc.id) prevById[String(pc.id)] = pc;
+            const unsupported = [];
             for (const c of rawCps) {
                 const provider = String(c.provider || 'test');
-                if (!REWARD_PROVIDERS[provider]) continue;      // silently drop unknowns
+                // LOUD, NOT SILENT.
+                //
+                // A checkpoint dropped here disappears from the visitor's
+                // reward entirely, so a reward the owner believes has N steps
+                // can become impossible to complete - and the owner is told
+                // nothing. It is collected and refused instead, because a save
+                // that quietly loses a checkpoint must not report success.
+                if (!REWARD_PROVIDERS[provider]) {
+                    unsupported.push({ name: String(c.name || '').slice(0, 80), provider: provider });
+                    continue;
+                }
                 const st = c.settings || {};
                 cps.push({
                     id: String(c.id || newId('cp')).slice(0, 40),
@@ -7574,9 +7646,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         apiKey: String(st.apiKey || '').slice(0, 200),
                         postbackUrl: String(st.postbackUrl || '').slice(0, 400)
                     },
-                    completed: Number(c.completed) || 0,
-                    cancelled: Number(c.cancelled) || 0,
-                    avgTimeSec: Number(c.avgTimeSec) || 0
+                    completed: Number((prevById[String(c.id || '')] || {}).completed) || 0,
+                    cancelled: Number((prevById[String(c.id || '')] || {}).cancelled) || 0,
+                    avgTimeSec: Number((prevById[String(c.id || '')] || {}).avgTimeSec) || 0
                 });
             }
 
@@ -7594,6 +7666,20 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 createdAt: (prev && prev.createdAt) || Date.now(),
                 updatedAt: Date.now()
             };
+            // REFUSE THE SAVE, rather than store a reward the owner cannot
+            // complete. Writing it and reporting ok is what let a five-step
+            // reward silently become a four-step one that no visitor could
+            // finish.
+            if (unsupported.length) {
+                return jsonResponse({
+                    ok: false,
+                    error: 'Unsupported provider: ' + unsupported.map(function (u) {
+                        return u.provider + (u.name ? ' (' + u.name + ')' : '');
+                    }).join(', ') + '. These cannot be verified and were not saved - the reward was left unchanged.',
+                    unsupported: unsupported
+                }, 400);
+            }
+
             await saveReward(env, rec);
 
             // Which checkpoints can actually be completed right now. The panel
@@ -7751,7 +7837,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
 
         // VISITOR: progress after a callback, or after a reload.
         if (url.pathname === '/sh/reward/state') {
-            const limited = rewardRate(request, url, 'reward-start');
+            // Its OWN bucket, not 'reward-start'. See the bucket table: this is
+            // the 4-second progress poll, and sharing a 20/min budget with the
+            // page-load calls meant an idle tab starved itself and the progress
+            // stopped updating - reported as "it would not count as passed".
+            const limited = rewardRate(request, url, 'reward-state');
             if (limited) return limited;
             const rid = String(url.searchParams.get('rid') || '').slice(0, 40);
             const sid = String(url.searchParams.get('sid') || '').slice(0, 40);
@@ -8284,6 +8374,17 @@ function luaSessionBootstrap(id, base, keyless) {
         + ' if r=="expired" then return "That license has expired." end\n'
         + ' if r=="banned" then return "That license has been banned." end\n'
         + ' if r=="hwid" then return "That license is locked to different hardware." end\n'
+        // A project mismatch is a real, common, FIXABLE configuration state: the
+        // key is valid, the script exists, and the owner simply bound them to
+        // different projects. It used to fall through to the generic line below
+        // and show the literal words
+        //
+        //     Denied: project
+        //
+        // which names an internal code instead of the problem, so the owner
+        // could not tell a mis-bound key from a broken one. This is the message
+        // the owner saw for "the script doesnt accept my key".
+        + ' if r=="project" then return "This license is for a different project than this script. Make a key for this project, or bind the key to All projects." end\n'
         + ' if r=="killswitch" then return "The owner has disabled this script." end\n'
         + ' return "Denied: "..r\n'
         + 'end\n'
@@ -8299,7 +8400,8 @@ function luaSessionBootstrap(id, base, keyless) {
         // so a bootstrap that only ever spoke POST would silently fail on every
         // executor without `request`. The server records which transport was
         // used, so the weak path stays visible instead of being averaged in.
-        + 'local function QS(t) local o={} for k,v in pairs(t) do o[#o+1]=k.."="..tostring(v) end return table.concat(o,"&") end\n'
+        + 'local function E(s) s=tostring(s or "") return (s:gsub("[^%w%-._~]",function(c) return string.format("%%%02X",string.byte(c)) end)) end\n'
+        + 'local function QS(t) local o={} for k,v in pairs(t) do o[#o+1]=E(k).."="..E(v) end return table.concat(o,"&") end\n'
         + 'local function GET(url)\n'
         + ' if request then\n'
         + '  local ok,r=pcall(function() return request({Url=url,Method="GET",'
