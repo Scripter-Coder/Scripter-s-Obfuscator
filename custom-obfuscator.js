@@ -152,6 +152,24 @@ function luaEscape(s) {
     for (var i = 0; i < b.length; i++) parts.push('\\' + b[i]);
     return parts.join('');
 }
+// Base64 of a byte array. The layered payload travels this way and the loader
+// decodes it back to the same raw bytes. The escaped form it replaces spent
+// about four characters on every byte, and that multiplier was the largest
+// term in every artifact size.
+function b64OfBytes(arr) {
+    var A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var out = [];
+    for (var i = 0; i < arr.length; i += 3) {
+        var b0 = arr[i];
+        var b1 = i + 1 < arr.length ? arr[i + 1] : 0;
+        var b2 = i + 2 < arr.length ? arr[i + 2] : 0;
+        var n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(A.charAt((n >> 18) & 63), A.charAt((n >> 12) & 63),
+            i + 1 < arr.length ? A.charAt((n >> 6) & 63) : '=',
+            i + 2 < arr.length ? A.charAt(n & 63) : '=');
+    }
+    return out.join('');
+}
 function makeNames(count) {
     var used = {}, names = [];
     while (names.length < count) {
@@ -889,20 +907,20 @@ function buildLoader(src, layerCount, options) {
     // ULTRA noise stride: junk byte every 2 real bytes (33% overhead) - max confusion
     var stride = options.stride || Math.max(3, 25 - layerCount * 2);
 
-    // build escaped payload string with noise (array-join: O(n) instead of
-    // the old string += that was O(n^2) and froze the tab on 100k-line
-    // scripts for minutes)
-    var escParts = [];
+    // The payload bytes with a junk byte after every `stride` real bytes, as
+    // before. It is sent as base64 and the loader decodes it back to exactly
+    // these bytes (see BD below), so everything after the decode is unchanged.
+    var rawParts = [];
     var sinceJunk = 0;
     for (var i = 0; i < bytes.length; i++) {
-        escParts.push('\\' + bytes[i]);
+        rawParts.push(bytes[i]);
         sinceJunk++;
         if (sinceJunk === stride) {
-            escParts.push('\\' + rndInt(0, 255));
+            rawParts.push(rndInt(0, 255));
             sinceJunk = 0;
         }
     }
-    var payloadStr = escParts.join('');
+    var payloadB64 = b64OfBytes(rawParts);
 
     var antiTamper = options.antiTamper !== false;
     var N = makeNames(31);
@@ -1000,7 +1018,12 @@ function buildLoader(src, layerCount, options) {
 // getgenv cover the cases, and the bare reference is the part that did fix it.
     out.push('local ' + FN + '=' + "(function()\nlocal n=string.char(108,111,97,100,115,116,114,105,110,103)\nlocal m=string.char(108,111,97,100)\nlocal t={}\nif type(_G)=='table' then t[#t+1]=_G end\nif getgenv then local ok,e=pcall(getgenv) if ok and type(e)=='table' then t[#t+1]=e end end\nfor i=1,#t do local a=rawget(t[i],n) or rawget(t[i],m) if a then return a end end\nreturn loadstring or load\nend)()");
     out.push('local ' + X + '=bit32 and bit32.bxor or function(a,b) local r,p=0,1 for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end');
-    out.push('local ' + P + '="' + payloadStr + '"');
+    // BD turns the base64 payload back into the raw bytes. Plain Lua 5.1: a
+    // lookup table for the alphabet, bits gathered six at a time and emitted
+    // eight at a time.
+    var BD = makeNames(1)[0];
+    out.push('local ' + BD + '=function(s) local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" local D={} for i=1,64 do D[A:byte(i)]=i-1 end local o,n,acc,bits={},0,0,0 for i=1,#s do local v=D[s:byte(i)] if v then acc=acc*64+v bits=bits+6 if bits>=8 then bits=bits-8 n=n+1 o[n]=string.char(math.floor(acc/2^bits)%256) acc=acc%2^bits end end end return table.concat(o) end');
+    out.push('local ' + P + '=' + BD + '("' + payloadB64 + '")');
     out.push('local ' + K + '={' + keyTableParts.join(',') + '}');
     out.push('local ' + JL + '={' + junkStrs.join(',') + '}');
     out.push('local ' + L + '=0x' + hex(6));
@@ -1274,7 +1297,47 @@ function buildLoader(src, layerCount, options) {
 // ============================================================
 // PUBLIC API
 // ============================================================
+// The size an artifact may reach before it is considered undeliverable. The
+// tier model estimates a build before it runs, so a build can still come out
+// over it; see applyCustomObfuscator below.
+var ARTIFACT_BUDGET_KB = 600;
+
+// The artifact must fit the budget when a lower tier can. A build that comes out
+// over budget is rebuilt as layers only, the strongest configuration that fits
+// here, and the caller is told which one shipped.
 export function applyCustomObfuscator(code, options, debugInfo) {
+    options = options || {};
+    var out = applyCustomObfuscatorCore(code, options, debugInfo);
+    var outKB = out.length / 1024;
+    if (options._budgetRetry || options.vmPass === false || outKB <= ARTIFACT_BUDGET_KB) return out;
+    // Lower tiers, strongest first: the lite VM, then layers only.
+    var steps = [{ vmPass: true, vmTier: 'lite' }, { vmPass: false }];
+    for (var s = 0; s < steps.length; s++) {
+        var retryOpts = Object.assign({}, options, steps[s], { _budgetRetry: true });
+        var retryDbg = {};
+        var retried = applyCustomObfuscatorCore(code, retryOpts, retryDbg);
+        if (retried.length / 1024 > ARTIFACT_BUDGET_KB) continue;
+        // The shipped build's split key and profile state go back to the caller.
+        // The tier overrides stay with the retry.
+        for (var k in retryOpts) {
+            if (k !== 'vmPass' && k !== 'vmTier' && k !== '_budgetRetry') options[k] = retryOpts[k];
+        }
+        var tierName = steps[s].vmTier ? 'lite VM' : 'layers only';
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[ScripterHub] the VM build came out at ' + Math.round(outKB) +
+                ' KB, over the ' + ARTIFACT_BUDGET_KB + ' KB budget, so it was rebuilt as ' +
+                tierName + ' (' + Math.round(retried.length / 1024) + ' KB).');
+        }
+        if (debugInfo) {
+            for (var d in debugInfo) delete debugInfo[d];
+            Object.assign(debugInfo, retryDbg, { budgetRetry: tierName, budgetRetryFromKB: Math.round(outKB) });
+        }
+        return retried;
+    }
+    return out;
+}
+
+function applyCustomObfuscatorCore(code, options, debugInfo) {
     options = options || {};
     // Honest profile handling (spec §12): FAST/BALANCED/SECURE are real presets with measurable diffs
     var profName = String(options.profile || options.preset || 'BALANCED').toUpperCase();
@@ -1329,7 +1392,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     //     3.2  MB -> ~52 s, drops the client to 0 fps
     //     15    MB -> never runs anywhere
     var srcKB = Math.max(1, (code ? code.length : 0) / 1024);
-    var BUDGET_KB = 600;          // the largest artifact observed running acceptably, x2
+    var BUDGET_KB = ARTIFACT_BUDGET_KB;          // the largest artifact observed running acceptably, x2
     var MULT_FLOOR = 4.0;        // VM + loader overhead that no setting switches off
     // TWO TERMS, because one is not enough.
     //
@@ -1369,8 +1432,8 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     //   layers      ~4.15x, plus a ~29 KB floor
     //   bytecode VM ~30x source, plus a ~36 KB floor   <- the dominant term
     //   vm lite     ~similar order, cheaper floor
-    var LAYER_FIXED_KB = 29;
-    var LAYER_SLOPE = 4.15;
+    var LAYER_FIXED_KB = 20;
+    var LAYER_SLOPE = 1.5;
     // WRAP IS THE OTHER HUGE TERM, AND IT WAS MISSING ENTIRELY.
     //
     // Measured on a 1.2 KB source:
@@ -1388,13 +1451,16 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // willDoubleWrap = intensity >= 7, willTripleWrap = intensity >= 25 - so it
     // has to be evaluated after the clamp, or the model describes a build that
     // never happens.
-    var WRAP_DOUBLE_MULT = 22;
-    var WRAP_TRIPLE_MULT = 46;
+    var WRAP_DOUBLE_MULT = 2.3;
+    var WRAP_TRIPLE_MULT = 4.6;
+    // The explicit ultra flag wraps about three times as hard as the same
+    // intensity without it (measured: 158 KB vs 53 KB on a 2 KB SECURE source).
+    var WRAP_ULTRA_MULT = 6.9;
     // HONEST SIZE PREDICTION. Used for REPORTING only - see below.
     var estOutKB = function (baseKB, intensityNow) {
         var base = LAYER_FIXED_KB + LAYER_SLOPE * baseKB;
         if (intensityNow >= 25) return base * WRAP_TRIPLE_MULT;
-        if (intensityNow >= 7) return base * WRAP_DOUBLE_MULT;
+        if (intensityNow >= 7) return base * (options.ultra === true ? WRAP_ULTRA_MULT : WRAP_DOUBLE_MULT);
         return base;
     };
 
@@ -1453,7 +1519,7 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         debugInfo.budgetUnreachable = unreachableBudget;
         // Layers are a near-constant 4.15x, so the caller's intensity is not
         // reported as a size lever. It still controls protection strength.
-        debugInfo.sizeModel = 'measured: 29 KB + 4.15x (intensity-independent)';
+        debugInfo.sizeModel = 'measured: 20 KB + 1.5x, double wrap 2.3x (base64 payload)';
     }
     if (unreachableBudget && typeof console !== 'undefined' && console.warn) {
         console.warn('[ScripterHub] source is ' + Math.round(srcKB) + ' KB, so the layers alone' +
@@ -1523,9 +1589,15 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     var _TIER_EXPANSION = { bytecode: 36.9, lite: 16.9, none: 1.0 };
     // Largest source each tier can carry into the budget:
     //   (budget - fixed floor) / (expansion * slope)
+    // The wrap multiplies the whole artifact, so the ceiling has to account for
+    // the wrap this intensity actually gets - otherwise a tier that fits the
+    // layers alone is chosen and then ships over budget once the wrap is applied.
+    var _wrapNow = intensity >= 25 ? WRAP_TRIPLE_MULT
+        : (intensity >= 7 ? (options.ultra === true ? WRAP_ULTRA_MULT : WRAP_DOUBLE_MULT) : 1);
     var _tierMaxSrcKB = function (tier) {
         var perKB = _TIER_EXPANSION[tier] * LAYER_SLOPE;
-        return perKB > 0 ? Math.max(0, (BUDGET_KB - LAYER_FIXED_KB) / perKB) : Infinity;
+        var room = BUDGET_KB / _wrapNow - LAYER_FIXED_KB;
+        return perKB > 0 ? Math.max(0, room / perKB) : Infinity;
     };
     var _autoTier = 'bytecode';
     if (srcKB > _tierMaxSrcKB('bytecode')) _autoTier = 'lite';

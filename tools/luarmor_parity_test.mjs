@@ -111,7 +111,7 @@ console.log('\n[LP3] Luarmor structural parity...');
     const markers = [
         ['readfile  (cache hit)', /pcall\(function\(\)\s*a=readfile/],
         ['makefolder (cache dir)', /pcall\(makefolder,d\)/],
-        ['writefile (cache write)', /writefile\(p,r\)/],
+        ['writefile (cache write)', /writefile\(p,a\)/],
         ['loadstring of the response', /loadstring\(a\)/],
         ['id passed as an argument', /return f\("ScripterHub\d+"\)/],
         ['executor User-Agent header', /\["User-Agent"\]="Roblox\//],

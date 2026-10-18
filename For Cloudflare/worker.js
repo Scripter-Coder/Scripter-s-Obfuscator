@@ -1428,6 +1428,21 @@ function pickClickIdFrom(obj) {
     return '';
 }
 
+// Which query parameters the provider actually sent, NAMES ONLY. A checkpoint
+// that arrives with no click id is otherwise a mystery - the owner cannot see
+// what the provider's redirect contained. Values are never echoed, because a
+// value here is a token and this page gets pasted into support threads.
+function heardParams(url) {
+    const names = [];
+    for (const k of url.searchParams.keys()) {
+        if (k === 'r' || k === 'i' || k === 'site' || k === 't') continue;
+        const clean = String(k).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+        if (clean && names.indexOf(clean) === -1) names.push(clean);
+        if (names.length >= 12) break;
+    }
+    return names.length ? ' (received: ' + names.join(', ') + ')' : ' (received: no parameters)';
+}
+
 // The page the provider sends the visitor back to. It is a real HTML document
 // rather than a bare 200 so that a person staring at a failed checkpoint is
 // told what happened instead of seeing a blank tab.
@@ -4423,15 +4438,16 @@ function shLoader(base, id) {
         'local d="sh_static"',
         'local p=d.."/init-"..' + idLit + '..".lua"',
         'pcall(makefolder,d)',
+        // Fetched on every run. The bootstrap holds no secret, so the disk copy
+        // only ever bought a stale bootstrap: a fix made on the server never
+        // reached a machine that had cached the old one. The file is now the
+        // offline fallback only.
         'local a',
-        'pcall(function() a=readfile(p) end)',
-        'if type(a)~="string" or #a<2000 then',
-        '  local r',
-        '  if request then local ok,res=pcall(request,{Url=u,Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}) if ok and type(res)=="table" then r=res.Body end end',
-        '  if type(r)~="string" or #r<2 then pcall(function() r=game:HttpGet(u) end) end',
-        '  if type(r)=="string" and #r>2000 then pcall(function() writefile(p,r) end) end',
-        '  a=r',
-        'end',
+        'if request then local ok,res=pcall(request,{Url=u,Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}) if ok and type(res)=="table" then a=res.Body end end',
+        'if type(a)~="string" or #a<2 then pcall(function() a=game:HttpGet(u) end) end',
+        'if type(a)=="string" and #a>2000 then pcall(function() writefile(p,a) end)',
+        'else pcall(function() a=readfile(p) end) end',
+        'if type(a)~="string" or #a<2 then error("[ScripterHub] could not reach the server and no cached copy exists.",0) end',
         'local f,e=loadstring(a)',
         'if not f then error("[ScripterHub] could not load the script: "..tostring(e),0) end',
         'return f(' + idLit + ')'
@@ -5173,24 +5189,62 @@ async function handleRequest(request, env, ctx) {
                 const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
                 return jsonResponse({ ok: true, id, replaced, keyless: true, loadstring: shLoader(base, id) });
             }
-            // ---- keyed scripts: ENCRYPTED with the Special Key ----
-            const cipher = String(body.cipher || '');
-            if (!cipher) return jsonResponse({ ok: false, error: 'cipher is required (encrypt client-side with the Special Key first)' }, 400);
-            if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare: KV values cap at 25MB and request bodies at ~100MB). Reduce the script or split it into modules.' }, 413);
-            const keyHash = String(body.keyHash || ''); // optional SHA-256 hex
-            try {
-                if (keeperNeededFor(env, cipher.length)) {
-                    const put = await storePut(env, id, 'artifact', cipher, await expiresAtForUpload(env, body, id));
-                    if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
-                    if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
-                } else {
-                    // KV: chunks if needed, and /sh/c/<id>/<i> serves them. The
-                    // script runs with the PC off.
-                    await putBlob(env, id, KV_PREFIX, cipher);
-                }
-            } catch (e) {
-                return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
-            }
+            // ---- keyed scripts: the ARTIFACT is plainCode, the browser view is cipher ----
+//
+// This branch stored `cipher` as the delivery artifact. That was the second half
+// of "Wrong Special Key, or the delivery was tampered with".
+//
+// `cipher` is shEncryptPayload(obfCode, specialKey) - the SPECIAL KEY layer. It
+// exists so the owner can read the source back on the website. The executor never
+// has the Special Key; it has the LICENSE, and the loader runs
+// DEC(getgenv().ScripterHubKey) over whatever it is given.
+//
+// So the delivered body was ciphertext under a key the visitor does not hold,
+// decrypted with a key they do. Garbage out, the SHOK magic fails, and the script
+// dies with a message that accuses the visitor of tampering with the delivery.
+//
+// The two layers have separate jobs and separate storage:
+//
+//   plainCode -> sh_loader_<id>  the executor artifact, encrypted PER DELIVERY
+//                                with the licence key that authorised the session
+//   cipher    -> sh_web_<id>     the browser view, opened with the Special Key on
+//                                the website
+//
+// main.js now sends plainCode for keyed uploads too. It is optional here so an
+// older panel still works, but without it the artifact is the Special-Key
+// ciphertext and a keyed script cannot run - which is the bug.
+const cipher = String(body.cipher || '');
+const plainCode = String(body.plainCode || '');
+if (!cipher && !plainCode) {
+    return jsonResponse({ ok: false, error: 'cipher is required (encrypt client-side with the Special Key first)' }, 400);
+}
+// The browser view. Same as the keyless branch, and it is NOT the artifact. A
+// failure here must not fail the publish - the artifact write below is what
+// decides whether this script exists at all.
+if (cipher) {
+    if (cipher.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'cipher too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
+    try {
+        if (keeperNeededFor(env, cipher.length)) await storePut(env, id, 'web', cipher, await expiresAtForUpload(env, body, id));
+        else await putBlob(env, id, KV_WEB_PREFIX, cipher);
+    } catch (e) { /* the view is not worth failing a publish over */ }
+}
+// The artifact the executor receives.
+const artifact = plainCode || cipher;
+if (artifact.length > MAX_CIPHER_LEN) return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare: KV values cap at 25MB and request bodies at ~100MB). Reduce the script or split it into modules.' }, 413);
+const keyHash = String(body.keyHash || ''); // optional SHA-256 hex
+try {
+    if (keeperNeededFor(env, artifact.length)) {
+        const put = await storePut(env, id, 'artifact', artifact, await expiresAtForUpload(env, body, id));
+        if (put === false) return jsonResponse({ ok: false, error: 'script storage refused the upload. Check the Storage Keeper service is running and its token matches.' }, 502);
+        if (put === null) return jsonResponse({ ok: false, error: 'script storage is unreachable. The script was NOT published. Try again shortly.' }, 503);
+    } else {
+        // KV: chunks if needed, and /sh/c/<id>/<i> serves them. The
+        // script runs with the PC off.
+        await putBlob(env, id, KV_PREFIX, artifact);
+    }
+} catch (e) {
+    return jsonResponse({ ok: false, error: 'script too large (max ~50MB on Cloudflare). Reduce the script or split it into modules.' }, 413);
+}
             // authRequired: this script demands a valid license key + HWID
             // on EVERY run (Luarmor model) - the split key is never served
             // without a short-lived /sh/auth token
@@ -8188,7 +8242,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // visitor here without doing its job. It is refused with a real
                 // sentence rather than a silent stall.
                 if (!clickId) {
-                    return rewardCallbackPage(origin, 'failed', 'no-click-id');
+                    return rewardCallbackPage(origin, 'failed', 'no-click-id' + heardParams(url));
                 }
                 // The click is parked, single use. Recording it BEFORE the
                 // verification is what makes a real click impossible to replay
@@ -8928,6 +8982,11 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'
         // ---- 4. assemble the payload
         + 'local SK, B\n'
+        // CH marks a chained delivery. Its parts are stored as plain obfuscated
+        // code and cannot be licence-encrypted per visitor at this size, so the
+        // session grant on each part is the gate there - the same gate a keyless
+        // script has. The inline path stays licence-encrypted.
+        + 'local CH=false\n'
         + 'if body:sub(1,4)=="SHL\\n" then\n'
         + '  B=body:sub(5)                      -- keyless, no server-only layer\n'
         // SHX: keyless, WITH a server-only layer.
@@ -8953,7 +9012,7 @@ function luaSessionBootstrap(id, base, keyless) {
         + '  SK=body:sub(5,nl-1)                -- "t0 chk k1 k2 k3..."\n'
         + '  B=body:sub(nl+1)                   -- the ciphertext\n'
         + 'elseif body:sub(1,4)=="SHG " then\n'
-        + '  local n,root,g=body:match("^SHG (%d+) (%S+) (%S+)")\n'
+        + '  CH=true local n,root,g=body:match("^SHG (%d+) (%S+) (%S+)")\n'
         + '  local nl=body:find("\\n")\n'
         // Same class of fault as the SHK branch: an unterminated header made
         // body:sub(nl+1) do arithmetic on nil, which kills the chunk with a
@@ -8974,23 +9033,79 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'else\n'
         + '  DIE("Unrecognised delivery format.") return\n'
         + 'end\n'
-        // ---- 5. decrypt locally with the Special Key (unchanged cipher)
+                // ===========================================================================
+        // 5. DECRYPT LOCALLY WITH THE LICENCE KEY
+        //
+        // The body arrives base64-ENCODED (shEncryptForLoader returns btoa), so
+        // the bytes on the wire are base64 CHARACTERS. Decoding has to come
+        // first: string.byte on the raw body yields the ASCII of A, B, C...
+        //
+        // THE THREE SETS OF SHIFTS. Every one of these was wrong at some point,
+        // and the wrong ones did not raise - they returned the wrong bytes,
+        // which is worse than refusing:
+        //
+        //   4 chars = 24 bits = 3 bytes : c>>16, (c>>8)&0xFF, c&0xFF  -> /65536 /256
+        //   3 chars = 18 bits = 2 bytes : c>>10, (c>>2)&0xFF           -> /1024  /4
+        //   2 chars = 12 bits = 1 byte  : c>>4                         -> /16
+        //
+        // 4096 and 16 for the 18-bit case are the 24-bit shifts, so they read the
+        // wrong bits silently. 262144, 4096 and 64 are the base64 SHIFT constants
+        // 64^3, 64^2, 64^1 used as if they were byte divisors. And the group
+        // offset was s:sub(1+j,1+j), reading from position 1 of the whole string
+        // - correct for the first group, garbage after it.
+        //
+        // A one-character remainder is not valid base64; it cannot occur for this
+        // worker's own output, and ignoring it truncated the artifact by a byte
+        // while the SHOK magic still matched at the front.
+        //
+        // tools/keyed_lua_roundtrip_test.mjs runs this Lua against the shipped
+        // encryptor at eight plaintext lengths, which is the only kind of test
+        // that could have found any of it: the seed function always matched, so
+        // every test that compared the two implementations in isolation stayed
+        // green while no keyed script could run.
+        // ===========================================================================
+
+
         + 'local function BX(a,b) a=a%4294967296 b=b%4294967296 local r,p=0.0,1.0 for _=1,32 do '
         + 'local x=a%2 local y=b%2 if x~=y then r=r+p end a=(a-x)/2 b=(b-y)/2 p=p*2 end return r end\n'
         + 'local function SD(k,i) local h=5381.0+i*7 for j=1,#k do local c=string.byte(k,j) '
         + 'h=(h*33+c)%4294967296 end return h end\n'
         + 'local function NX(s) local x=s[1] x=BX(x,(x*8192)%4294967296) x=BX(x,math.floor(x/131072)) '
         + 'x=BX(x,(x*32)%4294967296) s[1]=s[2] s[2]=s[3] s[3]=s[4] s[4]=x return x end\n'
-        + 'local function DEC(k) local a,b,c,d=SD(k,0),SD(k,1),SD(k,2),SD(k,3)\n'
-        + ' if a==0 then a=1 end if b==0 then b=2 end if c==0 then c=3 end if d==0 then d=4 end\n'
-        + ' local s={a,b,c,d} local o={} for i=1,#B do local x=NX(s) o[i]=string.char(BX(string.byte(B,i),x%256)) end\n'
-        + ' local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end\n'
++ 'local function DEC(k) local a,b,c,d=SD(k,0),SD(k,1),SD(k,2),SD(k,3)\n'
++ ' if a==0 then a=1 end if b==0 then b=2 end if c==0 then c=3 end if d==0 then d=4 end\n'
++ ' local function _b64dec(s)\n'
++ '  local T="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"\n'
++ '  local M={} for i=1,64 do M[T:sub(i,i)]=i-1 end\n'
++ '  s=tostring(s or ""):gsub("[^A-Za-z0-9+/]","")\n'
++ '  local n=#s local o={} local i=1\n'
++ '  while i+3<=n do\n'
++ '   local c=0\n'
++ '   for j=0,3 do local v=M[s:sub(i+j,i+j)] if v then c=c*64+v end end\n'
++ '   o[#o+1]=string.char(math.floor(c/65536),math.floor(c/256)%256,c%256)\n'
++ '   i=i+4\n'
++ '  end\n'
++ '  local rem=n-i+1\n'
++ '  if rem==1 then return nil end\n'
++ '  if rem==2 then\n'
++ '   local c=0\n'
++ '   for j=0,1 do local v=M[s:sub(i+j,i+j)] if v then c=c*64+v end end\n'
++ '   o[#o+1]=string.char(math.floor(c/16)%256)\n'
++ '  elseif rem==3 then\n'
++ '   local c=0\n'
++ '   for j=0,2 do local v=M[s:sub(i+j,i+j)] if v then c=c*64+v end end\n'
++ '   o[#o+1]=string.char(math.floor(c/1024)%256,math.floor(c/4)%256)\n'
++ '  end\n'
++ '  return table.concat(o)\n'
++ ' end\n'
++ ' if type(B)~="string" then return nil end\n'
++ ' local BD=(B:match("^[A-Za-z0-9+/=]+$")) and _b64dec(B) or B\n'
++ ' if #BD==0 then return nil end\n'
++ ' local s={a,b,c,d} local o={} for i=1,#BD do local x=NX(s) o[i]=string.char(BX(string.byte(BD,i),x%256)) end\n'
++ ' local t=table.concat(o) if t:sub(1,4)~="SHOK" then return nil end return t:sub(5) end\n'
         + 'local src=B\n'
-        + 'if KEYED then\n'
+        + 'if KEYED and not CH then\n'
         + ' if type(SK)~="string" or SK=="" then DIE("Missing key material.") return end\n'
-        + ' -- SK carries "t0 chk k1 k2 ...". The obfuscated file verifies the\n'
-        + ' -- time pad and the check value itself, so a tampered delivery\n'
-        + ' -- decrypts to garbage and fails the SHOK magic rather than running.\n'
         + ' src=DEC(K)\n'
         + ' if not src then DIE("Wrong Special Key, or the delivery was tampered with.") return end\n'
         + 'end\n'

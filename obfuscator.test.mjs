@@ -50,9 +50,12 @@ function decodeLoader(text) {
     assert(dbgMatch, 'shdebug header found');
     const dbg = JSON.parse(dbgMatch[1]);
 
-    const payloadMatch = text.match(/"(\\\d{1,3}(?:\\\d{1,3})*)"/);
+    // The payload is base64 now, assigned through the loader's decoder:
+    // local P=BD("...")  - anchored on that shape so the alphabet string in BD
+    // is not mistaken for a payload.
+    const payloadMatch = text.match(/local _0x[0-9a-f]+=_0x[0-9a-f]+\("([A-Za-z0-9+\/=]+)"\)/);
     assert(payloadMatch, 'payload string found');
-    const allBytes = [...payloadMatch[1].matchAll(/\\(\d{1,3})/g)].map(m => parseInt(m[1], 10));
+    const allBytes = Array.from(Buffer.from(payloadMatch[1], 'base64'));
 
     // slot table: {seed,iv,c1,c2,flags,shift,madd,next} per entry
     const tableMatch = text.match(/local _0x[0-9a-f]+=(\{\{[\d,{}]+\}\})/);
@@ -213,23 +216,27 @@ console.log('[9] Anti-tamper: flipping ONE byte must break the script...');
 const t9dbg = {};
 const outRun9 = applyCustomObfuscator(runnable, { intensity: 5, antiTamper: true, antiSkid: false, _debug: true }, t9dbg);
 const t9stride = t9dbg ? (JSON.parse(outRun9.match(/--\[shdebug:(\{.*?\})\]/)[1]).stride) : 19;
-const tampered = outRun9.replace(/"(\\\d{1,3}(?:\\\d{1,3})*)"/, (m) => {
-    // flip a REAL payload byte: noise bytes sit at every (stride+1)th
-    // position; flipping those does nothing (they are stripped). Pick the
-    // middle-most NON-noise byte so the flip always changes the payload.
-    const seqs = [...m.matchAll(/\\\d{1,3}/g)].map(x => ({ i: x.index, s: x[0] }));
+const B64_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const tampered = outRun9.replace(/local (_0x[0-9a-f]+)=(_0x[0-9a-f]+)\("([A-Za-z0-9+\/=]+)"\)/, (m, a, b, p64) => {
+    // flip a REAL payload byte: junk bytes sit at every (stride+1)th position
+    // and are stripped by the loader, so flipping one of those changes nothing.
+    // Change one base64 character near the middle and keep it only if it
+    // alters a real (non-junk) byte of the decoded payload.
     const SS = t9stride + 1;
-    for (let off = 0; off < seqs.length; off++) {
-        for (const cand of [Math.floor(seqs.length / 2) + off, Math.floor(seqs.length / 2) - off]) {
-            if (cand < 0 || cand >= seqs.length) continue;
-            const pos1 = cand + 1; // 1-based position of this byte
-            if ((pos1 - 1) % SS === t9stride) continue; // noise position - skip
-            const s = seqs[cand];
-            const flipped = s.s.startsWith('\\9') ? s.s.replace(/9/, '8') : s.s.replace(/\\(\d?)/, '\\9');
-            if (flipped !== s.s) return m.slice(0, s.i) + flipped + m.slice(s.i + s.s.length);
+    const orig = Buffer.from(p64, 'base64');
+    const mid = Math.floor(p64.length / 2);
+    for (let off = 0; off < p64.length; off++) {
+        for (const cand of [mid + off, mid - off]) {
+            if (cand < 0 || cand >= p64.length - 2) continue;
+            const repl = B64_ALPHA[(B64_ALPHA.indexOf(p64[cand]) + 1) % 64];
+            const changed = p64.slice(0, cand) + repl + p64.slice(cand + 1);
+            const bytes = Buffer.from(changed, 'base64');
+            for (let q = 0; q < bytes.length; q++) {
+                if (bytes[q] !== orig[q] && (q % SS) !== t9stride) return `local ${a}=${b}("${changed}")`;
+            }
         }
     }
-    return m.replace(/\\(\d)/, '\\9');
+    return m;
 });
 assert(tampered !== outRun9, 'tampering applied');
 const Lt = lauxlib.luaL_newstate();

@@ -595,6 +595,24 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
         } else {
             payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
+            // plainCode GOES TO THE SERVER FOR A KEYED SCRIPT TOO.
+            //
+            // It used to be sent only for a keyless one, so the worker had nothing
+            // to deliver but `cipher` - the Special-Key ciphertext - and stored
+            // THAT as the artifact.
+            //
+            // The executor has no Special Key and is never given one. It holds the
+            // LICENSE, and the loader runs DEC(getgenv().ScripterHubKey) over the
+            // body. Decrypting the Special-Key ciphertext with the licence key
+            // produces garbage, the SHOK magic fails, and every keyed script dies
+            // with "Wrong Special Key, or the delivery was tampered with" - a
+            // message that blames the visitor for a server-side mismatch.
+            //
+            // The two layers are different jobs. `cipher` is the browser view,
+            // opened by the owner with the Special Key on the website. `plainCode`
+            // is the executor artifact, which the worker encrypts per delivery
+            // with the licence key that authorised the session.
+            payload.plainCode = obfCode;
             // requireAuth (Luarmor model): the split key is only served
             // after a valid license key + HWID auth against /sh/auth
             if (requireAuth) payload.authRequired = true;

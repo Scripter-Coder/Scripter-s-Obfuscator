@@ -139,7 +139,7 @@ console.log('the shipped Lua agrees with the JavaScript');
 const LUA = fengari.lua, AUX = fengari.lauxlib;
 
 function luaDecryptBlock() {
-    const from = workerSrc.indexOf('// ---- 5. decrypt locally with the Special Key');
+    const from = workerSrc.indexOf('// 5. DECRYPT LOCALLY WITH THE LICENCE KEY');
     const to = workerSrc.indexOf('local LS=loadstring or load', from);
     if (from < 0 || to < 0) return '';
     const seg = workerSrc.slice(from, to);

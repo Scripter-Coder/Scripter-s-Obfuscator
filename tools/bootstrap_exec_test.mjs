@@ -224,7 +224,10 @@ function encrypt(specKey, payload) {
     s[0] = s[1]; s[1] = s[2]; s[2] = s[3]; s[3] = x;
     out += String.fromCharCode(xorMix(text.charCodeAt(i), x % 256) & 0xff);
   }
-  return out;
+  // Base64, as shEncryptForLoader and sh-crypto.js emit it. This used to return
+  // raw bytes, which is why the bootstrap could ship with no base64 decode and
+  // every keyed delivery still passed here while failing for every real user.
+  return Buffer.from(out, 'binary').toString('base64');
 }
 
 // -----------------------------------------------------------------------------
@@ -257,7 +260,9 @@ console.log('[cipher] the JS mirror is checked against the real Lua DEC...');
 
   const K = 'mirror-check-key';
   const plain = 'the quick brown fox 0123456789 !@#$%^&*()';
-  const ct = encrypt(K, plain);
+  // DEC works on raw bytes. The base64 step lives in the keyed branch and is
+  // exercised end to end by B3, so this check decodes first and tests DEC alone.
+  const ct = Buffer.from(encrypt(K, plain), 'base64').toString('binary');
 
   // Lua 5.1 has no \xNN and no \uNNNN, and JSON.stringify emits both, so a
   // ciphertext with any byte >= 0x80 will not compile. And a decimal escape must
@@ -582,6 +587,26 @@ console.log('[B6] a chain (SHG) response still parses...');
   });
   if (r.runtimeError || r.compileError) no('crashed: ' + (r.runtimeError || r.compileError));
   else ok('chain header parsed without crashing');
+}
+
+// -----------------------------------------------------------------------------
+console.log('[B16] a KEYED chain (SHG) assembles its parts and delivers the exact payload...');
+// -----------------------------------------------------------------------------
+{
+  const keyLine = '1790442165935 4242 11 22 33 44 55 66 77 88';
+  const body = 'SHG 2 https://x/root gen99\n' + keyLine + '\n';
+  const half = Math.floor(PAYLOAD.length / 2);
+  const r = runBootstrap(factory(ID, BASE, false), {
+    request: (url) => url.includes('/sh/session') ? 'SHS sid123 nonce456 1700000000' : body,
+    httpGet: (url) => url.includes('/root/0?') ? PAYLOAD.slice(0, half)
+      : url.includes('/root/1?') ? PAYLOAD.slice(half) : null,
+    license: 'any-key',
+    getgenv: true, identifyexecutor: true
+  });
+  if (r.compileError) no('compile error: ' + r.compileError);
+  else if (r.runtimeError) no('runtime error: ' + r.runtimeError);
+  else if (r.delivered.length === 1 && r.delivered[0] === PAYLOAD) ok('a keyed chain assembled its two parts and delivered the exact payload');
+  else no('a keyed chain did not deliver. notif: ' + JSON.stringify(r.notifications));
 }
 
 // -----------------------------------------------------------------------------
