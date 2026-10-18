@@ -179,12 +179,19 @@ let sid;
         headers: { 'User-Agent': 'Mozilla/5.0 Chrome/120', 'CF-Connecting-IP': '5.5.5.5' }
     }), env, { waitUntil() {} });
     const html = await cb.text();
-    check('an uncorroborated callback is REFUSED', /could not be verified/.test(html), html.slice(0, 200));
+    check('an uncorroborated callback is REFUSED', /could not be verified|not verified yet/i.test(html), html.slice(0, 200));
     // An immediate callback is refused as too-fast, BEFORE the click-id check.
     // That ordering is the dwell gate doing its job: a client that never
     // rendered an ad cannot produce a plausible click id either, so refusing
     // on time is the cheaper and stronger answer.
     check('and it names the reason (dwell gate runs first)', cbReason(html) === 'too-fast', 'reason = ' + JSON.stringify(cbReason(html)));
+  // REFUSED IS NOT THE SAME AS BANNED.
+  //
+  // This was the page a genuinely banned visitor saw, so `too-fast` - pressing
+  // Verify a moment early - read as an accusation of cheating. It is now the
+  // middle state: not verified yet, no strike, nothing to clear.
+  check('but an early press is NOT treated as cheating', /not been penalised/i.test(html),
+    'the page still accuses the visitor: ' + html.slice(0, 160));
 }
 
 // ---------------------------------------------------------------------------
@@ -285,8 +292,15 @@ console.log('the blacklist is server-side and survives a storage wipe');
     const res = await call('POST', '/sh/reward/block', { ip: '6.6.6.6', body: { fp: 'fpBad', reason: 'webdriver', rid: RID } });
     const b = await j(res);
     check('a ban is recorded', b.ok === true && b.until > Date.now(), JSON.stringify(b));
-    check('the first strike is ~2 hours', b.until > Date.now() + 1.9 * 3600e3 && b.until < Date.now() + 2.1 * 3600e3,
-        'until in ' + Math.round((b.until - Date.now()) / 60000) + ' min');
+    // ONE MINUTE, AT THE OWNER'S REQUEST.
+    //
+    // The owner was banned for two hours - and doubled to four - for pressing
+    // Verify on a checkpoint he had already completed. The penalty exists to
+    // make hammering the callback pointless, not to punish a misclick for an
+    // afternoon. A minute already does that, and costs an honest visitor
+    // nothing, because the strikes still double for someone who persists.
+    check('the first strike is ~1 minute', b.until > Date.now() + 30e3 && b.until < Date.now() + 70e3,
+        'until in ' + Math.round((b.until - Date.now()) / 1000) + 's');
 
     const start = await j(await call('POST', '/sh/reward/start', { ip: '6.6.6.6', body: { rid: RID, fp: 'fpBad' } }));
     check('the banned fingerprint cannot start', start.error === 'blacklisted', JSON.stringify(start).slice(0, 140));
@@ -294,15 +308,27 @@ console.log('the blacklist is server-side and survives a storage wipe');
     const pub = await j(await call('GET', '/sh/reward/pub?rid=' + RID + '&fp=fpBad', { ip: '6.6.6.6' }));
     check('and cannot even read the reward', pub.blacklisted === true, JSON.stringify(pub).slice(0, 140));
 
-    // A DIFFERENT fingerprint on the SAME connection: the IP entry catches it.
+    // A DIFFERENT FINGERPRINT ON THE SAME CONNECTION IS NOT BANNED.
+    //
+    // This asserted the OPPOSITE, and its failure message said the IP binding
+    // was "the whole point". It was the whole point of a rule that punished
+    // innocent people: the owner was banned on his desktop and found his phone
+    // and every other browser on the same Wi-Fi locked out too, with nothing
+    // explaining why.
+    //
+    // An IP is a household, an office, a campus and - on mobile - an entire
+    // carrier. One misclick behind an address locks out everyone behind it, and
+    // none of them can appeal. The fingerprint is the identity; the step token
+    // is HMAC-signed per reward/session/step and its nonce is single-use, so
+    // evasion does not depend on the IP binding.
     const newFp = await j(await call('POST', '/sh/reward/start', { ip: '6.6.6.6', body: { rid: RID, fp: 'fpFreshProfile' } }));
-    check('a new browser profile on the same IP is still banned', newFp.error === 'blacklisted',
-        'this is the whole point of binding on both');
+    check('a different browser on the same Wi-Fi is NOT banned', newFp.error !== 'blacklisted',
+        'an IP-wide ban locks out an entire household over one misclick');
 
-    // Doubling.
+    // Doubling still applies, from the new base.
     const b2 = await j(await call('POST', '/sh/reward/block', { ip: '6.6.6.6', body: { fp: 'fpBad', reason: 'again' } }));
-    check('a repeat offence doubles the ban', b2.strikes === 2 && b2.until > Date.now() + 3.9 * 3600e3,
-        'strike ' + b2.strikes + ' for ' + Math.round((b2.until - Date.now()) / 3600e3) + 'h');
+    check('a repeat offence doubles the ban', b2.strikes === 2 && b2.until > Date.now() + 90e3 && b2.until < Date.now() + 150e3,
+        'strike ' + b2.strikes + ' for ' + Math.round((b2.until - Date.now()) / 1000) + 's');
 }
 
 // ---------------------------------------------------------------------------
@@ -424,14 +450,33 @@ let RID2;
     // No self-report, no second request from the page. The worker decided.
     const after = await j(await call('GET', '/sh/reward/pub?rid=' + RID2 + '&fp=fpAuto', { ip: IP }));
     check('the worker banned the visitor on its own', after.blacklisted === true, JSON.stringify(after).slice(0, 160));
-    check('for about two hours', after.until > Date.now() + 1.9 * 3600e3, 'until=' + new Date(after.until).toISOString());
+    // One minute now, not two hours. See the note at the /sh/reward/block
+    // assertions above for why.
+    check('for about a minute', after.until > Date.now() + 30e3 && after.until < Date.now() + 70e3,
+        'until in ' + Math.round((after.until - Date.now()) / 1000) + 's');
 
     const blocked = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpAuto' } }));
     check('and they cannot start another checkpoint', blocked.error === 'blacklisted', JSON.stringify(blocked).slice(0, 140));
 
-    // A different browser on the same connection is caught by the IP entry.
+    // THE BLOCK IS SERVER-SIDE AND KEYED ON THE FINGERPRINT, NOT ON ANYTHING THE
+    // BROWSER HOLDS. That is the anti-evasion property and it is unchanged.
+    //
+    // Re-requesting with the SAME fingerprint is still refused after any amount
+    // of cookie clearing, because the key is derived server-side from the
+    // request - there is no cookie to delete and nothing in localStorage to
+    // wipe that could change the answer.
+    const again = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpAuto' } }));
+    check('clearing cookies does not help the banned visitor', again.error === 'blacklisted',
+        JSON.stringify(again).slice(0, 140));
+
+    // And the other direction: a DIFFERENT fingerprint on the same connection is
+    // no longer punished. This used to assert the opposite, and its failure
+    // message called the IP binding "the whole point" - which was the whole
+    // point of a rule that locked out the owner's phone and every other browser
+    // on his Wi-Fi. An IP is a household, not a person.
     const other = await j(await call('POST', '/sh/reward/start', { ip: IP, body: { rid: RID2, fp: 'fpOther' } }));
-    check('clearing cookies does not help', other.error === 'blacklisted', JSON.stringify(other).slice(0, 140));
+    check('but an unrelated visitor on the same Wi-Fi is not punished',
+        other.error !== 'blacklisted', JSON.stringify(other).slice(0, 140));
 }
 
 console.log();console.log('REWARD ROUTES   ' + (fails ? fails + ' FAILED' : 'all checks passed'));

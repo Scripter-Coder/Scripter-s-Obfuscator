@@ -942,7 +942,20 @@ const RBLK_PREFIX   = 'sh_rbl_';       // blacklist entry
 
 const REWARD_SESSION_TTL_MS = 8 * 24 * 3600 * 1000;  // 8 days idle (Luarmor: 7-10)
 const REWARD_STEP_TTL_MS     = 70 * 60 * 1000;       // 70 min per checkpoint
-const REWARD_BLACKLIST_MS    = 2 * 3600 * 1000;      // 2 hours
+// ONE MINUTE, not two hours.
+//
+// The owner set this after being banned for two hours for clicking Verify on a
+// checkpoint he had already completed. Two hours is a very long time to lose
+// for a mistake that is usually a misclick, a slow provider postback, or an ad
+// blocker - and it is enforced on the IP, so it is not even lost by the person
+// who triggered it.
+//
+// The point of this penalty is to stop a motivated bypasser hammering the
+// callback route. A minute is long enough to make hammering pointless and short
+// enough that an honest visitor who trips it loses nothing. Strikes still
+// double (1m, 2m, 4m, 8m), so a persistent offender still ends up somewhere
+// they cannot sit out.
+const REWARD_BLACKLIST_MS    = 60 * 1000;           // 1 minute
 const REWARD_BLACKLIST_MAX_STRIKES = 4;              // cap doubling at 16h
 
 // Providers this build can verify, and the credential each one needs before it
@@ -1098,8 +1111,17 @@ async function blacklistReadKey(env, k) {
 }
 
 async function blacklistGet(env, fp, ip) {
-    let hit = await blacklistReadKey(env, fp);
-    if (!hit && ip) hit = await blacklistReadKey(env, 'ip_' + ip);
+    // FINGERPRINT ONLY. NOT THE IP.
+    //
+    // This used to fall back to sh_rbl_ip_<ip>. Those entries still exist -
+    // written by the old code, with a 2-hour TTL - so honouring them would keep
+    // locking out entire households for up to two more hours after this
+    // deploys, which is the exact failure being fixed. A block keyed on an
+    // address shared by a whole home, an office or a carrier is not a block on
+    // a person.
+    //
+    // They simply expire; nothing needs deleting them.
+    const hit = await blacklistReadKey(env, fp);
     if (!hit) return null;
     if (hit.until && hit.until > Date.now()) return hit;
     return null;
@@ -1123,7 +1145,28 @@ async function blacklistAdd(env, fp, ip, reason, rid) {
     };
     try {
         if (fp) await env.LOADERS_KV.put(RBLK_PREFIX + fp, JSON.stringify(entry), { expirationTtl: ttlSec });
-        if (ip) await env.LOADERS_KV.put(RBLK_PREFIX + 'ip_' + ip, JSON.stringify(entry), { expirationTtl: ttlSec });
+        // NO IP ENTRY. NOT ANY MORE.
+        //
+        // This also wrote sh_rbl_ip_<ip>, which is why one person tripping the
+        // penalty locked out every device behind the same router: the owner
+        // reported exactly this - banned on his browser, and "i cant go to my
+        // phone and redo it or in any other browser".
+        //
+        // On residential NAT that is not a security measure, it is collateral.
+        // An IP is shared by a whole household, a campus, an office and a
+        // mobile carrier's entire subscriber base, so one misclick anywhere
+        // behind that address blocks every honest person behind it, with no way
+        // for any of them to find out why or appeal it.
+        //
+        // The fingerprint is the identity that matters here, and evasion is
+        // already hard without an IP ban: the step token is HMAC-signed per
+        // reward/session/step, the nonce is single-use server-side, and the
+        // session id is derived from the fingerprint. Someone who wants to
+        // retry simply retries.
+        //
+        // If an IP-level block is ever genuinely needed, it belongs on a
+        // deliberate-abuse signal with a short window and an operator override -
+        // not on every verification failure.
     } catch (e) { return null; }
     S.threatsBlocked++;
     return entry;
@@ -1391,16 +1434,38 @@ function pickClickIdFrom(obj) {
 // gets shared around in support channels.
 function rewardCallbackPage(origin, verdict, reason, until, remaining) {
     const ok = verdict === 'ok';
+    // "UNVERIFIED YET" IS ITS OWN OUTCOME, AND IT IS NOT AN ACCUSATION.
+    //
+    // This page used to have two states: passed, or failed-and-you-are-banned.
+    // The provider not having reported back yet was rendered as the second one,
+    // with the words "This checkpoint was not accepted" and a strike against
+    // the visitor.
+    //
+    // The single most common honest situation - a real provider postback that
+    // has not landed yet - was therefore indistinguishable from cheating, and
+    // it cost the visitor a lockout. The middle state says what is actually
+    // true: nothing is wrong, the check simply has not completed, and here is
+    // what to do about it.
+    const pending = verdict === 'unverified';
     const left = until ? fmtMins(until - Date.now()) : '';
     const title = ok
         ? (remaining > 0 ? ('Checkpoint done - ' + remaining + ' to go') : 'All checkpoints complete')
-        : 'Checkpoint could not be verified';
+        : (pending ? 'Not verified yet' : 'Checkpoint could not be verified');
     const body = ok
         ? '<p class="s">Verified. You can close this tab and return to the reward page.</p>'
-        : '<p class="s">This checkpoint was not accepted.</p>'
-          + '<p class="r">' + String(reason || 'unknown').replace(/[<>&]/g, '') + '</p>'
-          + (left ? '<p class="s">If this was an attempt to bypass, your browser is blocked for ' + left + '.</p>' : '')
-          + '<p class="s">Ad blockers and privacy extensions can stop the provider from reporting back. Retrying will not help if one is active.</p>';
+        : (pending
+            ? '<p class="s">Nothing is wrong - this just has not been confirmed yet, and you have NOT been penalised.</p>'
+            // The reason is shown here too. It is the worker's own verdict, not
+            // an accusation, and it is the difference between "too fast, wait"
+            // and "the provider never called back" - which the visitor can
+            // actually act on.
+            + '<p class="r">' + String(reason || 'not-confirmed').replace(/[<>&]/g, '') + '</p>'
+            + '<p class="s">The provider reports a completed visit a few seconds after the ad closes. Go back, give it a moment, and press Verify again. You can do that as many times as you need, on any device.</p>'
+            + '<p class="s">If you are running an ad blocker or a privacy extension, it can stop the provider from reporting back at all. Turning it off for this site is usually all it takes.</p>'
+            : '<p class="s">This checkpoint was not accepted.</p>'
+            + '<p class="r">' + String(reason || 'unknown').replace(/[<>&]/g, '') + '</p>'
+            + (left ? '<p class="s">If this was an attempt to bypass, your browser is paused for ' + left + '.</p>' : '')
+            + '<p class="s">Ad blockers and privacy extensions can stop the provider from reporting back. Retrying will not help if one is active.</p>');
     return new Response(
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         + '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
@@ -1416,7 +1481,7 @@ function rewardCallbackPage(origin, verdict, reason, until, remaining) {
         + '.s{color:#8888aa;font-size:13px;line-height:1.6;margin-top:10px}'
         + '.r{color:#ff6b6b;font-family:ui-monospace,monospace;font-size:12px;margin-top:12px;word-break:break-all}'
         + '</style></head><body><div class="c">'
-        + '<div class="i">' + (ok ? '✅' : '⚠️') + '</div>'
+        + '<div class="i">' + (ok ? '✅' : (pending ? '⏳' : '⚠️')) + '</div>'
         + '<h1>' + title + '</h1>' + body
         + '</div></body></html>',
         { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
@@ -7986,14 +8051,63 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             });
 
             if (!verdict.ok) {
-                // A provider we cannot corroborate is not an error to shrug
-                // off. It is the exact condition the anti-bypass feature exists
-                // to catch, so it bans - and it says so.
+                // NOT VERIFIED IS NOT THE SAME AS CHEATING.
+                //
+                // Every failure below used to be answered with a ban. The owner
+                // found out the hard way: he pressed Verify on a checkpoint he
+                // had already completed, was told he was bypassing the ad
+                // steps, and lost two hours - on his IP, so his phone and every
+                // other browser were locked out too.
+                //
+                // These are the two things an HONEST visitor hits most often:
+                //
+                //   no-click-id  the provider has not reported the click back
+                //                YET. Every real provider is asynchronous; the
+                //                postback can land seconds after the ad closes.
+                //   too-fast      the visitor pressed Verify within the 4s
+                //                dwell floor. That is what pressing a button
+                //                quickly looks like, and nothing else.
+                //
+                // Neither is evidence of intent, and banning on them punishes
+                // exactly the people the feature is supposed to serve. They now
+                // get an honest page telling them to wait, and no penalty at
+                // all. An ad blocker is the usual cause and the page says so.
+                //
+                // WHAT IS DELIBERATELY NOT IN THIS LIST:
+                //
+                //   not-confirmed  someone hit the callback URL without the
+                //                  confirm parameter the Verify button adds -
+                //                  i.e. they skipped the step. That IS the
+                //                  bypass, and it still earns a strike.
+                //   replayed       a single-use nonce presented twice, which is
+                //                  a genuine tamper of a signed capability.
+                //
+                // Those two are what the anti-bypass feature is actually for.
+                // Removing them would have turned "stop cheating" into "never
+                // detect anything".
+                const TRANSIENT = ['no-click-id', 'too-fast', 'lv-unreachable', 'wi-unreachable',
+                    'll-unreachable', 'lv-api-', 'wi-not-confirmed', 'll-api-'];
+                const isTransient = TRANSIENT.some(function (r) {
+                    return verdict.reason === r || String(verdict.reason).indexOf(r) === 0;
+                });
+
+                // MISCONFIGURED IS THE OWNER'S PROBLEM, NOT THE VISITOR'S.
                 if (verdict.reason === 'no-auth-token' || verdict.reason === 'no-api-key'
                     || verdict.reason === 'unknown-provider' || verdict.reason === 'unverifiable-provider') {
                     return rewardCallbackPage(origin, 'failed', verdict.reason);
                 }
-                const entry = await blacklistAdd(env, ses.fp, ses.ip || reqIp(request),
+
+                if (isTransient && verdict.reason !== 'replayed') {
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'reward.unverified', outcome: 'unverified', rid: rid,
+                        reason: verdict.reason, provider: provider, at: now
+                    }));
+                    // No strike, no ban, no lockout. The visitor can retry, and
+                    // so can their phone.
+                    return rewardCallbackPage(origin, 'unverified', verdict.reason);
+                }
+
+                const entry = await blacklistAdd(env, ses.fp, '',
                     'checkpoint ' + (i + 1) + ' via ' + provider + ': ' + verdict.reason, rid);
                 ctx.waitUntil(notifyTelemetry(env, {
                     event: 'reward.blocked', outcome: 'blocked', rid: rid,
