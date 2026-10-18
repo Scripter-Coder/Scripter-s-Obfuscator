@@ -1432,6 +1432,66 @@ function pickClickIdFrom(obj) {
 // The failure reason is echoed because it is diagnostic for the VISITOR's owner
 // too, but it never contains the API token or the short URL - a callback URL
 // gets shared around in support channels.
+// The Special-Key payload cipher, mirrored from sh-crypto.js so the worker can
+// produce a body the loader's DEC() can actually open.
+//
+// WHY IT IS HERE NOW
+//
+// SHK means "ciphertext follows". The bootstrap reads it as
+//
+//     local K = getgenv().ScripterHubKey     -- the LICENSE key
+//     src = DEC(K)
+//
+// but the worker was serving the PLAIN artifact there. So every keyed script
+// decrypted plaintext with a key that was never applied to it, failed the SHOK
+// magic, and died with:
+//
+//     Wrong Special Key, or the delivery was tampered with.
+//
+// which reads like a supply-chain attack and is really a mismatch between what
+// SHK promises and what it carried. The owner hit it the moment he generated a
+// license from the Users tab and ran the script.
+//
+// The cipher is symmetric - the same routine encrypts and decrypts - so the
+// worker encrypts the artifact with the SESSION'S LICENSE KEY, and the visitor
+// decrypts it with the key they already typed. That is also the only version
+// of this contract that can work: the key has to be one both sides hold.
+//
+// XOR-keystream with a djb2 seed, exactly as sh-crypto.js and the Lua DEC.
+// Every operation is a 32-bit unsigned value held in a double, so JS and Lua
+// agree bit for bit.
+function shSeed(key, idx) {
+    const bytes = new TextEncoder().encode(key);
+    let h = (5381 + idx * 7) >>> 0;
+    for (let i = 0; i < bytes.length; i++) {
+        h = (h * 33 + bytes[i]) % 4294967296;
+    }
+    return h >>> 0;
+}
+function xs128Next(s) {
+    let x = s[0] >>> 0;
+    x = (x ^ ((x * 8192) % 4294967296)) >>> 0;
+    x = (x ^ Math.floor(x / 131072)) >>> 0;
+    x = (x ^ ((x * 32) % 4294967296)) >>> 0;
+    s[0] = s[1]; s[1] = s[2]; s[2] = s[3]; s[3] = x;
+    return x >>> 0;
+}
+function shEncryptForLoader(text, key) {
+    const st = [shSeed(key, 0), shSeed(key, 1), shSeed(key, 2), shSeed(key, 3)];
+    if (st[0] === 0) st[0] = 1;
+    if (st[1] === 0) st[1] = 2;
+    if (st[2] === 0) st[2] = 3;
+    if (st[3] === 0) st[3] = 4;
+    const bytes = new TextEncoder().encode('SHOK' + text);
+    const out = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+        out[i] = bytes[i] ^ (xs128Next(st) & 0xFF);
+    }
+    let bin = '';
+    for (let i = 0; i < out.length; i++) bin += String.fromCharCode(out[i]);
+    return btoa(bin);
+}
+
 function rewardCallbackPage(origin, verdict, reason, until, remaining) {
     const ok = verdict === 'ok';
     // "UNVERIFIED YET" IS ITS OWN OUTCOME, AND IT IS NOT AN ACCUSATION.
@@ -6879,8 +6939,31 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         rec.hwid = hwid;
                         await saveLicenses(env, map);
                     }
-                    licenseKey = key;
                 }
+                // Record the credential on the session ONLY for a keyed script.
+                //
+                // These were two separate questions and only one of them was
+                // asked. "Is a licence required?" belongs to authRequired and
+                // decides hardware binding. "Which key was presented?" decides
+                // what a keyed delivery body can be encrypted with, and that
+                // depends on `keyless` - a DIFFERENT flag.
+                //
+                // A script with keyless:false and authRequired:false therefore
+                // got a session with no licence on it, and the delivery
+                // contract for a non-keyless script is SHK - ciphertext, opened
+                // by the key the visitor typed. With nothing on the session
+                // there was nothing to encrypt with, so every such delivery was
+                // either refused or served as plaintext the loader could not
+                // decrypt - the reported "Wrong Special Key".
+                //
+                // WHY NOT `key` UNCONDITIONALLY. Recording it for a KEYLESS
+                // script breaks that path outright: consumeSession() re-checks
+                // the licence with an EXISTS subquery, so a key that was never
+                // a licence for a free script - harmless at mint time, because
+                // nothing needed it - becomes a hard 405 at delivery. A8 caught
+                // exactly that. A keyless script delivers plain Lua (SHX) and
+                // decrypts nothing, so it needs no credential recorded.
+                if (key && !script.keyless) licenseKey = key;
 
                 const ttl = transport === 'url' ? URL_SESSION_TTL_MS : SESSION_TTL_MS;
                 let session;
@@ -7002,12 +7085,20 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 saveStatsSoon(env);
 
                 let licenseRef = null;
+                // The licence key is needed in CLEARTEXT further down: a keyed
+                // script is delivered as ciphertext and the visitor decrypts it
+                // with the key they typed, so the body has to be encrypted with
+                // the same one. Scoped out of the block below deliberately -
+                // an earlier version read `row` from there and threw
+                // "row is not defined" on every keyed delivery.
+                let sessionLicenseKey = '';
                 {
                     // The license that authorised this session is recorded on
                     // the session row itself, so read it back rather than
                     // guessing from the request. It is hashed for the log.
                     const row = await state.peekSession(sid, now);
-                    licenseRef = row && row.license_key ? await telemetryRef('lic', row.license_key) : null;
+                    sessionLicenseKey = row && row.license_key ? String(row.license_key) : '';
+                    licenseRef = sessionLicenseKey ? await telemetryRef('lic', sessionLicenseKey) : null;
                 }
 
                 // ---- where do the bytes come from? ----
@@ -7153,11 +7244,36 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 let out, keyLine = sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ')) : '';
                 if (script.keyless) {
                     out = keyLine ? ('SHX\n' + keyLine + '\n') : 'SHL\n';
+                    out += inlineBlob;
                 } else {
                     out = 'SHK\n';
                     if (keyLine) out += keyLine + '\n';
+                    // SHK MEANS CIPHERTEXT, SO IT HAS TO BE CIPHERTEXT.
+                    //
+                    // The blob here is the plain artifact, and the bootstrap
+                    // runs DEC(getgenv().ScripterHubKey) over whatever follows
+                    // this header - the LICENSE key. Serving plaintext under an
+                    // SHK header made every keyed script fail the SHOK magic and
+                    // die with "Wrong Special Key, or the delivery was tampered
+                    // with", which is what the owner reported the moment he
+                    // generated a license and ran the script.
+                    //
+                    // Encrypting with the session's own license key is the only
+                    // pairing both sides can honour: the worker holds the key it
+                    // validated at mint time, and the visitor holds the key they
+                    // typed. It also means a leaked SHK body is useless without
+                    // a valid licence - which is the point of the envelope.
+                    const licKey = sessionLicenseKey;
+                    if (!licKey) {
+                        return refuse(DENY.NEEDS_KEY);
+                    }
+                    try {
+                        out += shEncryptForLoader(inlineBlob, licKey);
+                    } catch (e) {
+                        console.error('[ScripterHub] SHK encrypt failed: ' + (e && e.message));
+                        return refuse(DENY.NO_STATE);
+                    }
                 }
-                out += inlineBlob;
                     try {
                         await state.audit({
                             event: 'delivery.ok', outcome: 'ok', scriptId: id, sessionId: sid,

@@ -59,3 +59,35 @@ if (out !== index) {
     console.log('[stamp] already current:');
     for (const file of STAMPED) console.log('        ' + file + ' -> v=' + stamps[file]);
 }
+
+// ---- reward.html, which has no <script> tag to hang a stamp on ----
+//
+// reward.html is reached by NAVIGATION to reward.html?rid=..., so the ?v= trick
+// used for main.js has nothing to attach to: there is no reference to rewrite.
+// GitHub Pages serves HTML with a short max-age, so a visitor who had the page
+// open before the fix keeps the broken one until it expires.
+//
+// The stamp therefore goes where the link is built. rewardLink() in rewards.js
+// appends it, so the URL a visitor opens changes exactly when reward.html does.
+// Without this, "I fixed the ad popup" and "the visitor still sees a tab stuck
+// on about:blank" are the same outcome, and the only fix is telling people to
+// hard-refresh.
+//
+// Written into rewards.js as a constant rather than computed at runtime,
+// because a browser cannot hash a file it has not fetched.
+const rewardStamp = sha12('reward.html');
+const rsPath = new URL('rewards.js', ROOT);
+const rsSrc = fs.readFileSync(rsPath, 'utf8');
+const RS_RE = /const REWARD_PAGE_STAMP = '[A-Za-z0-9._-]*';/;
+if (!RS_RE.test(rsSrc)) {
+    console.error('[stamp] rewards.js has no REWARD_PAGE_STAMP declaration to update.');
+    console.error('        It must be exactly:  const REWARD_PAGE_STAMP = \'...\';');
+    process.exit(1);
+}
+const rsOut = rsSrc.replace(RS_RE, "const REWARD_PAGE_STAMP = '" + rewardStamp + "';");
+if (rsOut !== rsSrc) {
+    fs.writeFileSync(rsPath, rsOut, 'utf8');
+    console.log('[stamp] rewards.js updated: REWARD_PAGE_STAMP = ' + rewardStamp);
+} else {
+    console.log('[stamp] REWARD_PAGE_STAMP already current: ' + rewardStamp);
+}

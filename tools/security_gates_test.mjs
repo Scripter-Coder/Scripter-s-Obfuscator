@@ -30,6 +30,10 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+// The gate has to prove a keyed delivery OPENS, not merely that it arrived.
+// Decrypting it here is what makes that a measurement instead of a guess: it is
+// the same cipher the visitor's executor runs.
+import { shDecryptPayload } from '../sh-crypto.js';
 const worker = (await import('../For Cloudflare/worker.js')).default;
 
 const SCHEMA = fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
@@ -251,9 +255,39 @@ gate('G01', 'Loader URL with no credential returns no artifact bytes', 'pass', a
   const s = await authorizedSession(env);
   const ok = await spend(env, s);
   need(ok.status === 200, 'gate setup failed: an authorized session did not deliver (' + ok.body.slice(0, 80) + ')');
-  // The stored artifact IS base64 (that is what an upload produces), so the
-  // delivery must contain the base64 form, not the decoded form.
-  if (!ok.body.includes(secretB64)) throw new Error('gate setup failed: the authorized delivery did not contain the artifact');
+  // 4b. The delivery must actually YIELD THE ARTIFACT, which is the whole point
+  //     of the counter-check - "served 200 OK" is not the same as "served the
+  //     script".
+  //
+  //     For a NON-KEYLESS script the body is an SHK envelope: ciphertext, opened
+  //     by the licence key the visitor typed. So the assertion has to decrypt it
+  //     with that key and compare - a substring search for the stored base64 is
+  //     wrong now, and was wrong before: it asserted that the worker leaked the
+  //     artifact in the clear, which is precisely what the envelope forbids.
+  //
+  //     The gate previously passed only because the delivery was broken.
+  const meta = JSON.parse(env.LOADERS_KV._store.get('sh_meta_' + ID));
+  const nl = ok.body.indexOf('\n', 4);
+  need(ok.body.slice(0, 4) === 'SHK\n', 'gate setup failed: a keyed delivery is not an SHK envelope: '
+    + JSON.stringify(ok.body.slice(0, 40)));
+  need(nl > 0, 'gate setup failed: the SHK envelope has no key line');
+  const body = ok.body.slice(nl + 1);
+  if (meta && meta.keyless) {
+    if (!ok.body.includes(secretB64)) throw new Error('gate setup failed: a KEYLESS delivery lost the artifact');
+  } else {
+    const opened = shDecryptPayload(body, s.key);
+    if (opened === null) {
+      throw new Error('gate setup failed: the authorized delivery did not open with the licence key.\n'
+        + '         This is the failure that reaches the visitor as "Wrong Special Key, or the\n'
+        + '         delivery was tampered with" - a keyed script that cannot be decrypted\n'
+        + '         by the key that authorised it.\n'
+        + '         licence: ' + JSON.stringify(s.key) + '  body: ' + body.length + ' bytes');
+    }
+    if (opened !== secretB64) {
+      throw new Error('gate setup failed: the authorized delivery opened to something else.\n'
+        + '         got: ' + JSON.stringify(opened.slice(0, 60)));
+    }
+  }
 });
 
 gate('G02', 'No artifact bytes escape without a minted, single-use session', 'pass', async () => {

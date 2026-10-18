@@ -12,6 +12,9 @@ import assert from 'assert';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './tools/owner_code_test_helper.mjs';
+// W14 has to prove a keyed delivery OPENS with the licence key, which means
+// decrypting it with the same cipher the visitor's executor runs.
+import { shDecryptPayload } from './sh-crypto.js';
 
 // ---- mock KV ----
 //
@@ -442,7 +445,26 @@ console.log('[W14] SPLIT-KEY: the loader + the gate work together...');
     const got = await authorizedFetch(SPLIT_ID, EXECUTOR_UA, 'TESTLIC');
     assert.strictEqual(got.status, 200, 'gate must deliver: ' + got.text.slice(0, 120));
     assert.ok(got.text.startsWith('SHK\n'), 'a keyed delivery carries the key line first');
-    assert.ok(got.text.includes('U0hPS0Zha2U='), 'the gated delivery must contain the artifact');
+    // SHK MEANS CIPHERTEXT. The body is opened with the licence key the visitor
+    // typed - so that is how it is checked here too.
+    //
+    // Searching the response for the base64 artifact was never right: it
+    // asserted that the gate hands over the artifact IN THE CLEAR, which is the
+    // one thing the envelope exists to prevent. It passed only because the
+    // delivery was broken - plaintext under an SHK header, which the loader then
+    // failed to decrypt as "Wrong Special Key".
+    const nl = got.text.indexOf('\n', 4);
+    assert.ok(nl > 0, 'the SHK envelope must carry a key line');
+    const body = got.text.slice(nl + 1);
+    assert.ok(body.length > 0, 'the SHK envelope must carry a ciphertext body');
+    assert.ok(!got.text.includes('U0hPS0Zha2U='), 'a keyed delivery must not carry the artifact in the clear');
+    const opened = shDecryptPayload(body, 'TESTLIC');
+    assert.ok(opened !== null,
+        'the gated delivery did not open with the licence key that authorised it');
+    assert.ok(opened.includes('U0hPS0Zha2U='),
+        'the decrypted delivery does not contain the artifact: ' + JSON.stringify(String(opened).slice(0, 80)));
+    assert.strictEqual(shDecryptPayload(body, 'WRONG-LICENCE'), null,
+        'a wrong licence must not open the delivery');
 
     // and a second attempt with a fresh session is a NEW authorized delivery,
     // which is correct: a session is one fetch, not a permanent ban.

@@ -85,7 +85,19 @@ for (const blk of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
 
 const sideScripts = [];
 for (const m of html.matchAll(/<script[^>]*\bsrc="\.?\/?([^"]+)"/gi)) {
-  const f = m[1].replace(/^\.\//, '');
+  // STRIP THE CACHE-BUSTING QUERY BEFORE TOUCHING THE FILESYSTEM.
+  //
+  // index.html loads `./rewards.js?v=eaa4ee33341c`, and `fs.existsSync` was
+  // being handed that whole string. It does not exist, so the file was skipped
+  // entirely - quietly, because the skip is not a failure, it is just a
+  // `continue`.
+  //
+  // The consequence was that every `window.*` rewards.js publishes went unseen.
+  // "Create Reward" on index.html then read as an inline handler naming
+  // something that does not exist, and this gate - which exists to prove inline
+  // handlers are NOT dead - went red on a button that works. A test that cannot
+  // see a file must not claim the file's contents are wrong.
+  const f = m[1].split('?')[0].split('#')[0].replace(/^\.\//, '');
   if (f === 'main.js' || !fs.existsSync(f)) continue;
   sideScripts.push(f);
   const s = fs.readFileSync(f, 'utf8');
@@ -122,7 +134,12 @@ if (missing.length === 0) {
 }
 
 // ---- and the module assumption, which is the cause ----
-if (/<script\s+type="module"\s+src="\.\/main\.js"/.test(html)) {
+//
+// The src carries a `?v=` cache stamp, so the closing quote does NOT follow
+// `main.js` directly. Anchoring on `main.js"` reported "main.js is not a
+// module" for a page that loads it as a module on line 659 - the gate
+// contradicting the file it was written to read.
+if (/<script\s+type="module"\s+src="\.\/main\.js(?:\?[^"]*)?"/.test(html)) {
   ok('main.js is a module, so the export list is what makes inline handlers work');
 } else {
   no('main.js is not a module - if that changes, the export list may no longer be needed');
@@ -130,7 +147,10 @@ if (/<script\s+type="module"\s+src="\.\/main\.js"/.test(html)) {
 
 // ---- a module cannot serve an inline handler on its own ----
 {
-  const modLoaded = [...html.matchAll(/<script\s+type="module"\s+src="\.?\/?([^"]+)"/gi)].map(m => m[1]);
+  const modLoaded = [...html.matchAll(/<script\s+type="module"\s+src="\.?\/?([^"]+)"/gi)]
+    // Same trap as above: the src carries a ?v= stamp, and the existence check
+    // needs the bare path.
+    .map(m => m[1].split('?')[0].split('#')[0]);
   const dead = modLoaded.filter(f => {
     if (!fs.existsSync(f)) return false;
     const s = fs.readFileSync(f, 'utf8');

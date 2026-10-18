@@ -165,6 +165,14 @@ async function shRewardMigrateAll() {
 // It used to carry the entire config, base64'd, unsigned - which is what let a
 // visitor rewrite the checkpoint list and mint a key without visiting an ad.
 // See shRewardSave for the whole argument.
+// Set by tools/stamp_version.mjs to the first 12 hex of reward.html's SHA-256.
+//
+// reward.html is reached by navigation, so there is no <script> tag to hang a
+// ?v= on and nothing in index.html to rewrite. Without this the visitor's
+// browser keeps whatever copy of the page it already has, and a fix to the ad
+// flow does not reach anyone who had the page open.
+const REWARD_PAGE_STAMP = 'f6be800849d1';
+
 function rewardLink(r) {
     if (!r.rid) return '';
     var path = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
@@ -174,7 +182,8 @@ function rewardLink(r) {
     // already in people's hands.
     var w = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
     return window.location.origin + path + 'reward.html?rid=' + encodeURIComponent(r.rid)
-        + (w ? '&w=' + encodeURIComponent(w) : '');
+        + (w ? '&w=' + encodeURIComponent(w) : '')
+        + (REWARD_PAGE_STAMP ? '&s=' + REWARD_PAGE_STAMP : '');
 }
 
 // A reward with no rid cannot be shared yet. The panel says so rather than

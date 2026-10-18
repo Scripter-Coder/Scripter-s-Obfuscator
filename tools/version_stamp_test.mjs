@@ -56,6 +56,31 @@ check('the page is served no-store',
     /http-equiv="Cache-Control"[^>]*no-store/.test(index),
     'a cached index.html can carry a stale stamp, so the whole scheme collapses');
 
+// ---- reward.html, which no <script> tag covers ----
+//
+// Same failure, different victim. reward.html is reached by NAVIGATION, so the
+// ?v= scheme has nothing to rewrite, and GitHub Pages serves HTML with a
+// short max-age: a visitor who already had the page open keeps the broken copy.
+// The stamp therefore lives in the link rewardLink() builds.
+{
+    const rewardsJs = fs.readFileSync(new URL('rewards.js', ROOT), 'utf8');
+    const rewardHtml = fs.readFileSync(new URL('reward.html', ROOT), 'utf8');
+    const expected = crypto.createHash('sha256').update(rewardHtml).digest('hex').slice(0, 12);
+    const m = /const REWARD_PAGE_STAMP = '([A-Za-z0-9._-]*)';/.exec(rewardsJs);
+
+    check('reward.html is stamped in the link that opens it', !!m,
+        'rewards.js must declare: const REWARD_PAGE_STAMP = \'...\';');
+    check('the reward page stamp is not empty', !!m && m[1].length > 0,
+        'an empty stamp means every visitor URL is unchanged and a fix to the ad flow never lands');
+    if (m && m[1]) {
+        check('the reward page stamp matches reward.html', m[1] === expected,
+            'rewards.js says ' + m[1] + ', reward.html hashes to ' + expected +
+            ' - run: node tools/stamp_version.mjs');
+    }
+    check('and rewardLink() actually appends it', /REWARD_PAGE_STAMP \? '&s=' \+ REWARD_PAGE_STAMP/.test(rewardsJs),
+        'a stamp that is computed but never put in the URL busts nothing');
+}
+
 console.log('');
 console.log('VERSION STAMP   ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

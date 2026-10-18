@@ -287,7 +287,18 @@
         var target = step && step.target;
         var w = null;
         if (target) {
-            w = window.open('about:blank', '_blank', 'noopener');
+            // NO 'noopener' IN THE FEATURES STRING.
+            //
+            // window.open returns null whenever noopener is requested - that is
+            // the spec, not a browser quirk. So the placeholder returned null,
+            // the `if (w)` branch that points it at the ad never ran, and the
+            // fallback window.open() happened outside the user gesture and was
+            // blocked. Result: a tab stuck on about:blank, forever.
+            //
+            // The opener is nulled immediately instead, which gives the same
+            // protection without losing the handle.
+            w = window.open('about:blank', '_blank');
+            try { w.opener = null; } catch (e) { /* cross-origin */ }
         }
         setAction('Opening...', true);
         api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (r) {
