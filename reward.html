@@ -103,7 +103,24 @@
     }
 
     var FP = fingerprint();
-    var rid = new URLSearchParams(location.search).get('rid') || '';
+    var QSP = new URLSearchParams(location.search);
+    var rid = QSP.get('rid') || '';
+    // The provider sends the visitor BACK here with its click id once the ad is
+    // done. See the static postback in the worker: Linkvertise's direct link is
+    // a fixed string typed into a dashboard, so the callback URL cannot carry a
+    // per-session token - it carries the reward and the checkpoint, and the
+    // click id comes back on the redirect.
+    //
+    // It is consumed once and then scrubbed from the address bar, because a
+    // second load of the same URL must not try to spend the same click again.
+    var RESUME = QSP.get('resume') || '';
+    if (RESUME) {
+        try {
+            var u = new URL(location.href);
+            u.searchParams.delete('resume');
+            history.replaceState(null, '', u.toString());
+        } catch (e) { /* older browsers keep the parameter; it is single use anyway */ }
+    }
 
     function api(path, opts) {
         if (!W) return Promise.resolve({ ok: false, error: 'This page is not connected to the reward server.' });
@@ -479,6 +496,45 @@
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     }
 
+    // Hand the provider's click back to the worker against OUR session.
+    //
+    // The worker needs all three: rid and fp to find the session, and the click
+    // id to prove the ad ran. It decides everything - this only supplies
+    // identifiers. The click id is single use on the server, so a reload with the
+    // same URL cannot spend it twice.
+    function submitResume() {
+        setAction('Checking your ad...', true);
+        // The session id is derived server-side from rid+fp+ip, so the page does
+        // not have to have kept one. Asking for state first gives us the sid the
+        // worker considers ours.
+        api('/sh/reward/state?rid=' + encodeURIComponent(rid) + '&fp=' + encodeURIComponent(FP))
+            .then(function (s) {
+                return api('/sh/reward/complete', {
+                    method: 'POST',
+                    body: { rid: rid, sid: (s && s.sid) || '', fp: FP, clickId: RESUME }
+                });
+            })
+            .then(function (res) {
+                if (res && res.ok) {
+                    notify('Checkpoint counted');
+                    refresh().then(function () {
+                        if (state && state.complete) stopPolling();
+                        else if (state && !state.complete) {
+                            api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (n) {
+                                if (n.ok && n.step) step = n.step;
+                                render();
+                            });
+                        }
+                    });
+                    return;
+                }
+                if (res && res.error === 'blacklisted') { showBan(res); return; }
+                notify(res && res.error ? String(res.error) : 'That checkpoint was not counted.');
+                setAction('I Have Finished This One', false);
+                refresh();
+            });
+    }
+
     function boot() {
         if (!rid) {
             fatal('This reward link is incomplete',
@@ -493,6 +549,15 @@
                 // Still render, so the owner (testing their own link) sees WHY.
                 state = { done: 0, keys: [], doneList: [] };
                 render();
+                return;
+            }
+            // THE VISITOR CAME BACK FROM THE PROVIDER WITH A CLICK ID.
+            //
+            // This is the moment the checkpoint actually counts, and it is
+            // submitted BEFORE anything else so a genuine click is never lost to
+            // a slow or failing poll.
+            if (RESUME) {
+                submitResume();
                 return;
             }
             refresh().then(function () {

@@ -171,7 +171,7 @@ async function shRewardMigrateAll() {
 // ?v= on and nothing in index.html to rewrite. Without this the visitor's
 // browser keeps whatever copy of the page it already has, and a fix to the ad
 // flow does not reach anyone who had the page open.
-const REWARD_PAGE_STAMP = 'f6be800849d1';
+const REWARD_PAGE_STAMP = '94aea81b57f1';
 
 function rewardLink(r) {
     if (!r.rid) return '';
@@ -526,6 +526,7 @@ function openCheckpointManagerUI(id) {
                 <div class="field-hint">Each provider pays differently and verifies clicks differently. Pick one you have an account for, then paste its API key below - without it the checkpoint cannot be completed.</div>
             </div>
             <div id="cpProviderSettings"></div>
+            <input type="hidden" id="cpRewardId" value="${escapeHtml(r.rid || '')}">
             <button onclick="confirmAddCheckpoint('${id}')" class="btn btn-primary" style="width:100%; margin-top:10px;">➕ Add Checkpoint</button>
         </div>
     `;
@@ -556,7 +557,15 @@ function renderProviderSettings() {
     if (!box || !sel) return;
     var p = sel.value;
     if (!p) { box.innerHTML = ''; return; }
-    box.innerHTML = providerFieldsHtml(p, {});
+    // The postback URL is shown on a provider that is not wired up yet too - it
+    // costs nothing and it tells the owner exactly what the worker expects, so a
+    // checkpoint that cannot complete says WHY rather than just failing later.
+    // The reward id rides in a hidden field so the postback URL can be built while
+    // the owner is still filling the form in. The index does not exist until the
+    // checkpoint is added, so the panel says so rather than printing a URL that
+    // would point at the wrong checkpoint.
+    var rid = document.getElementById('cpRewardId');
+    box.innerHTML = providerFieldsHtml(p, {}, rid ? rid.value : '', 'NEW');
 }
 async function confirmAddCheckpoint(id) {
     var found = findReward(id);
@@ -600,7 +609,15 @@ async function confirmAddCheckpoint(id) {
         shNotify('Added - But Not Usable Yet', 'Added, but it cannot be completed: ' + providerReadyHint(provider) + ' Edit it to paste the key.', 'warning', 10000);
         return;
     }
-    shNotify('Checkpoint Added', '"' + name + '" added and is ready.', 'success');
+    // The postback URL is the one step the owner still has to take, and it is the
+    // step whose absence made every checkpoint permanently uncompletable. So it
+    // is named in the success message rather than left to be discovered by
+    // editing the checkpoint later.
+    var pb = postbackUrl(r.rid, r.checkpoints.length - 1, provider);
+    shNotify('Checkpoint Added',
+        '"' + name + '" added. Now paste the postback URL into ' + (provider === 'linkvertise' ? 'Linkvertise' : provider)
+        + ' as the link target, or this checkpoint will never complete.'
+        + (pb ? '\\n\\n' + pb : ''), 'success', 14000);
 }
 
 async function moveCheckpoint(id, index, dir) {
@@ -641,20 +658,27 @@ function editCheckpointUI(id, index) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
 
-    // The verify URL is the worker's own signed callback. It is only known once
-    // a visitor opens the reward, because the step token is minted per session -
-    // so the dialog shows how to get one rather than a URL that would be dead.
+    // The postback URL is STATIC and computed here, from the reward id and the
+    // checkpoint's position.
+    //
+    // The dialog used to tell the owner to paste "this checkpoint's own verify
+    // URL" into the provider, while showing none - because the only verify URL
+    // the worker had was a signed token minted per visitor session. A URL that
+    // changes on every load cannot be pasted into a dashboard that keeps one
+    // value forever, so the instruction was not followable and no checkpoint
+    // could ever complete.
     var pending = !r.rid;
     overlay.innerHTML = `
         <div class="modal" style="max-width: 660px; padding: 28px; max-height:92vh; overflow-y:auto;">
             <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <h2 style="font-size:20px; margin:0 0 10px 0;">✏️ Edit Checkpoint</h2>
             <div class="provider-panel">
-                <div class="field-hint"><strong>Where this checkpoint goes:</strong> paste this checkpoint's own
-                verify URL into the provider's dashboard as the link target, and put your ad link in the
-                <em>Short URL</em> box below. The provider sends the visitor back to the verify URL when the ad
-                finishes, and the worker then checks with the provider's API that the click was real.</div>
-                ${pending ? '<div class="warn">This reward has not been saved to the reward server yet, so no verify URL exists. Press Save first.</div>' : ''}
+                <div class="field-hint"><strong>Where this checkpoint goes:</strong> put your ad link in the
+                <em>Short URL</em> box below, and paste the <strong>Postback URL</strong> from this dialog into the
+                provider's dashboard as the link target. The provider sends the visitor back to that postback when
+                the ad finishes, and the worker checks with the provider's API that the click was real. The postback
+                is a fixed URL - paste it once and leave it.</div>
+                ${pending ? '<div class="warn">This reward has not been saved to the reward server yet, so no postback URL exists. Press Save first.</div>' : ''}
             </div>
             <div class="form-group" style="margin-top:14px;"><label>Checkpoint Name</label>
                 <input type="text" id="editCpName" value="${(cp.name || '').replace(/"/g, '&quot;')}"></div>
@@ -673,9 +697,11 @@ function editCheckpointUI(id, index) {
     `;
     document.body.appendChild(overlay);
 
-    // Render the provider's own fields into the placeholder, pre-filled.
+    // Render the provider's own fields into the placeholder, pre-filled - with
+    // the reward id and THIS checkpoint's index, so the postback URL is the real
+    // one and not a placeholder.
     var box = document.getElementById('editCpProviderSettings');
-    box.innerHTML = providerFieldsHtml(cp.provider, cp.settings || {});
+    box.innerHTML = providerFieldsHtml(cp.provider, cp.settings || {}, r.rid, index);
     wireProviderFields(box, cp.provider, cp.settings || {});
 }
 
@@ -731,7 +757,57 @@ var PROVIDER_SETUP = {
 // anti-bypass feature.
 var VERIFIABLE = { test: 1, linkvertise: 1, lootlabs: 1, workink: 1 };
 
-function providerFieldsHtml(provider, st) {
+// The URL the owner pastes into the provider's dashboard.
+//
+// WHY IT HAS TO BE SHOWN, AND WHY IT IS COMPUTED HERE.
+//
+// Linkvertise, LootLabs and Work.Ink all take a destination URL that is typed
+// into a dashboard ONCE and is then fixed. The worker's original callback was a
+// signed per-session token minted on /sh/reward/start, so the URL the owner was
+// told to paste and the URL the worker expected were never the same string, and
+// not one checkpoint could ever complete. That presented as "it doesnt count",
+// "bypass is not blocked" and "adding a user key does not work" - all one bug,
+// and none of them about the visitor.
+//
+// The URL is derived rather than typed by hand, so it cannot drift out of sync
+// with the worker's route. `site` is carried in the URL because the worker has no
+// way to know where the owner's site is hosted, and a wrong guess would send
+// every visitor to a 404.
+function postbackUrl(rid, index, provider) {
+    var worker = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
+    if (!worker || !rid) return '';
+    var site = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+    return worker + '/sh/cp/' + encodeURIComponent(provider || 'test')
+        + '?r=' + encodeURIComponent(rid) + '&i=' + encodeURIComponent(index)
+        + '&site=' + encodeURIComponent(site);
+}
+
+function postbackPanelHtml(rid, index, provider) {
+    if (!VERIFIABLE[provider]) return '';
+    var label = provider === 'linkvertise' ? 'Linkvertise' : provider;
+    // A checkpoint that does not exist yet has no index, and the URL is indexed
+    // by it. Saying so beats showing a URL that 404s.
+    if (!rid || index === 'NEW' || index === '' || index === undefined || index === null) {
+        return '<div class="form-group"><label>Postback URL</label>'
+            + '<div class="field-hint">Add this checkpoint, then open it again to copy the postback URL for '
+            + label + '. It is built from this reward and the checkpoint position, so it cannot be typed by hand.</div></div>';
+    }
+    var url = postbackUrl(rid, index, provider);
+    if (!url) return '';
+    return '<div class="form-group"><label>Postback URL &mdash; paste this into ' + label + '</label>'
+        + '<input type="text" id="cpPostbackUrl" readonly value="' + escAttr(url) + '" onclick="this.select()" style="font-family:monospace;font-size:11px">'
+        + '<div class="field-hint">Put this in '
+        + (provider === 'linkvertise'
+            ? 'Linkvertise &rarr; your link &rarr; <b>Direct Link</b>'
+            : provider === 'lootlabs'
+                ? 'LootLabs &rarr; the destination URL on your link'
+                : 'Work.Ink &rarr; the postback URL on your link')
+        + '. The provider sends the visitor back here when the ad finishes, and that is what counts the checkpoint.'
+        + ' It must be this exact URL &mdash; a per-visitor callback cannot be pasted into a dashboard.'
+        + '</div></div>';
+}
+
+function providerFieldsHtml(provider, st, rid, index) {
     var spec = PROVIDER_SETUP[provider] || { desc: '', needs: 'apiKey', note: '' };
     var html = '<div class="provider-panel"><div class="provider-desc">' + spec.desc + '</div>';
     if (!VERIFIABLE[provider]) {
@@ -752,6 +828,7 @@ function providerFieldsHtml(provider, st) {
     if (spec.note && spec.needs !== 'none') {
         html += '<div class="field-hint" style="margin-top:8px">' + spec.note + '</div>';
     }
+    html += postbackPanelHtml(rid, index, provider);
     html += '</div>';
     return html;
 }
