@@ -6079,6 +6079,14 @@ function confirmCreateScript(projectId) {
                             for (var sj = 0; sj < projects[pi].scripts.length; sj++) {
                                 if (projects[pi].scripts[sj].id === script.id) {
                                     projects[pi].scripts[sj].loaderUrl = d.loadstring;
+                                    // The portable twin: the same one line, but it
+                                    // tries request() first. One executor in
+                                    // circulation throws from inside its own
+                                    // game:HttpGet before any request is made,
+                                    // and that one cannot run the plain line.
+                                    // Offered NEXT TO the plain one in the
+                                    // settings modal, not instead of it.
+                                    projects[pi].scripts[sj].loaderUrlPortable = d.loadstringPortable || '';
                                     projects[pi].scripts[sj].loaderId = d.id;
                                     break outer;
                                 }
@@ -6677,6 +6685,7 @@ var _genProjectName = '';
                 for (var sj = 0; sj < projects2[pi].scripts.length; sj++) {
                     if (projects2[pi].scripts[sj].id === scriptId) {
                         projects2[pi].scripts[sj].loaderUrl = d.loadstring;
+                        projects2[pi].scripts[sj].loaderUrlPortable = d.loadstringPortable || '';
                         projects2[pi].scripts[sj].loaderId = d.id;
                         break outer;
                     }
@@ -7105,6 +7114,7 @@ function confirmEditScript(projectId, scriptId) {
                         for (var sj2 = 0; sj2 < projects2[pi2].scripts.length; sj2++) {
                             if (projects2[pi2].scripts[sj2].id === scriptId) {
                                 projects2[pi2].scripts[sj2].loaderUrl = d.loadstring;
+                                projects2[pi2].scripts[sj2].loaderUrlPortable = d.loadstringPortable || '';
                                 projects2[pi2].scripts[sj2].loaderId = d.id;
                                 break outer2;
                             }
@@ -7224,14 +7234,20 @@ function openScriptSettings(projectId, scriptId) {
     overlay.style.display = 'flex';
     overlay.style.zIndex = '2000';
     var loaderUrl = script.loaderUrl || '';
+    var loaderUrlPortable = script.loaderUrlPortable || '';
     var isKeyless = !!script.keyless || !!script.freeForEveryone;
+    var escAttr = function(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
         + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
         + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
-        + '<button type="button" data-loadstring="' + loaderUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
+        + '<button type="button" data-loadstring="' + escAttr(loaderUrl) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
+        + (loaderUrlPortable
+            ? '<button type="button" data-loadstring="' + escAttr(loaderUrlPortable) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-edit" title="Same one line, but it tries request() first. Use this one if game:HttpGet throws in the executor (some executors have a broken HttpGet).">🛟 Copy portable loader</button>'
+            : '')
         + '</div>'
+        + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">One line. It fetches the init layer from the link, the init layer fetches the encrypted script from the server after the license check - nothing about the script is in this line.</p>'
         + (isKeyless
             ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 FREE script: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only needed to VIEW the code on the website (the key page). The code is obfuscated.</p>'
             : '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>')

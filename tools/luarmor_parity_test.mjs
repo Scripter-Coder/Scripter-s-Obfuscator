@@ -1,26 +1,44 @@
 // tools/luarmor_parity_test.mjs
 //
-// Asserts the properties that make the Luarmor stub hard to attack, so a later
-// refactor cannot quietly undo them.
+// Asserts the properties that make the ScripterHub loader hard to attack, so a
+// later refactor cannot quietly undo them.
+//
+// THE THREE LAYERS, as the owner and a deobfuscator see them:
+//
+//   L1  loadstring(game:HttpGet(".../sh/<id>"))()     <- what the owner pastes
+//   L2  the INIT LAYER: _bsdata0 + the cdn link + the licensed handshake
+//   L3  the artifact behind the cdn link: the obfuscated program itself
+//
+// L1 is one line and carries a URL. L2 is what comes back when the URL is
+// followed, and it is deliberately READABLE - the same property Luarmor's
+// init file has.
 //
 // The reasoning, because it is not obvious from the shape alone:
 //
-//   "Make the stub unreadable" is the WRONG goal and it is what most obfuscators
-//   do by accident. If the stub is what the user pastes, then obfuscating the
-//   stub only raises the cost of reading a URL. The artifact is not in the stub.
-//   The URL is public and permanent (D6); nothing can change that.
+//   "Make the layers unreadable" is the WRONG goal and it is what most
+//   obfuscators do by accident. If L1 is what the user pastes, then
+//   obfuscating it only raises the cost of reading a URL. The artifact is not
+//   in L1 or in L2.
 //
-//   The correct goal is the inverse: the stub should be MAXIMALLY readable, and
-//   what it points at should carry nothing. Then there is no reversing work for a
-//   bot to do at all - it reads the stub, writes down a URL, and stops. The stub
-//   being legible is the security property, not a failure of it.
+//   The correct goal is the inverse: the layers should be MAXIMALLY readable,
+//   and what they point at should carry nothing on its own. Then there is no
+//   reversing work for a bot to do at all - it reads L2, writes down a URL,
+//   and stops. The layers being legible is the security property, not a
+//   failure of it.
 //
-//   Luarmor's stub proves the point: readfile / makefolder / HttpGet / writefile /
-//   loadstring(response)(id). Nothing hidden. And the thing behind the URL is a
-//   764 KB VM that yields only a constant slot table.
+// Luarmor proves the point: its init file is readfile / makefolder / HttpGet
+// / writefile / loadstring(response)(id). Nothing hidden. And the thing
+// behind the URL is a 764 KB VM that yields only a constant slot table.
 //
-// This test therefore checks that the stub leaks nothing AND that it keeps
-// Luarmor's structural shape, rather than checking that it is hard to read.
+// This test therefore checks that the layers leak nothing AND that they keep
+// Luarmor's structural shape, rather than checking that they are hard to read.
+//
+// ONE DELIBERATE DEVIATION, asserted explicitly below: Luarmor caches the
+// artifact it downloaded to disk. This platform does not, because for a free
+// script the split key IS the server-only layer and a cached envelope carries
+// the key line with it. Copying the cache would turn every free script into a
+// single-sample deobfuscation target, which is the exact hole the SHX
+// envelope was built to close.
 //
 // Run: node tools/luarmor_parity_test.mjs
 import fs from 'node:fs';
@@ -38,7 +56,7 @@ let pass = 0, fail = 0;
 const ok = (m) => { pass++; console.log('  OK   ' + m); };
 const no = (m) => { fail++; console.log('  FAIL ' + m); };
 
-// Pull shLoader out of the worker the same way the other harnesses do.
+// Pull the generators out of the worker the same way the other harnesses do.
 function extract(name) {
     const start = src.indexOf('function ' + name + '(');
     if (start < 0) throw new Error(name + ' not found');
@@ -58,29 +76,49 @@ function extract(name) {
 }
 
 const shLoader = new Function(extract('shLoader') + '\nreturn shLoader;')();
+const shLoaderPortable = new Function(extract('shLoaderPortable') + '\nreturn shLoaderPortable;')();
+// SPLITKEY_GENV is a module-level constant in worker.js; the generator closes
+// over it, so the harness injects it the same way bootstrap_exec_test does.
+const luaSessionBootstrap = new Function('SPLITKEY_GENV', extract('luaSessionBootstrap') + '\nreturn luaSessionBootstrap;')('__SH_SPLITKEY');
+
 const BASE = 'https://scripterhub-stats.dubovikstanislav51.workers.dev';
 const ID = 'ScripterHub1666974089';
 const stub = shLoader(BASE, ID);
+const portable = shLoaderPortable(BASE, ID);
+const init = luaSessionBootstrap(ID, BASE, false);
 
-console.log('[LP1] the stub is valid Lua and readable...');
+console.log('[LP1] the pasteable line is valid Lua and readable...');
 {
     let parsed = true;
     for (const v of ['5.1', '5.3']) {
         try { luaparse.parse(stub, { luaVersion: v }); } catch (e) { parsed = false; no('does not parse as Lua ' + v + ': ' + e.message); }
     }
-    if (parsed) ok('stub parses as Lua 5.1 and 5.3');
+    if (parsed) ok('the loader parses as Lua 5.1 and 5.3');
 
-    // Readability is the property. A stub a human cannot read is a stub that
-    // hides something, and the only thing in here is a URL.
+    // ONE line. That is the whole point of the shape: the owner pastes a
+    // single line into their executor, exactly like a Luarmor loadstring.
+    const lines = stub.split('\n').filter(l => l.trim().length);
+    if (lines.length === 1) ok('the loader is ONE line (' + stub.length + ' bytes)');
+    else no('the loader is ' + lines.length + ' lines - it must be one');
+
+    // And it is the shape the platform promises.
+    if (/^loadstring\(game:HttpGet\("https?:\/\/[^"]+\/sh\/ScripterHub\d+"\)\)\(\)$/.test(stub.trim())) {
+        ok('it is exactly loadstring(game:HttpGet("<url>"))()');
+    } else {
+        no('the loader is not the promised one-liner: ' + stub.trim());
+    }
+
+    // Readability is the property. A layer a human cannot read is a layer
+    // that hides something, and the only thing in here is a URL.
     const words = stub.match(/[A-Za-z_]{3,}/g) || [];
     const uniq = [...new Set(words)].sort();
     console.log('       identifiers a reader sees: ' + uniq.join(', '));
-    ok('stub is plain text (' + stub.length + ' bytes, ' + stub.split('\n').length + ' lines)');
+    ok('the loader is plain text');
 }
 
-console.log('\n[LP2] an AI or deobfuscator bot handed the stub learns nothing but a URL...');
+console.log('\n[LP2] an AI or deobfuscator bot handed the loader learns nothing but a URL...');
 {
-    // The stub must not carry any artifact-bearing material.
+    // The loader must not carry any artifact-bearing material.
     const leaks = [
         ['artifact bytes', /SHL\\n|SHK\\n|SHG /],
         ['ciphertext envelope', /SHOK|SHKEK1:/],
@@ -95,70 +133,88 @@ console.log('\n[LP2] an AI or deobfuscator bot handed the stub learns nothing bu
     ];
     let clean = true;
     for (const [what, re] of leaks) {
-        if (re.test(stub)) { no('stub leaks ' + what); clean = false; }
+        if (re.test(stub)) { no('the loader leaks ' + what); clean = false; }
     }
-    if (clean) ok('stub carries no ciphertext, no key, no path, no blocklist, no decrypt routine');
+    if (clean) ok('the loader carries no ciphertext, no key, no path, no blocklist, no decrypt routine');
 
     // The only outbound URL must be the public loader route.
     const urls = [...stub.matchAll(/https?:\/\/[^"'\s]+/g)].map(m => m[0]);
     const onlyLoader = urls.every(u => /\/sh\/ScripterHub\d+$/.test(u));
-    if (urls.length && onlyLoader) ok('the only URL in the stub is /sh/<id> (' + urls.length + ' found)');
-    else no('stub reaches an unexpected URL: ' + JSON.stringify(urls));
+    if (urls.length && onlyLoader) ok('the only URL in the loader is /sh/<id> (' + urls.length + ' found)');
+    else no('the loader reaches an unexpected URL: ' + JSON.stringify(urls));
 }
 
-console.log('\n[LP3] Luarmor structural parity...');
+console.log('\n[LP3] the INIT LAYER (L2) keeps Luarmor\'s structural shape...');
 {
     const markers = [
-        ['readfile  (cache hit)', /pcall\(function\(\)\s*a=readfile/],
-        ['makefolder (cache dir)', /pcall\(makefolder,d\)/],
-        ['writefile (cache write)', /writefile\(p,a\)/],
-        ['loadstring of the response', /loadstring\(a\)/],
-        ['id passed as an argument', /return f\("ScripterHub\d+"\)/],
+        ['_bsdata0 data table', /_bsdata0=\{/],
+        ['the data table is READ, not decorative', /local D=_bsdata0/],
+        ['the id comes out of the table', /local ID=D\["id"\]/],
+        ['the base URL comes out of the table', /local BASE=D\["base"\]/],
+        ['the cdn link comes out of the table', /local CDN=D\["cdn"\]/],
+        ['a file-shaped cdn link', /\/sh\/v4_init_ScripterHub\d+\.lua/],
+        ['the cdn link is what is fetched', /GET\(CDN\.\."\?s="\.\.S\.\."&n="\.\.N\)/],
+        ['id passed to the payload as an argument', /pcall\(fn,ID\)/],
         ['executor User-Agent header', /\["User-Agent"\]="Roblox\//],
+        ['the session mint', /\/sh\/session/],
     ];
     for (const [what, re] of markers) {
-        if (re.test(stub)) ok('has ' + what); else no('missing ' + what);
+        if (re.test(init)) ok('has ' + what); else no('missing ' + what);
     }
 
-    // It must not have regressed to a bare one-liner that runs whatever came back.
-    if (/loadstring\(\(request and request/.test(stub)) no('regressed to the old one-liner form');
-    else ok('did not regress to the old one-liner form');
+    // The layer must still be READABLE. A layer a reader cannot follow is a
+    // layer that hides something, and the thing behind the link is a gate.
+    let parsed = true;
+    try { luaparse.parse(init, { luaVersion: '5.1' }); } catch (e) { parsed = false; no('the init layer does not parse: ' + e.message); }
+    if (parsed) ok('the init layer parses as Lua 5.1 (' + init.split('\n').length + ' lines)');
+
+    // AND the one thing we deliberately do NOT copy from Luarmor.
+    //
+    // Luarmor writes what it downloaded to disk and re-runs it from the cache.
+    // Here the artifact is the split key's last layer: a cached envelope
+    // carries the key line with it, and a free script becomes a
+    // single-sample deobfuscation target - the hole SHX was built to close.
+    // The re-run therefore costs one fetch, and the license is still checked
+    // on every single run.
+    if (/\bwritefile\b/.test(init)) no('the init layer writes the artifact to disk - that re-opens the SHX hole');
+    else ok('the artifact is NOT cached to disk (the SHX server-only layer survives)');
 }
 
-console.log('\n[LP4] the stub is IDENTICAL across scripts except the id and URL...');
+console.log('\n[LP4] the layers are IDENTICAL across scripts except the id and URL...');
 {
     const other = shLoader(BASE, 'ScripterHub0451244272');
     const norm = (s) => s.replace(/ScripterHub\d+/g, 'ID').replace(/https?:\/\/[^"'\s]+/g, 'URL');
-    if (norm(stub) === norm(other)) ok('two scripts differ only in the id and the URL - nothing per-script leaks');
-    else no('the stub varies by script beyond the id/URL:\n' + norm(stub) + '\n---\n' + norm(other));
+    if (norm(stub) === norm(other)) ok('two loaders differ only in the id and the URL - nothing per-script leaks');
+    else no('the loader varies by script beyond the id/URL:\n' + norm(stub) + '\n---\n' + norm(other));
+
+    const initOther = luaSessionBootstrap('ScripterHub0451244272', BASE, false);
+    if (norm(init) === norm(initOther)) ok('two init layers differ only in the id and the URL');
+    else no('the init layer varies by script beyond the id/URL');
 }
 
-console.log('\n[LP5] the bootstrap accepts the id as an argument (and keeps the fallback)...');
+console.log('\n[LP5] the init layer honours the id argument (and keeps the fallback)...');
 {
     // luaSessionBootstrap builds Lua by string concatenation, so the JS source
     // contains 'local ID=' + JSON.stringify(id), not the rendered Lua. Assert
     // against the generator source.
     const bs = extract('luaSessionBootstrap');
-    if (/type\(a\)=="string"\s+and\s+a:match\("\^ScripterHub%d\+\$"\)/.test(bs)) ok('bootstrap honours ... as the id');
-    else no('bootstrap does not honour the ... id argument');
-    if (/'local ID='\s*\+\s*JSON\.stringify\(id\)/.test(bs)) ok('bootstrap still bakes an id, so an older cached stub keeps working');
-    else no('bootstrap lost its baked-in id fallback');
+    if (/type\(a\)=="string"\s+and\s+a:match\("\^ScripterHub%d\+\$"\)/.test(bs)) ok('init layer honours ... as the id');
+    else no('init layer does not honour the ... id argument');
+    if (/'local ID=D\["id"\]/.test(bs)) ok('init layer still bakes an id, so an older cached stub keeps working');
+    else no('init layer lost its baked-in id fallback');
 
     // The id argument must not become a redirect primitive: `...` may only name
     // the script. If it could reach BASE or a fetch, anyone could rewrite the
     // id at the call site and aim the loader at a URL of their choosing.
     const dotdot = bs.match(/local a=\.\.\.[^\n]*/);
     ok('the ... argument is consumed in exactly one place: ' + (dotdot ? 'yes' : 'NOT FOUND'));
-    // BASE is emitted from JSON.stringify(base), i.e. from env/url only - never
-    // from the argument.
-    if (/'local BASE='\s*\+\s*JSON\.stringify\(base\)/.test(bs)) ok('BASE comes from the worker environment, never from ...');
+    // BASE and CDN are emitted from JSON.stringify(base), i.e. from env/url
+    // only - never from the argument.
+    if (/'local BASE=D\["base"\]/.test(bs)) ok('BASE comes from the worker environment, never from ...');
     else no('BASE is not sourced from the environment - check it cannot be influenced by the argument');
-    // No fetch in the bootstrap may be built from the argument.
-    //
-    // Scoped deliberately: the `a` identifier also names unrelated locals (a
-    // chain-part URL is built from `root`, which comes from the server's own
-    // SHG header). Asserting on bare /HttpGet\([^)]*a/ matched those and
-    // produced a false SSRF report, so match the argument's own name only.
+    if (/'local CDN=D\["cdn"\]/.test(bs)) ok('CDN comes from the worker environment, never from ...');
+    else no('CDN is not sourced from the environment - check it cannot be influenced by the argument');
+    // No fetch in the init layer may be built from the argument.
     const argName = 'a';
     const fedIntoFetch = [...bs.matchAll(new RegExp('HttpGet\\([^)]*\\b' + argName + '\\b', 'g'))];
     if (fedIntoFetch.length) no('the ... argument reaches a fetch - that is an SSRF primitive: ' + JSON.stringify(fedIntoFetch.map(m => m[0])));
@@ -170,18 +226,39 @@ console.log('\n[LP5] the bootstrap accepts the id as an argument (and keeps the 
     else no('the argument is bound ' + binds + ' times - expected exactly 1');
 }
 
-console.log('\n[LP6] the id guard BEHAVES correctly (executed in a real Lua VM)...');
+console.log('\n[LP6] the portable twin exists for an executor whose game:HttpGet throws...');
+{
+    // One executor in circulation throws from inside its own game:HttpGet
+    // before any request is made. The plain line cannot work there, so the
+    // portable twin tries request() first - with the executor User-Agent the
+    // worker needs - and falls back to game:HttpGet.
+    if (/^loadstring\(\(request and request\(/.test(portable.trim())) ok('the portable line tries request() first');
+    else no('the portable line does not prefer request(): ' + portable.trim());
+    if (/\["User-Agent"\]="Roblox\//.test(portable)) ok('and it sends the executor User-Agent');
+    else no('the portable line sends no User-Agent - it would be served HTML');
+    if (/game:HttpGet\(/.test(portable)) ok('and it falls back to game:HttpGet');
+    else no('the portable line has no game:HttpGet fallback');
+
+    let parsed = true;
+    for (const v of ['5.1', '5.3']) {
+        try { luaparse.parse(portable, { luaVersion: v }); } catch (e) { parsed = false; no('the portable line does not parse as Lua ' + v + ': ' + e.message); }
+    }
+    if (parsed) ok('the portable line parses as Lua 5.1 and 5.3');
+    if (portable.split('\n').filter(l => l.trim().length).length === 1) ok('and it is still ONE line');
+    else no('the portable line is not one line');
+}
+
+console.log('\n[LP7] the id guard BEHAVES correctly (executed in a real Lua VM)...');
 {
     // LP5 asserts the guard is present in the source. That is a string claim, and
-    // the whole point of LP6 is that string claims about id handling are exactly
+    // the whole point of LP7 is that string claims about id handling are exactly
     // where an SSRF primitive would sneak in. So run the real guard.
     //
-    // The network half of the bootstrap is irrelevant here and is not exercised;
-    // what is exercised is the id-selection rule, verbatim, in Lua 5.1.
+    // The network half of the init layer is irrelevant here and is not
+    // exercised; what is exercised is the id-selection rule, verbatim, in Lua 5.1.
     const BAKED = ID;
-    const bakedQ = JSON.stringify(BAKED);
     const guard =
-        'local ID=' + bakedQ + '\n' +
+        'local ID=' + JSON.stringify(BAKED) + '\n' +
         'local a=ARGV\n' +
         'if type(a)=="string" and a:match("^ScripterHub%d+$") then ID=a end\n' +
         'return ID';

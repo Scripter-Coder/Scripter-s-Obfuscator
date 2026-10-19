@@ -338,7 +338,9 @@ console.log('[C6] the session bootstrap RUNS the full flow in Lua...');
         // the two request shapes the bootstrap uses
         'request = function(o)',
         '  if o.Url:find("/sh/session", 1, true) then return { Body = SH_SESS } end',
-        '  if o.Url:find("/sh/a/", 1, true) then return { Body = SH_GATE } end',
+        // The delivery route. The init layer fetches it under its file-shaped
+        // name (/sh/v4_init_<id>.lua); /sh/a/<id> is the same gate.
+        '  if o.Url:find("/sh/v4_init_", 1, true) or o.Url:find("/sh/a/", 1, true) then return { Body = SH_GATE } end',
         '  return { Body = "" }',
         'end',
         'game.HttpGet = function(self, u)',

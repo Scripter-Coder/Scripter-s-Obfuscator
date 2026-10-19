@@ -25,12 +25,21 @@ boot.txt
 # Editor and script backups.
 *.bak
 
+# Whole user records written by tools/set-user-plan.mjs. These contain the
+# password hash and the base64 avatar, so they must never reach the repo.
+user-backups/
+
 # Tooling state and logs. All of these are written by something else and are
 # never inputs to a build.
 .wrangler/
 .opencode/
 .playwright-mcp/
 preview.log
+
+# Previews written by tools/show_loadstring.mjs: the pasted one-liner and the
+# init layer behind it. Regenerable in one command.
+loadstring_preview.txt
+init_layer_preview.txt
 
 # Ad-hoc dev scratch that accumulated at the repo root. None of it is imported
 # by anything, but naming it explicitly beats leaving the next `git add -A` to

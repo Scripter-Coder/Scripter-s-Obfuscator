@@ -36,20 +36,25 @@ console.log('');
 const url = W + '/sh/' + ID;
 let bad = 0;
 
-// Transport 1: request WITH the UA header (what the one-liner sends first)
+// What a correct init layer starts with. The OLD deployment (before D31)
+// answered with the bootstrap, so both are accepted - the old one means "the
+// worker has not been redeployed yet".
+const isInit = (s) => s.startsWith('-- Do not save this file') || s.startsWith('--[[ ScripterHub session loader');
+
+// Transport 1: request WITH the UA header (what the portable one-liner sends first)
 const withUA = await fetch(url, { headers: { 'User-Agent': 'Roblox/570 Delta Executor' } });
 const b1 = await withUA.text();
-const ok1 = withUA.status === 200 && b1.startsWith('--[[ ScripterHub session loader');
+const ok1 = withUA.status === 200 && isInit(b1);
 console.log('request + User-Agent -> ' + withUA.status + ', ' + b1.length + ' bytes | ' +
-  (ok1 ? 'LOADER (correct)' : 'WRONG: ' + b1.slice(0, 60)));
+  (ok1 ? 'INIT LAYER (correct)' : 'WRONG: ' + b1.slice(0, 60)));
 if (!ok1) bad++;
 
 // Transport 2: game:HttpGet equivalent - a real Roblox UA, no explicit header
 const asRoblox = await fetch(url, { headers: { 'User-Agent': 'Roblox/570 Delta Executor' } });
 const b2 = await asRoblox.text();
-const ok2 = asRoblox.status === 200 && b2.startsWith('--[[ ScripterHub session loader');
+const ok2 = asRoblox.status === 200 && isInit(b2);
 console.log('game:HttpGet path   -> ' + asRoblox.status + ', ' + b2.length + ' bytes | ' +
-  (ok2 ? 'LOADER (correct)' : 'WRONG'));
+  (ok2 ? 'INIT LAYER (correct)' : 'WRONG'));
 if (!ok2) bad++;
 
 // The regression this replaced: request with NO header gets HTML, which is what made
@@ -59,7 +64,15 @@ const b3 = await noUA.text();
 console.log('request, NO header  -> ' + noUA.status + ', ' + b3.length + ' bytes | ' +
   (b3.startsWith('<!DOCTYPE') ? 'HTML - the bug this fixes' : 'loader'));
 
+// The shape the owner asked for: the init layer carries _bsdata0 and a
+// file-shaped cdn link, and it carries no artifact material.
+if (b1.includes('_bsdata0=')) console.log('_bsdata0 present      -> YES');
+else { console.log('_bsdata0 present      -> NO'); bad++; }
+if (/\/sh\/v4_init_ScripterHub\d+\.lua/.test(b1)) console.log('cdn link present     -> YES');
+else if (b1.startsWith('-- Do not save this file')) { console.log('cdn link present     -> NO'); bad++; }
+else console.log('cdn link present     -> (old deployment, not redeployed yet)');
+
 console.log('\n' + (bad === 0
-  ? 'BOTH transports return the loader. The one-liner works.'
+  ? 'BOTH transports return the init layer. The one-liner works.'
   : 'FAILED: a transport returned the wrong content.'));
 process.exit(bad === 0 ? 0 : 1);

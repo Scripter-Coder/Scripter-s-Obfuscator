@@ -204,7 +204,9 @@ game = {
   GetService = function() return setmetatable({}, {__index=function() return function() end end}) end,
   HttpGet = function(u)
     u = tostring(u)
-    if u:find("/sh/a/", 1, true) then return __DELIVERY end
+    -- The delivery route. The init layer fetches it under its file-shaped
+    -- name (/sh/v4_init_<id>.lua); /sh/a/<id> is the same gate.
+    if u:find("/sh/v4_init_", 1, true) or u:find("/sh/a/", 1, true) then return __DELIVERY end
     return ""
   end,
 }

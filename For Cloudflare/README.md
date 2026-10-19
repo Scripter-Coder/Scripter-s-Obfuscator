@@ -16,10 +16,12 @@ This worker does four jobs:
 ## THE DELIVERY MODEL
 
 ```
-   public site                GET /sh/ScripterHub##########
-   (metadata, loader URL)         |
+   L1  the pasted line     loadstring(game:HttpGet(".../sh/<id>"))()
+       (one line, a URL)         |
                                   v
-                          BOOTSTRAP  - contains NO script material.
+   L2  THE INIT LAYER  - _bsdata0 + the cdn link + the licensed
+       GET /sh/<id>       handshake. Contains NO script material:
+       (executor UA)      no ciphertext, no key, no split key.
                           Identical for every script except the id
                           and base URL. Opens in a browser, a scraper
                           or an executor, it reveals nothing.
@@ -31,7 +33,7 @@ This worker does four jobs:
         |  "SHS <sid> <nonce> <exp>"
         |                      |  proof, not payload
         v                      v
-   GET /sh/a/<id>?s=&n=       THE GATE
+   GET /sh/v4_init/<id>.lua?s=&n=   THE GATE (same route as /sh/a/<id>)
         |                      consume nonce  (atomic UPDATE)
         |                      consume session (atomic UPDATE, re-checks
         |                        license + HWID + account live)
@@ -46,6 +48,20 @@ This worker does four jobs:
    (large only) GET /sh/c/<id>/<i>?g=&s=   or   /sh/g/<id>/<i>?g=&s=
         one atomic forward step per part; no skip, no replay
 ```
+
+The "cdn" link in L2 is a SHAPE, not a third-party bucket:
+`/sh/v4_init_<id>.lua` is the same gate as `/sh/a/<id>` - same nonce, same
+session, same bytes. The artifact has to stay behind the atomic gate, so a
+second spelling must not become a second door.
+
+The init layer deliberately does **not** cache the artifact to disk (D29, D31):
+for a free script the split key is the server-only layer, and a cached envelope
+would carry the key line with it.
+
+The pasted line has a twin. Some executors throw from inside their own
+`game:HttpGet` before any request is made; for those, `shLoaderPortable()`
+tries `request()` first, with the executor User-Agent. The site offers it next
+to the plain one.
 
 ### Optional hardening
 
@@ -352,9 +368,10 @@ See D15.
 
 | Route | Purpose |
 |---|---|
-| `GET /sh/<id>` | Public loader. Bootstrap or metadata. **No artifact.** |
+| `GET /sh/<id>` | Public loader. Init layer (executor) or metadata page (browser). **No artifact.** |
 | `POST\|GET /sh/session` | Mint. `{id, k, h}` → `SHS <sid> <nonce> <exp>` |
 | `GET\|POST /sh/a/<id>` | **The gate.** `?s=&n=` → artifact or a chain |
+| `GET\|POST /sh/v4_init_<id>.lua` | The same gate under a file-shaped name. The init layer fetches L3 from here |
 | `GET /sh/k/<id>` | Legacy split-key, hardened. Needs a live session now |
 | `GET /sh/c/<id>/<i>` | KV chunk, chain-gated, forward-only |
 | `GET /sh/g/<id>/<i>` | GitHub part, chain-gated, forward-only |

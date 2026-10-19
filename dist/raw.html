@@ -196,6 +196,11 @@
                 <button class="btn" id="copyLoadBtn" onclick="copyLoad(this)">📋 Copy Loadstring</button>
                 <div class="hint" id="keylessOut" style="display:none; margin-top:8px; color:#66ff66;">🌐 KEYLESS: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only required to view the code on the website.</div>
                 <div class="hint" style="margin-top:8px;">Keyed script: users must set <strong>getgenv().ScripterHubKey = "KEY"</strong> BEFORE executing (no popup in-game); in a browser it shows the key page. The key never appears in any URL.</div>
+                <div id="portableOut" style="display:none; margin-top:12px;">
+                    <div class="hint" style="margin-bottom:4px;">🛟 If the line above does nothing in the executor (some executors have a broken <code>game:HttpGet</code>), use this one instead - same link, but it tries <code>request()</code> first:</div>
+                    <code id="loadstringPortableOut"></code>
+                    <button class="btn btn-ghost" id="copyPortableBtn" onclick="copyPortable(this)">📋 Copy portable loader</button>
+                </div>
             </div>
         </div>
     </div>
@@ -318,7 +323,7 @@
             // encrypted view (what browsers get; key required to see it).
             // SERVER-KEY-SPLIT: the loader id is generated up front so the
             // key-fetch URL baked into the file matches what /sh/upload
-            // stores; the final layer key i./assets/custom-obfuscator-xp3kfMSA.jser and
+            // stores; the final layer key i./assets/custom-obfuscator-WVDsoBD4.jser and
             // NEVER embedded - static peelers stop one layer short.
             import('./custom-obfuscator.js').then(function(mod) {
                 var wantId = 'ScripterHub' + String(Date.now()).slice(-10);
@@ -414,6 +419,17 @@
                 if (d.ok) {
                     try { localStorage.setItem('sh_raw_username', user); } catch (e) {}
                     document.getElementById('loadstringOut').textContent = d.loadstring;
+                    // The portable twin: the same one line, but request() first.
+                    // Some executors throw from inside their own game:HttpGet
+                    // before any request is made, and that one cannot run the
+                    // plain line.
+                    var pOut = document.getElementById('portableOut');
+                    if (d.loadstringPortable) {
+                        document.getElementById('loadstringPortableOut').textContent = d.loadstringPortable;
+                        pOut.style.display = 'block';
+                    } else {
+                        pOut.style.display = 'none';
+                    }
                     document.getElementById('keylessOut').style.display = keyless ? 'block' : 'none';
                     document.getElementById('loadout').style.display = 'block';
                 } else {
@@ -464,11 +480,49 @@
             }
         }
 
+        // Copy the portable twin. Same routine, different code block: the
+        // executor that cannot run game:HttpGet needs this one.
+        function copyPortable(btn) {
+            var txt = document.getElementById('loadstringPortableOut').textContent;
+            if (!txt) return;
+            function done(ok) {
+                if (btn) { btn.textContent = ok ? '✅ Copied!' : '⚠️ Press Ctrl+C'; setTimeout(function() { btn.textContent = '📋 Copy portable loader'; }, 2500); }
+            }
+            function fallback() {
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = txt;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.focus(); ta.select();
+                    var ok = document.execCommand('copy');
+                    ta.remove();
+                    if (ok) { done(true); return; }
+                } catch (e) {}
+                var codeEl = document.getElementById('loadstringPortableOut');
+                if (codeEl && window.getSelection && document.createRange) {
+                    var range = document.createRange();
+                    range.selectNodeContents(codeEl);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+                done(false);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(txt).then(function() { done(true); }, fallback);
+            } else {
+                fallback();
+            }
+        }
+
         // expose for inline onclick handlers
         window.tryLogin = tryLogin;
         window.logoutRaw = logoutRaw;
         window.createScript = createScript;
         window.copyLoad = copyLoad;
+        window.copyPortable = copyPortable;
 
         // file upload -> textarea
         var fileInput = document.getElementById('scriptFile');

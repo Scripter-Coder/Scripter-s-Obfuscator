@@ -789,6 +789,16 @@ The old "must be one line" assertion in loader_exec_test.mjs was REPLACED, not
 deleted: "one line" was never the property, "carries no secret" was - and that is
 now asserted directly against the stub.
 
+**SUPERSEDED IN PART BY D31.** The fifteen-line stub is gone. Its disk cache
+moved into the init layer, and the pasteable line is one line again:
+
+    loadstring(game:HttpGet("https://host/sh/ScripterHub1234567890"))()
+
+The reasoning above still holds, and D31 keeps the readable-init-layer property:
+the pasted line is a URL, and the layer behind it is the Luarmor-shaped init
+layer. What changed is WHERE the cache question was answered - the init layer
+does not cache the artifact either, and D29 says why.
+
 ---
 
 ## D26 - The host compile is NOT proxied; the browser is given a ticket
@@ -1098,5 +1108,92 @@ both parse, both look correct. B14 runs the real Lua VM, gets `SHERR nonce`, and
 requires the bootstrap to recover on its own.
 
 `tools/bootstrap_exec_test.mjs` is 19/19.
+
+---
+
+## D31 - The loadstring is ONE line, and the three layers are L1 / L2 / L3
+
+The owner asked for the loadstring a user pastes to be a single line:
+
+    loadstring(game:HttpGet("https://host/sh/ScripterHub1234567890"))()
+
+and for the layer behind it to look the way a Luarmor user expects: a data table
+(`_bsdata0`), a link to the file that holds the program, and the program itself
+behind that link.
+
+That is a three-layer shape, and it is the shape Luarmor has:
+
+    L1  the pasted line        - one line, a URL, nothing else
+    L2  the init layer         - _bsdata0 + the cdn link + the handshake
+    L3  the artifact           - the obfuscated program, behind the gate
+
+**What moved where, and why.**
+
+D25 made the PASTEABLE line the fifteen-line stub, because the stub had the
+disk cache in it. The cache was the only reason it was long, and the cache
+belongs to the layer that knows what it is allowed to keep - the init layer,
+not the pasted line. So the cache question was settled first, and the line
+followed.
+
+**THE DISK CACHE IS NOT COPIED FROM LUARMOR, and that is deliberate.**
+
+Luarmor's init file writes what it downloaded to disk and re-runs it from the
+cache. Here that would put the artifact on the user's disk, and for a FREE
+script the split key IS the server-only layer (D29): the envelope carries the
+key line with it, so a cached copy is a complete, offline-runnable artifact. That
+is precisely the single-sample deobfuscation target D29 was built to close.
+
+So the init layer fetches the artifact on every run, and the license is still
+checked on every run. The cost is one round trip per execution; the benefit is
+that the server-only layer still is one. tools/luarmor_parity_test.mjs asserts
+the ABSENCE of `writefile` in the init layer, so a later refactor cannot
+re-introduce the cache by accident.
+
+**THE CDN LINK IS A SHAPE, NOT A HOLE.**
+
+L2 points at `/sh/v4_init_<id>.lua`, which reads like the Luarmor init file's
+`https://cdn.luarmor.net/v4_init_<key>.lua`. It is the SAME route as
+`/sh/a/<id>`: same gate, same nonce, same session, same bytes. "cdn" here means
+"a file-shaped address for the delivery", not "a public bucket anybody can
+fetch" - the artifact has to stay behind the same atomic gate (D12), and a
+second spelling must not become a second door.
+
+**THE PORTABLE TWIN EXISTS, AND IT IS OFFERED NEXT TO THE PLAIN ONE.**
+
+One executor in circulation throws from inside its own `game:HttpGet` before
+any request is made, so a line that only calls `game:HttpGet` cannot run there.
+D25's line solved that by preferring `request()`, and paying for it with a
+line that advertised the whole delivery mechanism.
+
+Now both exist: the plain one line is what the owner sees and copies, and
+`shLoaderPortable()` is the same URL with `request()` (and the executor
+User-Agent) first. The site offers the second one NEXT TO the first, labelled,
+for the executor that needs it. tools/loader_exec_test.mjs runs both on a real
+Lua VM against four executor shapes.
+
+**THE INIT LAYER SETS THE USER-AGENT ON ITS OWN REQUESTS.**
+
+`request()` with no User-Agent is not treated as an executor, and the worker
+answers such a request with the metadata page. `game:HttpGet` stamps a genuine
+Roblox UA; a bare `request()` does not. The init layer now sends the header
+explicitly on both transports, so a future change to the delivery route cannot
+break the fetch by accident.
+
+**UNCHANGED, DELIBERATELY SO:**
+
+- The pasted line still only ever fetches `/sh/<id>`, which serves the init
+  layer - no ciphertext, no key, no split key (D6/G01). The bytes still leave
+  the worker through `deliver()` alone (D12).
+- The init layer is IDENTICAL for every script apart from the id and the base
+  URL. LP4 asserts it for both layers.
+- The id is still pattern-matched to `^ScripterHub%d+$` before use, and `...`
+  still reaches neither the base URL nor any fetch - it can only name a script,
+  so it is not an SSRF primitive. LP7 executes that guard in a real Lua VM
+  against a URL, a traversal string, a number, an empty string and trailing
+  junk.
+- The browser still sees the metadata page and nothing else.
+
+tools/luarmor_parity_test.mjs (40 checks) and tools/loader_exec_test.mjs (21
+checks) lock the shape down.
 
 ---

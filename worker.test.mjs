@@ -204,14 +204,21 @@ let KEYLESS_ID = '';
     const skey = JSON.parse(KV._store.get('sh_skey_' + d.id));
     assert.ok(skey && Array.isArray(skey.paddedKey) && skey.paddedKey.length === padded.length,
         'a keyless upload with no stored split key is a script that cannot run');
-    // The loader prefers `request` and falls back to game:HttpGet, because
-            // game:HttpGet throws on at least one executor in circulation. Assert what
-            // the loader MEANS rather than the formatting it used to have.
-            assert.ok(d.loadstring, 'upload returned a loader');
-            assert.ok(d.loadstring.includes('/sh/' + d.id), 'loader points at this script id');
-            assert.ok(d.loadstring.includes('test.workers.dev'), 'loader points at this worker');
-            assert.ok(d.loadstring.includes('request'), 'loader tries request first');
-            assert.ok(!/SHOK|__SH_SPLITKEY|4294967296/.test(d.loadstring), 'loader carries no script material');
+    // The loader is ONE line, and it is the shape the owner asked for:
+    // loadstring(game:HttpGet("<url>"))(). The portable twin - the same URL,
+    // but request() first - is returned NEXT TO it, because game:HttpGet throws
+    // on at least one executor in circulation. Assert what each one MEANS
+    // rather than the formatting it used to have.
+    assert.ok(d.loadstring, 'upload returned a loader');
+    assert.ok(d.loadstring.includes('/sh/' + d.id), 'loader points at this script id');
+    assert.ok(d.loadstring.includes('test.workers.dev'), 'loader points at this worker');
+    assert.ok(/^loadstring\(game:HttpGet\(".*\/sh\/ScripterHub\d+"\)\)\(\)$/.test(d.loadstring.trim()),
+        'the loader is the one-line game:HttpGet form, got: ' + d.loadstring);
+    assert.ok(d.loadstringPortable, 'upload returned the portable twin');
+    assert.ok(d.loadstringPortable.includes('request'), 'the portable twin tries request first');
+    assert.ok(d.loadstringPortable.includes('/sh/' + d.id), 'the portable twin points at this script id');
+    assert.ok(!/SHOK|__SH_SPLITKEY|4294967296/.test(d.loadstring), 'loader carries no script material');
+    assert.ok(!/SHOK|__SH_SPLITKEY|4294967296/.test(d.loadstringPortable), 'the portable twin carries no script material');
     KEYLESS_ID = d.id;
     const meta = JSON.parse(KV._store.get('sh_meta_' + KEYLESS_ID));
     assert.strictEqual(meta.keyless, true);

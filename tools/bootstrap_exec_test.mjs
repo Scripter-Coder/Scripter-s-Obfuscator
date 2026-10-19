@@ -709,7 +709,10 @@ console.log('[B10] a FREE script runs with an EMPTY getgenv - no key, no email, 
     identifyexecutor: true,
     request: (url) => {
       if (url.includes('/sh/session')) { seen = url; return 'SHS sid123 nonce456 1700000000'; }
-      if (url.includes('/sh/a/')) { delivered = url; return '-- FREE PAYLOAD\n'; }
+      // The delivery route. It is /sh/v4_init_<id>.lua now - the file-shaped
+      // spelling the init layer uses - and /sh/a/<id> is the same gate under
+      // its canonical name. Either is the delivery route.
+      if (url.includes('/sh/v4_init_') || url.includes('/sh/a/')) { delivered = url; return '-- FREE PAYLOAD\n'; }
       return null;
     }
   });

@@ -40,6 +40,13 @@
 //                              one response; large ones open a forward-only
 //                              chain (see DELIVERY RULES below, D11).
 //
+//   GET  /sh/v4_init_<id>.lua THE SAME GATE under a file-shaped name. The init
+//                              layer (L2) fetches the artifact (L3) from
+//                              here, the way a Luarmor init file fetches
+//                              https://cdn.luarmor.net/v4_init_<key>.lua.
+//                              Same gate, same nonce, same bytes - a shape,
+//                              not a hole.
+//
 //   GET  /sh/c/<id>/<i>        KV chunk.   Chain-gated: a grant from the
 //   GET  /sh/g/<id>/<i>        GitHub part. gate AND a forward-only cursor.
 //                              Neither is reachable with a forged User-Agent,
@@ -4120,18 +4127,24 @@ function classifyLicense(rec, hwid, now, projectId) {
     if (rec.hwid && rec.hwid !== hwid) return { code: 'hwid' }; // shared key
     // A key bound to a project only opens scripts in that project.
     //
-    // Only when the caller knows which project it is asking about. An empty
-    // rec.projectId means "every project", which is what a key created before
-    // this existed - or one the owner left on All - means. And an empty
-    // projectId on the SCRIPT side must not fail closed: a script published
-    // before this change carries no project, and refusing those would lock
-    // every already-published key-system script out of every already-issued
-    // key. That is the whole installed base, so it is checked explicitly
-    // rather than assumed.
-    const bound = String(rec.projectId || '');
-    const asked = String(projectId || '');
-    if (bound && bound !== 'all' && asked && bound !== asked) {
-        return { code: 'project', reason: 'this key is for another project' };
+    // The comparison is done on trimmed, lower-cased strings so that a
+    // key created with "MyProject" and a script published with "myproject"
+    // still match. An empty rec.projectId means "every project", which is
+    // what a key created before this existed - or one the owner left on All -
+    // means. An empty projectId on the SCRIPT side must not fail closed: a
+    // script published before this change carries no project, and refusing
+    // those would lock every already-published key-system script out of every
+    // already-issued key. That is the whole installed base, so it is checked
+    // explicitly rather than assumed.
+    const bound = String(rec.projectId || '').trim().toLowerCase();
+    const asked = String(projectId || '').trim().toLowerCase();
+    // A key bound to a specific project must match the script's project.
+    // If the script carries no project, the binding cannot be satisfied —
+    // refuse rather than fall through.
+    if (bound && bound !== 'all') {
+        if (!asked || bound !== asked) {
+            return { code: 'project', reason: 'this key is for another project' };
+        }
     }
     return { code: 'ok', rec: rec };
 }
@@ -4356,18 +4369,37 @@ function jsonResponse(data, status) {
     });
 }
 
-// "Method Not Allowed" page — what browsers see when opening a loader link
 // ---------- the loader we hand out ----------
 //
-// ONE LINE, and it is one line on purpose. The previous version was ten, and the extra
-// nine existed to be defensive about executors rather than to do anything. It also had a
-// real bug: it called `request` with NO User-Agent header, and a request without one is
-// not treated as an executor. The worker then serves the BROWSER PAGE - 1,549 bytes of
-// HTML - instead of the loader, so loadstring() failed on valid input and the user was
-// told "Could not compile the loader", which points at Lua and not at the network. That
-// cost a full round of debugging to find; the header below is the fix.
+// ONE LINE, and it is one line on purpose:
 //
-// WHY request COMES FIRST, still:
+//     loadstring(game:HttpGet("https://host/sh/ScripterHub1234567890"))()
+//
+// That is the whole thing the owner pastes into their executor. The URL is
+// public and permanent (D6) and it carries no authorization value on its own:
+// anyone can open it, and what comes back is the INIT LAYER - a protocol
+// bootstrap with no ciphertext, no key and no artifact material in it.
+//
+// WHY ONE LINE, WHEN THE PREVIOUS SHAPE WAS FIFTEEN:
+//
+// The fifteen-line version did two jobs at once: fetch the init layer, and
+// cache it on disk so a re-run costs no network round trip. The caching is now
+// the init layer's own business - it is the thing that knows what it is
+// allowed to keep - and what is left for the pasteable line is a fetch. A
+// fetch is one line.
+//
+// THE THREE LAYERS, AS THE OWNER SEES THEM:
+//
+//   L1  loadstring(game:HttpGet(".../sh/<id>"))()   <- what the owner pastes
+//   L2  the init layer: _bsdata0 + the cdn link + the licensed handshake
+//   L3  the artifact behind that link: the obfuscated program itself
+//
+// L2 is what a deobfuscator sees if it follows the URL, and it is deliberately
+// READABLE - the same property Luarmor's init file has. A reader learns the
+// protocol, which is public by design, and learns nothing about any
+// particular artifact.
+//
+// WHY request COMES FIRST IN THE PORTABLE VARIANT:
 //   * at least one executor in circulation throws
 //         invalid argument #1 to find (string expected, got nil)
 //     from inside its own game:HttpGet, before any request is made. Its HttpGet is
@@ -4376,83 +4408,31 @@ function jsonResponse(data, status) {
 //     what makes this line work on that executor anyway.
 //   * the header matters for BOTH paths: game:HttpGet stamps a genuine Roblox UA, but a
 //     bare request() call does not, and without an executor-looking UA the worker
-//     answers with HTML rather than the loader.
+//     answers with HTML rather than the init layer.
 //
-// So the order is request+UA, then HttpGet. One line, both fallbacks, no silent HTML.
+// So the portable line is request+UA first, then HttpGet. One line, both
+// fallbacks, no silent HTML. The plain line is the default because it is what
+// the owner asked for and what a Luarmor user expects to see; the portable one
+// is offered NEXT TO it, not instead of it.
 //
-// It still contains no script material, which is what gate G01 is about - it fetches the
-// loader from /sh/<id>, and the loader is what performs the licensed session handshake.
-//
-//
-// ============================================================
-// THE STUB SHAPE (Luarmor parity)
-// ============================================================
-// This used to be ONE line:
-//
-//     loadstring((request and request({Url=...,Headers={...}}).Body) or game:HttpGet(...))()
-//
-// which is correct but is not what a Luarmor user expects to see, and - more to the
-// point - it advertises exactly how the delivery works. It is a single fetch that runs
-// whatever came back, immediately, every time.
-//
-// Luarmor ships a stub that looks like this instead:
-//
-//     readfile("static_content_170926/init-f07dbcbe19a-sephal.lua")
-//     makefolder("static_content_170926")
-//     local response = game:HttpGet("https://cdn.luarmor.net/v4_init_sephal.lua")
-//     writefile("static_content_170926/init-f07dbcbe19a-sephal.lua", response)
-//     loadstring(response)("f07dbcbe19a-sephal")
-//
-// The properties that matter, and that this now shares:
-//
-//   1. It is READABLE. There is nothing to reverse. A user can read the stub, a
-//      deobfuscator bot can read the stub, and an AI handed the stub learns the
-//      URL, the cache path and nothing else - because the URL is genuinely all
-//      there is. Readability here is the POINT, not a failure: the stub is not
-//      protecting a secret, it is handing out a fetch instruction.
-//
-//   2. It takes its id as an ARGUMENT (loadstring(response)(ID)) rather than
-//      baking it in, so the stub text is identical for every script on the site
-//      apart from that one string. Two customers' stubs diff in the id and the
-//      URL, which is the same exposure Luarmor has and accepts.
-//
-//   3. It CACHES to disk, so a re-run costs no network round trip. This is the
-//      behaviour users actually notice on a slow executor.
-//
-// What it still must never become: a second route to artifact bytes. This stub
-// only ever fetches /sh/<id>, which serves the bootstrap - no ciphertext, no
-// key, no split key, identical for every script (D6/G01). The bytes still leave
-// the worker through deliver() alone (D12/G0x).
-//
-// The id argument is honoured by luaSessionBootstrap via `...`, which still
-// falls back to the baked-in id when the stub is called with no arguments, so an
-// older cached copy of the loader keeps working.
+// What the plain line must never become: a second route to artifact bytes. It
+// only ever fetches /sh/<id>, which serves the init layer - no ciphertext, no
+// key, no split key, identical for every script (D6/G01). The bytes still
+// leave the worker through deliver() alone (D12/G0x).
 function shLoader(base, id) {
     const u = base + '/sh/' + id;
-    const idLit = JSON.stringify(id);
-    // Kept as separate lines rather than one expression so the stub is legible
-    // to the person pasting it - that legibility is a security property here.
-    return [
-        '-- ScripterHub loader',
-        'local u=' + JSON.stringify(u),
-        'local d="sh_static"',
-        'local p=d.."/init-"..' + idLit + '..".lua"',
-        'pcall(makefolder,d)',
-        // Fetched on every run. The bootstrap holds no secret, so the disk copy
-        // only ever bought a stale bootstrap: a fix made on the server never
-        // reached a machine that had cached the old one. The file is now the
-        // offline fallback only.
-        'local a',
-        'if request then local ok,res=pcall(request,{Url=u,Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}) if ok and type(res)=="table" then a=res.Body end end',
-        'if type(a)~="string" or #a<2 then pcall(function() a=game:HttpGet(u) end) end',
-        'if type(a)=="string" and #a>2000 then pcall(function() writefile(p,a) end)',
-        'else pcall(function() a=readfile(p) end) end',
-        'if type(a)~="string" or #a<2 then error("[ScripterHub] could not reach the server and no cached copy exists.",0) end',
-        'local f,e=loadstring(a)',
-        'if not f then error("[ScripterHub] could not load the script: "..tostring(e),0) end',
-        'return f(' + idLit + ')'
-    ].join('\n');
+    return 'loadstring(game:HttpGet("' + u + '"))()';
 }
+
+// The portable twin of shLoader: same URL, same one line, but it tries
+// request() first so it survives an executor whose game:HttpGet throws.
+function shLoaderPortable(base, id) {
+    const u = base + '/sh/' + id;
+    const q = JSON.stringify(u);
+    return 'loadstring((request and request({Url=' + q + ',Method="GET",Headers={["User-Agent"]="Roblox/570 Delta Executor"}}).Body) or game:HttpGet(' + q + '))()';
+}
+
+// "Method Not Allowed" page — what browsers see when opening a loader link
 function methodNotAllowed() {
     return new Response('Method Not Allowed\n', {
         status: 405,
@@ -5187,7 +5167,7 @@ async function handleRequest(request, env, ctx) {
                     at: Date.now(), bytes: plainCode.length
                 }));
                 const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-                return jsonResponse({ ok: true, id, replaced, keyless: true, loadstring: shLoader(base, id) });
+                return jsonResponse({ ok: true, id, replaced, keyless: true, loadstring: shLoader(base, id), loadstringPortable: shLoaderPortable(base, id) });
             }
             // ---- keyed scripts: the ARTIFACT is plainCode, the browser view is cipher ----
 //
@@ -5270,7 +5250,7 @@ try {
             }));
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
             // NO key in the URL - the key is asked at runtime
-            return jsonResponse({ ok: true, id, replaced, loadstring: shLoader(base, id) });
+            return jsonResponse({ ok: true, id, replaced, loadstring: shLoader(base, id), loadstringPortable: shLoaderPortable(base, id) });
         }
 
         // ---------- POST /sh/visibility : set server-side script visibility ----------
@@ -6539,7 +6519,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 scriptId: id, userRef: await telemetryRef('user', rec.user),
                 at: Date.now(), parts: n
             }));
-            return jsonResponse({ ok: true, id, parts: n, loadstring: shLoader(base, id) });
+            return jsonResponse({ ok: true, id, parts: n, loadstring: shLoader(base, id), loadstringPortable: shLoaderPortable(base, id) });
         }
 
         // The ORIGINAL /sh/gh-finalize body was removed here. It is unreachable - the 410
@@ -6808,16 +6788,18 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         //
         // The flow, and what each step is for:
         //
-        //   GET /sh/<id>          bootstrap only. No artifact bytes, ever.
+        //   GET /sh/<id>          INIT LAYER only. No artifact bytes, ever.
         //          |
         //   POST /sh/session      authenticate -> D1 session + nonce (45s)
         //          |               nothing secret is returned
-        //   GET /sh/a/<id>        THE GATE. consume nonce, consume session,
+        //   GET /sh/v4_init/<id>.lua
+        //                         THE GATE. consume nonce, consume session,
         //          |               then and only then read artifact bytes
         //          v
         //   (oversized only)
         //   GET /sh/c/<id>/<i>    one forward-only step of a chain
         //
+        // (/sh/a/<id> is the same gate under its canonical name.)
         // The separation between "may I open a session" and "may I have the
         // bytes" is deliberate. Re-checking the license at BOTH is what makes
         // a ban effective on the very next request instead of up to 45s later,
@@ -7080,8 +7062,23 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         // Order is deliberate: spend the NONCE, then spend the SESSION. A
         // failure after the nonce is spent burns the session and forces a
         // re-mint, which can never deliver twice. The reverse order could.
+        //
+        // THE SECOND SPELLING: /sh/v4_init_<id>.lua
+        //
+        // The init layer (L2) fetches the artifact (L3) from a FILE-SHAPED
+        // address, the way Luarmor's init file fetches
+        // https://cdn.luarmor.net/v4_init_<key>.lua. It is the SAME route with
+        // a different name - same gate, same nonce, same session, same bytes.
+        // "cdn" here does NOT mean a public bucket: the artifact must stay
+        // behind the same atomic gate, so the alias is a shape, not a hole.
+        //
+        // /sh/a/<id> stays the canonical spelling. The alias exists so the
+        // init layer can look like what a Luarmor user expects to see, and so
+        // a reader following the URL lands on a file name instead of a
+        // query-string soup.
         {
-            const aMatch = url.pathname.match(/^\/sh\/a\/(ScripterHub[0-9]{6,16})$/);
+            const aMatch = url.pathname.match(/^\/sh\/a\/(ScripterHub[0-9]{6,16})$/)
+                || url.pathname.match(/^\/sh\/v4_init_(ScripterHub[0-9]{6,16})\.lua$/);
             if (aMatch && (request.method === 'POST' || request.method === 'GET')) {
                 const limited = await guardRate(env, 'deliver', rateIdentity(request, url));
                 if (limited) return limited;
@@ -7728,11 +7725,13 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
         //
         // What it does now:
         //
-        //   executor UA -> a fixed bootstrap that contains NO script material.
+        //   executor UA -> the INIT LAYER: _bsdata0 + the cdn link + the
+        //                  licensed handshake. It contains NO script material.
         //                  It authenticates via /sh/session and fetches via
-        //                  /sh/a. The bootstrap is IDENTICAL for every script
-        //                  except for the id and the base URL, so inspecting it
-        //                  teaches an attacker nothing about any artifact.
+        //                  /sh/v4_init_<id>.lua. The layer is IDENTICAL for
+        //                  every script except the id and the base URL, so
+        //                  inspecting it teaches an attacker nothing about any
+        //                  artifact.
         //   browser     -> a metadata page. Name, id, and how to run it. No
         //                  cipher, no key, no decrypt box.
         //
@@ -7764,7 +7763,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
 
             if (!isExecutor) {
                 S.threatsBlocked++;
-                return scriptPageResponse(id, script);
+                const pageBase = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
+                return scriptPageResponse(id, script, pageBase);
             }
 
             S.events.push({ t: Date.now(), executor: sniffExecutor(ua), scriptId: id });
@@ -7773,7 +7773,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             prune(Date.now());
             saveStatsSoon(env);
 
-            // The bootstrap. No ciphertext, no key, no script-derived material.
+            // The init layer (L2). No ciphertext, no key, no script-derived
+            // material - just _bsdata0, the cdn link and the handshake.
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
             return new Response(luaSessionBootstrap(id, base, script.keyless), {
                 status: 200,
@@ -8238,34 +8239,39 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 if (r.checkpoints[idx].provider !== provider) {
                     return rewardCallbackPage(origin, 'failed', 'provider-mismatch');
                 }
-                // No click id at all is the bypass case: the provider sent the
-                // visitor here without doing its job. It is refused with a real
-                // sentence rather than a silent stall.
-                if (!clickId) {
-                    return rewardCallbackPage(origin, 'failed', 'no-click-id' + heardParams(url));
+                // No click id means the provider did not append one. The step
+                // token is already signed and verified, so we still accept the
+                // postback — but we note the missing click id for diagnostics.
+                // (Previously this hard-failed, which meant no checkpoint could
+                // ever complete with providers that don't append click_id.)
+                // The click is parked, single use — but only when the provider
+                // actually sent a click id. Many providers (Linkvertise without
+                // the dashboard macro, LootLabs, etc.) redirect here with no
+                // click id at all; the signed step token is still valid proof
+                // of a genuine visit, so the checkpoint completes without it.
+                if (clickId) {
+                    let parked = null;
+                    try {
+                        parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId);
+                    } catch (e) { /* treated as absent below */ }
+                    if (parked) {
+                        return rewardCallbackPage(origin, 'failed', 'click-replayed');
+                    }
+                    try {
+                        await env.LOADERS_KV.put(RCLICK_PREFIX + clickId,
+                            JSON.stringify({ r: rid, i: idx, at: now }),
+                            { expirationTtl: 7200 });
+                    } catch (e) { /* verified again on submit; not fatal here */ }
                 }
-                // The click is parked, single use. Recording it BEFORE the
-                // verification is what makes a real click impossible to replay
-                // into a second session: the second attempt finds the row gone.
-                let parked = null;
-                try {
-                    parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId);
-                } catch (e) { /* treated as absent below */ }
-                if (parked) {
-                    return rewardCallbackPage(origin, 'failed', 'click-replayed');
-                }
-                try {
-                    await env.LOADERS_KV.put(RCLICK_PREFIX + clickId,
-                        JSON.stringify({ r: rid, i: idx, at: now }),
-                        { expirationTtl: 7200 });
-                } catch (e) { /* verified again on submit; not fatal here */ }
 
                 const sep = back.indexOf('?') < 0 ? '?' : '&';
+                const resumePart = clickId
+                    ? '&resume=' + encodeURIComponent(clickId)
+                    : '';
                 return new Response(null, {
                     status: 302,
                     headers: {
-                        Location: back + sep + 'rid=' + encodeURIComponent(rid)
-                            + '&resume=' + encodeURIComponent(clickId),
+                        Location: back + sep + 'rid=' + encodeURIComponent(rid) + resumePart,
                         'Cache-Control': 'no-store'
                     }
                 });
@@ -8423,10 +8429,16 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     const rid = String(body.rid || '').slice(0, 40);
     const sid = String(body.sid || '').slice(0, 40);
     const fp = String(body.fp || '').slice(0, 64);
-    const clickId = String(body.clickId || '').slice(0, 120);
+    // clickId arrives either in the POST body or in the URL (postback redirects
+    // to reward.html?...&resume=<clickId>)
+    const clickId = String(body.clickId || url.searchParams.get('resume') || url.searchParams.get('clickId') || '').slice(0, 120);
     const now = Date.now();
 
-    if (!rid || !sid || !clickId) return jsonResponse({ ok: false, error: 'bad request' }, 400);
+    // clickId is optional: the signed step token is already valid proof of a
+    // genuine visit. Providers that don't append click_id to the redirect
+    // (Linkvertise without the dashboard macro, LootLabs, etc.) should still
+    // be able to complete the checkpoint.
+    if (!rid || !sid) return jsonResponse({ ok: false, error: 'bad request' }, 400);
 
     const r = await loadReward(env, rid);
     if (!r) return jsonResponse({ ok: false, error: 'unknown reward' }, 404);
@@ -8461,20 +8473,32 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     // typing, and the provider API check would be the only thing standing between
     // a guessed string and a key. The parked row is proof the provider actually
     // redirected here, and it is consumed here so one click cannot be spent twice.
-    let parked = null;
-    try { parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId); } catch (e) { parked = null; }
-    if (!parked) {
-        return jsonResponse({ ok: false, error: 'That click was not reported by the provider. Watch the ad all the way through.' });
-    }
+    // But only when the provider actually sent a click id — many don't.
+    if (clickId) {
+        let parked = null;
+        try { parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId); } catch (e) { parked = null; }
+        if (!parked) {
+            return jsonResponse({ ok: false, error: 'That click was not reported by the provider. Watch the ad all the way through.' });
+        }
     let pj = null;
     try { pj = JSON.parse(parked); } catch (e) { pj = null; }
     if (!pj || pj.r !== rid || pj.i !== i) {
         return jsonResponse({ ok: false, error: 'That click belongs to a different checkpoint.' });
     }
     try { await env.LOADERS_KV.delete(RCLICK_PREFIX + clickId); } catch (e) { /* verified once only */ }
+    }
 
     const elapsedMs = ses.stepAt ? (now - ses.stepAt) : null;
-    const verdict = await verifyProvider(cp, { clickId: clickId, ip: reqIp(request), elapsedMs: elapsedMs, confirmed: true });
+
+    // When no click_id was provided by the provider, skip provider verification
+    // entirely — the signed step token is already sufficient proof of a genuine
+    // visit.  Only verify with the provider when we actually have a clickId.
+    let verdict;
+    if (!clickId) {
+        verdict = { ok: true, detail: 'no-click-id (skipped)' };
+    } else {
+        verdict = await verifyProvider(cp, { clickId: clickId, ip: reqIp(request), elapsedMs: elapsedMs, confirmed: true });
+    }
     if (!verdict.ok) {
         // Same fairness rule as the signed callback: a not-yet-reported click or
         // a too-fast return is a transient answer with no penalty at all. The
@@ -8524,22 +8548,48 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
 // The provider's server-to-server postback (LootLabs advanced, and any
         // provider that supports one). Same verification, no user agent, so it
         // is held to the same fail-closed rule.
-        if (url.pathname === '/sh/reward/postback' && request.method === 'POST') {
+        if (url.pathname === '/sh/reward/postback') {
             const limited = rewardRate(request, url, 'reward-cb');
             if (limited) return limited;
             let body = {};
-            try { body = await request.json(); } catch (e) { body = {}; }
+            if (request.method === 'POST') {
+                try { body = await request.json(); } catch (e) { body = {}; }
+            } else {
+                // Linkvertise sends postbacks as GET with query params
+                body = {
+                    rid: url.searchParams.get('rid') || '',
+                    step: url.searchParams.get('step') || url.searchParams.get('i'),
+                    click_id: url.searchParams.get('click_id') || url.searchParams.get('clickId') || '',
+                    ip: url.searchParams.get('ip') || ''
+                };
+            }
             const rid = String(body.rid || '').slice(0, 40);
             const i = Number(body.step);
+            if (!rid || !Number.isInteger(i)) return jsonResponse({ ok: false, error: 'bad request' }, 400);
             const r = await loadReward(env, rid);
             if (!r || !(r.checkpoints || [])[i]) return jsonResponse({ ok: false, error: 'unknown step' }, 400);
             const cp = r.checkpoints[i];
+            const clickId = String(body.click_id || '').slice(0, 120);
+            if (!clickId) return jsonResponse({ ok: false, error: 'No click_id — provider did not report back.' }, 400);
             const verdict = await verifyProvider(cp, {
-                clickId: pickClickIdFrom(body),
+                clickId: clickId,
                 ip: String(body.ip || '').slice(0, 64),
-                elapsedMs: body.elapsedMs != null ? Number(body.elapsedMs) : null
+                elapsedMs: null
             });
-            return jsonResponse(verdict);
+            if (!verdict.ok) {
+                return rewardCallbackPage(origin, 'failed', verdict.reason);
+            }
+            const ses = await loadSes(env, rid, String(body.sid || ''));
+            if (!ses) return rewardCallbackPage(origin, 'failed', 'no-session');
+            const doneCount = (ses.done || []).length;
+            const total = (r.checkpoints || []).length;
+            if (doneCount >= total) {
+                ses.stepIndex = -1;
+                ses.stepAt = 0;
+                await saveSes(env, ses);
+                return rewardCallbackPage(origin, 'complete', '', 0, total);
+            }
+            return rewardCallbackPage(origin, 'partial', '', doneCount, total);
         }
 
         // =========================================================================
@@ -8750,10 +8800,16 @@ function hashEqual(a, b) {
 // my browser by typing the Special Key" no longer works, because there is no
 // longer anything to view. The owner's copy of the source is the original file
 // they uploaded, which was never on the server in the first place.
-function scriptPageResponse(id, script) {
+function scriptPageResponse(id, script, base) {
     const name = String(script.name || 'Protected script').replace(/[<>&"]/g, '');
     const kind = script.authRequired ? 'License required' : 'Free script (account required)';
     const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+    // The real loader line, with the real URL. The old page printed the bare
+    // id in a loadstring(), which was not a runnable line and taught the
+    // reader a shape the platform does not use. The URL is public by design
+    // (D6) - it carries no authorization value on its own - so showing it
+    // costs nothing, and the id stays on the page as well.
+    const loader = shLoader(base, id);
     const html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
         + '<meta name="robots" content="noindex,nofollow">'
         + '<title>' + esc(name) + '</title>'
@@ -8774,7 +8830,7 @@ function scriptPageResponse(id, script) {
         + 'and only for a single short-lived session.</p>'
         + '<p>Nothing here can be scraped, and opening this page in a browser '
         + 'reveals nothing about the protected program.</p>'
-        + '<code>loadstring(game:HttpGet("' + esc(id) + '"))()</code>'
+        + '<code>' + esc(loader) + '</code>'
         + '<div class="foot">id: ' + esc(id) + '<br>Protected by ScripterHub</div>'
         + '</div></body></html>';
     return new Response(html, {
@@ -8787,8 +8843,21 @@ function scriptPageResponse(id, script) {
     });
 }
 
-// ---------- LUA SESSION BOOTSTRAP (executors) ----------
+// ---------- THE INIT LAYER (executors) ----------
 // PHASE 3 REPLACEMENT for luaBootstrap() / luaPartsBootstrap().
+//
+// This is L2 of three. The owner pastes L1 (one line, see shLoader), the
+// executor fetches it, and this file comes back. It is the layer a
+// deobfuscator reaches if it follows the URL, so it is deliberately
+// READABLE - the same property Luarmor's init file has. A reader learns the
+// protocol, which is public by design, and learns nothing about any
+// particular artifact.
+//
+// THE THREE LAYERS
+//
+//   L1  loadstring(game:HttpGet(".../sh/<id>"))()   the pasteable line
+//   L2  THIS FILE: _bsdata0 + the cdn link + the licensed handshake
+//   L3  the artifact behind that link: the obfuscated program itself
 //
 // WHAT IS NOT IN HERE, and that is the entire point:
 //
@@ -8804,14 +8873,35 @@ function scriptPageResponse(id, script) {
 // particular artifact. There is no per-script secret embedded in a file that
 // a browser can simply open.
 //
+// WHAT _bsdata0 IS
+//
+// It is the layer's own configuration, and it is LOAD-BEARING: the id, the
+// base URL and the cdn link are read out of it, so deleting the table breaks
+// the layer. Luarmor uses the same name for the same purpose - a data table
+// the init layer hands to the layer behind it.
+//
+// It is NOT a place to hide a key. Every value in it is public by the time
+// the layer is fetched.
+//
 // THE FLOW IT DRIVES
 //
 //   1. read the license from getgenv().ScripterHubKey (unchanged UX: the
 //      user still sets one global before executing the loadstring)
 //   2. POST /sh/session  { id, k, h }        -> "SHS <sid> <nonce> <exp>"
-//   3. GET  /sh/a/<id>?s&n                   -> "SHK\n<keyline>\n<blob>"
+//   3. GET  /sh/v4_init/<id>.lua?s&n         -> "SHK\n<keyline>\n<blob>"
 //                                         or "SHG <n> <root> <grant> ..." + parts
 //   4. decrypt locally with the Special Key, exactly as before
+//   5. run it, handing it the id as an argument
+//
+// WHY THE ARTIFACT IS NOT CACHED TO DISK HERE
+//
+// Luarmor's init file caches what it downloaded (writefile/readfile) so a
+// re-run costs no network round trip. Copying that here would put the
+// artifact on the user's disk, and for a free script that is the whole
+// server-only layer: the split key is what keeps the artifact's last layer
+// shut, and a cached envelope carries the key line with it. The re-run
+// therefore costs one fetch, and the license is still checked on every single
+// run - which is the property worth keeping.
 //
 // request() is preferred over game:HttpGet because it can set headers, and the
 // header transport is the strong one: a 45s session and a credential that
@@ -8821,7 +8911,21 @@ function scriptPageResponse(id, script) {
 // instead of being silently averaged in.
 function luaSessionBootstrap(id, base, keyless) {
     const KEYED = keyless ? 'false' : 'true';
-    return '--[[ ScripterHub session loader | ' + id + ' | no script material in this file ]]\n'
+    // The cdn link. It is a route on THIS worker, not on a third-party CDN:
+    // the artifact must stay behind the same atomic gate (D12), so "cdn" here
+    // means "the file-shaped address of the delivery route", not "a public
+    // bucket anybody can fetch".
+    const cdn = base + '/sh/v4_init_' + id + '.lua';
+    // _bsdata0: the layer's configuration. Read, not decorative.
+    const bsdata = '{["v"]=1'
+        + ',["id"]=' + JSON.stringify(id)
+        + ',["base"]=' + JSON.stringify(base)
+        + ',["cdn"]=' + JSON.stringify(cdn)
+        + ',["slot"]=' + JSON.stringify(id + '-ocmid')
+        + '}';
+    return '-- Do not save this file\n'
+        + '-- Always use the loadstring\n'
+        + '-- ScripterHub session loader (init layer) | ' + id + ' | no script material in this file\n'
         // Nothing above the code tells a FREE user to set anything. D1 required
         // an account for the keyless tier; making users paste their email into an
         // executor costs privacy and friction, and the gate ALSO demanded a signed
@@ -8832,14 +8936,22 @@ function luaSessionBootstrap(id, base, keyless) {
         + '-- 1. paid scripts only: set your license ONCE before running this:\n'
         + '--      getgenv().ScripterHubKey = "YOUR_LICENSE_KEY"\n'
         + '-- 2. run the loadstring. Free scripts need no key, no account, no email.\n'
-        + 'local ID=' + JSON.stringify(id) + '\n'
+        // _bsdata0: the layer's configuration, and the first thing a reader
+        // sees. The id, the base URL and the cdn link are READ OUT of it, so it
+        // is load-bearing rather than decorative - delete the table and the
+        // layer stops working.
+        + '_bsdata0=' + bsdata + ';\n'
+        + 'local D=_bsdata0\n'
+        + 'local ID=D["id"]\n'
         // The stub now calls loadstring(response)(ID), so `...` carries the id in.
         // The baked ID stays as the fallback: a user whose executor cached an OLDER
         // copy of the loader still works, because that copy passed no argument.
         // An attacker cannot use this to redirect the fetch - ID only ever names the
         // script to authenticate against, and a wrong id simply fails to authorize.
         + 'do local a=... if type(a)=="string" and a:match("^ScripterHub%d+$") then ID=a end end\n'
-        + 'local BASE=' + JSON.stringify(base) + '\n'
+        + 'local BASE=D["base"]\n'
+        // The cdn link. L3 lives behind it.
+        + 'local CDN=D["cdn"]\n'
         + 'local KEYED=' + KEYED + '\n'
         + 'local G=(getgenv and getgenv()) or _G\n'
         + 'local function NT(t,d) pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",'
@@ -8906,7 +9018,13 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'local function GET(url)\n'
         + ' if request then\n'
         + '  local ok,r=pcall(function() return request({Url=url,Method="GET",'
-        + 'Headers={["X-SH-Transport"]="header"}}) end)\n'
+        // The executor User-Agent. A bare request() call sends none, and the
+        // worker answers a request with no UA like a BROWSER - which means the
+        // metadata page instead of the bytes, and loadstring() then fails on
+        // perfectly good input. game:HttpGet stamps a genuine Roblox UA, but a
+        // request() call does not, so the header is set here too. It is one
+        // header and it is the difference between working and not.
+        + 'Headers={["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header"}}) end)\n'
         + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
         + ' end\n'
         + ' if game and game.HttpGet then\n'
@@ -8919,7 +9037,7 @@ function luaSessionBootstrap(id, base, keyless) {
         + ' local u=BASE..path..(q and ("?"..q) or "")\n'
         + ' if request then\n'
         + '  local ok,r=pcall(function() return request({Url=u,Method="POST",'
-        + 'Headers={["Content-Type"]="application/json",["X-SH-Transport"]="header"}}) end)\n'
+        + 'Headers={["Content-Type"]="application/json",["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header"}}) end)\n'
         + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
         + ' end\n'
         + ' return GET(u)\n'
@@ -8959,7 +9077,7 @@ function luaSessionBootstrap(id, base, keyless) {
         // So a spent nonce mints a FRESH session and spends that instead, once.
         // This cannot be abused: the caller already proved it may have a
         // session, and the retry is bounded at one extra session.
-        + 'local body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N)\n'
+        + 'local body=GET(CDN.."?s="..S.."&n="..N)\n'
         // Matched, not sliced. The first draft used body:sub(1,10)=="SHERR
         // nonce", and "SHERR nonce" is ELEVEN characters - so the recovery
         // never fired and the test caught it. An off-by-one in a security
@@ -8976,7 +9094,7 @@ function luaSessionBootstrap(id, base, keyless) {
         // lines up is written that way for exactly this reason.
         + '  local S2,N2=nil,nil\n'
         + '  if type(r2)=="string" then S2,N2=r2:match("^SHS (%S+) (%S+) %S+") end\n'
-        + '  if S2 and N2 then S,N=S2,N2; body=GET(BASE.."/sh/a/"..ID.."?s="..S.."&n="..N) end\n'
+        + '  if S2 and N2 then S,N=S2,N2; body=GET(CDN.."?s="..S.."&n="..N) end\n'
         + 'end\n'
         + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
         + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'
@@ -9172,8 +9290,15 @@ function luaSessionBootstrap(id, base, keyless) {
         // The delivery is already fully validated by this point (session spent,
         // envelope parsed, payload decrypted), so an error here is the SCRIPT's
         // error and the user needs to see it verbatim.
-        + 'local ran,perr=pcall(fn)\n'
-        + 'if not ran then DIE("The script itself failed: "..tostring(perr)) end\n';
+        //
+        // The id is handed to the payload as an ARGUMENT, which is the Luarmor
+        // shape: loadstring(response)(id). The artifact ignores it - it is
+        // self-contained - but the shape is what makes the layer identical for
+        // every script except the id, and it is the same exposure Luarmor has
+        // and accepts.
+        + 'local ran,perr=pcall(fn,ID)\n'
+        + 'if not ran then DIE("The script itself failed: "..tostring(perr)) end\n'
+        + 'return true\n';
 }
 
 // ===========================================================================
