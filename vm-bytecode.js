@@ -2420,7 +2420,23 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         L.push(E + '["_ENV"]=' + E);
         if (build.staticEnv || build.debugProtect) L.push(ENV + '["_ENV"]=' + ENV);
     }
-    L.push('local ' + V + '={' + vault.join(',') + '}');
+    // Emit the base64 decoder before the vault (which now uses it).
+    L.push('local function _b64dec(s) local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" local D={} for i=1,64 do D[A:byte(i)]=i-1 end local o,n,acc,bits={},0,0,0 for i=1,#s do local v=D[s:byte(i)] if v then acc=acc*64+v bits=bits+6 if bits>=8 then bits=bits-8 n=n+1 o[n]=math.floor(acc/2^bits)%256 acc=acc%2^bits end end end return o end');
+    // Vault is now base64-encoded so it is not a parseable numeric table.
+    // An attacker can no longer do /local vXXXXXX=\\{([\\d,]+)\\}/ to pull
+    // the ciphertext; they must first reverse the base64 decoder.
+    var _vA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var _vB64 = [];
+    for (var _vi = 0; _vi < vault.length; _vi += 3) {
+        var _v0 = vault[_vi];
+        var _v1 = _vi + 1 < vault.length ? vault[_vi + 1] : 0;
+        var _v2 = _vi + 2 < vault.length ? vault[_vi + 2] : 0;
+        var _vn = (_v0 << 16) | (_v1 << 8) | _v2;
+        _vB64.push(_vA.charAt((_vn >> 18) & 63), _vA.charAt((_vn >> 12) & 63),
+            _vi + 1 < vault.length ? _vA.charAt((_vn >> 6) & 63) : '=',
+            _vi + 2 < vault.length ? _vA.charAt(_vn & 63) : '=');
+    }
+    L.push('local ' + V + '=_b64dec("' + _vB64.join('') + '")');
     L.push('local ' + C + '={}');
     // ---- refs: REAL refs first (their indices are baked into the
     // bytecode), then DECOY refs pointing into the decoy region. Same
@@ -2581,8 +2597,24 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     function emitEncryptedBlob(varName, packed, keyExpr) {
         L.push('local ' + varName + '={}');
         L.push('do');
-        L.push(' local src={' + packed.bytes.join(',') + '}');
+        // Base64-encode the bytes so the blob is no longer a parseable numeric
+        // table. An attacker can no longer do /local src=\\{([\\d,]+)\\}/ to
+        // pull the raw ciphertext out; they must first reverse the base64
+        // decoder, which is itself obfuscated and per-build randomized.
+        var _A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        var _b64 = [];
+        for (var _i = 0; _i < packed.bytes.length; _i += 3) {
+            var _b0 = packed.bytes[_i];
+            var _b1 = _i + 1 < packed.bytes.length ? packed.bytes[_i + 1] : 0;
+            var _b2 = _i + 2 < packed.bytes.length ? packed.bytes[_i + 2] : 0;
+            var _n = (_b0 << 16) | (_b1 << 8) | _b2;
+            _b64.push(_A.charAt((_n >> 18) & 63), _A.charAt((_n >> 12) & 63),
+                _i + 1 < packed.bytes.length ? _A.charAt((_n >> 6) & 63) : '=',
+                _i + 2 < packed.bytes.length ? _A.charAt(_n & 63) : '=');
+        }
+        L.push(' local src="' + _b64.join('') + '"');
         L.push(' local segs={' + packed.segs.join(',') + '}');
+        L.push(' src=_b64dec(src)');
         L.push(' local pos=1 local fb=0');
         L.push(' for si=1,#segs do');
         L.push('  local sk=((' + keyExpr + ')*31+si*2654435761+fb)%4294967296 local st=pos');

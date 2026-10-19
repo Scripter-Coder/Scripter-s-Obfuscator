@@ -1408,10 +1408,44 @@ function buildLoader(src, layerCount, options) {
     out.push('  if getclipboard and (getclipboard)~=_gc then return end');
     out.push(' end');
     out.push('end');
-    // SERVER-BOUND VM SEED: the vault seed is now DELIVERED BY THE
-    // SPLIT-KEY RESPONSE (see the carrier block above) - it is never
-    // embedded as a literal in the file. A loadstring-hook dump sees
-    // the payload WITHOUT this write, so its vault stays locked.
+    // ---------- PROGRESSIVE LAYER LOADER ----------
+    // Minimal loader: just fetch and compile. If loadstring is pre-hooked,
+    // behavioral test detects it. Clipboard/pre-run detection catches
+    // getclipboard/setclipboard hooks before payload delivery.
+    out.push('do');
+    // `meta` is NOT in scope in buildLoader - it lives in the callers
+    // (applyCustomObfuscatorCore / buildWrappedPayload). Referencing it here
+    // was a ReferenceError on EVERY build, so the whole obfuscator threw
+    // before it emitted a byte. The id travels in options, which is what
+    // meta.id is built from anyway.
+    var _loaderId = (options && options.scriptId) ? String(options.scriptId) : 'sh';
+    out.push(' -- ScripterHub session loader | ' + _loaderId + ' | keyless/free');
+    out.push(' local _test_s="return 42"');
+    out.push(' local _test_fn=loadstring or load');
+    out.push(' if type(_test_fn)=="function" then');
+    out.push('  local _fn=_test_fn(_test_s,"=[sh]")');
+    out.push('  if type(_fn)~="function" then return end');
+    out.push('  local ok,res=pcall(_fn)');
+    out.push('  if not ok or res~=42 then return end');
+    out.push(' else return end');
+    // NOTE: the `do` block is closed at the END of this group, not here. It
+    // used to be closed here, and the `end` at the bottom of the group closed
+    // nothing - the generated artifact did not compile ("<eof> expected near
+    // 'end'"), so every obfuscated script was a syntax error. One `end` per
+    // opened block, and the whole progressive check stays inside the `do` so
+    // its locals do not leak into the chunk.
+    out.push(' local _g=(getgenv and getgenv()) or _G');
+    out.push(' local _sc=setclipboard');
+    out.push(' local _gc=getclipboard');
+    out.push(' if type(_sc)=="function" and type(_gc)=="function" then');
+    out.push('  local pre_clip=_gc()');
+    out.push('  if type(pre_clip)=="string" and #pre_clip>10 then return end');
+    out.push('  if setclipboard and (setclipboard)~=_sc then return end');
+    out.push('  if getclipboard and (getclipboard)~=_gc then return end');
+    out.push(' end');
+    // Progressive layer reference: payload delivers bsdata-style array
+    out.push('end');
+    // SERVER-BOUND VM SEED: delivered by split-key response.
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
     // never swallow a failed compile: if the payload does not parse the
