@@ -1196,4 +1196,11 @@ break the fetch by accident.
 tools/luarmor_parity_test.mjs (40 checks) and tools/loader_exec_test.mjs (21
 checks) lock the shape down.
 
+tools/three_layer_flow_test.mjs is the one that proves the three of them work
+TOGETHER: it publishes a script through the real worker, takes the init layer
+the worker SERVES, runs it in a real Lua 5.3 VM, and checks that it mints a
+session, fetches the cdn link and hands the artifact to loadstring. It also
+checks that the cdn link without a session is refused, so the file-shaped
+alias cannot become a second door.
+
 ---
