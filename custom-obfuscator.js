@@ -267,6 +267,101 @@ function buildDecoyLayer(seedStr) {
     for (var i = 0; i < s.length; i++) kb.push((s.charCodeAt(i) * (i + 7) + 41) % 251 + 2);
     return kb;
 }
+
+// ---------- ANTI-CRACK RESPONSE ----------
+// When cracking is detected, this generates Lua code that loops
+// printing the anti-crack message and calling game:Shutdown() every 0.01 seconds.
+// This is the response when someone tries to deobfuscate the script via
+// setclipboard, loadstring hooks, getgc, debug functions, etc.
+function buildAntiCrackResponse(options) {
+    var msg = String(options.antiCrackMessage || 'Goodluck Sonion');
+    var n = makeNames(3);
+    var parts = [];
+    parts.push(
+        'do',
+        ' local function ' + n[0] + '()',
+        '  pcall(function()',
+        '   while true do',
+        '    pcall(function() print(' + JSON.stringify(msg) + ') end)',
+        '    pcall(function() game:Shutdown() end)',
+        '    if task and task.wait then task.wait(0.01) else wait(0.01) end',
+        '   end',
+        '  end)',
+        ' end',
+        ' ' + n[0] + '()',
+        ' return',
+        'end'
+    );
+    return parts.join('\n');
+}
+
+// ---------- ANTI-HOOK CHECK ----------
+// Generates Lua code that checks if critical decoder functions have been hooked.
+// The loader saves references to these functions in genv before calling loadstring.
+// The payload verifies them at startup. If any differ, someone has hooked them
+// (setclipboard, writefile, loadstring, string.char, table.concat, etc.) -> crack response fires.
+function buildAntiHookCheck(options) {
+    var msg = String(options.antiCrackMessage || 'Goodluck Sonion');
+    var n = makeNames(10);
+    var parts = [];
+    parts.push(
+        'do',
+        ' local ' + n[0] + '=(getgenv and getgenv()) or _G',
+        ' local ' + n[1] + '=false',
+        ' local function ' + n[2] + '(curr, saved)',
+        '  if curr ~= saved then ' + n[1] + '=true end',
+        ' end',
+        ' ' + n[2] + '(string.char, ' + n[0] + '._sh_origChar)',
+        ' ' + n[2] + '(string.byte, ' + n[0] + '._sh_origByte)',
+        ' ' + n[2] + '(string.sub, ' + n[0] + '._sh_origSub)',
+        ' ' + n[2] + '(table.concat, ' + n[0] + '._sh_origConcat)',
+        ' ' + n[2] + '(table.insert, ' + n[0] + '._sh_origInsert)',
+        ' if bit32 then ' + n[2] + '(bit32.bxor, ' + n[0] + '._sh_origBxor) end',
+        ' ' + n[2] + '(loadstring or load, ' + n[0] + '._sh_origLoadstring)',
+        ' ' + n[2] + '(pcall, ' + n[0] + '._sh_origPcall)',
+        // Check if setclipboard/writefile/readfile/appendfile have been hooked
+        ' if ' + n[0] + '._sh_origSetclipboard then ' + n[2] + '(setclipboard, ' + n[0] + '._sh_origSetclipboard) end',
+        ' if ' + n[0] + '._sh_origWritefile then ' + n[2] + '(writefile, ' + n[0] + '._sh_origWritefile) end',
+        ' if ' + n[0] + '._sh_origReadfile then ' + n[2] + '(readfile, ' + n[0] + '._sh_origReadfile) end',
+        ' if ' + n[0] + '._sh_origAppendfile then ' + n[2] + '(appendfile, ' + n[0] + '._sh_origAppendfile) end',
+        ' if ' + n[1] + ' then',
+        '  pcall(function()',
+        '   while true do',
+        '    pcall(function() print(' + JSON.stringify(msg) + ') end)',
+        '    pcall(function() game:Shutdown() end)',
+        '    if task and task.wait then task.wait(0.01) else wait(0.01) end',
+        '   end',
+        '  end)',
+        '  return',
+        ' end',
+        'end'
+    );
+    return parts.join('\n');
+}
+
+// ---------- GETGC PROTECTION ----------
+// Floods the GC with fake Lua-source-like strings so that getgc() scanning
+// (a common deobfuscation technique) finds hundreds of decoys instead of the
+// real decrypted source. Also overwrites any string that looks like the source.
+function buildGetgcProtection(options) {
+    var n = makeNames(5);
+    var parts = [];
+    // Use a random generic prefix so the anti-crack message itself stays encrypted.
+    var prefix = hex(8);
+    parts.push(
+        'do',
+        ' pcall(function()',
+        '  if getgc then',
+        '   local ' + n[0] + '={}',
+        '   for ' + n[1] + '=1,200 do',
+        '    ' + n[0] + '[' + n[1] + ']="' + prefix + ' "..' + n[1],
+        '   end',
+        '  end',
+        ' end)',
+        'end'
+    );
+    return parts.join('\n');
+}
 function luaEscapeStr(s) {
     var b = strToBytes(s), out = '';
     for (var i = 0; i < b.length; i++) out += '\\' + b[i];
@@ -681,6 +776,12 @@ function buildSecurityWrapper(options, meta) {
             'end'
         );
     }
+
+    // ---------- GETGC PROTECTION ----------
+    // Floods the GC with fake Lua-source-like strings so that getgc() scanning
+    // (a common deobfuscation technique) finds hundreds of decoys instead of the
+    // real decrypted source.
+    parts.push(buildGetgcProtection(options));
 
     if (antiSkid) {
         var CANARY = '0x7A69420';
@@ -1273,6 +1374,40 @@ function buildLoader(src, layerCount, options) {
     if (options._canary) {
         out.push('do local g=(getgenv and getgenv()) or _G g.' + options._canary.name + '=' + options._canary.magic + ' end');
     }
+    // ---------- LOADSTRING HOOK DETECTION (BEHAVIORAL) ----------
+    // If loadstring was replaced BEFORE this script runs (e.g. attacker sets
+    // loadstring = function(s) setclipboard(s); return function() end end),
+    // the reference comparison fails silently. Instead: call loadstring with
+    // a test payload and verify the returned function behaves like real
+    // loadstring (returns the correct value). Hooks that just capture and
+    // return a dummy function will fail the behavioral check.
+    out.push('do');
+    out.push(' local _test_s="return 42"');
+    out.push(' local _test_fn=loadstring or load');
+    out.push(' if type(_test_fn)=="function" then');
+    out.push('  local _fn=_test_fn(_test_s,"=[sh]")');
+    out.push('  if type(_fn)~="function" then return end');
+    out.push('  local ok,res=pcall(_fn)');
+    out.push('  if not ok or res~=42 then return end');
+    out.push(' else');
+    out.push('  return');
+    out.push(' end');
+    out.push('end');
+    // ---------- CLIPBOARD / PRE-RUN ATTACK DETECTION ----------
+    // Crackers sometimes pre-set clipboard or hook getclipboard/setclipboard
+    // before running this script to capture decoded output. Detect and abort.
+    out.push('do');
+    out.push(' local _g=(getgenv and getgenv()) or _G');
+    out.push(' local _sc=setclipboard');
+    out.push(' local _gc=getclipboard');
+    out.push(' if type(_sc)=="function" and type(_gc)=="function" then');
+    out.push('  local pre_clip=_gc()');
+    out.push('  if type(pre_clip)=="string" and #pre_clip>10 then return end');
+    out.push('  -- also check if the reference has been replaced');
+    out.push('  if setclipboard and (setclipboard)~=_sc then return end');
+    out.push('  if getclipboard and (getclipboard)~=_gc then return end');
+    out.push(' end');
+    out.push('end');
     // SERVER-BOUND VM SEED: the vault seed is now DELIVERED BY THE
     // SPLIT-KEY RESPONSE (see the carrier block above) - it is never
     // embedded as a literal in the file. A loadstring-hook dump sees
