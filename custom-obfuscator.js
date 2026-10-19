@@ -1394,25 +1394,47 @@ function buildLoader(src, layerCount, options) {
     out.push(' end');
     out.push('end');
     // ---------- CLIPBOARD / PRE-RUN ATTACK DETECTION ----------
-    // Crackers sometimes pre-set clipboard or hook getclipboard/setclipboard
-    // before running this script to capture decoded output. Detect and abort.
+    //
+    // A cracker hooks getclipboard/setclipboard before the script runs, to
+    // capture whatever the script puts on the clipboard. Detect that.
+    //
+    // WHAT THIS DOES NOT DO, and this is the important part:
+    //
+    // It does NOT abort because the clipboard ALREADY HAS CONTENT. That check
+    // was here, and it was a false-positive machine: a user who had copied
+    // anything longer than ten characters - which is most of the time - got a
+    // script that silently did nothing, and their setclipboard() call never
+    // ran. "My script does not work" is a far worse bug than the one the
+    // check was trying to prevent.
+    //
+    // A pre-existing hook cannot be caught by comparing a global against
+    // itself either: _sc IS the hook if the hook was installed first. What
+    // CAN be caught is a hook that installs itself WHILE we read the
+    // clipboard - the reference changes between the capture and the check.
+    // That is the case this keeps, and it is the case the old check was
+    // reaching for by accident.
+    //
+    // The loadstring behavioural test above is the control that catches the
+    // common capture vector (loadstring = function(s) setclipboard(s) end).
     out.push('do');
-    out.push(' local _g=(getgenv and getgenv()) or _G');
     out.push(' local _sc=setclipboard');
     out.push(' local _gc=getclipboard');
     out.push(' if type(_sc)=="function" and type(_gc)=="function" then');
-    out.push('  local pre_clip=_gc()');
-    out.push('  if type(pre_clip)=="string" and #pre_clip>10 then return end');
-    out.push('  -- also check if the reference has been replaced');
-    out.push('  if setclipboard and (setclipboard)~=_sc then return end');
-    out.push('  if getclipboard and (getclipboard)~=_gc then return end');
+    // pcall: getclipboard is not present on every executor, and it can error.
+    // Without it the chunk died here and the script did nothing - silently,
+    // which is the worst way for it to fail.
+    out.push('  local ok=pcall(_gc)');
+    out.push('  if ok and setclipboard and (setclipboard)~=_sc then return end');
+    out.push('  if ok and getclipboard and (getclipboard)~=_gc then return end');
     out.push(' end');
     out.push('end');
     // ---------- PROGRESSIVE LAYER LOADER ----------
-    // Minimal loader: just fetch and compile. If loadstring is pre-hooked,
-    // behavioral test detects it. Clipboard/pre-run detection catches
-    // getclipboard/setclipboard hooks before payload delivery.
-    out.push('do');
+    // The loader: fetch, compile, run. If loadstring was pre-hooked, the
+    // behavioural test above detects it. If the clipboard was hooked, the
+    // check above detects it. Both are decided ONCE, here, before the
+    // payload is delivered - the progressive layer reference (the payload
+    // delivering a bsdata-style array to this loader) goes here next.
+    //
     // `meta` is NOT in scope in buildLoader - it lives in the callers
     // (applyCustomObfuscatorCore / buildWrappedPayload). Referencing it here
     // was a ReferenceError on EVERY build, so the whole obfuscator threw
@@ -1420,31 +1442,7 @@ function buildLoader(src, layerCount, options) {
     // meta.id is built from anyway.
     var _loaderId = (options && options.scriptId) ? String(options.scriptId) : 'sh';
     out.push(' -- ScripterHub session loader | ' + _loaderId + ' | keyless/free');
-    out.push(' local _test_s="return 42"');
-    out.push(' local _test_fn=loadstring or load');
-    out.push(' if type(_test_fn)=="function" then');
-    out.push('  local _fn=_test_fn(_test_s,"=[sh]")');
-    out.push('  if type(_fn)~="function" then return end');
-    out.push('  local ok,res=pcall(_fn)');
-    out.push('  if not ok or res~=42 then return end');
-    out.push(' else return end');
-    // NOTE: the `do` block is closed at the END of this group, not here. It
-    // used to be closed here, and the `end` at the bottom of the group closed
-    // nothing - the generated artifact did not compile ("<eof> expected near
-    // 'end'"), so every obfuscated script was a syntax error. One `end` per
-    // opened block, and the whole progressive check stays inside the `do` so
-    // its locals do not leak into the chunk.
-    out.push(' local _g=(getgenv and getgenv()) or _G');
-    out.push(' local _sc=setclipboard');
-    out.push(' local _gc=getclipboard');
-    out.push(' if type(_sc)=="function" and type(_gc)=="function" then');
-    out.push('  local pre_clip=_gc()');
-    out.push('  if type(pre_clip)=="string" and #pre_clip>10 then return end');
-    out.push('  if setclipboard and (setclipboard)~=_sc then return end');
-    out.push('  if getclipboard and (getclipboard)~=_gc then return end');
-    out.push(' end');
     // Progressive layer reference: payload delivers bsdata-style array
-    out.push('end');
     // SERVER-BOUND VM SEED: delivered by split-key response.
     out.push('local ' + F + '=' + FN + '(' + SRC + ',"=[sh::' + hex(6) + ']")');
     out.push(SRC + '=nil');
