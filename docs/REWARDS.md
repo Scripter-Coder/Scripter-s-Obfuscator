@@ -47,13 +47,14 @@ step and an IP.
 | Control | Where | What it stops |
 |---|---|---|
 | The session id is derived | `deriveSesId` | A client cannot name a session, and cannot point the completion endpoint at somebody else's |
+| The provider's own parameter is read | `pickClickId` | Linkvertise's `hash`, LootLabs' `click_id`, Work.Ink's `click_id` — the evidence is found whatever the provider calls it |
 | The completion needs a click id | `/sh/reward/complete` | Calling the endpoint directly, with no evidence, counts nothing |
 | The click must be parked | `readParkedClick` | A guessed or invented click id is not a click |
 | The parked click must be **verified** | `parkClick` writes it only after the provider confirms it | Opening the postback url by hand does not count |
 | The parked click must match the reward and the step | `pj.r !== rid \|\| pj.i !== i` | A click for one checkpoint cannot complete another |
 | The click is single use | `spendParkedClick` marks it spent | A replayed callback cannot produce a second completion |
 | The provider is the authority | `verifyProvider` | "The provider said so" is the only thing that counts |
-| The provider's answer is READ | `readProviderAnswer` | A 200 with an empty body is not a pass |
+| The provider's answer is READ | `readAntiBypassAnswer` | A 200 with an empty body is not a pass, and `FALSE` is not `TRUE` |
 | The click's IP is checked | the completion and the poll | A click made on another machine cannot be claimed |
 | The step is the one that is open | `ses.stepIndex` | A client cannot complete a step that was not started |
 | The order is the order | `rewardNextStep` | The checkpoints have to be done in the configured order |
@@ -61,7 +62,9 @@ step and an IP.
 | The claim is atomic | `withSesLock` | Two simultaneous claims mint one key, not two |
 | The completion is recorded under a lock and re-read | `withSesLock` + the re-read | A concurrent page poll cannot roll a completion back |
 | Provider outages are transient | `isTransientReason` | A provider that is down costs the visitor nothing |
+| A broken configuration is not the visitor's fault | `isConfigReason` | A wrong endpoint or a wrong token is loud, and never a penalty |
 | The rate limits | `RATE_BUCKETS` | Flooding the callback route is metered |
+| The owner can prove the provider works | `/sh/reward/test-provider` | "It doesnt work" becomes "your token is wrong" in one click |
 
 ### The four things a visitor can never do
 
@@ -86,19 +89,66 @@ that never completes.
 
 ### Linkvertise
 
+**This is the one that was broken, and it is worth reading carefully.**
+
 1. Create a link. The target can be anything for now.
-2. Settings → Account → enable **Anti Bypassing**. That issues an API token.
+2. Settings → Account → enable **Anti Bypassing**. That issues a 64-character
+   API token.
 3. Paste the token into the checkpoint's **API Token** field.
-4. Open the checkpoint, copy the **Postback URL**, and paste it as the
+4. Open the checkpoint and copy the **Postback URL**, and paste it as the
    link's **Direct Link** (the target URL).
-5. Optional: paste your Linkvertise **link / zone id** into the optional
+5. Press **🧪 Test this provider**. The panel asks Linkvertise itself and
+   shows the answer. **Do this before you share the link.**
+6. Optional: paste your Linkvertise **link / zone id** into the optional
    field. It stops a click id from *another* campaign counting. Only fill it
    in if Linkvertise returns that id in the click data — otherwise every
    honest click would be refused.
 
-The worker checks the click with
-`https://api.linkvertise.com/api/v1/statistics?token=…&click_id=…` and reads
-the answer.
+**What Linkvertise actually sends, and why the old code could never work.**
+
+Linkvertise's anti-bypass does not send a click id. It appends
+
+```
+?hash=<64 characters>
+```
+
+to your target url. That hash is the **only** evidence there is, and it has
+three properties that matter:
+
+- it lives for **ten seconds** on Linkvertise's side;
+- it is **deleted** when it is verified, so it can be used once;
+- the check has to happen **the moment the visitor arrives**, not when their
+  page submits it later.
+
+So the worker recognises `hash` as the proof (it used to look for `click_id`,
+`clickid`, `clickId`, `unique_id` and `c` — and `hash` was not among them, so
+**no Linkvertise checkpoint could ever complete**, for the owner, for a
+visitor, or for a test), and the verification happens at the callback, where
+Linkvertise is actually answering.
+
+The documented answers are read, not assumed:
+
+| The provider says | It means |
+|---|---|
+| `TRUE` | the hash was found and deleted — the visit was real |
+| `FALSE` | the hash was not found — it expired, or was already used |
+| `Invalid token.` | the API token is wrong — a **configuration** problem |
+
+`FALSE` and `Invalid token.` are not the same thing and are not treated the
+same way. `FALSE` usually means the ten seconds ran out, which is **not the
+visitor's fault** and earns them no penalty. `Invalid token.` means the token
+is wrong, which is **not the visitor's fault** either.
+
+**If the verification URL is not right.** The exact address is Linkvertise's
+business, so it is editable on the checkpoint, and the **Test this provider**
+button settles it in one click: the worker calls the address with a proof that
+cannot exist and shows the provider's literal answer.
+
+- the provider answered `FALSE` → the address and the token are right;
+- the provider answered `Invalid token.` → the token is wrong;
+- the provider answered "not found" → the address is wrong;
+- the provider accepted a proof that does not exist → it is not checking
+  anything, and it must not be used for a paid reward.
 
 ### LootLabs
 
@@ -112,14 +162,22 @@ the answer.
    the IP the click cannot be tied to a visitor.
 6. Do **not** put this URL in the link destination. LootLabs calls it itself.
 
+LootLabs has no "ask about a click" API. Its documented mechanism is a
+server-to-server GET to your postback url carrying `click_id`, `ip` and
+`unique_id`, so the postback **is** the proof — and it is authenticated with
+the secret in the url, so anybody who reads the url out of a support thread
+can forge one. That is why the panel says not to post it publicly.
+
 ### Work.Ink
 
 1. Developer dashboard → generate an **API key**.
 2. Create a link whose destination contains the click-id macro, and paste the
    **Postback URL** as the target.
 3. Enable **Advanced Anti-Bypass** on their dashboard too.
+4. Press **🧪 Test this provider**.
 
-The worker checks the click with `https://api.work.ink/confirm/v2`.
+The worker checks the click with `https://api.work.ink/confirm/v2`, and the
+clicker's IP can be included so the answer is bound to the visitor.
 
 ### The test provider
 

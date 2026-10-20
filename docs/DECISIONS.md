@@ -1284,3 +1284,66 @@ The whole thing is written up in `docs/REWARDS.md`, including what this
 system CANNOT do.
 
 ---
+---
+
+## D33 - The provider names its evidence, and we have to know how
+
+The reward system still did not work, and the reason was one line.
+
+    const REWARD_CLICK_ID_PARAMS = ['click_id', 'clickid', 'clickId', 'unique_id', 'c'];
+
+Linkvertise's anti-bypass does not send a click id. It appends
+
+    ?hash=<64 characters>
+
+to the target url, and that hash is the ONLY evidence there is. The hash
+was invisible to the worker, so no proof was ever found, so NO Linkvertise
+checkpoint could ever complete - for the owner, for a visitor, or for a
+test. The other two things that made it look broken were the same thing:
+the postback bounced the visitor back with nothing to submit, and the page
+asked for the next checkpoint, forever.
+
+**What the hash changes about the design**
+
+- It lives for TEN SECONDS and is DELETED when it is verified. So the
+  verification has to happen at the callback, where the provider is
+  actually answering - not when the visitor's page submits it later. The
+  init layer already verified at the callback; that was right, and it is
+  now load-bearing rather than incidental.
+- The answer is plain text: "TRUE", "FALSE" or "Invalid token." The
+  distinction matters: "FALSE" usually means the ten seconds ran out, and
+  that is not the visitor's fault. "Invalid token." is the owner's
+  token, and that is not the visitor's fault either. Neither is a
+  reason to penalise anybody, and both are now classified apart from a
+  real rejection.
+- A provider that sends a hash cannot be checked with a statistics-style
+  "click_id" query. The verification is a POST with the hash and the
+  token, and the answer is READ: an empty body, an explicit negative or
+  an unrecognised answer is a refusal.
+
+**The endpoint is the provider's business, so it is configurable**
+
+The exact address could not be confirmed from the public documentation
+reachable here, and guessing one and shipping it as if it were
+documented would be worse than useless: a wrong address looks exactly
+like a broken provider. So the verification URL is a per-checkpoint
+setting with the documented shape as its default, and the owner has a
+button that settles it in one click:
+
+    POST /sh/reward/test-provider   (owner only)
+
+The worker asks the provider one question with a proof that cannot
+exist, and shows the answer:
+
+    "FALSE"          the endpoint and the token are right
+    "Invalid token." the token is wrong
+    not found        the endpoint is wrong
+    "TRUE"           the provider accepted a proof that does not exist,
+                    which means it is not checking anything
+
+**"It doesnt work" is a sentence for at least four different faults.**
+A wrong endpoint, a wrong token, a provider that is down and a proof that
+expired all look identical from the outside. The test button turns one
+of them into the other three, and the answer is shown verbatim.
+
+---

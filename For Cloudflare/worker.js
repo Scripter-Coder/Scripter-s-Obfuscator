@@ -972,11 +972,46 @@ const REWARD_BLACKLIST_MAX_STRIKES = 4;              // cap doubling at 16h
 // is allowed to pass a checkpoint. A provider absent from this table can still
 // be CONFIGURED - it is handed a signed callback URL - but it cannot be
 // completed, which is the fail-closed behaviour rather than an oversight.
+//
+// `proof` is the query parameter the provider actually puts its evidence in.
+//
+// THIS MATTERED MORE THAN ANYTHING ELSE IN THIS FILE. Linkvertise's anti-bypass
+// does NOT send a click id: it appends `?hash=<64 characters>` to the target
+// url, and that hash is the only evidence there is. The old parameter list was
+// click_id / clickid / clickId / unique_id / c, so the hash was invisible, no
+// proof was ever found, and NO Linkvertise checkpoint could ever complete - for
+// the owner, for a visitor, or for a test.
+//
+// `defaultVerify` is where the provider's verification API is expected to live.
+// It is a DEFAULT, not a promise: the owner can replace it per checkpoint, and
+// the "Test this provider" button in the panel tells them whether the URL they
+// have is one the provider answers.
 const REWARD_PROVIDERS = {
-    test:        { needs: 'none' },
-    linkvertise: { needs: 'authToken' },
-    lootlabs:    { needs: 'apiKey' },
-    workink:     { needs: 'apiKey' }
+    test: {
+        needs: 'none',
+        proof: null
+    },
+    linkvertise: {
+        needs: 'authToken',
+        proof: 'hash',
+        // Linkvertise's anti-bypass hash. It lives for TEN SECONDS and is
+        // deleted when it is verified, which is why the check has to happen the
+        // moment the visitor arrives and not when their page submits later.
+        defaultVerify: 'https://api.linkvertise.com/api/v1/anticlick'
+    },
+    lootlabs: {
+        needs: 'apiKey',
+        proof: 'click_id',
+        // LootLabs has no "ask about a click" API. Its documented mechanism is
+        // a server-to-server postback to US, so the verification URL is empty
+        // and the postback route is the evidence.
+        defaultVerify: ''
+    },
+    workink: {
+        needs: 'apiKey',
+        proof: 'click_id',
+        defaultVerify: 'https://api.work.ink/confirm/v2'
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -1334,6 +1369,22 @@ function isTransientReason(reason) {
     return REWARD_TRANSIENT_REASONS.some(function (x) { return r === x || r.indexOf(x) === 0; });
 }
 
+// THE OWNER'S CONFIGURATION IS BROKEN, NOT THE VISITOR.
+//
+// These are the answers that mean the checkpoint cannot work for ANYBODY: the
+// token is missing, the token is wrong, the verification url points at nothing.
+// The visitor did nothing wrong, so they are neither retried forever nor
+// punished - and the page says what is actually wrong, because from the
+// outside this is indistinguishable from "the ads do not work".
+const REWARD_CONFIG_REASONS = [
+    'bad-provider-token', 'endpoint-wrong', 'no-verify-url', 'no-auth-token',
+    'no-api-key', 'unknown-provider', 'unverifiable-provider', 'no-endpoint'
+];
+
+function isConfigReason(reason) {
+    return REWARD_CONFIG_REASONS.indexOf(String(reason || '')) !== -1;
+}
+
 function providerNeeds(cp) {
     const spec = REWARD_PROVIDERS[cp && cp.provider];
     if (!spec) return { ok: false, reason: 'unknown-provider' };
@@ -1397,6 +1448,141 @@ function readProviderAnswer(body, clickId) {
     return { ok: false, reason: 'unreadable-response' };
 }
 
+// READ AN ANTI-BYPASS ANSWER.
+//
+// Linkvertise's anti-bypass API answers in plain text, and the documented
+// answers are:
+//
+//   "TRUE"           the hash was found and deleted - the visit was real
+//   "FALSE"          the hash was not found - it expired, or was already used
+//   "Invalid token." the authentication token is wrong - a CONFIG problem
+//
+// and some deployments answer with JSON instead. All of them are read here, and
+// anything that is not recognised is a REFUSAL, because an answer we do not
+// understand is not evidence.
+//
+// The distinction that matters most: "FALSE" and "Invalid token." are not the
+// same thing and must not be treated the same. "FALSE" is the visitor's hash
+// being gone - often because it expired in the ten seconds it lives for, and
+// it is NOT their fault. "Invalid token." means the owner pasted the wrong
+// token, and it is not the visitor's fault either. Neither is a reason to
+// penalise anybody.
+function readAntiBypassAnswer(body, res) {
+    const txt = String(body || '').trim();
+    if (!txt) return { ok: false, reason: 'empty-response' };
+    if (txt === 'TRUE' || txt === 'true' || txt === '1') return { ok: true, detail: 'anti-bypass-true' };
+    if (txt === 'FALSE' || txt === 'false' || txt === '0') return { ok: false, reason: 'click-unknown' };
+    if (/invalid\s*token/i.test(txt)) return { ok: false, reason: 'bad-provider-token' };
+    if (/not\s*found/i.test(txt)) return { ok: false, reason: 'endpoint-wrong' };
+
+    let obj = null;
+    try { obj = JSON.parse(txt); } catch (e) { obj = null; }
+    if (obj && typeof obj === 'object') {
+        for (const k of ['valid', 'success', 'confirmed', 'ok']) {
+            if (Object.prototype.hasOwnProperty.call(obj, k)) {
+                const v = obj[k];
+                if (v === true) return { ok: true, detail: 'anti-bypass-true' };
+                if (v === false) return { ok: false, reason: 'click-unknown' };
+            }
+        }
+        if (obj.status && /ok|valid|confirm/i.test(String(obj.status))) {
+            return { ok: true, detail: 'anti-bypass-true' };
+        }
+        if (obj.messages || obj.message) {
+            const m = JSON.stringify(obj.messages || obj.message);
+            if (/invalid\s*token/i.test(m)) return { ok: false, reason: 'bad-provider-token' };
+            if (/not\s*found/i.test(m)) return { ok: false, reason: 'endpoint-wrong' };
+        }
+        if (res && res.status === 404) return { ok: false, reason: 'endpoint-wrong' };
+        if (res && res.status >= 400) return { ok: false, reason: 'lv-api-' + res.status };
+        if (Object.keys(obj).length === 0) return { ok: false, reason: 'empty-response' };
+        return { ok: true, detail: 'anti-bypass-body' };
+    }
+    if (res && res.status === 404) return { ok: false, reason: 'endpoint-wrong' };
+    if (res && res.status >= 400) return { ok: false, reason: 'lv-api-' + res.status };
+    return { ok: false, reason: 'unreadable-response' };
+}
+
+// ---------------------------------------------------------------------------
+// PROVE THE PROVIDER IS CONFIGURED.
+//
+// "It doesnt work" is the hardest bug to report, because the same sentence
+// covers "the endpoint is wrong", "the token is wrong", "the provider is
+// unreachable" and "the provider is fine but the hash expired". This probes
+// the provider with a DUMMY proof and reports its LITERAL answer.
+//
+// The dummy is a hash that cannot exist, so:
+//
+//   "FALSE"          the endpoint is right and the token is accepted. The
+//                    checkpoint will work.
+//   "Invalid token." the token is wrong.
+//   a 404 / an error  the endpoint is wrong.
+//   "TRUE"           the provider accepted a hash that does not exist, which
+//                    means it is not checking anything. That is worth knowing
+//                    before a bypasser finds it out.
+//
+// It is the owner's own checkpoint, on the owner's own dashboard, and it costs
+// one request to the provider.
+// ---------------------------------------------------------------------------
+async function probeProvider(cp) {
+    const spec = REWARD_PROVIDERS[cp && cp.provider];
+    if (!spec) return { ok: false, verdict: 'unknown-provider', answer: '' };
+    const st = cp.settings || {};
+    if (spec.needs === 'none') {
+        return { ok: true, verdict: 'no-provider-needed', answer: 'the test provider needs nothing' };
+    }
+    if (cp.provider === 'lootlabs') {
+        // LootLabs has no "ask about a click" API. The proof is the postback
+        // itself, so what can be checked is the postback url and the secret.
+        if (!st.apiKey) return { ok: false, verdict: 'no-token', answer: 'the API key is empty' };
+        return {
+            ok: true, verdict: 'postback-only',
+            answer: 'LootLabs calls the postback url itself. Check that the url is in their Advanced tab with CLICK_ID and IP enabled.'
+        };
+    }
+    if (cp.provider === 'workink') {
+        if (!st.apiKey) return { ok: false, verdict: 'no-token', answer: 'the API key is empty' };
+    }
+    if (cp.provider === 'linkvertise') {
+        if (!st.authToken) return { ok: false, verdict: 'no-token', answer: 'the API token is empty' };
+    }
+    const url = String(st.verifyUrl || '').trim() || (spec.defaultVerify || '');
+    if (!url) return { ok: false, verdict: 'no-endpoint', answer: 'no verification url is set' };
+    const dummy = 'sh-diagnostic-' + '0'.repeat(48);
+    const token = cp.provider === 'workink' ? st.apiKey : st.authToken;
+    try {
+        const sep = url.indexOf('?') === -1 ? '?' : '&';
+        const res = await fetch(url + sep
+            + 'hash=' + encodeURIComponent(dummy)
+            + '&click_id=' + encodeURIComponent(dummy)
+            + '&token=' + encodeURIComponent(token), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
+            body: JSON.stringify({ hash: dummy, click_id: dummy, token: token })
+        });
+        const body = (await res.text()).trim();
+        const answer = readAntiBypassAnswer(body, res);
+        const shown = body.replace(/\s+/g, ' ').slice(0, 240);
+        if (answer.ok) {
+            // It accepted a hash that cannot exist. Say so, loudly.
+            return { ok: false, verdict: 'provider-accepts-anything', answer: shown, url: url };
+        }
+        if (answer.reason === 'bad-provider-token') {
+            return { ok: false, verdict: 'bad-token', answer: shown, url: url };
+        }
+        if (answer.reason === 'endpoint-wrong') {
+            return { ok: false, verdict: 'endpoint-wrong', answer: shown, url: url };
+        }
+        if (answer.reason === 'click-unknown') {
+            // "FALSE" for a hash that does not exist is the CORRECT answer.
+            return { ok: true, verdict: 'endpoint-ok', answer: shown, url: url };
+        }
+        return { ok: false, verdict: answer.reason || 'unreadable-response', answer: shown, url: url };
+    } catch (e) {
+        return { ok: false, verdict: 'unreachable', answer: String(e && e.message || e).slice(0, 200), url: url };
+    }
+}
+
 async function verifyProvider(cp, signal) {
     const ready = providerNeeds(cp);
     if (!ready.ok) return ready;
@@ -1415,21 +1601,26 @@ async function verifyProvider(cp, signal) {
 
     if (cp.provider === 'linkvertise') {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
+        // The verification URL is the provider's anti-bypass API. It is
+        // CONFIGURABLE per checkpoint, because the owner can - in one click -
+        // find out whether the URL they have is one the provider answers. The
+        // default is the documented shape.
+        const url = String(st.verifyUrl || '').trim() || (REWARD_PROVIDERS.linkvertise.defaultVerify || '');
+        if (!url) return { ok: false, reason: 'no-verify-url' };
         try {
-            // Linkvertise's publisher API, with the token from the dashboard's
-            // Anti Bypassing setting. The answer is READ, not assumed.
-            const u = 'https://api.linkvertise.com/api/v1/statistics'
-                + '?token=' + encodeURIComponent(st.authToken)
-                + '&click_id=' + encodeURIComponent(signal.clickId);
-            const res = await fetch(u, { headers: { Accept: 'application/json' } });
-            if (!res.ok) return { ok: false, reason: 'lv-api-' + res.status };
+            const sep = url.indexOf('?') === -1 ? '?' : '&';
+            const res = await fetch(url + sep
+                + 'hash=' + encodeURIComponent(signal.clickId)
+                + '&token=' + encodeURIComponent(st.authToken), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
+                body: JSON.stringify({ hash: signal.clickId, token: st.authToken })
+            });
             const body = await res.text();
-            const answer = readProviderAnswer(body, signal.clickId);
+            const answer = readAntiBypassAnswer(body, res);
             if (!answer.ok) return answer;
             // The owner may pin the Linkvertise link (zone) the click must
-            // belong to. When they have, a click from any other campaign is
-            // refused: otherwise a click id from somebody else's campaign
-            // would pass, because it is a real click.
+            // belong to, so a click id from another campaign does not count.
             const wantLink = String(st.linkId || '').trim();
             if (wantLink && String(body).indexOf(wantLink) === -1) {
                 return { ok: false, reason: 'lv-wrong-link' };
@@ -1441,9 +1632,9 @@ async function verifyProvider(cp, signal) {
     if (cp.provider === 'workink') {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
         try {
-            // Work.Ink's confirm endpoint. It answers with plain text, and
-            // the IP of the clicker can be included so the answer can be
-            // bound to the visitor.
+            // Work.Ink's confirm endpoint. It answers with plain text, and the
+            // IP of the clicker can be included so the answer can be bound to
+            // the visitor.
             const u = 'https://api.work.ink/confirm/v2'
                 + '?token=' + encodeURIComponent(st.apiKey)
                 + '&click_id=' + encodeURIComponent(signal.clickId)
@@ -1623,23 +1814,36 @@ function rewardRate(request, url, bucket) {
 // provider signal extraction
 // ---------------------------------------------------------------------------
 
-// Every provider names its click id differently. These are the names the
+// Every provider names its evidence differently. These are the names the
 // supported ones actually use; accepting a fixed set beats accepting whatever
 // arrives, because a wildcard would let a caller nominate their own "click id"
 // and satisfy the check with a value the provider never issued.
-const REWARD_CLICK_ID_PARAMS = ['click_id', 'clickid', 'clickId', 'unique_id', 'c'];
+//
+// `hash` is Linkvertise's anti-bypass token and it is the important one: it is
+// the ONLY thing Linkvertise sends, and the old list did not have it, so no
+// Linkvertise checkpoint could ever complete.
+const REWARD_CLICK_ID_PARAMS = ['hash', 'click_id', 'clickid', 'clickId', 'unique_id', 'c'];
 
-function pickClickId(url) {
+// The evidence a provider sent, if any.
+//
+// The provider's own parameter name is tried FIRST, so a provider that uses
+// `hash` is never confused by a `c` somebody else added.
+function pickClickId(url, provider) {
+    const spec = REWARD_PROVIDERS[provider];
+    if (spec && spec.proof) {
+        const v = url.searchParams.get(spec.proof);
+        if (v) return String(v).slice(0, 200);
+    }
     for (const k of REWARD_CLICK_ID_PARAMS) {
         const v = url.searchParams.get(k);
-        if (v) return String(v).slice(0, 120);
+        if (v) return String(v).slice(0, 200);
     }
     return '';
 }
 
 function pickClickIdFrom(obj) {
     for (const k of REWARD_CLICK_ID_PARAMS) {
-        if (obj && obj[k]) return String(obj[k]).slice(0, 120);
+        if (obj && obj[k]) return String(obj[k]).slice(0, 200);
     }
     return '';
 }
@@ -8252,6 +8456,17 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         // click, and without this it would count; with it, the
                         // provider's own answer has to mention this link.
                         linkId: String(st.linkId || '').slice(0, 120),
+                        // WHERE THE PROVIDER'S VERIFICATION API LIVES. It is
+                        // configurable because the exact address is the
+                        // provider's business, and the owner can find the
+                        // right one with the "Test this provider" button
+                        // instead of guessing.
+                        verifyUrl: String(st.verifyUrl || '').slice(0, 400),
+                        // THE LAST PROVIDER TEST. It is the owner's diagnostic
+                        // and it is what the panel shows next to the button.
+                        testedAt: Number(st.testedAt) || 0,
+                        testedOk: !!st.testedOk,
+                        testedVerdict: String(st.testedVerdict || '').slice(0, 40),
                         postbackUrl: String(st.postbackUrl || '').slice(0, 400)
                     },
                     completed: Number((prevById[String(c.id || '')] || {}).completed) || 0,
@@ -8303,6 +8518,46 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 ok: true, rid: rid,
                 public: rewardPublicView(rec),
                 notReady: notReady
+            });
+        }
+
+        // OWNER: prove the provider is set up correctly, and show its answer.
+        //
+        // This is the difference between "the checkpoints do not work" and a
+        // diagnosis. It asks the provider one question with a proof that
+        // cannot exist, and reports what came back.
+        if (url.pathname === '/sh/reward/test-provider' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, url, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const rid = String(body.rid || '').slice(0, 40);
+            const index = Number(body.index);
+            const r = await loadReward(env, rid);
+            if (!r || !Number.isInteger(index) || !(r.checkpoints || [])[index]) {
+                return jsonResponse({ ok: false, error: 'unknown checkpoint' }, 404);
+            }
+            const cp = r.checkpoints[index];
+            const probe = await probeProvider(cp);
+            // The result is remembered on the checkpoint, so the panel can show
+            // a tick (or a warning) without asking the provider again.
+            const idx = r.checkpoints.indexOf(cp);
+            const settings = cp.settings || {};
+            settings.testedAt = Date.now();
+            settings.testedVerdict = String(probe.verdict || '').slice(0, 40);
+            settings.testedOk = !!probe.ok;
+            cp.settings = settings;
+            r.checkpoints[idx] = cp;
+            await saveReward(env, r);
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'reward.provider_test', outcome: probe.ok ? 'ok' : 'failed',
+                rid: rid, provider: cp.provider, step: index, reason: probe.verdict, at: Date.now()
+            }));
+            return jsonResponse({
+                ok: true,
+                verdict: probe.verdict,
+                usable: !!probe.ok,
+                answer: String(probe.answer || '').slice(0, 400),
+                url: String(probe.url || '').slice(0, 400)
             });
         }
 
@@ -8699,7 +8954,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const rid = String(url.searchParams.get('r') || '').slice(0, 40);
                 const idx = Number(url.searchParams.get('i'));
                 const site = String(url.searchParams.get('site') || '').slice(0, 300);
-                const clickId = pickClickId(url);
+                const clickId = pickClickId(url, provider);
                 // The IP THE PROVIDER SAW. LootLabs' documented postback
                 // carries it, and it is the only thing that ties a click to
                 // the machine that made it.
@@ -8765,6 +9020,17 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                             reason: verdict.reason, provider: provider, step: idx, at: now
                         }));
                         return rewardCallbackPage(origin, 'unverified', verdict.reason);
+                    }
+                    // THE OWNER'S SETUP IS WRONG. The visitor is not at fault,
+                    // so they are not banned and not asked to retry - the page
+                    // says what is wrong, because from the outside this looks
+                    // exactly like "the ad steps do not work".
+                    if (isConfigReason(verdict.reason)) {
+                        ctx.waitUntil(notifyTelemetry(env, {
+                            event: 'reward.misconfigured', outcome: 'misconfigured', rid: rid,
+                            reason: verdict.reason, provider: provider, step: idx, at: now
+                        }));
+                        return rewardCallbackPage(origin, 'failed', verdict.reason);
                     }
                     ctx.waitUntil(notifyTelemetry(env, {
                         event: 'reward.rejected', outcome: 'rejected', rid: rid,

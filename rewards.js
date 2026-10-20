@@ -592,6 +592,7 @@ async function confirmAddCheckpoint(id) {
     if (g('cpApiKey')) settings.apiKey = g('cpApiKey');
     if (g('cpAuthToken')) settings.authToken = g('cpAuthToken');
     if (g('cpLinkId')) settings.linkId = g('cpLinkId');
+    if (g('cpVerifyUrl')) settings.verifyUrl = g('cpVerifyUrl');
     if (g('cpPostbackUrl')) settings.postbackUrl = g('cpPostbackUrl');
     r.checkpoints.push({ id: 'cp_' + Date.now(), name: name, shortUrl: shortUrl, provider: provider, settings: settings, completed: 0, cancelled: 0, avgTimeSec: 0 });
     // A checkpoint that exists only in this tab cannot be completed by a
@@ -760,6 +761,36 @@ var PROVIDER_SETUP = {
 // anti-bypass feature.
 var VERIFIABLE = { test: 1, linkvertise: 1, lootlabs: 1, workink: 1 };
 
+// WHERE EACH PROVIDER'S VERIFICATION API LIVES.
+//
+// The default is what the provider's documentation describes. It is a DEFAULT,
+// not a promise: the address is editable, and the "Test this provider" button
+// asks the provider itself and shows the literal answer, so a wrong address is
+// a two-second diagnosis instead of a silent "the ads do not work".
+var PROVIDER_VERIFY_URL = {
+    linkvertise: 'https://api.linkvertise.com/api/v1/anticlick',
+    workink: 'https://api.work.ink/confirm/v2'
+};
+
+// WHAT EACH VERDICT MEANS, IN THE OWNER'S WORDS.
+//
+// The worker sends the verdict; the owner needs the sentence. Without this the
+// panel would show "endpoint-wrong", which is a code, not an explanation.
+var PROVIDER_TEST_WORDS = {
+    'endpoint-ok': 'The provider answered correctly. This checkpoint will work.',
+    'bad-token': 'The provider says the API token is wrong. Copy the token again from the provider dashboard.',
+    'endpoint-wrong': 'The provider did not recognise that address. Paste the verification URL from the provider\'s own documentation.',
+    'provider-accepts-anything': 'The provider accepted a proof that does not exist. It is not checking anything - do not use this provider for a paid reward.',
+    'unreachable': 'The provider could not be reached. That may be their outage, or the address may be blocked.',
+    'no-token': 'The API token is empty. Paste it in first.',
+    'no-endpoint': 'No verification URL is set.',
+    'no-provider-needed': 'This provider needs nothing. It proves the plumbing, and nothing else.',
+    'postback-only': 'This provider calls the postback URL itself. Check that the URL is in their dashboard with CLICK_ID and IP enabled.',
+    'unknown-provider': 'This provider is not supported.',
+    'unreadable-response': 'The provider answered something we do not understand. The answer is shown below.',
+    'empty-response': 'The provider answered with nothing.'
+};
+
 // The URL the owner pastes into the provider's dashboard.
 //
 // WHY IT HAS TO BE SHOWN, AND WHY IT IS COMPUTED HERE.
@@ -841,7 +872,46 @@ function postbackPanelHtml(rid, index, provider, st) {
         + where
         + '. ' + what
         + ' It must be this exact URL &mdash; a per-visitor callback cannot be pasted into a dashboard.'
-        + '</div></div>';
+        + '</div></div>'
+        // THE TEST BUTTON.
+        //
+        // "The checkpoints do not work" is one sentence for at least four
+        // different faults: the endpoint is wrong, the token is wrong, the
+        // provider is down, and the provider is fine but the proof expired.
+        // The worker asks the provider one question with a proof that cannot
+        // exist, and shows the answer, so the owner does not have to guess.
+        + '<div class="form-group"><label>Is it actually working?</label>'
+        + '<button type="button" class="btn-sm btn-sm-edit" onclick="shTestProvider(' + escAttr(String(rid)) + ',' + String(index) + ',this)">🧪 Test this provider</button>'
+        + (st && st.testedAt
+            ? '<div class="field-hint" style="margin-top:6px">Last tested: ' + (st.testedOk ? '✅ the provider answered correctly' : '❌ ' + escAttr(String(st.testedVerdict || 'failed')) + ' - press it again after changing anything') + '</div>'
+            : '<div class="field-hint" style="margin-top:6px">Not tested yet. A checkpoint that has never been tested is a guess.</div>')
+        + '</div>';
+}
+
+// ASK THE PROVIDER WHETHER IT IS CONFIGURED.
+//
+// The worker does the request; this shows what came back. The verdict is the
+// worker's, the sentence is ours, and the provider's own answer is shown
+// verbatim underneath - because "the provider said NOT FOUND" is the single
+// most useful sentence in this whole feature.
+async function shTestProvider(rid, index, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing...'; }
+    var res = null;
+    try {
+        res = await window.shOwnerApi('sh/reward/test-provider', { rid: rid, index: index });
+    } catch (e) {
+        res = { ok: false, error: 'network' };
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '🧪 Test this provider'; }
+    if (!res || !res.ok) {
+        shNotify('Provider test failed', (res && res.error) || 'could not reach the reward server', 'error', 10000);
+        return;
+    }
+    var words = PROVIDER_TEST_WORDS[res.verdict] || ('The provider answered: ' + String(res.verdict || ''));
+    var extra = res.answer ? ('\n\nThe provider said: ' + String(res.answer).slice(0, 300)) : '';
+    if (res.url) extra += ('\n\nChecked: ' + String(res.url).slice(0, 200));
+    shNotify(res.usable ? '✅ Provider is working' : '❌ Provider is not ready', words + extra,
+        res.usable ? 'success' : 'error', 14000);
 }
 
 function providerFieldsHtml(provider, st, rid, index) {
@@ -869,8 +939,8 @@ function providerFieldsHtml(provider, st, rid, index) {
         // OPTIONAL, AND OPTIONAL FOR A REASON.
         //
         // The worker checks every click with Linkvertise's own API, so a click
-        // id has to be a real click. It does NOT have to be a click on YOUR
-        // campaign: a click id from somebody else's campaign is still a real
+        // has to be a real click. It does NOT have to be a click on YOUR
+        // campaign: a click from somebody else's campaign is still a real
         // click, and it would pass. Pinning the link id closes that, because
         // the answer then has to mention YOUR link.
         //
@@ -883,6 +953,18 @@ function providerFieldsHtml(provider, st, rid, index) {
             + '<div class="field-hint">Only fill this in if Linkvertise returns it in the click data. '
             + 'It stops a click id from another campaign from counting. '
             + 'If you are not sure, leave it empty - every honest click is then still checked against Linkvertise\'s API.</div></div>';
+    }
+    if (PROVIDER_VERIFY_URL[provider]) {
+        // WHERE THE PROVIDER'S VERIFICATION API LIVES.
+        //
+        // The exact address belongs to the provider, and it is the one thing
+        // that can be wrong in a way that looks exactly like "the ads do not
+        // work". So it is editable, and the "Test this provider" button below
+        // asks the provider itself and shows the answer.
+        html += '<div class="form-group"><label>Verification URL</label>'
+            + '<input type="text" id="cpVerifyUrl" value="' + escAttr(st.verifyUrl || '') + '" placeholder="' + escAttr(PROVIDER_VERIFY_URL[provider]) + '">'
+            + '<div class="field-hint">Where the provider answers "was this click real?". '
+            + 'Leave it empty to use the default. Press <b>Test this provider</b> below to check it - the provider\'s own answer is shown.</div></div>';
     }
     html += postbackPanelHtml(rid, index, provider, st);
     html += '</div>';
@@ -916,6 +998,7 @@ async function confirmEditCheckpoint(id, index) {
     if (g('cpAuthToken') !== '') cp.settings.authToken = g('cpAuthToken');
     if (g('cpApiKey') !== '') cp.settings.apiKey = g('cpApiKey');
     if (g('cpLinkId') !== '') cp.settings.linkId = g('cpLinkId');
+    if (g('cpVerifyUrl') !== '') cp.settings.verifyUrl = g('cpVerifyUrl');
 
     var out = await shRewardPersist(found.reward);
     saveRewardsData(found.data);
@@ -973,6 +1056,7 @@ window.confirmRewardSettings = confirmRewardSettings;
 window.deleteReward = deleteReward;
 window.confirmAddCheckpoint = confirmAddCheckpoint;
 window.renderProviderSettings = renderProviderSettings;
+window.shTestProvider = shTestProvider;
 window.moveCheckpoint = moveCheckpoint;
 window.deleteCheckpoint = deleteCheckpoint;
 window.editCheckpointUI = editCheckpointUI;

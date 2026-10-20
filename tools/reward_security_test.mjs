@@ -77,12 +77,26 @@ globalThis.fetch = async (u, o) => {
     const url = String(u);
     if (url.indexOf('api.linkvertise.com') !== -1) {
         asked.push(url);
+        // Only the real route answers. Anything else on the API host answers
+        // the way the real API does for an unknown route, so a wrong
+        // verification url is diagnosed as a wrong url and not as a working
+        // one.
+        if (url.indexOf('/api/v1/anticlick') === -1) {
+            return new Response(JSON.stringify({ success: false, error: true, messages: ['Not Found!'], state: 404 }),
+                { status: 404, headers: { 'Content-Type': 'application/json' } });
+        }
         if (providerMode === 'down') throw new Error('provider down');
-        if (providerMode === 'refuse') return new Response('nope', { status: 404 });
+        if (providerMode === 'refuse') return new Response('FALSE', { status: 200 });
         if (providerMode === 'empty') return new Response('{}', { status: 200 });
-        // A real click: the body echoes the click id we asked about.
-        const m = url.match(/click_id=([^&]+)/);
-        return new Response(JSON.stringify({ status: 'ok', click: { id: m ? decodeURIComponent(m[1]) : '' } }), { status: 200 });
+        // THE DOCUMENTED SHAPE. Linkvertise's anti-bypass answers in plain
+        // text: "TRUE" when the hash was found and deleted, "FALSE" when it was
+        // not. A diagnostic probe carries a hash that cannot exist, and gets
+        // the "FALSE" that proves the endpoint and the token are right.
+        const m = url.match(/[?&]hash=([^&]+)/);
+        const hash = m ? decodeURIComponent(m[1]) : '';
+        if (hash.indexOf('sh-diagnostic') === 0) return new Response('FALSE', { status: 200 });
+        if (hash === 'deadbeef') return new Response('FALSE', { status: 200 });
+        return new Response('TRUE', { status: 200 });
     }
     return realFetch(u, o);
 };
@@ -292,6 +306,72 @@ console.log('UNAUTHORISED PROGRESSION');
         JSON.stringify(st).slice(0, 160));
     const early2 = await call('POST', '/sh/reward/claim', { rid: RID, fp: FP3 });
     check('and no key can be claimed', early2.ok === false, JSON.stringify(early2).slice(0, 160));
+}
+
+console.log('');
+console.log('THE REAL LINKVERTISE SHAPE');
+{
+    // Linkvertise's anti-bypass does not send a click id. It appends
+    // `?hash=<64 characters>` to the target url, the hash lives for TEN
+    // SECONDS, and it is deleted when it is verified.
+    //
+    // The parameter list used to be click_id / clickid / clickId / unique_id /
+    // c. The hash was invisible, so no evidence was ever found and NO
+    // Linkvertise checkpoint could complete - for the owner, for a visitor, or
+    // for a test.
+    const FPH = 'fpvisitorhash00001';
+    const s = await openSession(FPH);
+    check('a session opens', s.ok === true);
+    clock += 30000;
+    const pb = await raw('/sh/cp/linkvertise?r=' + RID + '&i=0&site=' + encodeURIComponent(SITE)
+        + '&hash=' + 'a'.repeat(64));
+    check('the provider redirect with ?hash= is accepted', pb.status === 302,
+        'status ' + pb.status + ' - the hash is the evidence and it was not found');
+    const done = await submit(FPH, 'a'.repeat(64), s.sid);
+    check('and the checkpoint completes', done.ok === true, JSON.stringify(done).slice(0, 160));
+    check('and the provider was asked about the hash',
+        asked.some(u => u.indexOf('hash=' + 'a'.repeat(64)) !== -1),
+        'the hash was never sent to the provider');
+}
+
+console.log('');
+console.log('THE OWNER CAN ASK THE PROVIDER WHETHER IT IS CONFIGURED');
+{
+    const probe = await call('POST', '/sh/reward/test-provider', { rid: RID, index: 0, token: OWNER.token });
+    check('the test route answers', probe.ok === true, JSON.stringify(probe).slice(0, 160));
+    check('and it says the provider is usable', probe.usable === true,
+        'verdict=' + probe.verdict + ' answer=' + String(probe.answer).slice(0, 80));
+    check('and it shows the provider\'s own answer', String(probe.answer).indexOf('FALSE') !== -1,
+        'answer=' + String(probe.answer).slice(0, 80));
+
+    // A wrong endpoint must be diagnosed, not swallowed.
+    const saved = await call('POST', '/sh/reward/save', {
+        token: OWNER.token,
+        reward: {
+            rid: RID,
+            name: 'SecurityReward', keyDurationH: 2, maxKeys: 1, cooldownH: 0,
+            checkpoints: [
+                { id: 'cp_one', name: 'One', provider: 'linkvertise', shortUrl: 'https://direct-link.net/one', settings: { authToken: 'tok', verifyUrl: 'https://api.linkvertise.com/api/v1/nonsense' } },
+                { id: 'cp_two', name: 'Two', provider: 'linkvertise', shortUrl: 'https://direct-link.net/two', settings: { authToken: 'tok' } },
+            ],
+        },
+    });
+    check('a checkpoint with a wrong verification url saves', saved.ok === true, JSON.stringify(saved).slice(0, 160));
+    const bad = await call('POST', '/sh/reward/test-provider', { rid: RID, index: 0, token: OWNER.token });
+    check('and the test says the endpoint is wrong', bad.usable === false,
+        'verdict=' + bad.verdict);
+    // Put it back.
+    await call('POST', '/sh/reward/save', {
+        token: OWNER.token,
+        reward: {
+            rid: RID,
+            name: 'SecurityReward', keyDurationH: 2, maxKeys: 1, cooldownH: 0,
+            checkpoints: [
+                { id: 'cp_one', name: 'One', provider: 'linkvertise', shortUrl: 'https://direct-link.net/one', settings: { authToken: 'tok' } },
+                { id: 'cp_two', name: 'Two', provider: 'linkvertise', shortUrl: 'https://direct-link.net/two', settings: { authToken: 'tok' } },
+            ],
+        },
+    });
 }
 
 console.log('');
