@@ -135,12 +135,42 @@ function loadPage({ search, worker, endpoints }) {
     sb.globalThis = sb;
     sb.window.outerWidth = 1440;
     sb.window.outerHeight = 900;
+    // The copy buttons, cached so the page wires the same objects it is
+    // handed.
+    let copyCache = { html: null, buttons: [] };
     sb.document = {
         getElementById: (id) => (present.has(id) ? el(id) : null),
         createElement: () => el('dyn'),
         querySelector: (sel) => {
             if (String(sel).includes('data-sh-endpoint')) return { getAttribute: () => worker };
             return { remove() {}, style: {} };
+        },
+        // The copy buttons next to the keys. The page finds them with
+        // querySelectorAll, and a mock without it is a mock that is missing
+        // part of the DOM - which is how a page change breaks a test that
+        // never tested the page.
+        //
+        // The SAME objects have to come back every time, because the page
+        // wires them by assigning .onclick - on a throwaway object that
+        // assignment would go nowhere.
+        querySelectorAll: (sel) => {
+            if (String(sel).includes('keycopy')) {
+                const html = String((made.elements.app || {}).innerHTML || '');
+                if (copyCache.html !== html) {
+                    const keys = [...html.matchAll(/data-k="([^"]*)"/g)].map(m => m[1]);
+                    copyCache = {
+                        html: html,
+                        buttons: keys.map(k => ({
+                            getAttribute: (a) => (a === 'data-k' ? k : null),
+                            onclick: null,
+                            textContent: '📋',
+                            parentNode: { textContent: k }
+                        }))
+                    };
+                }
+                return copyCache.buttons;
+            }
+            return [];
         },
         body: {
             _children: [],
@@ -344,7 +374,7 @@ console.log('the earned key comes from the server');
 // ---------------------------------------------------------------------------
 {
     let claim = 0;
-    const { made } = loadPage({
+    const { made, sb } = loadPage({
         search: '?rid=rwTEST1',
         worker: W,
         endpoints: {
@@ -363,6 +393,28 @@ console.log('the earned key comes from the server');
         check('the key is claimed from the worker, never generated here', claim === 1, 'claims = ' + claim);
         check('and the server key is what gets rendered', /REALKEY/.test(String(made.elements.app.innerHTML)),
             'a locally generated key is not a license - /sh/auth would answer invalid');
+    }
+
+    // THE COPY BUTTON.
+    //
+    // A key is 192 characters and it wraps over several lines, so there has
+    // to be a way to take it without selecting it by hand. The button has to
+    // carry the key, and it has to be wired to the clipboard.
+    {
+        const html = String(made.elements.app.innerHTML);
+        check('the key has a copy button next to it', /class="keycopy/.test(html), html.slice(0, 200));
+        check('and the button carries the key itself', /data-k="REALKEY"/.test(html), html.slice(0, 200));
+        const copies = sb.document.querySelectorAll('.keycopy');
+        check('the button is wired up', copies.length === 1 && typeof copies[0].onclick === 'function',
+            'buttons=' + copies.length);
+        // The clipboard API is the happy path, but it is refused in more
+        // places than people expect, so there is a fallback and the key ends
+        // up SELECTED when even that is refused. A silent failure is not an
+        // answer.
+        const src = extractScript(rewardHtml, 'reward.html');
+        check('it copies with the clipboard API', /navigator\.clipboard\.writeText/.test(src));
+        check('and falls back when that is refused', /execCommand\('copy'\)/.test(src));
+        check('and selects the key as the last resort', /selectNodeContents/.test(src));
     }
     const body = extractScript(rewardHtml, 'reward.html')
         .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
