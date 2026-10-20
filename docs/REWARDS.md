@@ -59,7 +59,7 @@ step and an IP.
 | The step is the one that is open | `ses.stepIndex` | A client cannot complete a step that was not started |
 | The order is the order | `rewardNextStep` | The checkpoints have to be done in the configured order |
 | The claim needs every step | `/sh/reward/claim` | Asking for a key early gets an error, not a key |
-| The claim is atomic | `withSesLock` | Two simultaneous claims mint one key, not two |
+| The claim is one transaction | `rewardIssueKeyAtomic` | Two simultaneous claims mint one key, not two - the cap and the ordinal are the same count, taken at the same moment |
 | The completion is recorded under a lock and re-read | `withSesLock` + the re-read | A concurrent page poll cannot roll a completion back |
 | Provider outages are transient | `isTransientReason` | A provider that is down costs the visitor nothing |
 | A broken configuration is not the visitor's fault | `isConfigReason` | A wrong endpoint or a wrong token is loud, and never a penalty |
@@ -193,9 +193,40 @@ Nothing new is needed: the reward system already lived in the worker and in
 KV. The changes are inside the same routes.
 
 ```
-  wrangler deploy            (For Cloudflare/worker.js)
-  npm run build && git push  (the static site: reward.html, rewards.js)
+  wrangler d1 execute scripterhub --file=migrations/0003_reward_keys.sql
+  wrangler deploy                          (For Cloudflare/worker.js)
+  npm run build && git push                (the static site: reward.html, rewards.js)
 ```
+
+**The migration is not optional.** `migrations/0003_reward_keys.sql` adds the
+reward ledger - the table that makes the key a one-time reward. Without it the
+worker creates the table on the fly, so a missing migration is not an outage,
+but applying it is the supported path.
+
+### Where each thing lives
+
+| Thing | Where | Why |
+|---|---|---|
+| The reward config | KV | Read and written by the owner, rarely |
+| The visitor session | KV | Read and written constantly; guarded by a per-session lock |
+| **The issued keys** | **D1** | The one thing that has to happen exactly once, so it is a transaction |
+| The parked provider clicks | KV | Short lived, single use |
+| The bans | KV | Read on every visitor request |
+| The licenses the gate reads | D1 | Already the authoritative store |
+
+The key issuance is ONE statement, and SQLite runs a statement atomically:
+
+```sql
+INSERT INTO reward_keys (rid, sid, ordinal, key_text, at, expires)
+SELECT ?,?,(SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?),?,?,?
+WHERE (SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?) < ?
+```
+
+The count that becomes the ordinal and the count that enforces the cap are the
+same count, taken at the same moment. Two claims that arrive together get
+ordinal N and N+1, or the second is refused by the cap - which is what
+"maxKeys" means. The primary key turns the last of the race into a constraint
+failure, which is retried rather than silently overwriting.
 
 The visitor page needs to know where the worker is. It reads it from
 

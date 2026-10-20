@@ -1347,3 +1347,41 @@ expired all look identical from the outside. The test button turns one
 of them into the other three, and the answer is shown verbatim.
 
 ---
+---
+
+## D34 - The one-time reward is a transaction, not a blob
+
+The key a visitor earns is the one thing in this system that has to happen
+EXACTLY once, and it was a read-modify-write of a JSON blob in KV.
+
+    ses.issued = (ses.issued || []).concat([{ key: key, ... }]);
+    await saveSes(env, ses);
+
+Two claims that arrive together both read "0 issued", both mint, and one
+of the two keys ends up in the license table with nobody able to see it.
+KV is eventually consistent, so a lock and a re-read narrow the window;
+they do not close it.
+
+**So the keys moved to D1, and the issuance is ONE statement.**
+
+    INSERT INTO reward_keys (rid, sid, ordinal, key_text, at, expires)
+    SELECT ?,?,(SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?),?,?,?
+    WHERE (SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?) < ?
+
+SQLite runs a statement atomically, so the count that becomes the ordinal
+and the count that enforces the cap are the SAME count, taken at the same
+moment. Two claims get ordinal N and N+1, or the second is refused by the
+cap - which is what maxKeys means. The primary key (rid, sid, ordinal)
+turns the last of the race into a constraint failure, which is retried
+rather than silently overwriting.
+
+The session itself stays in KV. It is read and written constantly and it
+is guarded by a per-session lock, and moving it would be a large change
+for a smaller gain. The ONE thing that has to be exactly-once is the key,
+and the key is a transaction now.
+
+`migrations/0003_reward_keys.sql` adds the table. The worker also creates
+it on the fly if the migration has not been applied, so a missing migration
+is not an outage - but applying it is the supported path.
+
+---

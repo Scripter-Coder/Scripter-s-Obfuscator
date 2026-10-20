@@ -1504,6 +1504,90 @@ function readAntiBypassAnswer(body, res) {
 }
 
 // ---------------------------------------------------------------------------
+// THE ONE-TIME REWARD, IN A TRANSACTION.
+//
+// The key a visitor earns is the one thing in this system that has to happen
+// EXACTLY once. It used to be appended to the session blob in KV, which is a
+// read-modify-write on an eventually consistent key: two claims arriving
+// together both read "0 issued" and both mint, and the visitor ends up with a
+// key the session does not know about.
+//
+// So the keys live in D1, and they are issued by ONE statement:
+//
+//     INSERT INTO reward_keys (...)
+//     SELECT ?, ?, (SELECT COUNT(*) ...), ?, ?
+//     WHERE (SELECT COUNT(*) ...) < ?
+//
+// SQLite runs a statement atomically, so the count that becomes the ordinal
+// and the count that enforces the cap are the same count, taken at the same
+// moment. Two concurrent claims get ordinal N and N+1, or the second is
+// refused by the cap. The PRIMARY KEY (rid, sid, ordinal) turns the remaining
+// race - both picking the same ordinal - into a constraint failure, which is
+// retried rather than silently overwriting.
+//
+// If D1 is not bound there is NO reward ledger and no key is issued. The
+// alternative - quietly falling back to the blob - is the bug this replaced.
+// ---------------------------------------------------------------------------
+async function rewardEnsureLedger(env) {
+    if (!env || !env.SH_DB) return false;
+    if (env.__shRewardLedger) return true;
+    try {
+        await q(env.SH_DB, `CREATE TABLE IF NOT EXISTS reward_keys (
+            rid TEXT NOT NULL,
+            sid TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            key_text TEXT NOT NULL,
+            at INTEGER NOT NULL,
+            expires INTEGER NOT NULL,
+            PRIMARY KEY (rid, sid, ordinal)
+        )`);
+        env.__shRewardLedger = true;
+        return true;
+    } catch (e) {
+        console.error('[ScripterHub] reward ledger unavailable: ' + (e && e.message));
+        return false;
+    }
+}
+
+// Issue one key, atomically, against the cap.
+//
+// Returns { ok:true, key, at, expires } | { ok:false, reason:'maxed'|'no-db'|'conflict' }
+async function rewardIssueKeyAtomic(env, rid, sid, key, hours, maxKeys) {
+    if (!(await rewardEnsureLedger(env))) return { ok: false, reason: 'no-db' };
+    const now = Date.now();
+    const expires = now + hours * 3600000;
+    const sql = `INSERT INTO reward_keys (rid, sid, ordinal, key_text, at, expires)
+        SELECT ?,?,(SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?),?,?,?
+        WHERE (SELECT COUNT(*) FROM reward_keys WHERE rid=? AND sid=?) < ?`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const res = await q(env.SH_DB, sql,
+                rid, sid, rid, sid, key, now, expires, rid, sid, maxKeys);
+            if (changesOf(res) > 0) return { ok: true, key: key, at: now, expires: expires };
+            return { ok: false, reason: 'maxed' };
+        } catch (e) {
+            // The PRIMARY KEY fired: another claim took this ordinal between
+            // the count and the insert. Take the next one.
+            if (attempt === 2) return { ok: false, reason: 'conflict' };
+        }
+    }
+    return { ok: false, reason: 'conflict' };
+}
+
+// The keys a session has earned, oldest first.
+async function rewardListKeys(env, rid, sid) {
+    if (!(await rewardEnsureLedger(env))) return [];
+    try {
+        const rows = await qAll(env.SH_DB,
+            `SELECT key_text, at, expires FROM reward_keys WHERE rid=? AND sid=? ORDER BY ordinal`,
+            rid, sid);
+        return (rows || []).map(function (r) {
+            return { key: r.key_text, at: Number(r.at) || 0, expires: Number(r.expires) || 0 };
+        });
+    } catch (e) { return []; }
+}
+
+// ---------------------------------------------------------------------------
 // PROVE THE PROVIDER IS CONFIGURED.
 //
 // "It doesnt work" is the hardest bug to report, because the same sentence
@@ -1746,10 +1830,20 @@ async function issueRewardKey(env, reward, ses) {
     const capMs = reward.allowExtending && reward.maxHours
         ? reward.maxHours * 3600000 : 0;
 
+    // THE EXACTLY-ONCE PART COMES FIRST.
+    //
+    // The ledger row is what enforces the cap, and it is the one write that
+    // must not happen twice. If it cannot be taken, no key is written at all
+    // and nothing is minted.
+    const issued = await rewardIssueKeyAtomic(env, reward.rid, ses.sid, key, hours, reward.maxKeys || 1);
+    if (!issued.ok) {
+        return { ok: false, reason: issued.reason };
+    }
+
     const map = await loadLicenses(env);
     map[key] = {
         hwid: '',
-        expiresAt: now + hours * 3600000,
+        expiresAt: issued.expires,
         banned: false,
         banReason: '',
         discordId: '',
@@ -1766,12 +1860,17 @@ async function issueRewardKey(env, reward, ses) {
     };
     await saveLicenses(env, map);
 
-    // expires is carried on the entry as well as in the license record, because
-    // the visitor's table renders it and re-reading sh_licenses for one row would
-    // be a second round trip on the one request that must feel instant.
-    ses.issued = (ses.issued || []).concat([{ key: key, at: now, expires: now + hours * 3600000 }]);
-    await saveSes(env, ses);
-    return key;
+    // The license map is ONE key holding every license, so two claims that
+    // arrive together can lose one of them. The ledger row is the truth and
+    // it is already written; the map is a mirror for the owner panel and the
+    // gate reads D1. So the key is put back if the mirror lost it.
+    const back = await loadLicenses(env);
+    if (!back[key]) {
+        back[key] = map[key];
+        await saveLicenses(env, back);
+    }
+
+    return { ok: true, key: key, at: issued.at, expires: issued.expires };
 }
 
 // ---------------------------------------------------------------------------
@@ -8656,7 +8755,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // A read is all this route needs here.
                 return jsonResponse({
                     ok: true, sid: ses.sid, complete: true, done: doneCount, total: total,
-                    keys: ses.issued || []
+                    keys: await rewardListKeys(env, rid, ses.sid)
                 });
             }
 
@@ -8740,7 +8839,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 },
                 done: doneNow, total: total, doneList: (fresh && fresh.done) || ses.done || [],
                 complete: false,
-                keys: (fresh && fresh.issued) || ses.issued || [],
+                keys: await rewardListKeys(env, rid, ses.sid),
                 stepExpired: !!next.expired
             });
         }
@@ -8788,7 +8887,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // tell it WHICH ones are ticked.
                 ok: true, sid: ses.sid, done: done, total: total, doneList: ses.done || [],
                 complete: total > 0 && done >= total,
-                keys: ses.issued || [],
+                keys: await rewardListKeys(env, rid, ses.sid),
                 cooldownUntil: (ses.lastCompletion || 0) + (r.cooldownH || 0) * 3600000
             });
         }
@@ -8829,31 +8928,32 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
 
             // THE CLAIM IS ATOMIC AND IDEMPOTENT.
             //
-            // The cap check and the mint have to happen under one lock, or two
-            // requests that arrive together both see "0 of 1 issued" and both
-            // mint. The visitor asked for one key and would get two - and the
-            // session's issued list would only remember one of them, so the
-            // second key would exist in the license table with nobody able to
-            // see it.
-            //
-            // Under the lock the session is re-read, the cap is checked
-            // against the FRESH count, and the key is minted and recorded
-            // before the lock is released.
+            // The cap check and the mint happen inside ONE transaction in D1
+            // (see rewardIssueKeyAtomic), so two requests that arrive together
+            // cannot both see "0 of 1 issued" and both mint. The visitor asked
+            // for one key and would get two - and the session's issued list
+            // would only remember one of them, so the second key would exist in
+            // the license table with nobody able to see it.
             let minted = null;
-            let keys = ses.issued || [];
+            let keys = await rewardListKeys(env, rid, sid0);
             let maxed = false;
             await withSesLock(env, rid, sid0, async function () {
                 const cur = await loadSes(env, rid, sid0);
                 if (!cur) return;
-                const curIssued = cur.issued || [];
-                if (curIssued.length >= (r.maxKeys || 1)) {
+                const curKeys = await rewardListKeys(env, rid, sid0);
+                if (curKeys.length >= (r.maxKeys || 1)) {
                     maxed = true;
-                    keys = curIssued;
+                    keys = curKeys;
                     return;
                 }
-                const key = await issueRewardKey(env, r, cur);
-                minted = key;
-                keys = cur.issued || [];
+                const res = await issueRewardKey(env, r, cur);
+                if (res && res.ok) {
+                    minted = res.key;
+                    keys = await rewardListKeys(env, rid, sid0);
+                } else if (res && res.reason === 'maxed') {
+                    maxed = true;
+                    keys = curKeys;
+                }
             });
             if (maxed) {
                 // Already at the cap. The existing keys are returned rather than
@@ -9357,7 +9457,7 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     await spendParkedClick(env, clickId);
 
     if ((ses.done || []).indexOf(i) !== -1) {
-        return jsonResponse({ ok: true, done: ses.done.length, total: (r.checkpoints || []).length, keys: ses.issued || [], already: true });
+        return jsonResponse({ ok: true, done: ses.done.length, total: (r.checkpoints || []).length, keys: await rewardListKeys(env, rid, sid), already: true });
     }
 
     // THE COMPLETION IS RECORDED UNDER THE SESSION LOCK, AND RE-READ AFTER.
