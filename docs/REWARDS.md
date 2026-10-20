@@ -95,14 +95,25 @@ that never completes.
 2. Settings → Account → enable **Anti Bypassing**. That issues a 64-character
    API token.
 3. Paste the token into the checkpoint's **API Token** field.
-4. Open the checkpoint and copy the **Postback URL**, and paste it as the
+4. Open the checkpoint, copy the **Postback URL**, and paste it as the
    link's **Direct Link** (the target URL).
-5. Press **🧪 Test this provider**. The panel asks Linkvertise itself and
+5. Open the checkpoint again and paste your **Publisher ID** into that field.
+   It is the number in the Full Script API snippet on your dashboard:
+
+   ```html
+   <script src="https://publisher.linkvertise.com/cdn/linkvertise.js"></script>
+   <script>linkvertise(1294304, { whitelist: [], blacklist: [] });</script>
+   ```
+
+   Linkvertise lists it as a credential of its own, so it travels with every
+   verification request.
+6. Press **🧪 Test this provider**. The panel asks Linkvertise itself and
    shows the answer. **Do this before you share the link.**
-6. Optional: paste your Linkvertise **link / zone id** into the optional
+7. Optional: paste your Linkvertise **link / zone id** into the optional
    field. It stops a click id from *another* campaign counting. Only fill it
-   in if Linkvertise returns that id in the click data — otherwise every
-   honest click would be refused.
+   in if Linkvertise returns that id in the click data — the test button tells
+   you, because a provider whose answer never mentions your link would refuse
+   every honest click.
 
 **What Linkvertise actually sends, and why the old code could never work.**
 
@@ -149,6 +160,10 @@ cannot exist and shows the provider's literal answer.
 - the provider answered "not found" → the address is wrong;
 - the provider accepted a proof that does not exist → it is not checking
   anything, and it must not be used for a paid reward.
+
+When the field is **empty**, the worker tries the addresses it knows and
+reports the one that answered, so the owner can paste that in. The test button
+is therefore a discovery tool, not just a check.
 
 ### LootLabs
 

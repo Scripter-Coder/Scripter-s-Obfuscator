@@ -1346,6 +1346,33 @@ A wrong endpoint, a wrong token, a provider that is down and a proof that
 expired all look identical from the outside. The test button turns one
 of them into the other three, and the answer is shown verbatim.
 
+**THE ENDPOINT IS DISCOVERED, NOT GUESSED**
+
+The exact address could not be confirmed from the documentation that can
+be reached from here: every source that describes it truncates the url,
+and probing the API by hand found no such route on either host. Shipping
+a guessed address as if it were documented would be worse than useless -
+a wrong address looks exactly like a broken provider.
+
+So when the field is EMPTY the worker tries the addresses it knows, in
+order, and reports the one the provider actually ANSWERS. An address that
+replies "not found" is not the address and the next one is tried; an
+address that replies "FALSE" or "Invalid token." IS the address. The test
+button is therefore a discovery tool, not just a check, and the owner can
+paste the answer into the field.
+
+**THE PUBLISHER ID IS A CREDENTIAL**
+
+Linkvertise lists the publisher id next to the anti-bypass token, and the
+id is the number in the Full Script API snippet on the dashboard:
+
+    linkvertise(1294304, { whitelist: [], blacklist: [] });
+
+So it is a field on the checkpoint, it travels with every verification
+request, and the test button reports whether the provider's answer ever
+mentions it - because if it does not, the "Link / Zone ID" field has to
+stay EMPTY or every honest click would be refused.
+
 ---
 ---
 

@@ -592,6 +592,7 @@ async function confirmAddCheckpoint(id) {
     if (g('cpApiKey')) settings.apiKey = g('cpApiKey');
     if (g('cpAuthToken')) settings.authToken = g('cpAuthToken');
     if (g('cpLinkId')) settings.linkId = g('cpLinkId');
+    if (g('cpPublisherId')) settings.publisherId = g('cpPublisherId');
     if (g('cpVerifyUrl')) settings.verifyUrl = g('cpVerifyUrl');
     if (g('cpPostbackUrl')) settings.postbackUrl = g('cpPostbackUrl');
     r.checkpoints.push({ id: 'cp_' + Date.now(), name: name, shortUrl: shortUrl, provider: provider, settings: settings, completed: 0, cancelled: 0, avgTimeSec: 0 });
@@ -910,6 +911,12 @@ async function shTestProvider(rid, index, btn) {
     var words = PROVIDER_TEST_WORDS[res.verdict] || ('The provider answered: ' + String(res.verdict || ''));
     var extra = res.answer ? ('\n\nThe provider said: ' + String(res.answer).slice(0, 300)) : '';
     if (res.url) extra += ('\n\nChecked: ' + String(res.url).slice(0, 200));
+    // The publisher id is only worth sending if the provider's answer ever
+    // mentions it, and the answer tells us.
+    if (res.linkVisible === false) {
+        extra += ('\n\nYour publisher id is NOT in the provider\'s answer, so leave the '
+            + 'Link / Zone ID field EMPTY - filling it in would refuse every honest click.');
+    }
     shNotify(res.usable ? '✅ Provider is working' : '❌ Provider is not ready', words + extra,
         res.usable ? 'success' : 'error', 14000);
 }
@@ -936,6 +943,22 @@ function providerFieldsHtml(provider, st, rid, index) {
         html += '<div class="field-hint" style="margin-top:8px">' + spec.note + '</div>';
     }
     if (provider === 'linkvertise') {
+        // THE PUBLISHER ID.
+        //
+        // It is the number in the Full Script API snippet on the Linkvertise
+        // dashboard:
+        //
+        //     <script src="https://publisher.linkvertise.com/cdn/linkvertise.js"></script>
+        //     <script>linkvertise(1294304, { whitelist: [], blacklist: [] });</script>
+        //
+        // Linkvertise lists it as a credential of its own, so it travels with
+        // the verification request.
+        html += '<div class="form-group"><label>Publisher ID</label>'
+            + '<input type="text" id="cpPublisherId" value="' + escAttr(st.publisherId || '') + '" placeholder="1294304 - the number in linkvertise(...)">'
+            + '<div class="field-hint">From <strong>Full Script API</strong> on your Linkvertise dashboard: '
+            + 'the number inside <code>linkvertise(1294304, ...)</code>. '
+            + 'It is sent with every verification request, and the test below says whether the provider answers without it.</div></div>';
+
         // OPTIONAL, AND OPTIONAL FOR A REASON.
         //
         // The worker checks every click with Linkvertise's own API, so a click
@@ -998,6 +1021,7 @@ async function confirmEditCheckpoint(id, index) {
     if (g('cpAuthToken') !== '') cp.settings.authToken = g('cpAuthToken');
     if (g('cpApiKey') !== '') cp.settings.apiKey = g('cpApiKey');
     if (g('cpLinkId') !== '') cp.settings.linkId = g('cpLinkId');
+    if (g('cpPublisherId') !== '') cp.settings.publisherId = g('cpPublisherId');
     if (g('cpVerifyUrl') !== '') cp.settings.verifyUrl = g('cpVerifyUrl');
 
     var out = await shRewardPersist(found.reward);

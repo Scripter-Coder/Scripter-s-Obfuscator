@@ -75,8 +75,12 @@ const asked = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (u, o) => {
     const url = String(u);
-    if (url.indexOf('api.linkvertise.com') !== -1) {
+    if (/linkvertise\.com\/api\//.test(url)) {
         asked.push(url);
+        // The outage comes FIRST: a provider that is down answers nothing on
+        // any address, which is the difference between "not verified yet" and
+        // "the endpoint is wrong".
+        if (providerMode === 'down') throw new Error('provider down');
         // Only the real route answers. Anything else on the API host answers
         // the way the real API does for an unknown route, so a wrong
         // verification url is diagnosed as a wrong url and not as a working
@@ -85,7 +89,11 @@ globalThis.fetch = async (u, o) => {
             return new Response(JSON.stringify({ success: false, error: true, messages: ['Not Found!'], state: 404 }),
                 { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
-        if (providerMode === 'down') throw new Error('provider down');
+        // The publisher id is sent with the request; the provider's answer
+        // mentions it, which is what makes the link id worth pinning.
+        if (url.indexOf('publisher_id=1294304') !== -1 && url.indexOf('hash=sh-diagnostic') === -1) {
+            return new Response('TRUE', { status: 200 });
+        }
         if (providerMode === 'refuse') return new Response('FALSE', { status: 200 });
         if (providerMode === 'empty') return new Response('{}', { status: 200 });
         // THE DOCUMENTED SHAPE. Linkvertise's anti-bypass answers in plain
@@ -343,6 +351,8 @@ console.log('THE OWNER CAN ASK THE PROVIDER WHETHER IT IS CONFIGURED');
         'verdict=' + probe.verdict + ' answer=' + String(probe.answer).slice(0, 80));
     check('and it shows the provider\'s own answer', String(probe.answer).indexOf('FALSE') !== -1,
         'answer=' + String(probe.answer).slice(0, 80));
+    check('and it names the address that answered',
+        String(probe.url).indexOf('/api/v1/anticlick') !== -1, 'url=' + String(probe.url));
 
     // A wrong endpoint must be diagnosed, not swallowed.
     const saved = await call('POST', '/sh/reward/save', {
@@ -372,6 +382,33 @@ console.log('THE OWNER CAN ASK THE PROVIDER WHETHER IT IS CONFIGURED');
             ],
         },
     });
+}
+
+console.log('');
+console.log('THE PUBLISHER ID IS SENT WITH THE VERIFICATION');
+{
+    // The publisher id comes from the Full Script API snippet on the
+    // Linkvertise dashboard: linkvertise(1294304, {...}).
+    const FPP = 'fpvisitorpubid0001';
+    await call('POST', '/sh/reward/save', {
+        token: OWNER.token,
+        reward: {
+            rid: RID,
+            name: 'SecurityReward', keyDurationH: 2, maxKeys: 1, cooldownH: 0,
+            checkpoints: [
+                { id: 'cp_one', name: 'One', provider: 'linkvertise', shortUrl: 'https://direct-link.net/one', settings: { authToken: 'tok', publisherId: '1294304' } },
+                { id: 'cp_two', name: 'Two', provider: 'linkvertise', shortUrl: 'https://direct-link.net/two', settings: { authToken: 'tok' } },
+            ],
+        },
+    });
+    const s = await openSession(FPP);
+    clock += 30000;
+    await providerClick(0, 'hash-with-publisher', IP);
+    const done = await submit(FPP, 'hash-with-publisher', s.sid);
+    check('the checkpoint still completes', done.ok === true, JSON.stringify(done).slice(0, 160));
+    check('and the publisher id travelled with the request',
+        asked.some(u => u.indexOf('publisher_id=1294304') !== -1),
+        'the provider was asked without the publisher id');
 }
 
 console.log('');

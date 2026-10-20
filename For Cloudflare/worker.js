@@ -1587,6 +1587,59 @@ async function rewardListKeys(env, rid, sid) {
     } catch (e) { return []; }
 }
 
+// WHERE THE PROVIDER'S VERIFICATION API MIGHT BE.
+//
+// The exact address is the provider's business and it is not in the public
+// documentation that can be reached from here, so it is DISCOVERED rather than
+// assumed: the "Test this provider" button tries these in order and reports
+// the first one the provider actually answers.
+//
+// An address that answers with a RECOGNISED reply is the right one:
+//
+//   "FALSE"          the endpoint is right and the token is accepted
+//   "Invalid token." the endpoint is right and the token is wrong
+//   {"valid":true}   the endpoint is right
+//
+// An address that answers "Not Found!", or redirects, is not the endpoint, and
+// the next one is tried. That is the difference between a button that says
+// "your provider is broken" and one that says "here is the address your
+// provider answers on".
+const REWARD_VERIFY_CANDIDATES = {
+    linkvertise: [
+        'https://api.linkvertise.com/api/v1/anticlick',
+        'https://publisher.linkvertise.com/api/v1/anticlick',
+        'https://api.linkvertise.com/api/v1/anti_bypass',
+        'https://api.linkvertise.com/api/v1/anti-bypass',
+        'https://api.linkvertise.com/api/v1/hash/verify',
+        'https://api.linkvertise.com/api/v1/hash/validate',
+        'https://api.linkvertise.com/api/v1/click/verify',
+        'https://api.linkvertise.com/api/v1/verify'
+    ]
+};
+
+// The query parameters a provider's verification call is made with. Several
+// names are sent because the providers disagree, and a provider that ignores
+// one of them is not harmed by it.
+function verifyQuery(url, proof, token, publisherId) {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    let q = url + sep
+        + 'hash=' + encodeURIComponent(proof)
+        + '&click_id=' + encodeURIComponent(proof)
+        + '&token=' + encodeURIComponent(token || '');
+    if (publisherId) {
+        q += '&publisher_id=' + encodeURIComponent(publisherId)
+            + '&zid=' + encodeURIComponent(publisherId)
+            + '&pid=' + encodeURIComponent(publisherId);
+    }
+    return q;
+}
+
+function verifyBody(proof, token, publisherId) {
+    const b = { hash: proof, click_id: proof, token: token || '' };
+    if (publisherId) { b.publisher_id = publisherId; b.zid = publisherId; b.pid = publisherId; }
+    return JSON.stringify(b);
+}
+
 // ---------------------------------------------------------------------------
 // PROVE THE PROVIDER IS CONFIGURED.
 //
@@ -1624,47 +1677,73 @@ async function probeProvider(cp) {
             answer: 'LootLabs calls the postback url itself. Check that the url is in their Advanced tab with CLICK_ID and IP enabled.'
         };
     }
-    if (cp.provider === 'workink') {
-        if (!st.apiKey) return { ok: false, verdict: 'no-token', answer: 'the API key is empty' };
-    }
-    if (cp.provider === 'linkvertise') {
-        if (!st.authToken) return { ok: false, verdict: 'no-token', answer: 'the API token is empty' };
-    }
-    const url = String(st.verifyUrl || '').trim() || (spec.defaultVerify || '');
-    if (!url) return { ok: false, verdict: 'no-endpoint', answer: 'no verification url is set' };
-    const dummy = 'sh-diagnostic-' + '0'.repeat(48);
     const token = cp.provider === 'workink' ? st.apiKey : st.authToken;
-    try {
-        const sep = url.indexOf('?') === -1 ? '?' : '&';
-        const res = await fetch(url + sep
-            + 'hash=' + encodeURIComponent(dummy)
-            + '&click_id=' + encodeURIComponent(dummy)
-            + '&token=' + encodeURIComponent(token), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
-            body: JSON.stringify({ hash: dummy, click_id: dummy, token: token })
-        });
-        const body = (await res.text()).trim();
-        const answer = readAntiBypassAnswer(body, res);
+    if (!token) {
+        return { ok: false, verdict: 'no-token', answer: 'the API token is empty' };
+    }
+    const publisherId = String(st.publisherId || '').trim();
+
+    // THE ADDRESSES TO TRY. The one the owner set comes first, then the
+    // candidates.
+    const configured = String(st.verifyUrl || '').trim();
+    const list = configured ? [configured] : (REWARD_VERIFY_CANDIDATES[cp.provider] || []).slice();
+    if (!list.length) return { ok: false, verdict: 'no-endpoint', answer: 'no verification url is set' };
+
+    const dummy = 'sh-diagnostic-' + '0'.repeat(48);
+    let lastAnswer = '';
+    let unreachable = 0;
+    for (const base of list) {
+        const u = verifyQuery(base, dummy, token, publisherId);
+        let body = '', status = 0, res = null;
+        try {
+            res = await fetch(u, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
+                body: verifyBody(dummy, token, publisherId)
+            });
+            status = res.status;
+            body = (await res.text()).trim();
+        } catch (e) {
+            unreachable++;
+            lastAnswer = 'could not reach it: ' + String(e && e.message || e).slice(0, 120);
+            continue;
+        }
         const shown = body.replace(/\s+/g, ' ').slice(0, 240);
+        lastAnswer = shown;
+        const answer = readAntiBypassAnswer(body, res);
+        // An address the provider does not know is not the address. The next
+        // candidate is tried.
+        if (answer.reason === 'endpoint-wrong' || answer.reason === 'unreadable-response') continue;
         if (answer.ok) {
-            // It accepted a hash that cannot exist. Say so, loudly.
-            return { ok: false, verdict: 'provider-accepts-anything', answer: shown, url: url };
+            // It accepted a proof that does not exist. Say so, loudly.
+            return { ok: false, verdict: 'provider-accepts-anything', answer: shown, url: base };
         }
         if (answer.reason === 'bad-provider-token') {
-            return { ok: false, verdict: 'bad-token', answer: shown, url: url };
-        }
-        if (answer.reason === 'endpoint-wrong') {
-            return { ok: false, verdict: 'endpoint-wrong', answer: shown, url: url };
+            return { ok: false, verdict: 'bad-token', answer: shown, url: base };
         }
         if (answer.reason === 'click-unknown') {
             // "FALSE" for a hash that does not exist is the CORRECT answer.
-            return { ok: true, verdict: 'endpoint-ok', answer: shown, url: url };
+            return {
+                ok: true, verdict: 'endpoint-ok', answer: shown, url: base,
+                // Does the provider's answer ever mention the link the owner
+                // pinned? If it does not, pinning it would refuse every honest
+                // click, so the owner is told to leave it empty.
+                linkVisible: publisherId ? shown.indexOf(publisherId) !== -1 : null
+            };
         }
-        return { ok: false, verdict: answer.reason || 'unreadable-response', answer: shown, url: url };
-    } catch (e) {
-        return { ok: false, verdict: 'unreachable', answer: String(e && e.message || e).slice(0, 200), url: url };
+        if (answer.reason === 'lv-api-' + status || /api-/.test(String(answer.reason))) {
+            return { ok: false, verdict: String(answer.reason), answer: shown, url: base };
+        }
     }
+    return {
+        ok: false,
+        // A provider that could not be reached at all is an OUTAGE, not a
+        // broken configuration, and the visitor is told to wait instead of
+        // being shown a failure page.
+        verdict: unreachable === list.length ? 'unreachable' : 'endpoint-wrong',
+        url: list[0] || '',
+        answer: lastAnswer || ('none of the ' + list.length + ' known addresses answered')
+    };
 }
 
 async function verifyProvider(cp, signal) {
@@ -1686,31 +1765,48 @@ async function verifyProvider(cp, signal) {
     if (cp.provider === 'linkvertise') {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
         // The verification URL is the provider's anti-bypass API. It is
-        // CONFIGURABLE per checkpoint, because the owner can - in one click -
-        // find out whether the URL they have is one the provider answers. The
-        // default is the documented shape.
-        const url = String(st.verifyUrl || '').trim() || (REWARD_PROVIDERS.linkvertise.defaultVerify || '');
-        if (!url) return { ok: false, reason: 'no-verify-url' };
-        try {
-            const sep = url.indexOf('?') === -1 ? '?' : '&';
-            const res = await fetch(url + sep
-                + 'hash=' + encodeURIComponent(signal.clickId)
-                + '&token=' + encodeURIComponent(st.authToken), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
-                body: JSON.stringify({ hash: signal.clickId, token: st.authToken })
-            });
-            const body = await res.text();
-            const answer = readAntiBypassAnswer(body, res);
-            if (!answer.ok) return answer;
-            // The owner may pin the Linkvertise link (zone) the click must
-            // belong to, so a click id from another campaign does not count.
-            const wantLink = String(st.linkId || '').trim();
-            if (wantLink && String(body).indexOf(wantLink) === -1) {
-                return { ok: false, reason: 'lv-wrong-link' };
+        // CONFIGURABLE per checkpoint, and when it is empty the KNOWN
+        // addresses are tried in order, because the exact one is the
+        // provider's business and it is not in the documentation that can be
+        // reached from here. The "Test this provider" button reports the
+        // address that answered, and the owner can paste it in.
+        const configured = String(st.verifyUrl || '').trim();
+        const list = configured ? [configured] : (REWARD_VERIFY_CANDIDATES.linkvertise || []).slice();
+        if (!list.length) return { ok: false, reason: 'no-verify-url' };
+        const publisherId = String(st.publisherId || '').trim();
+        let lastReason = 'endpoint-wrong';
+        for (const base of list) {
+            const u = verifyQuery(base, signal.clickId, st.authToken, publisherId);
+            let body = '', res = null;
+            try {
+                res = await fetch(u, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
+                    body: verifyBody(signal.clickId, st.authToken, publisherId)
+                });
+                body = await res.text();
+            } catch (e) {
+                lastReason = 'lv-unreachable';
+                continue;
             }
-            return { ok: true, detail: 'linkvertise:' + answer.detail };
-        } catch (e) { return { ok: false, reason: 'lv-unreachable' }; }
+            const answer = readAntiBypassAnswer(body, res);
+            if (answer.ok) {
+                // The owner may pin the Linkvertise link (zone) the click must
+                // belong to, so a click id from another campaign does not count.
+                const wantLink = String(st.linkId || '').trim();
+                if (wantLink && String(body).indexOf(wantLink) === -1) {
+                    return { ok: false, reason: 'lv-wrong-link' };
+                }
+                return { ok: true, detail: 'linkvertise:' + answer.detail };
+            }
+            if (answer.reason === 'endpoint-wrong' || answer.reason === 'unreadable-response') {
+                // Not the address. Try the next one.
+                lastReason = answer.reason;
+                continue;
+            }
+            return answer;
+        }
+        return { ok: false, reason: lastReason };
     }
 
     if (cp.provider === 'workink') {
@@ -8555,6 +8651,10 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         // click, and without this it would count; with it, the
                         // provider's own answer has to mention this link.
                         linkId: String(st.linkId || '').slice(0, 120),
+                        // The publisher id, from the Full Script API snippet
+                        // (linkvertise(123456, {...})). The provider lists it as a
+                        // credential of its own, so it travels with the request.
+                        publisherId: String(st.publisherId || '').slice(0, 40),
                         // WHERE THE PROVIDER'S VERIFICATION API LIVES. It is
                         // configurable because the exact address is the
                         // provider's business, and the owner can find the
@@ -8656,7 +8756,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 verdict: probe.verdict,
                 usable: !!probe.ok,
                 answer: String(probe.answer || '').slice(0, 400),
-                url: String(probe.url || '').slice(0, 400)
+                url: String(probe.url || '').slice(0, 400),
+                // Whether the provider's answer ever mentions the publisher
+                // id. When it does not, the owner must leave the link id
+                // empty or every honest click is refused.
+                linkVisible: probe.linkVisible === undefined ? null : !!probe.linkVisible
             });
         }
 
