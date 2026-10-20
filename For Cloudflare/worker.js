@@ -1084,8 +1084,8 @@ function newId(prefix) {
 
 // The visitor's session id is DERIVED, not stored.
 //
-// The client sends only its fingerprint; the worker combines that with the IP
-// and signs it into a stable id. Two consequences, both wanted:
+// The client sends only its fingerprint; the worker combines that with the
+// reward id and signs it into a stable id. Two consequences, both wanted:
 //
 //   * Clearing localStorage does not hand out a fresh session. A visitor who is
 //     mid-way through a reward, or who has been banned, cannot reset their way
@@ -1097,9 +1097,109 @@ function newId(prefix) {
 //
 // It is a capability for THIS reward only: the reward id is inside the signed
 // material, so a session id cannot be lifted onto a different reward.
-async function deriveSesId(secret, rid, fp, ip) {
-    const material = rid + '|' + String(fp || '') + '|' + String(ip || '');
+//
+// THE IP IS NOT IN THE ID, and that is a fix, not an oversight.
+//
+// It used to be: material = rid | fp | ip. A phone that changed network (or a
+// browser that got a new IPv6 address, or a VPN that dropped) produced a
+// DIFFERENT session id, so the worker's lookup missed and the visitor's
+// progress - and their earned keys - vanished. That is the "refreshing the
+// page makes my progress disappear" report, and it hits exactly the people
+// most likely to be on a mobile network.
+//
+// The IP is still RECORDED on the session, and it is still the thing the
+// provider's click is checked against. Binding the CLICK to the IP is what
+// makes a click verifiable; binding the SESSION to the IP only broke people.
+//
+// The cooldown is unaffected: it hangs off the session, so it follows the
+// fingerprint rather than the address, which is strictly harder to dodge.
+async function deriveSesId(secret, rid, fp) {
+    const material = rid + '|' + String(fp || '');
     return 's' + (await hmacHex(secret, material)).slice(0, 24);
+}
+
+// ---------------------------------------------------------------------------
+// A LOCK PER SESSION.
+//
+// The reward session is one JSON blob in KV, and two requests that both write
+// it are a lost update waiting to happen. The concrete case:
+//
+//   1. the provider callback completes checkpoint 0        -> writes done=[0]
+//   2. the page's own /sh/reward/start (it fires on every load and after
+//      every completion) had already read the session with done=[] and now
+//      writes it back -> done=[] again
+//
+// The completion is silently gone and the visitor is back at 0/1, forever.
+// This is the "the checkpoint progression sometimes does not advance" bug, and
+// "sometimes" is the whole of it: it depends on which of the two writes lands
+// last.
+//
+// So the writes are SERIALISED per session. Cloudflare KV has no compare-and-
+// set, so the lock is a write-then-read-back: put a random token, read it,
+// and only proceed if the token that comes back is ours. KV guarantees
+// read-after-write on the same key, so two writers cannot both believe they
+// hold it.
+//
+// It is a best-effort mutex, not a distributed lock, and it is documented as
+// one. If the lock cannot be taken within the window the request proceeds
+// anyway: refusing a legitimate visitor because a lock was busy is worse than
+// the race it prevents, and the completion path re-reads and retries as well.
+// ---------------------------------------------------------------------------
+const RLOCK_PREFIX = 'sh_rlock_';
+
+async function withSesLock(env, rid, sid, fn, waitMs) {
+    if (!env.LOADERS_KV || !rid || !sid) return await fn();
+    const key = RLOCK_PREFIX + rid + '_' + sid;
+    const token = newId('lk');
+    const deadline = Date.now() + (waitMs || 2500);
+    for (;;) {
+        let held = false;
+        try {
+            const cur = await env.LOADERS_KV.get(key);
+            if (!cur) {
+                await env.LOADERS_KV.put(key, JSON.stringify({ t: token, at: Date.now() }),
+                    { expirationTtl: 15 });
+                const back = await env.LOADERS_KV.get(key);
+                held = !!(back && JSON.parse(back).t === token);
+            }
+        } catch (e) { held = true; /* a KV hiccup must not block the visitor */ }
+        if (held) {
+            try { return await fn(); }
+            finally {
+                try { await env.LOADERS_KV.delete(key); } catch (e) { /* expires anyway */ }
+            }
+        }
+        if (Date.now() > deadline) return await fn();
+        await new Promise(function (r) { setTimeout(r, 40 + Math.floor(Math.random() * 60)); });
+    }
+}
+
+// THE SESSION FOR THIS FINGERPRINT.
+//
+// The id is derived, so finding the session is a derivation and a read.
+//
+// If the derived id has no session, the LEGACY id is tried: until this change
+// the id included the IP, so every visitor in progress has a session under
+// the old id. Adopting it means deploying this does not reset every
+// unfinished reward in the country once. A visitor whose IP has changed
+// since they started is not adopted - that is the case that was broken
+// anyway, and their progress is unrecoverable by definition.
+async function resolveSes(env, rid, fp, ip, secret) {
+    const sid = await deriveSesId(secret, rid, fp);
+    const ses = await loadSes(env, rid, sid);
+    if (ses) return { sid: sid, ses: ses };
+    if (ip) {
+        const legacySid = 's' + (await hmacHex(secret, rid + '|' + String(fp || '') + '|' + String(ip))).slice(0, 24);
+        if (legacySid !== sid) {
+            const old = await loadSes(env, rid, legacySid);
+            if (old) {
+                old.sid = sid;
+                await saveSes(env, old);
+                return { sid: sid, ses: old };
+            }
+        }
+    }
+    return { sid: sid, ses: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,15 +1290,49 @@ async function blacklistAdd(env, fp, ip, reason, rid) {
 // able to return ok:false, and every caller must treat that as a refusal.
 //
 //   cp      the owner's checkpoint, including its settings
-//   signal  whatever the provider echoed back: { clickId, ip, elapsedMs }
+//   signal  whatever the provider echoed back:
+//              { clickId, ip, elapsedMs, confirmed, postback, hash }
 //   origin  this worker's own public base URL
 //
 // Returns { ok:true, detail } or { ok:false, reason }.
+//
+// THE PROVIDER IS THE AUTHORITY, AND THE ANSWER IS READ, NOT ASSUMED.
+//
+// The old Linkvertise check was `if (!res.ok) fail; await res.text(); return
+// {ok:true}`. The body was fetched and thrown away, so ANY 200 was a pass -
+// including the 200 an API returns for a click id it has never heard of. An
+// attacker who could produce a click id from any campaign anywhere would
+// pass. The body is now parsed and the answer is read out of it.
+//
+// Every failure is classified, because the two kinds must be treated
+// differently:
+//
+//   transient  the provider has not reported back yet, or is unreachable, or
+//              the click id is unknown TO THE PROVIDER. The visitor is told
+//              to wait and NOTHING is penalised. This is the common honest
+//              case and it must never cost anybody a lockout.
+//   refused   the provider answered, and the answer is "this click is not
+//              what you say it is". That is a real bypass signal.
 // ---------------------------------------------------------------------------
 
 // How long a click plausibly takes. A return faster than this is a client that
 // never rendered an ad, and it is refused rather than counted.
 const REWARD_MIN_DWELL_MS = 4000;
+
+// The reasons that mean "not yet", as opposed to "no".
+//
+// They are checked with indexOf === 0 because some of them carry a status
+// code (lv-api-403) and the prefix is what matters.
+const REWARD_TRANSIENT_REASONS = [
+    'no-click-id', 'too-fast', 'lv-unreachable', 'wi-unreachable',
+    'll-unreachable', 'lv-api-', 'wi-not-confirmed', 'll-api-',
+    'click-unknown', 'postback-unauthenticated'
+];
+
+function isTransientReason(reason) {
+    const r = String(reason || '');
+    return REWARD_TRANSIENT_REASONS.some(function (x) { return r === x || r.indexOf(x) === 0; });
+}
 
 function providerNeeds(cp) {
     const spec = REWARD_PROVIDERS[cp && cp.provider];
@@ -1208,6 +1342,59 @@ function providerNeeds(cp) {
     if (spec.needs === 'authToken' && !st.authToken) return { ok: false, reason: 'no-auth-token' };
     if (spec.needs === 'apiKey' && !st.apiKey) return { ok: false, reason: 'no-api-key' };
     return { ok: true };
+}
+
+// READ A PROVIDER'S ANSWER.
+//
+// The providers do not agree on a schema, and inventing one is how a check
+// ends up passing everything. So this looks for an EXPLICIT negative and
+// otherwise requires the body to actually contain something. A response that
+// is empty, unparseable, or an object with no data in it is a refusal, not a
+// pass.
+//
+//   body       the raw text the provider returned
+//   clickId    the id we asked about, so a body that echoes it is a positive
+function readProviderAnswer(body, clickId) {
+    const txt = String(body || '').trim();
+    if (!txt) return { ok: false, reason: 'empty-response' };
+    // A plain-text confirmation, which is what work.ink's confirm endpoint
+    // returns.
+    if (/^"?confirmed"?$/i.test(txt) || /^1$/.test(txt) || /^true$/i.test(txt)) {
+        return { ok: true, detail: 'confirmed-text' };
+    }
+    if (/^(invalid|not\s*found|unknown|error|no\s*click)/i.test(txt)) {
+        return { ok: false, reason: 'click-unknown' };
+    }
+    let obj = null;
+    try { obj = JSON.parse(txt); } catch (e) { obj = null; }
+    if (obj && typeof obj === 'object') {
+        // An explicit negative wins over everything else.
+        const neg = ['error', 'errors', 'message', 'status', 'success', 'valid', 'confirmed', 'found'];
+        for (const k of neg) {
+            if (Object.prototype.hasOwnProperty.call(obj, k)) {
+                const v = obj[k];
+                if (v === false || v === 0 || v === 'false' || v === 'error' || v === 'invalid'
+                    || v === 'not_found' || v === 'not found' || v === 'failed' || v === 'expired') {
+                    return { ok: false, reason: 'click-unknown' };
+                }
+            }
+        }
+        // A body that echoes the click id we asked about is a positive: the
+        // provider knows this click.
+        if (clickId && txt.indexOf(clickId) !== -1) return { ok: true, detail: 'click-echoed' };
+        // Otherwise: a non-empty object with data in it is a positive, and an
+        // empty one is not.
+        const keys = Object.keys(obj);
+        if (keys.length === 0) return { ok: false, reason: 'empty-response' };
+        if (keys.length === 1 && Array.isArray(obj[keys[0]]) && obj[keys[0]].length === 0) {
+            return { ok: false, reason: 'empty-response' };
+        }
+        return { ok: true, detail: 'provider-body' };
+    }
+    // Not JSON and not a known confirmation. If it mentions the click id it
+    // is a positive; otherwise it is not.
+    if (clickId && txt.indexOf(clickId) !== -1) return { ok: true, detail: 'click-echoed' };
+    return { ok: false, reason: 'unreadable-response' };
 }
 
 async function verifyProvider(cp, signal) {
@@ -1229,40 +1416,62 @@ async function verifyProvider(cp, signal) {
     if (cp.provider === 'linkvertise') {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
         try {
+            // Linkvertise's publisher API, with the token from the dashboard's
+            // Anti Bypassing setting. The answer is READ, not assumed.
             const u = 'https://api.linkvertise.com/api/v1/statistics'
                 + '?token=' + encodeURIComponent(st.authToken)
                 + '&click_id=' + encodeURIComponent(signal.clickId);
             const res = await fetch(u, { headers: { Accept: 'application/json' } });
             if (!res.ok) return { ok: false, reason: 'lv-api-' + res.status };
-            await res.text();
-            return { ok: true, detail: 'linkvertise' };
+            const body = await res.text();
+            const answer = readProviderAnswer(body, signal.clickId);
+            if (!answer.ok) return answer;
+            // The owner may pin the Linkvertise link (zone) the click must
+            // belong to. When they have, a click from any other campaign is
+            // refused: otherwise a click id from somebody else's campaign
+            // would pass, because it is a real click.
+            const wantLink = String(st.linkId || '').trim();
+            if (wantLink && String(body).indexOf(wantLink) === -1) {
+                return { ok: false, reason: 'lv-wrong-link' };
+            }
+            return { ok: true, detail: 'linkvertise:' + answer.detail };
         } catch (e) { return { ok: false, reason: 'lv-unreachable' }; }
     }
 
     if (cp.provider === 'workink') {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
         try {
+            // Work.Ink's confirm endpoint. It answers with plain text, and
+            // the IP of the clicker can be included so the answer can be
+            // bound to the visitor.
             const u = 'https://api.work.ink/confirm/v2'
                 + '?token=' + encodeURIComponent(st.apiKey)
                 + '&click_id=' + encodeURIComponent(signal.clickId)
                 + '&ip=' + encodeURIComponent(signal.ip || '');
             const res = await fetch(u);
             const txt = (await res.text()).trim();
-            if (!/confirmed|success|^1$/i.test(txt)) return { ok: false, reason: 'wi-not-confirmed' };
-            return { ok: true, detail: 'workink' };
+            if (!res.ok) return { ok: false, reason: 'wi-api-' + res.status };
+            const answer = readProviderAnswer(txt, signal.clickId);
+            if (!answer.ok) return answer;
+            return { ok: true, detail: 'workink:' + answer.detail };
         } catch (e) { return { ok: false, reason: 'wi-unreachable' }; }
     }
 
     if (cp.provider === 'lootlabs') {
+        // LootLabs' documented mechanism is a SERVER-TO-SERVER POSTBACK: the
+        // provider calls OUR url with click_id, ip and unique_id when a user
+        // completes a task. There is no documented "ask LootLabs about this
+        // click" endpoint, so the postback IS the proof, and it is
+        // authenticated with the shared secret the owner put in the postback
+        // url.
+        //
+        // The old implementation called lootlabs.com/api/lootlabs_postback
+        // with the API key in a `status` parameter. That endpoint is not in
+        // LootLabs' documentation, and an unverifiable call is worse than no
+        // call: it either fails for honest visitors or passes for everyone.
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
-        try {
-            const u = 'https://lootlabs.com/api/lootlabs_postback'
-                + '?click_id=' + encodeURIComponent(signal.clickId)
-                + '&status=' + encodeURIComponent(st.apiKey || '');
-            const res = await fetch(u, { method: 'POST' });
-            if (!res.ok) return { ok: false, reason: 'll-api-' + res.status };
-            return { ok: true, detail: 'lootlabs' };
-        } catch (e) { return { ok: false, reason: 'll-unreachable' }; }
+        if (!signal.postback) return { ok: false, reason: 'postback-unauthenticated' };
+        return { ok: true, detail: 'lootlabs:postback' };
     }
 
     return { ok: false, reason: 'unverifiable-provider' };
@@ -1435,6 +1644,142 @@ function pickClickIdFrom(obj) {
     return '';
 }
 
+// PARK A CLICK, ONCE.
+//
+// The row is the proof that a specific provider click exists, and it is
+// created ONLY after the provider has confirmed that click. One row per click
+// id, so the same click cannot be spent twice - by a replayed callback, by a
+// second visitor, or by the same visitor pressing the button again.
+//
+// The row is written before the visitor is sent back, and spent (deleted)
+// only after the completion has been recorded, so a provider that is briefly
+// unreachable costs the visitor nothing.
+//
+// There is also an INDEX, keyed by reward and step, holding the most recent
+// verified click for that step. It exists for the providers whose documented
+// mechanism is a SERVER-TO-SERVER postback (LootLabs): the provider calls us
+// with the click id, and the visitor's browser never sees that click id, so
+// there is nothing for the page to submit. The index is how the visitor's own
+// next poll finds the click that the provider left for them.
+//
+// A newer click replaces the index entry, because watching the ad twice is
+// normal and the second attempt is the one that should count.
+const RCLKI_PREFIX = 'sh_rclki_';
+
+function clickIndexKey(rid, idx) { return RCLKI_PREFIX + rid + '_' + idx; }
+
+async function parkClick(env, clickId, rec) {
+    if (!env.LOADERS_KV || !clickId) return { ok: false, reason: 'no-click-id' };
+    const key = RCLICK_PREFIX + clickId;
+    try {
+        const existing = await env.LOADERS_KV.get(key);
+        if (existing) return { ok: false, reason: 'click-replayed' };
+        await env.LOADERS_KV.put(key, JSON.stringify(rec), { expirationTtl: 7200 });
+        // The index is a pointer, not the proof. It points at the click row.
+        await env.LOADERS_KV.put(clickIndexKey(rec.r, rec.i),
+            JSON.stringify({ clickId: clickId, ip: rec.ip || '', at: rec.at || Date.now() }),
+            { expirationTtl: 7200 });
+    } catch (e) {
+        // A KV failure must not turn into a pass. If the click cannot be
+        // parked it cannot be spent, so the completion cannot happen.
+        return { ok: false, reason: 'park-failed' };
+    }
+    return { ok: true };
+}
+
+async function readParkedClick(env, clickId) {
+    if (!env.LOADERS_KV || !clickId) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch (e) { return null; }
+}
+
+// The click the provider most recently left for THIS step, if any.
+async function readIndexedClick(env, rid, idx) {
+    if (!env.LOADERS_KV) return null;
+    try {
+        const raw = await env.LOADERS_KV.get(clickIndexKey(rid, idx));
+        if (!raw) return null;
+        const ptr = JSON.parse(raw);
+        if (!ptr || !ptr.clickId) return null;
+        const row = await readParkedClick(env, ptr.clickId);
+        if (!row) return null;
+        if (row.spent) return null;
+        row.indexedIp = ptr.ip || '';
+        return row;
+    } catch (e) { return null; }
+}
+
+async function spendParkedClick(env, clickId) {
+    if (!env.LOADERS_KV || !clickId) return;
+    // THE ROW IS NOT DELETED, IT IS SPENT.
+    //
+    // It used to be deleted, and that reopened the replay: once the row was
+    // gone, the same click id could be parked again by hitting the postback
+    // url a second time, and the second visit to the same checkpoint would
+    // find a fresh "verified" row. The row now says spent, and parking a
+    // click that has a row - parked OR spent - is refused.
+    try {
+        const raw = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId);
+        if (raw) {
+            const row = JSON.parse(raw);
+            row.spent = true;
+            row.spentAt = Date.now();
+            await env.LOADERS_KV.put(RCLICK_PREFIX + clickId, JSON.stringify(row), { expirationTtl: 7200 });
+        }
+    } catch (e) { /* expires anyway */ }
+}
+
+// THE PROVIDER LEFT A CLICK FOR THIS STEP, AND IT WAS MADE FROM THIS
+// NETWORK. COUNT IT.
+//
+// This is the other half of the server-to-server postback. LootLabs' own
+// documentation describes a GET to the publisher's postback url carrying
+// click_id, ip and unique_id - the provider calls the server, the browser
+// never sees the click id, and the visitor's page has nothing to submit.
+//
+// So the worker's poll looks for a verified click the provider left for the
+// step that is open, and counts it when the click was made from the same
+// network the visitor is now on. The IP is the binding: the click happened
+// where the visitor is.
+//
+// Without the IP there is no binding, and nothing is counted - a click that
+// cannot be tied to a machine cannot be tied to a visitor.
+async function completeStepFromProviderClick(env, rid, ip, ses) {
+    if (!ses || !ip) return false;
+    const i = Number(ses.stepIndex);
+    if (!Number.isInteger(i) || i < 0) return false;
+    if ((ses.done || []).indexOf(i) !== -1) return false;
+    const pj = await readIndexedClick(env, rid, i);
+    if (!pj || !pj.verified) return false;
+    if (pj.r !== rid || pj.i !== i) return false;
+    const clickIp = pj.ip || pj.indexedIp || '';
+    if (!clickIp || clickIp !== ip) return false;
+
+    let recorded = false;
+    let clickId = '';
+    await withSesLock(env, rid, ses.sid, async function () {
+        const cur = await loadSes(env, rid, ses.sid);
+        if (!cur) return;
+        if ((cur.done || []).indexOf(i) === -1) {
+            cur.done = (cur.done || []).concat([i]);
+            cur.stepIndex = -1;
+            cur.stepAt = 0;
+            await saveSes(env, cur);
+        }
+        const back = await loadSes(env, rid, ses.sid);
+        recorded = !!(back && (back.done || []).indexOf(i) !== -1);
+    });
+    if (recorded) {
+        const idx = await readIndexedClick(env, rid, i);
+        clickId = (idx && idx.clickId) || '';
+        await spendParkedClick(env, clickId);
+    }
+    return recorded;
+}
+
 // Which query parameters the provider actually sent, NAMES ONLY. A checkpoint
 // that arrives with no click id is otherwise a mystery - the owner cannot see
 // what the provider's redirect contained. Values are never echoed, because a
@@ -1532,10 +1877,18 @@ function rewardCallbackPage(origin, verdict, reason, until, remaining) {
     // true: nothing is wrong, the check simply has not completed, and here is
     // what to do about it.
     const pending = verdict === 'unverified';
+    // A THIRD STATE, AND IT IS THE OWNER'S PROBLEM TO FIX.
+    //
+    // "Unverifiable" means the provider did not report a click at all, so
+    // there is nothing to verify. The visitor did nothing wrong and cannot
+    // do anything about it either - the checkpoint as configured cannot be
+    // completed by anybody. The page has to say that, because the alternative
+    // is the visitor bouncing between the provider and this site forever.
+    const unverifiable = verdict === 'unverifiable';
     const left = until ? fmtMins(until - Date.now()) : '';
     const title = ok
         ? (remaining > 0 ? ('Checkpoint done - ' + remaining + ' to go') : 'All checkpoints complete')
-        : (pending ? 'Not verified yet' : 'Checkpoint could not be verified');
+        : (pending ? 'Not verified yet' : (unverifiable ? 'This checkpoint cannot be verified' : 'Checkpoint could not be verified'));
     const body = ok
         ? '<p class="s">Verified. You can close this tab and return to the reward page.</p>'
         : (pending
@@ -1547,10 +1900,16 @@ function rewardCallbackPage(origin, verdict, reason, until, remaining) {
             + '<p class="r">' + String(reason || 'not-confirmed').replace(/[<>&]/g, '') + '</p>'
             + '<p class="s">The provider reports a completed visit a few seconds after the ad closes. Go back, give it a moment, and press Verify again. You can do that as many times as you need, on any device.</p>'
             + '<p class="s">If you are running an ad blocker or a privacy extension, it can stop the provider from reporting back at all. Turning it off for this site is usually all it takes.</p>'
-            : '<p class="s">This checkpoint was not accepted.</p>'
-            + '<p class="r">' + String(reason || 'unknown').replace(/[<>&]/g, '') + '</p>'
-            + (left ? '<p class="s">If this was an attempt to bypass, your browser is paused for ' + left + '.</p>' : '')
-            + '<p class="s">Ad blockers and privacy extensions can stop the provider from reporting back. Retrying will not help if one is active.</p>');
+            : (unverifiable
+                ? '<p class="s">The provider did not report a click for this visit, so there is nothing that can be verified. '
+                + 'This is a configuration problem on the reward, not something you did.</p>'
+                + '<p class="r">' + String(reason || 'no-click-id').replace(/[<>&]/g, '') + '</p>'
+                + '<p class="s">The owner needs to set this checkpoint up so the provider sends a click id back to the reward page. '
+                + 'Until then this checkpoint cannot be completed by anybody, and you have NOT been penalised.</p>'
+                : '<p class="s">This checkpoint was not accepted.</p>'
+                + '<p class="r">' + String(reason || 'unknown').replace(/[<>&]/g, '') + '</p>'
+                + (left ? '<p class="s">If this was an attempt to bypass, your browser is paused for ' + left + '.</p>' : '')
+                + '<p class="s">Ad blockers and privacy extensions can stop the provider from reporting back. Retrying will not help if one is active.</p>'));
     return new Response(
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         + '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
@@ -3052,6 +3411,9 @@ const RATE_BUCKETS = {
     'reward-cb':      { limit: 40,  window: 60 * 1000 },
 // Once per checkpoint, so this only has to cover a retry or two.
 'reward-submit':  { limit: 12,  window: 60 * 1000 },
+// A bypass REPORT. It writes a blacklist entry, so it must not be a way
+// to lock somebody else out: a handful a minute, per identity.
+'reward-block':   { limit: 5,   window: 60 * 1000 },
     'reward-save':    { limit: 30,  window: 60 * 1000 },
     // A download link is a bearer token for the whole artifact, so a flood
     // against one is either scraping or a shared link running away. Tight
@@ -7885,6 +8247,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         dynamicUrl: !!st.dynamicUrl,
                         authToken: String(st.authToken || '').slice(0, 200),
                         apiKey: String(st.apiKey || '').slice(0, 200),
+                        // OPTIONAL. The Linkvertise link (or zone) the click has
+                        // to belong to. A click id from ANY campaign is a real
+                        // click, and without this it would count; with it, the
+                        // provider's own answer has to mention this link.
+                        linkId: String(st.linkId || '').slice(0, 120),
                         postbackUrl: String(st.postbackUrl || '').slice(0, 400)
                     },
                     completed: Number((prevById[String(c.id || '')] || {}).completed) || 0,
@@ -8003,8 +8370,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // ignored entirely, because the whole point is that it cannot be
             // reset by clearing storage.
             const secret0 = await grantSecret(env);
-            const mySid = await deriveSesId(secret0, rid, fp, ip);
-            let ses = await loadSes(env, rid, mySid);
+            const resolved0 = await resolveSes(env, rid, fp, ip, secret0);
+            const mySid = resolved0.sid;
+            let ses = resolved0.ses;
             if (!ses) {
                 ses = { rid: rid, sid: mySid, fp: fp, ip: ip, ua: reqUa(request), done: [], issued: [], startedAt: now, stepIndex: -1, stepAt: 0, nonces: {} };
             }
@@ -8027,7 +8395,10 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const total = (r.checkpoints || []).length;
 
             if (next.index === -1) {
-                await saveSes(env, ses);
+                // Nothing to open. This does NOT write the session: the write
+                // would carry whatever `done` was when the request started, and
+                // a completion that landed in between would be rolled back.
+                // A read is all this route needs here.
                 return jsonResponse({
                     ok: true, sid: ses.sid, complete: true, done: doneCount, total: total,
                     keys: ses.issued || []
@@ -8037,15 +8408,54 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const cp = r.checkpoints[next.index];
             const need = providerNeeds(cp);
 
-            if (ses.stepIndex !== next.index) {
-                ses.stepIndex = next.index;
-                ses.stepAt = now;
-                ses.nonces = ses.nonces || {};
-                ses.nonces[next.index] = newId('n');
-                await saveSes(env, ses);
-            }
-
+            // OPENING A STEP WRITES THE SESSION - AND ONLY WHEN IT CHANGES.
+            //
+            // The old code wrote it unconditionally at the end of the route,
+            // every single time. That write carried the whole session blob as
+            // it was read at the START of the request, so a completion that
+            // was recorded while this request was in flight was silently
+            // rolled back by it. The page calls this route on every load and
+            // after every completion, so the race was not rare - and the
+            // symptom was "the checkpoint sometimes does not advance".
+            //
+            // The write is now under the session lock, it re-reads first, and
+            // it merges only the fields this route owns (which step is open,
+            // when it was opened, the nonce for it). The progress - the `done`
+            // list and the earned keys - is never written from here, so it
+            // cannot be lost.
             const secret = await grantSecret(env);
+            await withSesLock(env, rid, ses.sid, async function () {
+                let cur = await loadSes(env, rid, ses.sid);
+                if (!cur) {
+                    // FIRST TIME THIS FINGERPRINT HAS OPENED THIS REWARD. The
+                    // session has to be CREATED here, not just updated - and it
+                    // has to be created under the lock, or two simultaneous
+                    // first visits would each write a session and one would be
+                    // lost.
+                    cur = {
+                        rid: rid, sid: ses.sid, fp: fp, ip: ip, ua: reqUa(request),
+                        done: [], issued: [], startedAt: now,
+                        stepIndex: -1, stepAt: 0, nonces: {}
+                    };
+                }
+                if (cur.stepIndex === next.index) {
+                    // Already open. Do not touch the session at all.
+                    ses.stepIndex = cur.stepIndex;
+                    ses.stepAt = cur.stepAt;
+                    ses.nonces = cur.nonces;
+                    return;
+                }
+                cur.stepIndex = next.index;
+                cur.stepAt = now;
+                cur.nonces = cur.nonces || {};
+                cur.nonces[next.index] = newId('n');
+                cur.ip = ip;
+                await saveSes(env, cur);
+                ses.stepIndex = cur.stepIndex;
+                ses.stepAt = cur.stepAt;
+                ses.nonces = cur.nonces;
+            });
+
             const stepToken = await signStep(secret, {
                 rid: rid, sid: ses.sid, i: next.index,
                 nonce: ses.nonces[next.index], exp: now + REWARD_STEP_TTL_MS
@@ -8053,7 +8463,11 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const origin = new URL(request.url).origin;
             const verifyUrl = origin + '/sh/cp/' + cp.provider + '?t=' + encodeURIComponent(stepToken);
 
-            await saveSes(env, ses);
+            // The progress is re-read, not remembered: the completion that
+            // landed during this request is in here, and the page is told the
+            // truth.
+            const fresh = await loadSes(env, rid, ses.sid);
+            const doneNow = fresh ? (fresh.done || []).length : doneCount;
             return jsonResponse({
                 ok: true, sid: ses.sid,
                 step: {
@@ -8069,9 +8483,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     // than a silent stall.
                     ready: need.ok, notReady: need.ok ? '' : need.reason
                 },
-                done: doneCount, total: total, doneList: ses.done || [],
+                done: doneNow, total: total, doneList: (fresh && fresh.done) || ses.done || [],
                 complete: false,
-                keys: ses.issued || [],
+                keys: (fresh && fresh.issued) || ses.issued || [],
                 stepExpired: !!next.expired
             });
         }
@@ -8096,9 +8510,21 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
 
             // Same derivation as /sh/reward/start, so a visitor who cleared
             // localStorage still sees their own progress and their own keys.
-            const sid0 = await deriveSesId(await grantSecret(env), rid, fp, ip);
-            const ses = await loadSes(env, rid, sid0);
+            const sid0 = (await resolveSes(env, rid, fp, ip, await grantSecret(env))).sid;
+            let ses = await loadSes(env, rid, sid0);
             if (!ses) return jsonResponse({ ok: true, sid: '', done: 0, total: (r.checkpoints || []).length, keys: [], complete: false });
+
+            // A PROVIDER POSTBACK MAY HAVE LEFT A CLICK FOR THE OPEN STEP.
+            //
+            // LootLabs' documented mechanism is a server-to-server GET, so the
+            // browser never holds the click id and the page has nothing to
+            // submit. The click is bound to the visitor by the IP the provider
+            // reported, and this poll is where it is picked up.
+            if (ses && (ses.done || []).length < (r.checkpoints || []).length) {
+                const counted = await completeStepFromProviderClick(env, rid, ip, ses);
+                if (counted) ses = await loadSes(env, rid, sid0);
+            }
+
             const total = (r.checkpoints || []).length;
             const done = (ses.done || []).length;
             return jsonResponse({
@@ -8130,8 +8556,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const bl = await blacklistGet(env, fp, ip);
             if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
 
-            const sid0 = await deriveSesId(await grantSecret(env), rid, fp, ip);
-            const ses = await loadSes(env, rid, sid0);
+            const resolvedC = await resolveSes(env, rid, fp, ip, await grantSecret(env));
+            const sid0 = resolvedC.sid;
+            const ses = resolvedC.ses;
             if (!ses) return jsonResponse({ ok: false, error: 'No session - open the reward first.' }, 400);
             if (ses.fp && fp && ses.fp !== fp) return jsonResponse({ ok: false, error: 'blacklisted' }, 403);
 
@@ -8144,27 +8571,73 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (cooldownUntil > Date.now()) {
                 return jsonResponse({ ok: false, error: 'cooldown', until: cooldownUntil });
             }
-            const issued = (ses.issued || []).length;
-            if (issued >= (r.maxKeys || 1)) {
+
+            // THE CLAIM IS ATOMIC AND IDEMPOTENT.
+            //
+            // The cap check and the mint have to happen under one lock, or two
+            // requests that arrive together both see "0 of 1 issued" and both
+            // mint. The visitor asked for one key and would get two - and the
+            // session's issued list would only remember one of them, so the
+            // second key would exist in the license table with nobody able to
+            // see it.
+            //
+            // Under the lock the session is re-read, the cap is checked
+            // against the FRESH count, and the key is minted and recorded
+            // before the lock is released.
+            let minted = null;
+            let keys = ses.issued || [];
+            let maxed = false;
+            await withSesLock(env, rid, sid0, async function () {
+                const cur = await loadSes(env, rid, sid0);
+                if (!cur) return;
+                const curIssued = cur.issued || [];
+                if (curIssued.length >= (r.maxKeys || 1)) {
+                    maxed = true;
+                    keys = curIssued;
+                    return;
+                }
+                const key = await issueRewardKey(env, r, cur);
+                minted = key;
+                keys = cur.issued || [];
+            });
+            if (maxed) {
                 // Already at the cap. The existing keys are returned rather than
                 // an error, because the visitor still needs to see what they
                 // earned; the cap is enforced by refusing to mint more.
-                return jsonResponse({ ok: true, keys: ses.issued, maxed: true });
+                return jsonResponse({ ok: true, keys: keys, maxed: true });
             }
-
-            const key = await issueRewardKey(env, r, ses);
-            return jsonResponse({ ok: true, keys: ses.issued, key: key, maxed: false });
+            if (!minted) {
+                return jsonResponse({ ok: false, error: 'The key could not be issued. Try again.', retryable: true }, 503);
+            }
+            return jsonResponse({ ok: true, keys: keys, key: minted, maxed: false });
         }
 
         // VISITOR: report a bypass attempt. Held server-side, keyed on
         // fingerprint AND ip, so clearing site data does not clear the ban.
         if (url.pathname === '/sh/reward/block' && request.method === 'POST') {
+            // A REPORT IS NOT A FREE-FOR-ALL BAN MACHINE.
+            //
+            // This route takes a fingerprint from the request body and writes a
+            // blacklist entry for it, so it was worth bounding: it is now rate
+            // limited, and the reward it names has to exist. The fingerprint
+            // itself is not a secret - it is a hash of the visitor's browser -
+            // so the honest statement is that this route can pause a
+            // fingerprint for up to eight minutes (the strikes double from one
+            // minute, four deep) and cannot grant anything. It cannot be used
+            // to earn a key, and it cannot be used to take one away.
+            const limited = rewardRate(request, url, 'reward-block');
+            if (limited) return limited;
             let body = {};
             try { body = await request.json(); } catch (e) { body = {}; }
             const fp = String(body.fp || '').slice(0, 64);
             const ip = reqIp(request);
+            const blRid = String(body.rid || '').slice(0, 40);
             if (!fp && !ip) return jsonResponse({ ok: false, error: 'nothing to key on' }, 400);
-            const entry = await blacklistAdd(env, fp, ip, String(body.reason || 'bypass attempt').slice(0, 200), String(body.rid || '').slice(0, 40));
+            if (blRid) {
+                const r = await loadReward(env, blRid);
+                if (!r) return jsonResponse({ ok: false, error: 'unknown reward' }, 404);
+            }
+            const entry = await blacklistAdd(env, fp, ip, String(body.reason || 'bypass attempt').slice(0, 200), blRid);
             if (!entry) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             return jsonResponse({ ok: true, until: entry.until, strikes: entry.strikes });
         }
@@ -8227,6 +8700,10 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const idx = Number(url.searchParams.get('i'));
                 const site = String(url.searchParams.get('site') || '').slice(0, 300);
                 const clickId = pickClickId(url);
+                // The IP THE PROVIDER SAW. LootLabs' documented postback
+                // carries it, and it is the only thing that ties a click to
+                // the machine that made it.
+                const reportedIp = String(url.searchParams.get('ip') || '').slice(0, 64);
                 const back = site.replace(/\/+$/, '') + '/reward.html';
 
                 if (!rid || !Number.isInteger(idx) || idx < 0 || !site) {
@@ -8239,35 +8716,76 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 if (r.checkpoints[idx].provider !== provider) {
                     return rewardCallbackPage(origin, 'failed', 'provider-mismatch');
                 }
-                // No click id means the provider did not append one. The step
-                // token is already signed and verified, so we still accept the
-                // postback — but we note the missing click id for diagnostics.
-                // (Previously this hard-failed, which meant no checkpoint could
-                // ever complete with providers that don't append click_id.)
-                // The click is parked, single use — but only when the provider
-                // actually sent a click id. Many providers (Linkvertise without
-                // the dashboard macro, LootLabs, etc.) redirect here with no
-                // click id at all; the signed step token is still valid proof
-                // of a genuine visit, so the checkpoint completes without it.
-                if (clickId) {
-                    let parked = null;
-                    try {
-                        parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId);
-                    } catch (e) { /* treated as absent below */ }
-                    if (parked) {
-                        return rewardCallbackPage(origin, 'failed', 'click-replayed');
+                const cp = r.checkpoints[idx];
+
+                // NO CLICK ID MEANS NO PROOF, AND THE STEP CANNOT COUNT.
+                //
+                // This used to bounce the visitor back to the reward page
+                // anyway, with nothing to submit. The page then asked for the
+                // next checkpoint, the visitor watched the ad again, and the
+                // provider sent them back to the same dead end - forever. That
+                // is the "stuck in a loop between the provider and the site"
+                // report, and it was invisible: every request looked fine.
+                //
+                // Without a click id there is nothing for the provider's API
+                // to be asked about, so this checkpoint cannot be verified -
+                // for this visitor or for anyone. The page now says so, and
+                // the owner is told in the panel, instead of the visitor
+                // discovering it by looping.
+                if (!clickId) {
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'reward.unverifiable', outcome: 'unverified', rid: rid,
+                        reason: 'no-click-id', provider: provider, step: idx, at: now
+                    }));
+                    return rewardCallbackPage(origin, 'unverifiable', 'no-click-id');
+                }
+
+                // THE CLICK IS VERIFIED HERE, WITH THE PROVIDER, RIGHT NOW.
+                //
+                // It has to be here and not later. Linkvertise's anti-bypass
+                // token is short lived - it is only valid for seconds after
+                // the redirect and is deleted after that - so a check that
+                // runs when the visitor's page submits, minutes later, always
+                // fails. Verifying at the callback is both the only moment
+                // that works and the moment the provider is actually
+                // answering.
+                //
+                // It also means the parked row is a VERIFIED row. It used to
+                // be an "a request arrived with this click id" row, which
+                // anyone could produce by opening the postback url by hand -
+                // and the provider check that was supposed to catch that
+                // only looked at whether the API answered 200.
+                const verdict = await verifyProvider(cp, {
+                    clickId: clickId, ip: reportedIp || reqIp(request), elapsedMs: null
+                });
+                if (!verdict.ok) {
+                    if (isTransientReason(verdict.reason)) {
+                        ctx.waitUntil(notifyTelemetry(env, {
+                            event: 'reward.unverified', outcome: 'unverified', rid: rid,
+                            reason: verdict.reason, provider: provider, step: idx, at: now
+                        }));
+                        return rewardCallbackPage(origin, 'unverified', verdict.reason);
                     }
-                    try {
-                        await env.LOADERS_KV.put(RCLICK_PREFIX + clickId,
-                            JSON.stringify({ r: rid, i: idx, at: now }),
-                            { expirationTtl: 7200 });
-                    } catch (e) { /* verified again on submit; not fatal here */ }
+                    ctx.waitUntil(notifyTelemetry(env, {
+                        event: 'reward.rejected', outcome: 'rejected', rid: rid,
+                        reason: verdict.reason, provider: provider, step: idx, at: now
+                    }));
+                    return rewardCallbackPage(origin, 'failed', verdict.reason);
+                }
+
+                // PARK THE VERIFIED CLICK. One row per click id, so one click
+                // cannot be spent twice, and the row carries the provider's
+                // verdict and the IP the provider saw.
+                const parked = await parkClick(env, clickId, {
+                    r: rid, i: idx, at: now, ip: reportedIp || '',
+                    provider: provider, verified: true, detail: verdict.detail
+                });
+                if (!parked.ok) {
+                    return rewardCallbackPage(origin, 'failed', parked.reason);
                 }
 
                 const sep = back.indexOf('?') < 0 ? '?' : '&';
-                const resumePart = clickId
-                    ? '&resume=' + encodeURIComponent(clickId)
-                    : '';
+                const resumePart = '&resume=' + encodeURIComponent(clickId);
                 return new Response(null, {
                     status: 302,
                     headers: {
@@ -8427,7 +8945,11 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     let body = {};
     try { body = await request.json(); } catch (e) { body = {}; }
     const rid = String(body.rid || '').slice(0, 40);
-    const sid = String(body.sid || '').slice(0, 40);
+    // The client sends a session id. It is NOT trusted: the session is looked
+    // up by the id DERIVED from the fingerprint, so a client cannot point at
+    // somebody else's session. The value the client sends is only used to
+    // notice that it disagrees.
+    const clientSid = String(body.sid || '').slice(0, 40);
     const fp = String(body.fp || '').slice(0, 64);
     // clickId arrives either in the POST body or in the URL (postback redirects
     // to reward.html?...&resume=<clickId>)
@@ -8438,12 +8960,42 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     // genuine visit. Providers that don't append click_id to the redirect
     // (Linkvertise without the dashboard macro, LootLabs, etc.) should still
     // be able to complete the checkpoint.
-    if (!rid || !sid) return jsonResponse({ ok: false, error: 'bad request' }, 400);
+    if (!rid || !fp) return jsonResponse({ ok: false, error: 'bad request' }, 400);
+    // A CLICK ID IS REQUIRED. ALWAYS.
+    //
+    // This endpoint used to treat a missing click id as proof:
+    //
+    //     if (!clickId) { verdict = { ok: true, detail: 'no-click-id (skipped)' }; }
+    //
+    // The comment claimed the signed step token was sufficient - but that is
+    // the OTHER route. This one is the static postback path, and there is no
+    // signed token in it at all. So the rule was: POST this endpoint with no
+    // click id and the checkpoint completes, with no provider contacted, no
+    // click watched, and no evidence of anything.
+    //
+    // Two requests per checkpoint, then a key. That is the whole bypass, and
+    // it is what "calling the completion endpoint directly" means.
+    if (!clickId) {
+        return jsonResponse({
+            ok: false, error: 'No click was reported by the provider, so there is nothing to count.'
+        }, 400);
+    }
 
     const r = await loadReward(env, rid);
     if (!r) return jsonResponse({ ok: false, error: 'unknown reward' }, 404);
-    const ses = await loadSes(env, rid, sid);
+
+    // The session is found by the DERIVED id, not by the one the client sent.
+    // A client cannot point at somebody else's session.
+    const secret = await grantSecret(env);
+    const resolved = await resolveSes(env, rid, fp, reqIp(request), secret);
+    const sid = resolved.sid;
+    const ses = resolved.ses;
     if (!ses) return jsonResponse({ ok: false, error: 'no session' }, 404);
+    if (clientSid && clientSid !== sid) {
+        // Not fatal - the derived id wins - but recorded, because a client that
+        // keeps sending a different one is not this browser's.
+        S.events.push({ t: now, executor: 'reward-sid-mismatch' });
+    }
 
     // The session belongs to the browser that opened it. Handing someone else's
     // sid must not transfer their progress - the same rule /sh/reward/start
@@ -8467,87 +9019,163 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     }
     const cp = r.checkpoints[i];
 
-    // THE CLICK MUST HAVE COME BACK THROUGH OUR OWN POSTBACK.
+    // THE CLICK MUST HAVE BEEN REPORTED BY THE PROVIDER, AND VERIFIED.
     //
-    // Without this the endpoint would accept any click id the visitor felt like
-    // typing, and the provider API check would be the only thing standing between
-    // a guessed string and a key. The parked row is proof the provider actually
-    // redirected here, and it is consumed here so one click cannot be spent twice.
-    // But only when the provider actually sent a click id — many don't.
-    if (clickId) {
-        let parked = null;
-        try { parked = await env.LOADERS_KV.get(RCLICK_PREFIX + clickId); } catch (e) { parked = null; }
-        if (!parked) {
-            return jsonResponse({ ok: false, error: 'That click was not reported by the provider. Watch the ad all the way through.' });
-        }
-    let pj = null;
-    try { pj = JSON.parse(parked); } catch (e) { pj = null; }
-    if (!pj || pj.r !== rid || pj.i !== i) {
+    // The parked row is written by the worker itself, and only AFTER the
+    // provider confirmed the click (see the static postback). It is the
+    // evidence that this click is real, that it belongs to THIS reward and
+    // THIS checkpoint, and - when the provider reports the clicker's IP -
+    // that it came from the machine that is now asking for the reward.
+    const pj = await readParkedClick(env, clickId);
+    if (!pj) {
+        return jsonResponse({ ok: false, error: 'That click was not reported by the provider. Watch the ad all the way through.' });
+    }
+    if (!pj.verified) {
+        return jsonResponse({ ok: false, error: 'That click was not verified by the provider.' });
+    }
+    if (pj.spent) {
+        return jsonResponse({ ok: false, error: 'That click has already been used.' });
+    }
+    if (pj.r !== rid || pj.i !== i) {
         return jsonResponse({ ok: false, error: 'That click belongs to a different checkpoint.' });
     }
-    try { await env.LOADERS_KV.delete(RCLICK_PREFIX + clickId); } catch (e) { /* verified once only */ }
+
+    // THE IP THE PROVIDER SAW, AGAINST THE IP ASKING FOR THE REWARD.
+    //
+    // This is the strongest signal the providers actually give us, and
+    // Luarmor says the same thing: they are "limited to the APIs provided by
+    // advertiser platforms". LootLabs' postback carries the clicker's IP,
+    // Work.Ink's confirm endpoint takes it, and the reward session is bound
+    // to an IP too. A click made on one machine and claimed from another is
+    // not a person who watched an ad.
+    //
+    // It REFUSES the completion, and it does NOT punish anybody. A phone that
+    // changes network between the ad and the callback is a normal thing that
+    // happens, and this repository has been bitten by exactly that before: a
+    // penalty keyed on the address locked out a whole household, and a
+    // two-hour ban for a misclick cost the owner an afternoon. Changing your
+    // IP address is listed as something a visitor must never be punished for.
+    //
+    // So the click is refused - the reward is not paid out - and the refusal
+    // is recorded, but no strike is added and nobody is banned.
+    //
+    // Only applied when the provider reported an IP. A provider that does not
+    // send an IP is not a reason to refuse an honest visitor.
+    const reqIpNow = reqIp(request);
+    if (pj.ip && reqIpNow && pj.ip !== reqIpNow) {
+        ctx.waitUntil(notifyTelemetry(env, {
+            event: 'reward.rejected', outcome: 'rejected', rid: rid,
+            reason: 'ip-mismatch', provider: cp.provider, step: i, at: now
+        }));
+        return jsonResponse({
+            ok: false, error: 'That click was made on a different network, so it cannot be counted. '
+                + 'No penalty has been added - try the ad again.'
+        }, 400);
     }
 
     const elapsedMs = ses.stepAt ? (now - ses.stepAt) : null;
 
-    // When no click_id was provided by the provider, skip provider verification
-    // entirely — the signed step token is already sufficient proof of a genuine
-    // visit.  Only verify with the provider when we actually have a clickId.
-    let verdict;
-    if (!clickId) {
-        verdict = { ok: true, detail: 'no-click-id (skipped)' };
-    } else {
-        verdict = await verifyProvider(cp, { clickId: clickId, ip: reqIp(request), elapsedMs: elapsedMs, confirmed: true });
+    // The provider was already asked, at the callback, and the answer is in
+    // the parked row. It is NOT asked again here: Linkvertise's anti-bypass
+    // token is only valid for seconds, so a second check would always fail
+    // and every honest visitor would be told the checkpoint did not count.
+    if (elapsedMs != null && elapsedMs < REWARD_MIN_DWELL_MS) {
+        return jsonResponse({ ok: false, error: 'Not counted yet - too-fast', transient: true });
     }
-    if (!verdict.ok) {
-        // Same fairness rule as the signed callback: a not-yet-reported click or
-        // a too-fast return is a transient answer with no penalty at all. The
-        // visitor is told what to do and may try again.
-        const TRANSIENT = ['no-click-id', 'too-fast', 'lv-unreachable', 'wi-unreachable',
-            'll-unreachable', 'lv-api-', 'wi-not-confirmed', 'll-api-'];
-        const transient = TRANSIENT.some(function (x) {
-            return verdict.reason === x || String(verdict.reason).indexOf(x) === 0;
-        });
-        if (transient) {
-            ctx.waitUntil(notifyTelemetry(env, {
-                event: 'reward.unverified', outcome: 'unverified', rid: rid,
-                reason: verdict.reason, provider: cp.provider, at: now
-            }));
-            return jsonResponse({ ok: false, error: 'Not counted yet - ' + verdict.reason, transient: true });
-        }
-        const entry = await blacklistAdd(env, fp, '', 'checkpoint ' + (i + 1) + ' via ' + cp.provider + ': ' + verdict.reason, rid);
-        ctx.waitUntil(notifyTelemetry(env, {
-            event: 'reward.blocked', outcome: 'blocked', rid: rid,
-            reason: verdict.reason, provider: cp.provider, at: now
-        }));
-        return jsonResponse({ ok: false, error: 'blocked', reason: verdict.reason, until: entry ? entry.until : now + REWARD_BLACKLIST_MS, strikes: entry ? entry.strikes : 1 });
-    }
+
+    // THE CLICK IS SPENT ONLY NOW, AFTER EVERY CHECK HAS PASSED.
+    //
+    // It used to be deleted before the provider was asked, so a provider that
+    // was briefly unreachable consumed the click and the visitor had to watch
+    // the ad again. A transient failure must not cost the visitor the ad.
+    await spendParkedClick(env, clickId);
 
     if ((ses.done || []).indexOf(i) !== -1) {
         return jsonResponse({ ok: true, done: ses.done.length, total: (r.checkpoints || []).length, keys: ses.issued || [], already: true });
     }
 
-    ses.done = (ses.done || []).concat([i]);
-    ses.stepIndex = -1;
-    ses.stepAt = 0;
+    // THE COMPLETION IS RECORDED UNDER THE SESSION LOCK, AND RE-READ AFTER.
+    //
+    // The write is a read-modify-write of one JSON blob, and the page's own
+    // /sh/reward/start writes the same blob. Without the lock and the
+    // re-read, one of the two writes wins and the completion is silently
+    // gone - the visitor is back at 0/1 with a key they earned, watching the
+    // ad again. That is the "the checkpoint progression sometimes does not
+    // advance" bug, and it is a race, so it only shows up sometimes.
     const total = (r.checkpoints || []).length;
-    if (ses.done.length >= total) ses.lastCompletion = now;
+    let recorded = false;
+    await withSesLock(env, rid, sid, async function () {
+        const cur = await loadSes(env, rid, sid);
+        if (!cur) return;
+        if ((cur.done || []).indexOf(i) === -1) {
+            cur.done = (cur.done || []).concat([i]);
+            cur.stepIndex = -1;
+            cur.stepAt = 0;
+            if (cur.done.length >= total) cur.lastCompletion = now;
+            await saveSes(env, cur);
+        }
+        // Read it back. If the completion is not there, another writer landed
+        // after us - apply it again rather than lose it.
+        const back = await loadSes(env, rid, sid);
+        recorded = !!(back && (back.done || []).indexOf(i) !== -1);
+        if (!recorded) {
+            const again = await loadSes(env, rid, sid);
+            if (again) {
+                again.done = (again.done || []).concat([i]);
+                again.stepIndex = -1;
+                again.stepAt = 0;
+                if (again.done.length >= total) again.lastCompletion = now;
+                await saveSes(env, again);
+                recorded = true;
+            }
+        }
+    });
+    if (!recorded) {
+        return jsonResponse({ ok: false, error: 'The completion could not be recorded. Try again.', retryable: true }, 503);
+    }
+
+    // The counters live on the reward record, which is a SEPARATE blob from
+    // the session, so a completion cannot roll back the owner's settings.
     cp.completed = (cp.completed || 0) + 1;
     const spent = elapsedMs ? elapsedMs / 1000 : 0;
     cp.avgTimeSec = cp.avgTimeSec ? (cp.avgTimeSec * 0.7 + spent * 0.3) : spent;
     await saveReward(env, r);
-    await saveSes(env, ses);
 
     ctx.waitUntil(notifyTelemetry(env, {
         event: 'reward.step', outcome: 'ok', rid: rid,
-        provider: cp.provider, step: i, detail: verdict.detail, at: now
+        provider: cp.provider, step: i, detail: pj.detail || 'verified', at: now
     }));
-    return jsonResponse({ ok: true, done: ses.done.length, total: total, keys: ses.issued || [] });
+    const after = await loadSes(env, rid, sid);
+    return jsonResponse({
+        ok: true, done: (after && (after.done || []).length) || 0,
+        total: total, keys: (after && after.issued) || []
+    });
 }
 
-// The provider's server-to-server postback (LootLabs advanced, and any
-        // provider that supports one). Same verification, no user agent, so it
-        // is held to the same fail-closed rule.
+// THE PROVIDER'S SERVER-TO-SERVER POSTBACK.
+//
+// LootLabs' documented mechanism (help.lootlabs.gg, "Postback API"): every
+// time a user completes a task, the provider sends a GET to the publisher's
+// postback url with
+//
+//     click_id   identifies the link / the visitor
+//     ip         the IP of the user who completed the task
+//     unique_id  a unique id per completed task, for de-duplication
+//
+// There is no documented "ask LootLabs about this click" endpoint, so the
+// postback IS the evidence - and it has to be AUTHENTICATED, or anyone could
+// call the url and complete a checkpoint. The owner puts a secret in the
+// postback url (the same API key they already paste for this provider) and
+// the worker compares it in constant time.
+//
+// The click is parked with the IP the provider reported, and the visitor's
+// own poll picks it up and counts it - that poll is bound to the visitor's
+// IP, which is what ties the provider's click to a machine.
+//
+// The old implementation called lootlabs.com/api/lootlabs_postback with the
+// key in a `status` parameter. That endpoint is not in LootLabs' docs, and
+// an unverifiable call is worse than no call: it either fails for honest
+// visitors or passes for everybody.
         if (url.pathname === '/sh/reward/postback') {
             const limited = rewardRate(request, url, 'reward-cb');
             if (limited) return limited;
@@ -8555,12 +9183,14 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
             if (request.method === 'POST') {
                 try { body = await request.json(); } catch (e) { body = {}; }
             } else {
-                // Linkvertise sends postbacks as GET with query params
+                // The documented shape: a GET with query parameters.
                 body = {
                     rid: url.searchParams.get('rid') || '',
                     step: url.searchParams.get('step') || url.searchParams.get('i'),
                     click_id: url.searchParams.get('click_id') || url.searchParams.get('clickId') || '',
-                    ip: url.searchParams.get('ip') || ''
+                    ip: url.searchParams.get('ip') || '',
+                    unique_id: url.searchParams.get('unique_id') || url.searchParams.get('uniqueId') || '',
+                    key: url.searchParams.get('key') || ''
                 };
             }
             const rid = String(body.rid || '').slice(0, 40);
@@ -8570,26 +9200,48 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
             if (!r || !(r.checkpoints || [])[i]) return jsonResponse({ ok: false, error: 'unknown step' }, 400);
             const cp = r.checkpoints[i];
             const clickId = String(body.click_id || '').slice(0, 120);
-            if (!clickId) return jsonResponse({ ok: false, error: 'No click_id — provider did not report back.' }, 400);
+            if (!clickId) return jsonResponse({ ok: false, error: 'No click_id - the provider did not report back.' }, 400);
+
+            // THE SHARED SECRET. The owner pastes their provider key into the
+            // postback url, and the provider sends it back. Without it this
+            // route is an open door: anybody could post a click id and
+            // complete a checkpoint.
+            //
+            // Either credential the provider uses will do - the API key for
+            // LootLabs, the auth token for a provider that uses one - because
+            // the owner already had to paste one of them for this checkpoint.
+            const presented = String(body.key || '').slice(0, 200);
+            const st = cp.settings || {};
+            const expected = String(st.apiKey || st.authToken || '').slice(0, 200);
+            if (!expected || !presented || !hashEqual(presented, expected)) {
+                ctx.waitUntil(notifyTelemetry(env, {
+                    event: 'reward.rejected', outcome: 'rejected', rid: rid,
+                    reason: 'postback-unauthenticated', provider: cp.provider, step: i, at: Date.now()
+                }));
+                return jsonResponse({ ok: false, error: 'postback not authenticated' }, 403);
+            }
+
             const verdict = await verifyProvider(cp, {
                 clickId: clickId,
                 ip: String(body.ip || '').slice(0, 64),
-                elapsedMs: null
+                elapsedMs: null,
+                postback: true
             });
             if (!verdict.ok) {
-                return rewardCallbackPage(origin, 'failed', verdict.reason);
+                return jsonResponse({ ok: false, error: verdict.reason }, isTransientReason(verdict.reason) ? 202 : 400);
             }
-            const ses = await loadSes(env, rid, String(body.sid || ''));
-            if (!ses) return rewardCallbackPage(origin, 'failed', 'no-session');
-            const doneCount = (ses.done || []).length;
-            const total = (r.checkpoints || []).length;
-            if (doneCount >= total) {
-                ses.stepIndex = -1;
-                ses.stepAt = 0;
-                await saveSes(env, ses);
-                return rewardCallbackPage(origin, 'complete', '', 0, total);
+
+            const parked = await parkClick(env, clickId, {
+                r: rid, i: i, at: Date.now(),
+                ip: String(body.ip || '').slice(0, 64),
+                provider: cp.provider, verified: true, detail: verdict.detail
+            });
+            if (!parked.ok) {
+                // The same click reported twice is not an error worth failing
+                // loudly over: the first report already counted.
+                return jsonResponse({ ok: true, already: true, reason: parked.reason });
             }
-            return rewardCallbackPage(origin, 'partial', '', doneCount, total);
+            return jsonResponse({ ok: true, rid: rid, step: i });
         }
 
         // =========================================================================

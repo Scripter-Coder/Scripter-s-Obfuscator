@@ -529,6 +529,18 @@
                     return;
                 }
                 if (res && res.error === 'blacklisted') { showBan(res); return; }
+                // NO SESSION. The worker could not find this browser's session -
+                // it expired, or the reward was re-published. Re-opening it
+                // here is what stops the visitor being left with a button that
+                // can only ever say "no".
+                if (res && res.error === 'no session') {
+                    notify('Your session had expired - starting a new one.');
+                    api('/sh/reward/start', { method: 'POST', body: { rid: rid, fp: FP } }).then(function (n) {
+                        if (n.ok && n.step) { step = n.step; setAction('I Have Finished This One', false); }
+                        refresh().then(render);
+                    });
+                    return;
+                }
                 notify(res && res.error ? String(res.error) : 'That checkpoint was not counted.');
                 setAction('I Have Finished This One', false);
                 refresh();

@@ -591,6 +591,7 @@ async function confirmAddCheckpoint(id) {
     if (c('cpDynamicUrl')) settings.dynamicUrl = true;
     if (g('cpApiKey')) settings.apiKey = g('cpApiKey');
     if (g('cpAuthToken')) settings.authToken = g('cpAuthToken');
+    if (g('cpLinkId')) settings.linkId = g('cpLinkId');
     if (g('cpPostbackUrl')) settings.postbackUrl = g('cpPostbackUrl');
     r.checkpoints.push({ id: 'cp_' + Date.now(), name: name, shortUrl: shortUrl, provider: provider, settings: settings, completed: 0, cancelled: 0, avgTimeSec: 0 });
     // A checkpoint that exists only in this tab cannot be completed by a
@@ -613,10 +614,12 @@ async function confirmAddCheckpoint(id) {
     // step whose absence made every checkpoint permanently uncompletable. So it
     // is named in the success message rather than left to be discovered by
     // editing the checkpoint later.
-    var pb = postbackUrl(r.rid, r.checkpoints.length - 1, provider);
+    var pb = postbackUrl(r.rid, r.checkpoints.length - 1, provider, settings.apiKey);
     shNotify('Checkpoint Added',
         '"' + name + '" added. Now paste the postback URL into ' + (provider === 'linkvertise' ? 'Linkvertise' : provider)
-        + ' as the link target, or this checkpoint will never complete.'
+        + (provider === 'lootlabs'
+            ? ' &rarr; Advanced &rarr; Postback URL (NOT the link destination)'
+            : ' as the link target, or this checkpoint will never complete.')
         + (pb ? '\\n\\n' + pb : ''), 'success', 14000);
 }
 
@@ -734,7 +737,7 @@ var PROVIDER_SETUP = {
     lootlabs: {
         desc: 'Pays well and has cash-out options. API token is on your <strong>Profile</strong> page.',
         needs: 'apiKey',
-        note: 'Put the same URL as the link target on their dashboard. LootLabs appends the click id for us.'
+        note: 'LootLabs calls us back itself (a server-to-server postback), so the URL below goes in their <strong>Advanced</strong> tab, not in the link target. Turn on <strong>CLICK_ID</strong>, <strong>IP</strong> and <strong>UNIQUE_ID</strong> there - without the click id and the IP the checkpoint cannot be tied to a visitor.'
     },
     workink: {
         desc: 'Developer API key from <strong>dashboard.work.ink &rarr; Developer</strong>. Supports a click-id macro in the target URL.',
@@ -773,16 +776,42 @@ var VERIFIABLE = { test: 1, linkvertise: 1, lootlabs: 1, workink: 1 };
 // with the worker's route. `site` is carried in the URL because the worker has no
 // way to know where the owner's site is hosted, and a wrong guess would send
 // every visitor to a 404.
-function postbackUrl(rid, index, provider) {
+//
+// THE TWO SHAPES, AND WHICH PROVIDER GETS WHICH.
+//
+// A provider that REDIRECTS the visitor to the URL (Linkvertise, Work.Ink) gets
+// /sh/cp/<provider>?r=&i=&site=. The visitor lands there, the worker checks the
+// click with the provider's API, and the visitor is sent back to the reward page
+// carrying the click.
+//
+// A provider that CALLS the URL itself (LootLabs, whose documented mechanism is
+// a server-to-server GET with click_id, ip and unique_id) gets
+// /sh/reward/postback?rid=&step=&key=... . The browser never sees that click
+// id, so the URL carries the provider's own API key as a shared secret, and the
+// worker counts the click on the visitor's next poll, bound by the IP the
+// provider reported.
+//
+// Getting these the wrong way round is the difference between a checkpoint
+// that works and one that silently never completes, so the panel says which is
+// which.
+function postbackUrl(rid, index, provider, apiKey) {
     var worker = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
     if (!worker || !rid) return '';
     var site = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+    if (provider === 'lootlabs') {
+        // The provider calls us. The key travels in the url and is checked
+        // against the one stored for this checkpoint, so the postback cannot be
+        // forged by anyone who has read it out of a support thread.
+        return worker + '/sh/reward/postback'
+            + '?rid=' + encodeURIComponent(rid) + '&step=' + encodeURIComponent(index)
+            + '&key=' + encodeURIComponent(apiKey || '');
+    }
     return worker + '/sh/cp/' + encodeURIComponent(provider || 'test')
         + '?r=' + encodeURIComponent(rid) + '&i=' + encodeURIComponent(index)
         + '&site=' + encodeURIComponent(site);
 }
 
-function postbackPanelHtml(rid, index, provider) {
+function postbackPanelHtml(rid, index, provider, st) {
     if (!VERIFIABLE[provider]) return '';
     var label = provider === 'linkvertise' ? 'Linkvertise' : provider;
     // A checkpoint that does not exist yet has no index, and the URL is indexed
@@ -792,17 +821,25 @@ function postbackPanelHtml(rid, index, provider) {
             + '<div class="field-hint">Add this checkpoint, then open it again to copy the postback URL for '
             + label + '. It is built from this reward and the checkpoint position, so it cannot be typed by hand.</div></div>';
     }
-    var url = postbackUrl(rid, index, provider);
+    var url = postbackUrl(rid, index, provider, (st && st.apiKey) || '');
     if (!url) return '';
+    // WHERE IT GOES IS DIFFERENT FOR EACH PROVIDER, AND GETTING IT WRONG IS
+    // THE DIFFERENCE BETWEEN A CHECKPOINT THAT WORKS AND ONE THAT NEVER
+    // COMPLETES - SILENTLY.
+    var where = provider === 'linkvertise'
+        ? 'Linkvertise &rarr; your link &rarr; <b>Direct Link</b> (the target URL)'
+        : provider === 'lootlabs'
+            ? 'LootLabs &rarr; your link &rarr; <b>Advanced</b> tab &rarr; the Postback URL field (NOT the link destination)'
+            : 'Work.Ink &rarr; the postback URL on your link';
+    var what = provider === 'lootlabs'
+        ? 'LootLabs calls this URL itself when somebody finishes a task, sending the click id and the IP. Turn on <b>CLICK_ID</b>, <b>IP</b> and <b>UNIQUE_ID</b> on that page, or the click cannot be tied to a visitor. '
+        + '<b>This URL contains your API key</b> - it is the secret that proves the postback came from LootLabs. Do not post it publicly, and do not paste it anywhere except their dashboard.'
+        : 'The provider sends the visitor back here when the ad finishes, and that is what counts the checkpoint.';
     return '<div class="form-group"><label>Postback URL &mdash; paste this into ' + label + '</label>'
         + '<input type="text" id="cpPostbackUrl" readonly value="' + escAttr(url) + '" onclick="this.select()" style="font-family:monospace;font-size:11px">'
         + '<div class="field-hint">Put this in '
-        + (provider === 'linkvertise'
-            ? 'Linkvertise &rarr; your link &rarr; <b>Direct Link</b>'
-            : provider === 'lootlabs'
-                ? 'LootLabs &rarr; the destination URL on your link'
-                : 'Work.Ink &rarr; the postback URL on your link')
-        + '. The provider sends the visitor back here when the ad finishes, and that is what counts the checkpoint.'
+        + where
+        + '. ' + what
         + ' It must be this exact URL &mdash; a per-visitor callback cannot be pasted into a dashboard.'
         + '</div></div>';
 }
@@ -828,7 +865,26 @@ function providerFieldsHtml(provider, st, rid, index) {
     if (spec.note && spec.needs !== 'none') {
         html += '<div class="field-hint" style="margin-top:8px">' + spec.note + '</div>';
     }
-    html += postbackPanelHtml(rid, index, provider);
+    if (provider === 'linkvertise') {
+        // OPTIONAL, AND OPTIONAL FOR A REASON.
+        //
+        // The worker checks every click with Linkvertise's own API, so a click
+        // id has to be a real click. It does NOT have to be a click on YOUR
+        // campaign: a click id from somebody else's campaign is still a real
+        // click, and it would pass. Pinning the link id closes that, because
+        // the answer then has to mention YOUR link.
+        //
+        // It is opt-in because the answer's exact shape is Linkvertise's, not
+        // ours: if their API does not return the link id for a click, setting
+        // this would refuse every honest click. Leave it empty if you are not
+        // sure - the click id, the single use and the IP binding still apply.
+        html += '<div class="form-group"><label>Link / Zone ID <span style="opacity:.6">(optional)</span></label>'
+            + '<input type="text" id="cpLinkId" value="' + escAttr(st.linkId || '') + '" placeholder="Your Linkvertise link or zone id">'
+            + '<div class="field-hint">Only fill this in if Linkvertise returns it in the click data. '
+            + 'It stops a click id from another campaign from counting. '
+            + 'If you are not sure, leave it empty - every honest click is then still checked against Linkvertise\'s API.</div></div>';
+    }
+    html += postbackPanelHtml(rid, index, provider, st);
     html += '</div>';
     return html;
 }
@@ -859,6 +915,7 @@ async function confirmEditCheckpoint(id, index) {
     cp.settings = cp.settings || {};
     if (g('cpAuthToken') !== '') cp.settings.authToken = g('cpAuthToken');
     if (g('cpApiKey') !== '') cp.settings.apiKey = g('cpApiKey');
+    if (g('cpLinkId') !== '') cp.settings.linkId = g('cpLinkId');
 
     var out = await shRewardPersist(found.reward);
     saveRewardsData(found.data);

@@ -1204,3 +1204,83 @@ checks that the cdn link without a session is refused, so the file-shaped
 alias cannot become a second door.
 
 ---
+---
+
+## D32 - The provider is the authority, and the click is the evidence
+
+The reward system had two bugs that looked like one, and neither of them
+was in the browser.
+
+**BUG A: legitimate progress did not advance.** Three separate causes, and
+all three were real:
+
+1. `/sh/reward/start` wrote the WHOLE session blob on every call, and the
+   page calls it on every load and after every completion. The write
+   carried the `done` list as it was read at the start of the request, so
+   a completion recorded while the request was in flight was rolled back
+   by it. It was a race, which is why it only happened *sometimes*.
+2. The session id was derived from the IP as well as the fingerprint, so
+   a phone that changed network got a different session and lost its
+   progress and its earned keys. That is the "refreshing makes my progress
+   disappear" report, and it hits exactly the people most likely to be on
+   a mobile network.
+3. A provider whose postback carries no click id bounced the visitor back
+   to a page with nothing to submit, which asked for the next checkpoint,
+   which sent them to the same dead end. The "stuck in a loop between the
+   provider and the site" report.
+
+**BUG B: a checkpoint could be completed with no evidence at all.**
+
+`/sh/reward/complete` had this:
+
+    if (!clickId) { verdict = { ok: true, detail: 'no-click-id (skipped)' }; }
+
+The comment claimed the signed step token was sufficient - but that is the
+OTHER route. The static postback path carries no token, so the rule was:
+POST the endpoint with no click id and the checkpoint completed, with no
+provider contacted and no click watched. Two requests per checkpoint, then
+a key.
+
+Two more holes sat underneath it. The Linkvertise check only asked whether
+the API answered 200 and threw the body away, so any click id from any
+campaign passed. And the click was DELETED before the provider was asked,
+so a provider that was briefly unreachable cost the visitor the ad they
+had just watched.
+
+**WHAT CHANGED**
+
+- The click is verified WITH THE PROVIDER, at the callback, where the
+  provider is actually answering. Linkvertise's anti-bypass token is
+  only valid for seconds, so a check that runs later always fails - which
+  is why the old flow could not work for it and why the verification is
+  now read out of the provider's answer instead of assumed from a 200.
+- The parked click is a VERIFIED click, written by the worker, single use,
+  and it carries the IP the provider saw. The completion needs it, and it
+  is only spent after every check has passed.
+- A click with no id is refused, and a click made on another network is
+  refused - WITHOUT a strike, because changing your IP address must
+  never cost a visitor a lockout.
+- The session id no longer contains the IP. The IP is still recorded, and
+  it is still what a click is checked against. The cooldown follows the
+  fingerprint, which is harder to dodge than the address.
+- The writes are serialised per session, and a completion is re-read after
+  it is written, so a concurrent poll cannot undo it.
+- LootLabs uses its DOCUMENTED mechanism - a server-to-server GET with
+  click_id, ip and unique_id, authenticated with a shared secret in the
+  url. The previous code called an endpoint that is not in LootLabs'
+  documentation.
+
+**WHAT WAS DELIBERATELY NOT DONE**
+
+Luarmor binds the session to the IP. Luarmor also has a stable session id
+that survives an IP change. We had the IP in the id, which is not the same
+thing, and it cost people their progress.
+
+And the disk cache was not copied from Luarmor: for a free script the
+split key IS the server-only layer, and a cached envelope carries the key
+line with it.
+
+The whole thing is written up in `docs/REWARDS.md`, including what this
+system CANNOT do.
+
+---
