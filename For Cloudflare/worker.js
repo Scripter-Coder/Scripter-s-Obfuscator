@@ -1608,32 +1608,90 @@ async function rewardListKeys(env, rid, sid) {
 // WHERE THE PROVIDER'S VERIFICATION API MIGHT BE.
 //
 // The exact address is the provider's business and it is not in the public
-// documentation that can be reached from here, so it is DISCOVERED rather than
-// assumed: the "Test this provider" button tries these in order and reports
-// the first one the provider actually answers.
+// documentation that can be reached from here. Probing for it is harder than
+// it looks, because a route that BINDS THE HASH - as a path parameter, or
+// because it validates the hash before answering - returns "not found" for a
+// made-up hash. A dummy hash therefore cannot find the route at all.
 //
-// An address that answers with a RECOGNISED reply is the right one:
+// Which is why the discovery happens where the real thing exists: the
+// callback. The hash is live for TEN SECONDS from the moment the provider
+// sends the visitor back, so that is the only moment a candidate can be
+// tested with the credential it will actually be used with.
 //
-//   "FALSE"          the endpoint is right and the token is accepted
+// An address that answers is the right one:
+//
+//   "TRUE"          the hash was found and deleted - the visit was real
+//   "FALSE"         the endpoint is right; the hash expired or was used
 //   "Invalid token." the endpoint is right and the token is wrong
-//   {"valid":true}   the endpoint is right
 //
-// An address that answers "Not Found!", or redirects, is not the endpoint, and
-// the next one is tried. That is the difference between a button that says
-// "your provider is broken" and one that says "here is the address your
-// provider answers on".
-const REWARD_VERIFY_CANDIDATES = {
-    linkvertise: [
-        'https://api.linkvertise.com/api/v1/anticlick',
-        'https://publisher.linkvertise.com/api/v1/anticlick',
-        'https://api.linkvertise.com/api/v1/anti_bypass',
-        'https://api.linkvertise.com/api/v1/anti-bypass',
-        'https://api.linkvertise.com/api/v1/hash/verify',
-        'https://api.linkvertise.com/api/v1/hash/validate',
-        'https://api.linkvertise.com/api/v1/click/verify',
-        'https://api.linkvertise.com/api/v1/verify'
-    ]
-};
+// The winning address is written back to the checkpoint, so the next click is
+// a single request.
+// WHERE THE PROVIDER'S VERIFICATION API MIGHT BE.
+//
+// The exact address is the provider's business and it is not in the public
+// documentation that can be reached from here. Probing for it is harder than it
+// looks, because a route that BINDS THE HASH - as a path parameter, or because
+// it validates the hash before it answers - returns "not found" for a made-up
+// hash. A dummy hash therefore cannot find the route at all.
+//
+// Which is why the discovery happens where the real thing exists: the
+// callback. The hash is live for TEN SECONDS from the moment the provider
+// sends the visitor back, so that is the only moment a candidate can be
+// tested with the credential it will actually be used with.
+//
+// An address that answers is the right one:
+//
+//   "TRUE"          the hash was found and deleted - the visit was real
+//   "FALSE"         the endpoint is right; the hash expired or was used
+//   "Invalid token." the endpoint is right and the token is wrong
+//
+// The winning address is written back to the checkpoint, so the next click is
+// a single request.
+//
+// THE LIST IS GENERATED, because it is a search and not a definition: the
+// names come from the feature ("anti bypassing"), from the thing being
+// checked (a hash), and from the generic words an API would use for a
+// verification. It is in tiers, so the most likely shapes are tried first and
+// the burst stays small.
+const REWARD_VERIFY_HOSTS = [
+    'https://api.linkvertise.com',
+    'https://publisher.linkvertise.com'
+];
+const REWARD_VERIFY_PREFIXES = ['/api/v1/', '/api/'];
+const REWARD_VERIFY_VERBS = [
+    'anticlick', 'anti_click', 'anti-click', 'anti_bypass', 'anti-bypass',
+    'antibypass', 'hash', 'bypass'
+];
+const REWARD_VERIFY_SUFFIXES = ['', '/verify', '/validate', '/check'];
+
+function rewardVerifyCandidates(hash) {
+    const out = [];
+    const seen = {};
+    function add(u) { if (!seen[u]) { seen[u] = 1; out.push(u); } }
+    // TIER 1: the names the feature has been called, and the generic verbs.
+    for (const host of REWARD_VERIFY_HOSTS) {
+        for (const prefix of REWARD_VERIFY_PREFIXES) {
+            for (const verb of REWARD_VERIFY_VERBS) {
+                for (const suffix of REWARD_VERIFY_SUFFIXES) {
+                    add(host + prefix + verb + suffix);
+                }
+            }
+        }
+    }
+    // TIER 2: the hash as a path segment. A route that binds it answers "not
+    // found" for a hash it does not have - which is exactly why these can only
+    // be found with a live hash.
+    if (hash) {
+        for (const host of REWARD_VERIFY_HOSTS) {
+            for (const p of ['/api/v1/', '/api/']) {
+                for (const verb of ['anticlick', 'anti_bypass', 'antibypass', 'hash', 'verify', 'check']) {
+                    add(host + p + verb + '/' + encodeURIComponent(hash));
+                }
+            }
+        }
+    }
+    return out;
+}
 
 // The query parameters a provider's verification call is made with. Several
 // names are sent because the providers disagree, and a provider that ignores
@@ -1703,11 +1761,19 @@ async function probeProvider(cp) {
 
     // THE ADDRESSES TO TRY. The one the owner set comes first, then the
     // candidates.
+    //
+    // A DUMMY hash is used here, and that has a limit: a route that binds
+    // the hash - as a path parameter, or because it validates the hash
+    // before it answers - says "not found" for a made-up one. So this probe
+    // can confirm an address the owner already has, and it can find an
+    // address that answers for anything, but it CANNOT find one that needs a
+    // real hash. That discovery happens at the callback, where the hash the
+    // provider just sent is live for ten seconds.
+    const dummy = 'sh-diagnostic-' + '0'.repeat(48);
     const configured = String(st.verifyUrl || '').trim();
-    const list = configured ? [configured] : (REWARD_VERIFY_CANDIDATES[cp.provider] || []).slice();
+    const list = configured ? [configured] : rewardVerifyCandidates(dummy);
     if (!list.length) return { ok: false, verdict: 'no-endpoint', answer: 'no verification url is set' };
 
-    const dummy = 'sh-diagnostic-' + '0'.repeat(48);
     let lastAnswer = '';
     let unreachable = 0;
     for (const base of list) {
@@ -1784,47 +1850,80 @@ async function verifyProvider(cp, signal) {
         if (!signal || !signal.clickId) return { ok: false, reason: 'no-click-id' };
         // The verification URL is the provider's anti-bypass API. It is
         // CONFIGURABLE per checkpoint, and when it is empty the KNOWN
-        // addresses are tried in order, because the exact one is the
-        // provider's business and it is not in the documentation that can be
-        // reached from here. The "Test this provider" button reports the
-        // address that answered, and the owner can paste it in.
+        // addresses are tried IN PARALLEL with the LIVE hash.
+        //
+        // Parallel, and live, because a route that BINDS THE HASH - as a path
+        // parameter, or because it validates the hash before it answers -
+        // returns "not found" for a made-up hash. A dummy can therefore never
+        // find the route; only the hash the provider just sent can, and it is
+        // only live for ten seconds.
         const configured = String(st.verifyUrl || '').trim();
-        const list = configured ? [configured] : (REWARD_VERIFY_CANDIDATES.linkvertise || []).slice();
+        // THE SEARCH IS BOUNDED.
+        //
+        // Every click that does not find the address runs the search again,
+        // and the search is a burst of requests to the provider. That is fine
+        // three times and it is abuse after that, so the attempt counter lives
+        // on the checkpoint and after three fruitless searches the owner has to
+        // paste the address in.
+        const settings = cp.settings || {};
+        const searches = Number(settings.verifySearches) || 0;
+        const searchAllowed = searches < 3;
+        if (!configured && !searchAllowed) {
+            return { ok: false, reason: 'endpoint-wrong' };
+        }
+        const list = configured ? [configured] : rewardVerifyCandidates(signal.clickId);
         if (!list.length) return { ok: false, reason: 'no-verify-url' };
         const publisherId = String(st.publisherId || '').trim();
-        let lastReason = 'endpoint-wrong';
-        for (const base of list) {
-            const u = verifyQuery(base, signal.clickId, st.authToken, publisherId);
-            let body = '', res = null;
-            try {
-                res = await fetch(u, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
-                    body: verifyBody(signal.clickId, st.authToken, publisherId)
-                });
-                body = await res.text();
-            } catch (e) {
-                lastReason = 'lv-unreachable';
-                continue;
-            }
-            const answer = readAntiBypassAnswer(body, res);
-            if (answer.ok) {
-                // The owner may pin the Linkvertise link (zone) the click must
-                // belong to, so a click id from another campaign does not count.
-                const wantLink = String(st.linkId || '').trim();
-                if (wantLink && String(body).indexOf(wantLink) === -1) {
-                    return { ok: false, reason: 'lv-wrong-link' };
+        const token = st.authToken;
+
+        // Small batches: enough to finish inside the ten seconds the hash
+        // lives, few enough not to hammer the provider.
+        const BATCH = 16;
+        let answered = 0;
+        let unreachable = 0;
+        for (let i = 0; i < list.length; i += BATCH) {
+            const batch = list.slice(i, i + BATCH);
+            const results = await Promise.all(batch.map(async function (base) {
+                const u = verifyQuery(base, signal.clickId, token, publisherId);
+                try {
+                    const res = await fetch(u, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain' },
+                        body: verifyBody(signal.clickId, token, publisherId)
+                    });
+                    return { base: base, body: await res.text(), res: res };
+                } catch (e) {
+                    return { base: base, body: '', res: null };
                 }
-                return { ok: true, detail: 'linkvertise:' + answer.detail };
+            }));
+            for (const r of results) {
+                if (!r.res) { unreachable++; continue; }
+                const answer = readAntiBypassAnswer(r.body, r.res);
+                if (answer.reason === 'endpoint-wrong' || answer.reason === 'unreadable-response'
+                    || answer.reason === 'empty-response') continue;
+                // This address ANSWERED, so it is the endpoint.
+                answered++;
+                if (answer.ok) {
+                    // The owner may pin the Linkvertise link (zone) the click
+                    // must belong to, so a click from another campaign does
+                    // not count.
+                    const wantLink = String(st.linkId || '').trim();
+                    if (wantLink && String(r.body).indexOf(wantLink) === -1) {
+                        return { ok: false, reason: 'lv-wrong-link', endpoint: r.base };
+                    }
+                    return { ok: true, detail: 'linkvertise:' + answer.detail, endpoint: r.base };
+                }
+                // It answered, but not with a yes: "FALSE" (the hash expired
+                // or was already used) or "Invalid token." (the token is
+                // wrong). Either way the ADDRESS is right.
+                return { ok: false, reason: answer.reason, endpoint: r.base };
             }
-            if (answer.reason === 'endpoint-wrong' || answer.reason === 'unreadable-response') {
-                // Not the address. Try the next one.
-                lastReason = answer.reason;
-                continue;
-            }
-            return answer;
         }
-        return { ok: false, reason: lastReason };
+        // NOTHING ANSWERED. If the provider could not be reached at all, that
+        // is an OUTAGE and the visitor is told to wait. If the provider
+        // answered but not with anything we recognise, then the address is
+        // still wrong.
+        return { ok: false, reason: (unreachable && !answered) ? 'lv-unreachable' : 'endpoint-wrong' };
     }
 
     if (cp.provider === 'workink') {
@@ -9235,6 +9334,24 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const verdict = await verifyProvider(cp, {
                     clickId: clickId, ip: reportedIp || reqIp(request), elapsedMs: null
                 });
+                // THE ADDRESS THAT ANSWERED IS REMEMBERED.
+                //
+                // The candidates are a guess, and the only way to find the
+                // right one is to try them with the LIVE hash - which exists
+                // for ten seconds, here and only here. So the address that
+                // worked is written back to the checkpoint, and the next click
+                // is a single request to it.
+                if (verdict.endpoint && !String((cp.settings || {}).verifyUrl || '').trim()) {
+                    cp.settings = cp.settings || {};
+                    cp.settings.verifyUrl = String(verdict.endpoint).slice(0, 400);
+                    cp.settings.verifySearches = 0;
+                    await saveReward(env, r);
+                } else if (!String((cp.settings || {}).verifyUrl || '').trim()) {
+                    // Count the fruitless search, so the burst is bounded.
+                    cp.settings = cp.settings || {};
+                    cp.settings.verifySearches = (Number(cp.settings.verifySearches) || 0) + 1;
+                    await saveReward(env, r);
+                }
                 if (!verdict.ok) {
                     if (isTransientReason(verdict.reason)) {
                         ctx.waitUntil(notifyTelemetry(env, {
