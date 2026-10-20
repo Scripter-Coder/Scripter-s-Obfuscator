@@ -113,19 +113,31 @@
     var FP = fingerprint();
     var QSP = new URLSearchParams(location.search);
     var rid = QSP.get('rid') || '';
-    // The provider sends the visitor BACK here with its click id once the ad is
-    // done. See the static postback in the worker: Linkvertise's direct link is
-    // a fixed string typed into a dashboard, so the callback URL cannot carry a
-    // per-session token - it carries the reward and the checkpoint, and the
-    // click id comes back on the redirect.
+    // The provider sends the visitor BACK here once the ad is done, and it
+    // carries the PROOF in whatever parameter name that provider uses:
     //
-    // It is consumed once and then scrubbed from the address bar, because a
-    // second load of the same URL must not try to spend the same click again.
-    var RESUME = QSP.get('resume') || '';
+    //   resume      the worker's own postback bounce
+    //   hash        Linkvertise's anti-bypass hash
+    //   click_id    LootLabs' postback id
+    //   clickid / clickId / unique_id / c    the other spellings
+    //
+    // It used to read ONE of them ("resume"), so a provider that redirected
+    // here with anything else dropped its own evidence on the floor and the
+    // checkpoint silently never counted. Every spelling is read now, and the
+    // first one that is present wins.
+    //
+    // The proof is consumed once and then scrubbed from the address bar,
+    // because a second load of the same URL must not try to spend it again.
+    var RESUME = '';
+    var PROOF_PARAMS = ['resume', 'hash', 'click_id', 'clickid', 'clickId', 'unique_id', 'c'];
+    for (var pi = 0; pi < PROOF_PARAMS.length; pi++) {
+        var pv = QSP.get(PROOF_PARAMS[pi]);
+        if (pv) { RESUME = pv; break; }
+    }
     if (RESUME) {
         try {
             var u = new URL(location.href);
-            u.searchParams.delete('resume');
+            for (var pi2 = 0; pi2 < PROOF_PARAMS.length; pi2++) u.searchParams.delete(PROOF_PARAMS[pi2]);
             history.replaceState(null, '', u.toString());
         } catch (e) { /* older browsers keep the parameter; it is single use anyway */ }
     }

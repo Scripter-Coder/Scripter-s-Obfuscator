@@ -70,6 +70,12 @@ Date.now = () => clock;
 let providerMode = 'confirm';   // confirm | refuse | down | empty
 const asked = [];
 const realFetch = globalThis.fetch;
+// THE CLICKS THE PROVIDER KNOWS ABOUT. The provider confirms one of these
+// and says "FALSE" for anything else, which is what it does.
+const KNOWN_CLICKS = new Set(['click-one', 'click-two', 'click-up', 'hash-with-publisher',
+    'hash-that-came-with-the-page', 'click-concurrent', 'click-conc-claim-1', 'click-conc-claim-2',
+    'click-for-a', 'a'.repeat(64), 'pb-2']);
+
 globalThis.fetch = async (u, o) => {
     const url = String(u);
     if (/linkvertise\.com\/api\//.test(url)) {
@@ -86,22 +92,21 @@ globalThis.fetch = async (u, o) => {
             return new Response(JSON.stringify({ success: false, error: true, messages: ['Not Found!'], state: 404 }),
                 { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
-        // The publisher id is sent with the request; the provider's answer
-        // mentions it, which is what makes the link id worth pinning.
-        if (url.indexOf('publisher_id=1294304') !== -1 && url.indexOf('hash=sh-diagnostic') === -1) {
-            return new Response('TRUE', { status: 200 });
-        }
         if (providerMode === 'refuse') return new Response('FALSE', { status: 200 });
         if (providerMode === 'empty') return new Response('{}', { status: 200 });
         // THE DOCUMENTED SHAPE. Linkvertise's anti-bypass answers in plain
         // text: "TRUE" when the hash was found and deleted, "FALSE" when it was
         // not. A diagnostic probe carries a hash that cannot exist, and gets
         // the "FALSE" that proves the endpoint and the token are right.
+        //
+        // IT ONLY CONFIRMS A CLICK IT HAS SEEN. The stub used to say yes to
+        // everything, which is not how a provider behaves and it hid the
+        // question this test exists to answer.
         const m = url.match(/[?&]hash=([^&]+)/);
         const hash = m ? decodeURIComponent(m[1]) : '';
         if (hash.indexOf('sh-diagnostic') === 0) return new Response('FALSE', { status: 200 });
-        if (hash === 'deadbeef') return new Response('FALSE', { status: 200 });
-        return new Response('TRUE', { status: 200 });
+        if (KNOWN_CLICKS.has(hash)) return new Response('TRUE', { status: 200 });
+        return new Response('FALSE', { status: 200 });
     }
     return realFetch(u, o);
 };
@@ -420,6 +425,30 @@ console.log('THE PUBLISHER ID IS SENT WITH THE VERIFICATION');
     check('and the publisher id travelled with the request',
         asked.some(u => u.indexOf('publisher_id=1294304') !== -1),
         'the provider was asked without the publisher id');
+}
+
+console.log('');
+console.log('A PROOF THAT ARRIVED AT THE PAGE, NOT THROUGH THE POSTBACK');
+{
+    // The owner's Linkvertise link can point at the REWARD PAGE, and then the
+    // provider's proof arrives at the page instead of at the worker's
+    // postback. The page hands it over and the worker verifies it with the
+    // provider - a proof that was never parked is not automatically a
+    // forgery.
+    const FPP = 'fpvisitorpageproof';
+    const s = await openSession(FPP);
+    clock += 30000;
+    const done = await submit(FPP, 'hash-that-came-with-the-page', s.sid);
+    check('the proof is verified with the provider and it counts', done.ok === true,
+        JSON.stringify(done).slice(0, 160));
+    check('and the progress moved', done.done === 1, JSON.stringify(done).slice(0, 160));
+
+    // The same proof a second time must not count twice: the provider deletes
+    // it when it verifies it, and the worker parks it as spent.
+    const again = await submit(FPP, 'hash-that-came-with-the-page', s.sid);
+    const st = await call('GET', '/sh/reward/state?rid=' + RID + '&fp=' + FPP);
+    check('the same proof cannot be spent twice', st.done === 1,
+        'done=' + st.done + ' reply=' + JSON.stringify(again).slice(0, 100));
 }
 
 console.log('');

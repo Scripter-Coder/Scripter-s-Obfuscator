@@ -1657,7 +1657,7 @@ const REWARD_VERIFY_HOSTS = [
     'https://api.linkvertise.com',
     'https://publisher.linkvertise.com'
 ];
-const REWARD_VERIFY_PREFIXES = ['/api/v1/', '/api/'];
+const REWARD_VERIFY_PREFIXES = ['/api/v1/', '/api/', ''];
 const REWARD_VERIFY_VERBS = [
     'anticlick', 'anti_click', 'anti-click', 'anti_bypass', 'anti-bypass',
     'antibypass', 'hash', 'bypass'
@@ -9623,26 +9623,65 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
         return jsonResponse({ ok: false, error: 'no open checkpoint' });
     }
     const cp = r.checkpoints[i];
+    // How long the visitor has been on this step. The dwell floor is a check
+    // on the CLICK, so it is needed before the click is judged.
+    const elapsedMs = ses.stepAt ? (now - ses.stepAt) : null;
 
-    // THE CLICK MUST HAVE BEEN REPORTED BY THE PROVIDER, AND VERIFIED.
+    // THE DWELL FLOOR IS CHECKED BEFORE THE PROVIDER IS ASKED.
     //
-    // The parked row is written by the worker itself, and only AFTER the
-    // provider confirmed the click (see the static postback). It is the
-    // evidence that this click is real, that it belongs to THIS reward and
-    // THIS checkpoint, and - when the provider reports the clicker's IP -
-    // that it came from the machine that is now asking for the reward.
+    // The provider's proof is one-time use: asking about it DELETES it. So
+    // asking first and refusing afterwards would burn a legitimate visitor's
+    // hash and send them back to watch the ad again - the exact thing the
+    // floor is supposed to prevent.
+    if (elapsedMs != null && elapsedMs < REWARD_MIN_DWELL_MS) {
+        return jsonResponse({ ok: false, error: 'Not counted yet - too-fast', transient: true });
+    }
+
+    // THE CLICK MAY NOT HAVE COME THROUGH THE POSTBACK.
+    //
+    // Where the provider's redirect LANDS is the owner's choice of target url,
+    // and the natural thing to paste into a provider's dashboard is the page
+    // the visitor has to end up on - the reward page - with the reward id in
+    // it. The proof then arrives at the PAGE, and the page hands it to this
+    // endpoint.
+    //
+    // So a proof that was never parked is NOT automatically a forgery: it is
+    // verified here, with the provider, exactly like a parked one. The
+    // provider deletes the hash when it verifies it, so it cannot be spent
+    // twice - which is what the parked row was there to guarantee, and what
+    // the provider's own one-time use guarantees when the proof comes
+    // straight from the visitor's redirect.
+    //
+    // What is refused is a proof that the provider does not recognise.
     const pj = await readParkedClick(env, clickId);
     if (!pj) {
-        return jsonResponse({ ok: false, error: 'That click was not reported by the provider. Watch the ad all the way through.' });
-    }
-    if (!pj.verified) {
-        return jsonResponse({ ok: false, error: 'That click was not verified by the provider.' });
-    }
-    if (pj.spent) {
-        return jsonResponse({ ok: false, error: 'That click has already been used.' });
-    }
-    if (pj.r !== rid || pj.i !== i) {
-        return jsonResponse({ ok: false, error: 'That click belongs to a different checkpoint.' });
+        // Not parked. Verify it with the provider, right now, while it is
+        // still live.
+        const raw = await verifyProvider(cp, {
+            clickId: clickId, ip: reqIp(request), elapsedMs: elapsedMs, confirmed: true
+        });
+        if (!raw.ok) {
+            if (isTransientReason(raw.reason)) {
+                return jsonResponse({ ok: false, error: 'Not counted yet - ' + raw.reason, transient: true });
+            }
+            return jsonResponse({ ok: false, error: 'That click was not confirmed by the provider.', reason: raw.reason });
+        }
+        // It is real. Park it, so the replay guard is in place for anything
+        // that arrives with the same proof later.
+        await parkClick(env, clickId, {
+            r: rid, i: i, at: now, ip: '', provider: cp.provider,
+            verified: true, detail: raw.detail
+        });
+    } else {
+        if (!pj.verified) {
+            return jsonResponse({ ok: false, error: 'That click was not verified by the provider.' });
+        }
+        if (pj.spent) {
+            return jsonResponse({ ok: false, error: 'That click has already been used.' });
+        }
+        if (pj.r !== rid || pj.i !== i) {
+            return jsonResponse({ ok: false, error: 'That click belongs to a different checkpoint.' });
+        }
     }
 
     // THE IP THE PROVIDER SAW, AGAINST THE IP ASKING FOR THE REWARD.
@@ -9667,7 +9706,10 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
     // Only applied when the provider reported an IP. A provider that does not
     // send an IP is not a reason to refuse an honest visitor.
     const reqIpNow = reqIp(request);
-    if (pj.ip && reqIpNow && pj.ip !== reqIpNow) {
+    // pj is null when the proof came straight from the visitor's redirect
+    // rather than through the postback: there is no parked row to compare
+    // against, and the provider did not report an IP either.
+    if (pj && pj.ip && reqIpNow && pj.ip !== reqIpNow) {
         ctx.waitUntil(notifyTelemetry(env, {
             event: 'reward.rejected', outcome: 'rejected', rid: rid,
             reason: 'ip-mismatch', provider: cp.provider, step: i, at: now
@@ -9678,15 +9720,11 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
         }, 400);
     }
 
-    const elapsedMs = ses.stepAt ? (now - ses.stepAt) : null;
-
-    // The provider was already asked, at the callback, and the answer is in
-    // the parked row. It is NOT asked again here: Linkvertise's anti-bypass
-    // token is only valid for seconds, so a second check would always fail
-    // and every honest visitor would be told the checkpoint did not count.
-    if (elapsedMs != null && elapsedMs < REWARD_MIN_DWELL_MS) {
-        return jsonResponse({ ok: false, error: 'Not counted yet - too-fast', transient: true });
-    }
+    // The provider was already asked - at the callback, or a moment ago on the
+    // raw proof above - and the answer is in hand. It is NOT asked again here:
+    // Linkvertise's anti-bypass token is only valid for seconds, so a second
+    // check would always fail and every honest visitor would be told the
+    // checkpoint did not count.
 
     // THE CLICK IS SPENT ONLY NOW, AFTER EVERY CHECK HAS PASSED.
     //
@@ -9748,7 +9786,7 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
 
     ctx.waitUntil(notifyTelemetry(env, {
         event: 'reward.step', outcome: 'ok', rid: rid,
-        provider: cp.provider, step: i, detail: pj.detail || 'verified', at: now
+        provider: cp.provider, step: i, detail: (pj && pj.detail) || 'verified', at: now
     }));
     const after = await loadSes(env, rid, sid);
     return jsonResponse({

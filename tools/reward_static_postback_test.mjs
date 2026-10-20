@@ -104,9 +104,18 @@ console.log('');
 console.log('the visitor page submits the click instead of just refreshing');
 {
     const src = rewardHtml.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
-    check('the resume parameter is read', /QSP\.get\('resume'\)/.test(src));
+    check('the resume parameter is read', /QSP\.get\('resume'\)/.test(src) || /'resume'/.test(src),
+        'the page must read the proof the provider sent');
+    // The provider names its proof differently - Linkvertise sends "hash",
+    // LootLabs sends "click_id" - and the page used to read ONE of them, so a
+    // provider that redirected here with anything else dropped its own evidence
+    // on the floor and the checkpoint silently never counted.
+    for (const name of ['resume', 'hash', 'click_id', 'unique_id']) {
+        check('the page reads a proof called "' + name + '"', new RegExp("'" + name + "'").test(src),
+            'the provider may send the proof under this name');
+    }
     check('it is scrubbed from the address bar, so a reload cannot respend it',
-        /searchParams\.delete\('resume'\)/.test(src));
+        /searchParams\.delete\('resume'\)/.test(src) || /searchParams\.delete\(PROOF_PARAMS/.test(src));
     check('boot submits it rather than falling through to the normal path',
         /if \(RESUME\) \{\s*submitResume\(\);\s*return;\s*\}/.test(src.replace(/\s+/g, ' ')),
         'the RESUME branch must return, or boot also starts a fresh step underneath it');
@@ -141,18 +150,26 @@ console.log('a click the provider reported completes the checkpoint');
     // The provider's API is the only thing that can say a click was real. It is
     // stubbed at the network edge so the test exercises the WORKER's decision,
     // not Linkvertise's uptime.
+    //
+    // IT ONLY CONFIRMS A CLICK IT HAS ACTUALLY SEEN.
+    //
+    // The stub used to answer "yes" to every click id except one, which is
+    // not how a provider behaves and it hides a real question: is a click that
+    // never went through the postback still refused? It is - the provider says
+    // no - and the stub has to model that or the test proves nothing.
+    const KNOWN_CLICKS = new Set(['real-click-1', 'real-click-2']);
     const realFetch = globalThis.fetch;
     const asked = [];
     globalThis.fetch = async (u, o) => {
         const url = String(u);
-        if (url.indexOf('api.linkvertise.com') !== -1) {
+        if (url.indexOf('linkvertise.com') !== -1) {
             asked.push(url);
-            // A click the provider knows about. Anything else 404s, exactly as a
-            // made-up click id would.
-            if (url.indexOf('click_id=fake-click') === -1) {
-                return new Response(JSON.stringify({ ok: true }), { status: 200 });
-            }
-            return new Response('nope', { status: 404 });
+            const m = url.match(/[?&](?:click_id|hash)=([^&]+)/);
+            const id = m ? decodeURIComponent(m[1]) : '';
+            // The answer the real provider gives: "TRUE" for a click it has,
+            // "FALSE" for one it does not.
+            if (KNOWN_CLICKS.has(id)) return new Response('TRUE', { status: 200 });
+            return new Response('FALSE', { status: 200 });
         }
         return realFetch(u, o);
     };
