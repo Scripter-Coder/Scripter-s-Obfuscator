@@ -31,6 +31,14 @@
         th { text-align: left; color: #8888aa; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
         td { padding: 10px 8px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.05); }
         .keymono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #66ccff; word-break: break-all; }
+        /* The copy button next to a key. A key is 192 characters and it wraps
+           over several lines, so selecting it by hand is a hunt for the end of
+           the string. One click is the whole difference between "copy and
+           paste" and "where does it stop". */
+        .keycopy { border: 1px solid rgba(108,59,255,0.35); background: rgba(108,59,255,0.18); color: #a78bff; border-radius: 7px; cursor: pointer; font-size: 11px; padding: 3px 7px; margin-left: 6px; vertical-align: middle; font-family: inherit; line-height: 1.3; transition: all .2s; }
+        .keycopy:hover { background: rgba(108,59,255,0.45); color: #fff; }
+        .keycopy.copied { background: rgba(0,204,68,0.35); border-color: rgba(0,204,68,0.5); color: #66ff66; }
+        .keycopy.failed { background: rgba(255,107,107,0.3); border-color: rgba(255,107,107,0.5); color: #ff6b6b; }
         .status-active { color: #66ff66; } .status-expired { color: #ff6b6b; }
         .notif { position: fixed; top: 20px; right: 20px; left: 20px; background: linear-gradient(135deg, #0ca84c, #66ff66); color: #fff; padding: 14px 20px; border-radius: 12px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.5); opacity: 0; transform: translateY(-20px); transition: all .35s; z-index: 100; text-align: center; }
         .notif.show { opacity: 1; transform: translateY(0); }
@@ -252,7 +260,13 @@
             html += '<table><tr><th>Key</th><th>Time Left</th><th>Status</th></tr>';
             keys.forEach(function (k) {
                 var expired = k.expires <= Date.now();
-                html += '<tr><td class="keymono">' + esc(k.key) + '</td>'
+                html += '<tr><td class="keymono">' + esc(k.key)
+                    // THE COPY BUTTON. One click, and the key is on the
+                    // clipboard. The key itself is in a data attribute rather
+                    // than in the click handler, so nothing user-supplied is
+                    // ever interpolated into code.
+                    + ' <button type="button" class="keycopy' + (shCopiedKey === k.key ? ' copied' : '') + '" data-k="' + esc(k.key) + '" title="Copy this key">'
+                    + (shCopiedKey === k.key ? '✅' : '📋') + '</button></td>'
                     + '<td>' + fmtLeft(k.expires - Date.now()) + '</td>'
                     + '<td class="' + (expired ? 'status-expired' : 'status-active') + '">'
                     + (expired ? 'expired' : 'active') + '</td></tr>';
@@ -275,6 +289,66 @@
         if (verifyBtn) verifyBtn.onclick = onVerify;
         var claimBtn = document.getElementById('claimBtn');
         if (claimBtn) claimBtn.onclick = onClaim;
+        // The copy buttons on the keys.
+        var copies = document.querySelectorAll('.keycopy');
+        for (var i = 0; i < copies.length; i++) {
+            copies[i].onclick = function () { shCopyKey(this.getAttribute('data-k'), this); };
+        }
+    }
+
+    // COPY A KEY.
+    //
+    // The clipboard API is the happy path, but it is refused in more places
+    // than people expect: an insecure origin, a permission that was never
+    // granted, an old browser. So there is a fallback, and if even that fails
+    // the key is SELECTED, because "the text is selected, press Ctrl+C" is
+    // still the right answer and a silent failure is not.
+    //
+    // The confirmation lives in a variable rather than in the button, because
+    // the page re-renders every four seconds to poll for progress, and a
+    // confirmation that is wiped by the next poll is not a confirmation.
+    var shCopiedKey = '';
+    var shCopiedTimer = null;
+    function shCopyKey(text, btn) {
+        if (!text) return;
+        function done(ok) {
+            shCopiedKey = ok ? text : '';
+            if (shCopiedTimer) clearTimeout(shCopiedTimer);
+            shCopiedTimer = setTimeout(function () { shCopiedKey = ''; }, 1600);
+            render();
+        }
+        function fallback() {
+            try {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                var ok = document.execCommand('copy');
+                ta.remove();
+                if (ok) { done(true); return; }
+            } catch (e) { /* fall through to the selection */ }
+            var cell = btn && btn.parentNode;
+            if (cell && window.getSelection && document.createRange) {
+                try {
+                    var range = document.createRange();
+                    range.selectNodeContents(cell);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                } catch (e2) { /* nothing more to try */ }
+            }
+            done(false);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+        } else {
+            fallback();
+        }
     }
 
     function setAction(label, disabled) {
