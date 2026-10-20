@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { makeD1 as makeD1Shape } from './d1_shape.mjs';
 
 function makeKV() {
     const store = new Map();
@@ -28,9 +29,11 @@ function makeKV() {
     };
 }
 function makeD1() {
-    const db = new DatabaseSync(':memory:');
-    db.exec(fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
-    return db;
+    // The D1 mock returns the SHAPE D1 returns - see tools/d1_shape.mjs. The
+    // permissive node:sqlite shape hid a real bug: a key was minted and then
+    // the state route reported no keys, because .map was called on D1's
+    // {results:[...]} instead of on an array.
+    return makeD1Shape();
 }
 
 const workerSrc = await import('../For Cloudflare/worker.js');

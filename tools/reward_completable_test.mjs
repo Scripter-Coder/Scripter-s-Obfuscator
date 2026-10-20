@@ -36,6 +36,7 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { makeD1 } from './d1_shape.mjs';
 
 const worker = (await import(new URL('../For Cloudflare/worker.js', import.meta.url))).default;
 // Owner routes are gated on a CODE token obtained from /sh/login, not on the
@@ -70,11 +71,7 @@ function makeKV() {
         _store: store,
     };
 }
-function makeD1() {
-    const db = new DatabaseSync(':memory:');
-    db.exec(fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
-    return db;
-}
+// The D1 mock returns the SHAPE D1 returns - see tools/d1_shape.mjs.
 
 // Comments are stripped before any of the checks below. Several of the
 // comments here QUOTE the old broken code verbatim, to say why it was wrong -

@@ -21,6 +21,7 @@
 // Run: node tools/reward_security_test.mjs
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { makeD1 } from './d1_shape.mjs';
 
 const worker = (await import(new URL('../For Cloudflare/worker.js', import.meta.url))).default;
 const { OWNER_CODE_PLAIN, OWNER_CODE_HASH } = await import('./owner_code_test_helper.mjs');
@@ -47,11 +48,7 @@ function makeKV() {
         _store: store,
     };
 }
-function makeD1() {
-    const db = new DatabaseSync(':memory:');
-    db.exec(fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
-    return db;
-}
+// The D1 mock returns the SHAPE D1 returns - see tools/d1_shape.mjs.
 
 console.log('REWARD SECURITY   legitimate progression and unauthorized progression');
 console.log('-'.repeat(72));
@@ -193,12 +190,26 @@ console.log('LEGITIMATE PROGRESSION');
     const done2 = await submit(FP, 'click-two', s2.sid);
     check('the second checkpoint completes', done2.ok === true && done2.done === 2, JSON.stringify(done2).slice(0, 160));
 
-    // THE KEY.
+    // THE KEY. And then it must be VISIBLE.
     const claim = await call('POST', '/sh/reward/claim', { rid: RID, fp: FP });
     check('the key is issued once every checkpoint is verified',
         claim.ok === true && !!(claim.key || (claim.keys || []).length), JSON.stringify(claim).slice(0, 160));
     check('and it is a real server-minted license key', typeof claim.key === 'string' && claim.key.length >= 32,
         'key length ' + (claim.key || '').length);
+
+    // THE STATE MUST SHOW THE KEY.
+    //
+    // This is the exact bug that was found by running the real thing in a real
+    // browser against the deployed worker: the key was minted, the claim said
+    // so, and the visitor's table said "no keys yet" - because D1's .all()
+    // returns {results:[...]} and the code called .map on it. The test mock
+    // used node:sqlite, whose .all() returns an array, so it passed. The mock
+    // now returns the shape D1 returns (tools/d1_shape.mjs), and this
+    // assertion is here so it cannot come back.
+    const after = await call('GET', '/sh/reward/state?rid=' + RID + '&fp=' + FP);
+    check('the state route shows the key that was just issued',
+        after.ok === true && (after.keys || []).length === 1 && after.keys[0].key === claim.key,
+        'keys=' + JSON.stringify(after.keys || []).slice(0, 120));
 
     // AND ONLY ONCE.
     const claim2 = await call('POST', '/sh/reward/claim', { rid: RID, fp: FP });

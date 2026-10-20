@@ -1412,3 +1412,34 @@ it on the fly if the migration has not been applied, so a missing migration
 is not an outage - but applying it is the supported path.
 
 ---
+---
+
+## D35 - The mock was more permissive than the runtime
+
+A key was minted, the page said "Key Created Successfully", and the table
+said "no keys yet".
+
+It was found by RUNNING the thing: deploying the worker, opening the real
+reward page in a real browser, and pressing the buttons. No test failed,
+because the tests and the runtime disagreed about what a database
+returns:
+
+    D1          .all()  ->  { results: [...], success: true, meta: {...} }
+    node:sqlite .all()  ->  [ ... ]
+
+The reward tests use node:sqlite, so `.map` on the result worked there and
+threw on D1, where the result is an object. The catch returned an empty
+list, so the state route reported no keys while the key was sitting in the
+table.
+
+**The fix is in two places, and the second one is the important one.**
+
+The code now reads the shape D1 returns. And the mock now returns the
+shape D1 returns (tools/d1_shape.mjs), so a test that depends on the
+array shape fails here instead of in production. A mock that is more
+permissive than the runtime is not a test, it is a way of losing a bug.
+
+The regression test is the obvious one: after the claim, the STATE route
+must show the key that was just issued.
+
+---

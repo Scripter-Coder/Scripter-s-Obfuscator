@@ -36,6 +36,7 @@
 
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { makeD1 } from './d1_shape.mjs';
 
 const worker = (await import(new URL('../For Cloudflare/worker.js', import.meta.url))).default;
 const { OWNER_CODE_PLAIN, OWNER_CODE_HASH } = await import('./owner_code_test_helper.mjs');
@@ -65,11 +66,7 @@ function makeKV() {
         _store: store,
     };
 }
-function makeD1() {
-    const db = new DatabaseSync(':memory:');
-    db.exec(fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
-    return db;
-}
+// The D1 mock returns the SHAPE D1 returns - see tools/d1_shape.mjs.
 
 console.log('[BF] an honest visitor is not locked out');
 console.log('-'.repeat(72));

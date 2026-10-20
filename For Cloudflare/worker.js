@@ -1575,16 +1575,34 @@ async function rewardIssueKeyAtomic(env, rid, sid, key, hours, maxKeys) {
 }
 
 // The keys a session has earned, oldest first.
+//
+// THE TWO ENGINES RETURN DIFFERENT THINGS, and this is where a key went missing.
+//
+//   D1          .all()  ->  { results: [...], success: true, meta: {...} }
+//   node:sqlite .all()  ->  [ ... ]
+//
+// The tests use node:sqlite, so the array shape is the one the test suite
+// sees. On D1 the same code called .map on an object, threw, and the catch
+// returned an empty list - so the key was minted and then the visitor was
+// told they had none. It was found by running the real thing in a real
+// browser against the deployed worker, not by a test.
+//
+// The mock in the test harness now returns the D1 shape, so this cannot come
+// back.
 async function rewardListKeys(env, rid, sid) {
     if (!(await rewardEnsureLedger(env))) return [];
     try {
-        const rows = await qAll(env.SH_DB,
+        const res = await qAll(env.SH_DB,
             `SELECT key_text, at, expires FROM reward_keys WHERE rid=? AND sid=? ORDER BY ordinal`,
             rid, sid);
-        return (rows || []).map(function (r) {
+        const rows = Array.isArray(res) ? res : ((res && res.results) || []);
+        return rows.map(function (r) {
             return { key: r.key_text, at: Number(r.at) || 0, expires: Number(r.expires) || 0 };
         });
-    } catch (e) { return []; }
+    } catch (e) {
+        console.error('[ScripterHub] reward key list failed: ' + (e && e.message));
+        return [];
+    }
 }
 
 // WHERE THE PROVIDER'S VERIFICATION API MIGHT BE.
