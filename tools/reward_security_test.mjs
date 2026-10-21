@@ -223,11 +223,23 @@ console.log('LEGITIMATE PROGRESSION');
         after.ok === true && (after.keys || []).length === 1 && after.keys[0].key === claim.key,
         'keys=' + JSON.stringify(after.keys || []).slice(0, 120));
 
-    // AND ONLY ONCE.
+    // AND ONLY ONCE - because the key SPENT the checkpoints.
+    //
+    // The second claim is refused outright: the visitor is back at 0/N, so
+    // the ad has to be watched again. That is a stronger guarantee than a
+    // cap - there is no path from "one ad" to "a second key" at all - and it
+    // is how every other key system works.
     const claim2 = await call('POST', '/sh/reward/claim', { rid: RID, fp: FP });
     check('a second claim does not mint a second key',
-        claim2.ok === true && claim2.maxed === true && (claim2.keys || []).length === 1,
+        claim2.ok === false && /checkpoints are complete/.test(String(claim2.error || '')),
         JSON.stringify(claim2).slice(0, 160));
+    const after2 = await call('GET', '/sh/reward/state?rid=' + RID + '&fp=' + FP);
+    check('and the progress is back at zero',
+        after2.ok === true && after2.done === 0,
+        JSON.stringify(after2).slice(0, 140));
+    check('while the key they earned is still theirs',
+        (after2.keys || []).length === 1,
+        'keys=' + JSON.stringify(after2.keys || []).slice(0, 120));
 }
 
 console.log('');

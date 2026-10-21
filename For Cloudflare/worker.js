@@ -9841,7 +9841,32 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!minted) {
                 return jsonResponse({ ok: false, error: 'The key could not be issued. Try again.', retryable: true }, 503);
             }
-            return jsonResponse({ ok: true, keys: keys, key: minted, maxed: false });
+
+            // THE CHECKPOINTS ARE SPENT BY THE KEY.
+            //
+            // One completed checkpoint used to be a permanent unlock: the
+            // visitor pressed "Get A New Key" again, up to the key cap, and
+            // the hammer added time to it - all without watching another ad.
+            //
+            // The ad IS the price of a key. So the key takes the checkpoints
+            // with it, and the visitor is back at 0/N for the next one.
+            //
+            // The nonces go with them: a callback that carried the nonce of
+            // the step that was just consumed must not be able to complete
+            // the step that replaced it.
+            await withSesLock(env, rid, sid0, async function () {
+                const cur = await loadSes(env, rid, sid0);
+                if (!cur) return;
+                cur.done = [];
+                cur.issued = (cur.issued || []).concat([minted]);
+                cur.nonces = {};
+                cur.stepIndex = -1;
+                cur.stepAt = 0;
+                cur.lastCompletion = Date.now();
+                await saveSes(env, cur);
+            });
+
+            return jsonResponse({ ok: true, keys: keys, key: minted, maxed: false, progressReset: true });
         }
 
         // VISITOR: put more time on a key that ran out.

@@ -247,9 +247,28 @@ let key;
         JSON.stringify(rec && rec.expiresAt));
     check('it is not pre-locked to any HWID', rec && rec.hwid === '');
 
+    // A KEY SPENDS THE CHECKPOINTS.
+    //
+    // The second claim is refused, because the visitor is back at 0/1 - the
+    // ad has to be watched again. That is the model every other key system
+    // works on: the ad is the price of a key.
     const again = await j(await call('POST', '/sh/reward/claim', { ip: '7.7.7.7', body: { rid: FRID, sid: s1.sid, fp: 'fpC' } }));
-    check('maxKeys is enforced server-side', again.maxed === true && (again.keys || []).length === 1,
+    check('the second key needs the checkpoints again',
+        again.ok === false && /checkpoints are complete/.test(String(again.error || '')),
         JSON.stringify(again).slice(0, 140));
+
+    // And the cap is still enforced on top of that: the visitor does the ad
+    // again, and the second key is refused because maxKeys is 1.
+    const s2 = await j(await call('POST', '/sh/reward/start', { ip: '7.7.7.7', body: { rid: FRID, fp: 'fpC' } }));
+    const cb2 = await worker.fetch(new Request(s2.step.verifyUrl + '&confirmed=1',
+        { headers: { 'CF-Connecting-IP': '7.7.7.7' } }), env, { waitUntil() {} });
+    const cb2Text = await cb2.text();
+    check('and the checkpoint can be done again',
+        /All checkpoints complete|Checkpoint done/.test(cb2Text),
+        cb2Text.slice(0, 120));
+    const third = await j(await call('POST', '/sh/reward/claim', { ip: '7.7.7.7', body: { rid: FRID, sid: s1.sid, fp: 'fpC' } }));
+    check('maxKeys is enforced server-side', third.maxed === true && (third.keys || []).length === 1,
+        JSON.stringify(third).slice(0, 140));
 }
 
 // ---------------------------------------------------------------------------
