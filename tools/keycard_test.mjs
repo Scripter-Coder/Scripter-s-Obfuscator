@@ -240,6 +240,37 @@ console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
 
 // ---------------------------------------------------------------------------
 console.log('');
+console.log('');
+console.log('THE CARD AND THE GATE MUST USE THE SAME HARDWARE ID');
+// ---------------------------------------------------------------------------
+{
+    // The loader's bootstrap resolves the hardware id like this:
+    //
+    //     local HW=(G and G.ScripterHubHwid)
+    //         or (identifyexecutor and (pcall(identifyexecutor) and identifyexecutor()))
+    //         or "?"
+    //
+    // The card used to send the ROBLOX CLIENT ID instead, which is a
+    // completely different string - a long base64-ish value rather than the
+    // executor's GUID. So a key locked to a hardware id never matched the
+    // card, and a whitelist written in GUIDs never matched it either, and
+    // nothing in the answer said why.
+    const bootstrap = (await import('../For Cloudflare/worker.js'), fs.readFileSync('For Cloudflare/worker.js', 'utf8'));
+    check('the gate prefers the executor id',
+        /identifyexecutor and \(pcall\(identifyexecutor\)/.test(bootstrap),
+        'the gate does not use identifyexecutor');
+    check('and the card does the same',
+        /identifyexecutor/.test(src) && /env\.ScripterHubHwid/.test(src),
+        'the card does not use the executor id');
+    check('and the Roblox client id is only the LAST resort',
+        /the Roblox client id/.test(src) &&
+        src.indexOf('GetClientId') > src.indexOf('identifyexecutor'),
+        'the card still prefers the client id');
+    check('and the card says which one it took',
+        /hwidSource/.test(src) && /from " \.\. tostring\(hwidSource\)/.test(src),
+        'the card does not say where the id came from');
+}
+
 console.log('THERE IS NO FORGET BUTTON, AND THE HARDWARE ID IS SHOWN');
 // ---------------------------------------------------------------------------
 {

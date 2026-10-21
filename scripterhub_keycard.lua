@@ -41,7 +41,58 @@ local _HTTPGET = game.HttpGet
 local player = game.Players.LocalPlayer
 local playerName = player.Name
 local userId = player.UserId
-local hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+-- THE HARDWARE ID, RESOLVED THE WAY THE GATE RESOLVES IT.
+--
+-- The loader's bootstrap does this:
+--
+--     local HW=(G and G.ScripterHubHwid)
+--         or (identifyexecutor and (pcall(identifyexecutor) and identifyexecutor()))
+--         or "?"
+--
+-- The card used to send game:GetService("RbxAnalyticsService"):GetClientId()
+-- instead, which is a DIFFERENT STRING - a long base64-ish value rather
+-- than the executor's GUID. So a key locked to a hardware id never matched
+-- the card, and a whitelist written in GUIDs never matched it either, and
+-- there was nothing in the answer to say why.
+--
+-- The same list, in the same order, so the value the panel holds and the
+-- value the card sends are the SAME string.
+local hwidSource = "the Roblox client id"
+local hwid = ""
+do
+    local env = (getgenv and getgenv()) or _G
+    -- 1. the id the site hands over
+    if env.ScripterHubHwid and tostring(env.ScripterHubHwid) ~= "" then
+        hwid = tostring(env.ScripterHubHwid)
+        hwidSource = "the executor environment"
+    -- 2. the executor's own hardware id - a GUID on most exploits
+    elseif type(identifyexecutor) == "function" then
+        local ok, v = pcall(identifyexecutor)
+        if ok and type(v) == "string" and v ~= "" then
+            hwid = v
+            hwidSource = "identifyexecutor()"
+        end
+    end
+    -- 3. the older global
+    if hwid == "" and type(gethwid) == "function" then
+        local ok, v = pcall(gethwid)
+        if ok and type(v) == "string" and v ~= "" then
+            hwid = v
+            hwidSource = "gethwid()"
+        end
+    end
+    -- 4. the Roblox client id, which is what the card used to send
+    if hwid == "" then
+        local ok, v = pcall(function()
+            return game:GetService("RbxAnalyticsService"):GetClientId()
+        end)
+        if ok and type(v) == "string" and v ~= "" then
+            hwid = v
+            hwidSource = "the Roblox client id"
+        end
+    end
+    if hwid == "" then hwid = "?" end
+end
 local keyVerified = false
 local keyExpiry = nil
 local countdownThread = nil
@@ -1089,13 +1140,24 @@ hwidTitle.TextXAlignment = Enum.TextXAlignment.Left
 local hwidValue = Instance.new("TextLabel")
 hwidValue.Parent = hwidFrame
 hwidValue.BackgroundTransparency = 1
-hwidValue.Position = UDim2.new(0, 12, 0, 24)
+hwidValue.Position = UDim2.new(0, 12, 0, 22)
 hwidValue.Size = UDim2.new(1, -110, 0, 20)
 hwidValue.Font = Enum.Font.Gotham
 hwidValue.Text = tostring(hwid):sub(1, 22) .. "..."
 hwidValue.TextColor3 = Color3.fromRGB(180, 180, 180)
 hwidValue.TextSize = 11
 hwidValue.TextXAlignment = Enum.TextXAlignment.Left
+
+local hwidSourceLabel = Instance.new("TextLabel")
+hwidSourceLabel.Parent = hwidFrame
+hwidSourceLabel.BackgroundTransparency = 1
+hwidSourceLabel.Position = UDim2.new(0, 12, 0, 34)
+hwidSourceLabel.Size = UDim2.new(1, -110, 0, 14)
+hwidSourceLabel.Font = Enum.Font.Gotham
+hwidSourceLabel.Text = "from " .. tostring(hwidSource)
+hwidSourceLabel.TextColor3 = Color3.fromRGB(120, 120, 150)
+hwidSourceLabel.TextSize = 10
+hwidSourceLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local hwidCopyBtn = Instance.new("TextButton")
 hwidCopyBtn.Parent = hwidFrame
