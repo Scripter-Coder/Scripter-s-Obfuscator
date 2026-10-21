@@ -69,6 +69,31 @@ async function ping() {
 }
 
 // ---------------------------------------------------------------------------
+console.log('');
+console.log('THE CARD IS PUBLISHED UNDER BOTH DEPLOYMENTS');
+// ---------------------------------------------------------------------------
+{
+    // The repository has TWO Pages deployments and they race: the workflow
+    // uploads the built site, and GitHub's own "deploy from a branch"
+    // publishes the repository root. Whichever finishes last wins, and the
+    // site flips between them.
+    //
+    // The built site only contains what the build produces, so a .lua file
+    // that lives in the repository root is NOT on the site during the
+    // workflow's window. public/ is copied verbatim by the build, so the
+    // card is in public/ as well - and the two copies have to be the same
+    // file, or the site serves two different cards depending on which
+    // deployment won.
+    const rootCopy = fs.readFileSync('scripterhub_keycard.lua', 'utf8');
+    check('the root copy exists', rootCopy.length > 1000, 'it is missing');
+    check('and it is the same file as the public one',
+        rootCopy === src,
+        'the two copies differ - the site would serve two different cards');
+    check('and the build copies public/ verbatim', /copyPublicDir:\s*true/.test(
+        fs.readFileSync('vite.config.js', 'utf8')),
+        'the build does not copy public/');
+}
+
 console.log('THE KEY CARD PARSES');
 // ---------------------------------------------------------------------------
 {
