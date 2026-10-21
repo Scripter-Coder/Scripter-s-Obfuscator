@@ -434,18 +434,55 @@ if providedKey then
     writeFile(KEY_FILE, providedKey)
 end
 
--- WHITELIST (OPTIONAL, OFF BY DEFAULT)
+-- ============ THE WHITELIST ============
 --
--- The old system had a hardware whitelist that granted lifetime access. The
--- ScripterHub worker has no such route, so this is off. Put a url here that
--- answers with the word WHITELISTED for a machine you trust and it will be
--- used; leave it empty and the whitelist does not exist.
-local WHITELIST_URL = ""
-if WHITELIST_URL ~= "" then
-    local body = httpGet(WHITELIST_URL .. urlEncode(hwid))
-    if body and tostring(body):find("WHITELISTED") then
-        isWhitelisted = true
+-- A list of hardware ids, one per line, in brackets:
+--
+--     [91164E91-D7DC-47AE-81EA-8A506F0BC51F] -- Discord: scripter_0
+--
+-- The brackets are part of the format, and the id is what is INSIDE them.
+-- Anything after the closing bracket is a note for the owner and is ignored.
+--
+-- The file is fetched ONCE, at startup, and the card's hardware id is
+-- looked up in it. A match means lifetime access: no key, no ad, nothing
+-- to type.
+--
+-- This is the owner's own file, at their own raw url, and the owner edits
+-- it - so the url is a constant here, at the top of the card, rather than
+-- something that has to be configured in two places.
+--
+-- BOTH ids are checked, because the list is written by hand: the client id
+-- (a GUID) and the executor's name ("Real", "Solara") are both plausible
+-- entries in it.
+local WHITELIST_URL = "https://raw.githubusercontent.com/Scripter-Coder/Scripter-Coder/refs/heads/main/Universal/Whitelist_Users"
+
+local function cleanId(s)
+    return (tostring(s or ""):gsub("%s+", "")):lower()
+end
+
+local function whitelisted(url)
+    if not url or url == "" then return false, "no whitelist url" end
+    if not hwid or hwid == "" or hwid == "?" then return false, "no hardware id" end
+    local body = httpGet(url)
+    if not body or type(body) ~= "string" then return false, "the list could not be fetched" end
+    local wanted = {}
+    wanted[cleanId(hwid)] = true
+    if hwid2 ~= "" then wanted[cleanId(hwid2)] = true end
+    -- EVERY [id] IN THE FILE.
+    local found = 0
+    for m in body:gmatch("%[([^%]\r\n]+)%]") do
+        found = found + 1
+        if wanted[cleanId(m)] then return true, "your hardware id is in the list (" .. found .. " entries)" end
     end
+    return false, "not in the list (" .. found .. " entries)"
+end
+
+local whitelistNote = ""
+do
+    local ok, reason = whitelisted(WHITELIST_URL)
+    isWhitelisted = ok == true
+    whitelistNote = tostring(reason or "")
+    print(isWhitelisted and ("\226\156\133 Whitelisted: " .. whitelistNote) or ("\226\132\185\239\184\143 Not whitelisted: " .. whitelistNote))
 end
 
 if isWhitelisted then

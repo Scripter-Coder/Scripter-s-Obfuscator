@@ -1395,6 +1395,77 @@ async function forgeryClear(env, fp, rid) {
 }
 
 // ---------------------------------------------------------------------------
+// THE WHITELIST
+// ---------------------------------------------------------------------------
+//
+// A list of hardware ids, one per line, in brackets:
+//
+//     [91164E91-D7DC-47AE-81EA-8A506F0BC51F] -- Discord: scripter_0
+//
+// The brackets are part of the format, and the id is what is INSIDE them.
+// Anything after the closing bracket is a note for the owner.
+//
+// The url is the owner's own file, at their own raw url, and they edit it -
+// so the worker fetches it, and the list is cached for a minute so that a
+// run of visitors does not fetch it once each.
+//
+// A whitelisted machine does not need a licence key. That is what a
+// whitelist is FOR: the owner's own machine, and the machines of the
+// people they trust, run the scripts without buying a key.
+//
+// IT IS A TRUST LIST. A whitelisted machine receives the script the way a
+// free script is received - plain Lua behind the server-only layer - because
+// there is no licence to encrypt it with. That is the trade the whitelist
+// makes, and it is the same one Luarmor makes.
+const WHITELIST_KV_KEY = 'sh_whitelist_url';
+const WHITELIST_TTL_MS = 60 * 1000;
+let whitelistCache = { at: 0, url: '', ids: null };
+
+async function whitelistUrl(env) {
+    if (!env.LOADERS_KV) return '';
+    try { return String((await env.LOADERS_KV.get(WHITELIST_KV_KEY)) || '').trim(); } catch (e) { return ''; }
+}
+
+// THE IDS IN THE LIST, or an empty set.
+async function whitelistIds(env) {
+    const url = await whitelistUrl(env);
+    if (!url) { whitelistCache = { at: Date.now(), url: '', ids: new Set() }; return whitelistCache.ids; }
+    if (whitelistCache.ids && whitelistCache.url === url && Date.now() - whitelistCache.at < WHITELIST_TTL_MS) {
+        return whitelistCache.ids;
+    }
+    const ids = new Set();
+    try {
+        const res = await fetch(url, { headers: { 'User-Agent': 'ScripterHub-Whitelist/1' } });
+        const text = await res.text();
+        const re = /\[([^\]\r\n]+)\]/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            const id = String(m[1]).trim().toLowerCase();
+            if (id) ids.add(id);
+        }
+    } catch (e) {
+        // A list that cannot be fetched keeps the last one that could.
+        if (whitelistCache.ids && whitelistCache.url === url) return whitelistCache.ids;
+    }
+    whitelistCache = { at: Date.now(), url, ids };
+    return ids;
+}
+
+// IS THIS MACHINE ON THE LIST?
+//
+// BOTH ids are checked: the client id (a GUID) and the executor's name
+// ("Real", "Solara"). The list is written by hand, and either can be in it.
+async function isWhitelistedMachine(env, hwid, hwid2) {
+    const ids = await whitelistIds(env);
+    if (!ids || !ids.size) return false;
+    const a = String(hwid || '').trim().toLowerCase();
+    const b = String(hwid2 || '').trim().toLowerCase();
+    if (a && ids.has(a)) return true;
+    if (b && ids.has(b)) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // provider verification
 // ---------------------------------------------------------------------------
 //
@@ -7509,6 +7580,45 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             return jsonResponse({ ok: true, count: n, keptRewardKeys: kept });
         }
 
+        // THE OWNER SETS THE WHITELIST URL, AND ANYONE CAN ASK WHETHER THEY
+        // ARE ON IT.
+        if (url.pathname === '/sh/whitelist' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { body = {}; }
+            if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+            const wl = String(body.url || '').trim().slice(0, 500);
+            await env.LOADERS_KV.put(WHITELIST_KV_KEY, wl);
+            whitelistCache = { at: 0, url: '', ids: null };
+            const ids = wl ? await whitelistIds(env) : new Set();
+            return jsonResponse({ ok: true, url: wl, count: ids.size });
+        }
+
+        // THE OWNER READS THE URL BACK, so the panel can show what is
+        // configured. It is a GET on its own path, because the other GET on
+        // /sh/whitelist answers "is this machine on the list" and has a
+        // different shape.
+        if (url.pathname === '/sh/whitelist-url' && request.method === 'GET') {
+            if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const ids = await whitelistIds(env);
+            return jsonResponse({ ok: true, url: await whitelistUrl(env), count: ids.size });
+        }
+
+        if (url.pathname === '/sh/whitelist' && request.method === 'GET') {
+            const h = String(url.searchParams.get('h') || '').slice(0, 300);
+            const h2 = String(url.searchParams.get('h2') || '').slice(0, 300);
+            const yes = await isWhitelistedMachine(env, h, h2);
+            const ids = await whitelistIds(env);
+            return new Response('SHW ' + (yes ? 'yes' : 'no') + ' ' + ids.size + '\n', {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
+
         if (url.pathname === '/sh/licenses' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
@@ -8347,7 +8457,20 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // would be a stale authorization decision.
                 const licensesCache = await loadLicenses(env);
                 const classify = (k, h, at, pid) => classifyLicense(licensesCache[k], h, at, pid, hwid2);
-                const verdict = classifyAuthorization({
+
+                // THE WHITELIST, IF THE SCRIPT IS GATED.
+                //
+                // A machine on the owner's list does not need a licence. That
+                // is what the list is for, and it is the owner's own list.
+                //
+                // The session it gets carries NO licence, so the delivery
+                // gives it the free envelope - and the free envelope is
+                // exactly what the loader understands without a key.
+                const whitelisted = script.authRequired
+                    ? await isWhitelistedMachine(env, hwid, hwid2)
+                    : false;
+
+                const verdict = whitelisted ? null : classifyAuthorization({
                     noState: false,
                     scriptExists: !!script,
                     killswitch, scriptKilled: false,
@@ -8700,7 +8823,16 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // plain Lua as ciphertext, skip DEC, and hand the parser raw
                 // key numbers on line 1 - the exact failure recorded above.
                 let out, keyLine = sk ? (sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ')) : '';
-                if (script.keyless) {
+                // NO LICENCE KEY ON THE SESSION MEANS THE FREE ENVELOPE.
+                //
+                // That is a keyless script (which has no licence by
+                // definition) or a WHITELISTED machine on a gated script -
+                // the session route only mints one of those without a licence.
+                //
+                // The body is plain Lua behind the server-only layer, because
+                // there is no licence to encrypt it with. That is the trade a
+                // whitelist makes, and it is the same one Luarmor makes.
+                if (script.keyless || !sessionLicenseKey) {
                     out = keyLine ? ('SHX\n' + keyLine + '\n') : 'SHL\n';
                     out += inlineBlob;
                 } else {

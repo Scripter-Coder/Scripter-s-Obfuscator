@@ -217,6 +217,26 @@ function renderRewardsTab() {
         '<div class="stat-card"><div class="stat-label">👥 Registered Visitors</div><div class="stat-value">' + (d.visitors || 0) + ' <span class="max">/ ' + visitorsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.visitors === Infinity ? 2 : Math.min(100, (d.visitors || 0) / plan.visitors * 100)) + '%"></div></div></div>' +
         '<div class="stat-card"><div class="stat-label">🛤️ Total Checkpoints</div><div class="stat-value">' + cpsUsed + ' <span class="max">/ ' + cpsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.checkpoints === Infinity ? 2 : Math.min(100, cpsUsed / plan.checkpoints * 100)) + '%"></div></div></div>';
 
+    // THE WHITELIST.
+    //
+    // A list of hardware ids, one per line, in brackets:
+    //
+    //     [91164E91-D7DC-47AE-81EA-8A506F0BC51F] -- Discord: scripter_0
+    //
+    // The url is the owner's own file, at their own raw url, and they edit
+    // it. A machine on the list runs the scripts without a licence key.
+    //
+    // It is saved on the server, so it works for every visitor and not just
+    // the ones whose card has the url compiled into it.
+    var wlBox = document.getElementById('rewardWhitelistBox');
+    if (wlBox && !wlBox.dataset.loaded) {
+        wlBox.dataset.loaded = '1';
+        shOwnerApi('sh/whitelist-url', null).then(function (r) {
+            var input = document.getElementById('rewardWhitelistUrl');
+            if (input && r && r.ok) input.value = r.url || '';
+        }).catch(function () { });
+    }
+
     if (!d.rewards.length) {
         listEl.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">No rewards yet. Click "🎁 Create Reward" to make one - visitors will earn keys by completing ad checkpoints.</p>';
         return;
@@ -407,6 +427,29 @@ async function deleteReward(id) {
         return;
     }
     shNotify('Deleted', 'Reward deleted. The old link no longer works.', 'warning');
+}
+
+// ---------- The whitelist ----------
+//
+// The list of hardware ids that run the scripts without a key. The url is
+// the owner's own file; the worker fetches it and caches it for a minute.
+async function shSaveWhitelist() {
+    var input = document.getElementById('rewardWhitelistUrl');
+    if (!input) return;
+    var url = input.value.trim();
+    var btn = document.getElementById('rewardWhitelistSave');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    try {
+        var r = await window.shOwnerApi('sh/whitelist', { url: url });
+        if (r && r.ok) {
+            shNotify('Whitelist saved', (r.count || 0) + ' hardware id(s) in the list. Machines on it run the scripts without a key.', 'success', 7000);
+        } else {
+            shNotify('Not saved', (r && r.error) || 'the server refused it', 'warning', 6000);
+        }
+    } catch (e) {
+        shNotify('Network', 'could not reach the reward server', 'error', 5000);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
 }
 
 // ---------- The keys a reward has issued ----------
@@ -1180,6 +1223,8 @@ window.deleteReward = deleteReward;
 window.confirmAddCheckpoint = confirmAddCheckpoint;
 window.renderProviderSettings = renderProviderSettings;
 window.shTestProvider = shTestProvider;
+window.shSaveWhitelist = shSaveWhitelist;
+window.shShowRewardKeys = shShowRewardKeys;
 window.moveCheckpoint = moveCheckpoint;
 window.deleteCheckpoint = deleteCheckpoint;
 window.editCheckpointUI = editCheckpointUI;

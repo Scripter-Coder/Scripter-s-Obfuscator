@@ -452,6 +452,25 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
         <div class="tab-content" id="tab-rewards" style="display:none;">
             <h2 style="color:#fff;">🎁 Rewards</h2>
             <p style="color:#8888aa; font-size:13px; margin:4px 0 16px 0;">Let visitors obtain keys through ad-link checkpoints.</p>
+            <!-- THE WHITELIST. A list of hardware ids, one per line, in
+                 brackets, at the owner's own raw url. A machine on the list
+                 runs the scripts without a licence key. -->
+            <div id="rewardWhitelistBox" style="background:rgba(20,20,35,0.55); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:14px 16px; margin-bottom:18px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <div style="flex:1; min-width:280px;">
+                        <div style="color:#fff; font-weight:600; font-size:14px;">🔒 Whitelist</div>
+                        <div style="color:#8888aa; font-size:12px; margin-top:4px;">
+                            Your own list of hardware ids, one per line, in brackets:
+                            <code style="color:#8a6bff;">[91164E91-D7DC-47AE-81EA-8A506F0BC51F] -- Discord: scripter_0</code>.
+                            A machine on the list runs the scripts with no key. Point this at your raw file.
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input class="sh-input" id="rewardWhitelistUrl" type="text" placeholder="https://raw.githubusercontent.com/.../Whitelist_Users" style="min-width:320px;">
+                        <button id="rewardWhitelistSave" onclick="shSaveWhitelist()" class="btn btn-primary" style="padding:9px 16px;">💾 Save</button>
+                    </div>
+                </div>
+            </div>
             <div id="rewardsStatsRow" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:14px; margin-bottom:18px;"></div>
             <button class="btn btn-primary" onclick="openCreateRewardUI()" style="margin-bottom:18px;">🎁 Create Reward</button>
             <div id="rewardsList" style="display:grid; grid-template-columns:1fr; gap:12px;"></div>

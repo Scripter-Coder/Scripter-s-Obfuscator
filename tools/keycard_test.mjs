@@ -240,6 +240,40 @@ console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
 
 // ---------------------------------------------------------------------------
 console.log('');
+console.log('');
+console.log('THE WHITELIST IS READ, AND MATCHED');
+// ---------------------------------------------------------------------------
+{
+    // The owner's list, at their own raw url, fetched and parsed for the
+    // hardware ids INSIDE the brackets. It used to be a stub with an empty
+    // url, so the list was never read and nothing ever matched.
+    check('the card has a whitelist url', /WHITELIST_URL = "https/.test(src),
+        'the card has no whitelist url');
+    check('and it fetches it', /httpGet\(url\)/.test(src) && /whitelisted\(WHITELIST_URL\)/.test(src),
+        'the card does not fetch the list');
+    check('and it takes the id from inside the brackets',
+        /gmatch\("%\\\[\(\[%^%\]/.test(src) || src.includes('gmatch("%['),
+        'the card does not parse the brackets');
+    check('and it checks both ids',
+        /wanted\[cleanId\(hwid\)\] = true/.test(src) && /wanted\[cleanId\(hwid2\)\] = true/.test(src),
+        'the card checks only one id');
+
+    // The worker, for the PUBLISHED scripts.
+    const workerSrc = fs.readFileSync('For Cloudflare/worker.js', 'utf8');
+    check('the worker reads a whitelist url too',
+        /sh_whitelist_url/.test(workerSrc),
+        'the worker has no whitelist url');
+    check('and it fetches the list',
+        /whitelistIds\(env\)/.test(workerSrc) && /fetch\(url/.test(workerSrc),
+        'the worker does not fetch the list');
+    check('and a whitelisted machine needs no key',
+        /isWhitelistedMachine\(env, hwid, hwid2\)/.test(workerSrc),
+        'the worker does not check the list at the gate');
+    check('and the answer is plain text',
+        /SHW /.test(workerSrc),
+        'the worker does not answer in plain text');
+}
+
 console.log('THE CLIENT ID IS THE ID, AND THE EXECUTOR NAME IS THE SECOND ONE');
 // ---------------------------------------------------------------------------
 {

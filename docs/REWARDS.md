@@ -362,6 +362,40 @@ Each reward also has a **🔑 Keys** button, which lists every key that
 reward has paid out: when it was issued, when it ends, and whether it is
 active, expired or revoked.
 
+### The whitelist
+
+A list of hardware ids, one per line, in brackets, at the owner's own raw
+url:
+
+    [91164E91-D7DC-47AE-81EA-8A506F0BC51F] -- Discord: scripter_0
+
+The brackets are part of the format, and the id is what is **inside** them;
+anything after the closing bracket is a note for the owner.
+
+**A machine on the list runs the scripts with no licence key.** That is what
+a whitelist is for: the owner's own machine, and the machines of the people
+they trust, run the scripts without buying a key.
+
+It is set in two places, on purpose:
+
+- **the worker** - the url is saved on the server (**🔒 Whitelist** in the
+  Rewards tab), so the *published* scripts accept a whitelisted machine
+  with no key. The worker fetches the list and caches it for a minute, so a
+  run of visitors does not fetch it once each.
+- **the key card** - the url is a constant at the top of the card, so the
+  card grants lifetime access to a whitelisted machine without asking for
+  anything.
+
+A whitelisted machine receives the script the way a free script is
+received - plain Lua behind the server-only layer - because there is no
+licence to encrypt it with. That is the trade a whitelist makes, and it is
+the same one Luarmor makes.
+
+The hardware id the list is matched against is the **client id**
+(RbxAnalyticsService:GetClientId()), the same one the gate uses; the
+executor's name is checked as well, because the list is written by hand and
+either can be in it.
+
 ### The key card inside the game
 
 `scripterhub_keycard.lua` is the owner's own in-game card: the big UI, the
