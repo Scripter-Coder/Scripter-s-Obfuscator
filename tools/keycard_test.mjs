@@ -227,7 +227,7 @@ console.log('THE FORGET BUTTON SAYS WHAT IT DID');
         /cannot delete files/.test(src),
         'the button does not explain a failure');
     check('and the state is cleared either way',
-        /keyVerified = false/.test(src) && /setStatePill\("NO KEY"/.test(src),
+        /keyVerified = false/.test(src) && /updateCountdownDisplay\(countdownElements, nil, false\)/.test(src),
         'the card still thinks the key is there');
 }
 
