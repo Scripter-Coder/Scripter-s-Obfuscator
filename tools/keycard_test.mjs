@@ -240,24 +240,35 @@ console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
 
 // ---------------------------------------------------------------------------
 console.log('');
-console.log('THE FORGET BUTTON SAYS WHAT IT DID');
+console.log('THERE IS NO FORGET BUTTON, AND THE HARDWARE ID IS SHOWN');
 // ---------------------------------------------------------------------------
 {
-    // It used to call the delete functions and say nothing, so a key that
-    // could not be deleted - no delfile, or a read-only file - looked
-    // exactly like a key that had been deleted.
-    check('the delete reports whether it worked',
-        /local function deleteFile[\s\S]{0,400}return (ok == true|false)/.test(src),
-        'the delete does not report anything');
-    check('and the button counts what it removed',
-        /local gone = deleteAll4Files\(\)/.test(src) && /gone == 4/.test(src),
-        'the button does not count');
-    check('and it says so when the executor cannot delete files',
-        /cannot delete files/.test(src),
-        'the button does not explain a failure');
-    check('and the state is cleared either way',
-        /keyVerified = false/.test(src) && /updateCountdownDisplay\(countdownElements, nil, false\)/.test(src),
-        'the card still thinks the key is there');
+    // The owner was right: the button could not do anything. While the key
+    // is in getgenv().ScripterHubKey - which is where the LOADED SCRIPT reads
+    // it from - the card restores it and writes the files again on the next
+    // run. A button that deleted the files would look like it had done
+    // nothing, and the key would be back.
+    //
+    // The files are not the key. The key is the license, and a license is
+    // revoked from the panel, not from a file on the visitor's machine.
+    check('there is no forget button', src.indexOf('FORGET THE SAVED KEY') === -1,
+        'the button is still there');
+
+    // The owner needs the hardware id to lock a key to one machine: the
+    // panel's HWID field is compared with the value the card sends, and they
+    // have to be the SAME string. There was nowhere to get it - it is a
+    // per-client value Roblox generates - so the panel got a placeholder and
+    // the key was locked to a machine that does not exist.
+    check('the card shows the hardware id', /YOUR HARDWARE ID/.test(src),
+        'the card does not show it');
+    check('and it copies it', /setclipboard\(tostring\(hwid\)\)/.test(src),
+        'the card does not copy it');
+    check('and the value it shows is the one it sends',
+        /hwidValue\.Text = tostring\(hwid\)/.test(src) && /&h=" \.\. urlEncode\(hwid\)/.test(src),
+        'the card shows a different id than the one it sends');
+    check('and it says where a restored key came from',
+        /Key provided in the environment/.test(src),
+        'the card does not say the key came from the environment');
 }
 
 // ---------------------------------------------------------------------------

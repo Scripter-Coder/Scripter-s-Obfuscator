@@ -354,6 +354,11 @@ print("HWID: " .. tostring(hwid))
 print("API URL: " .. API_URL)
 
 -- A key handed over in the environment is used as the starting point.
+--
+-- The environment is where the LOADED SCRIPT reads the key from, so it is
+-- restored on every run and the files are written again. That is why
+-- deleting the files does not get rid of the key - and the card says so
+-- now, instead of leaving it to be discovered.
 local providedKey = getProvidedKey()
 if providedKey then
     print("\240\159\148\145 Key provided in the environment")
@@ -1051,6 +1056,75 @@ end
 
 createParagraph(welcomeContent, "\240\159\146\142 LIFETIME KEY OFFER", "If you want to have a key for Lifetime access, you can pay $20 for it. In order to buy, DM me on Discord: @scripter_0")
 
+-- ============ YOUR HARDWARE ID ============
+--
+-- The owner needs this to lock a key to one machine: the HWID field in the
+-- panel is compared with the value the card sends, and they have to be the
+-- SAME string. There was nowhere to get it - it is a per-client value
+-- Roblox generates - so the panel got a placeholder, and the key was then
+-- locked to a machine that does not exist, and nobody could tell why.
+--
+-- So the card shows it, and copies the whole thing.
+local hwidFrame = Instance.new("Frame")
+hwidFrame.Parent = welcomeContent
+hwidFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+hwidFrame.BorderSizePixel = 0
+hwidFrame.Size = UDim2.new(1, -20, 0, 50)
+
+local hwidCorner = Instance.new("UICorner")
+hwidCorner.CornerRadius = UDim.new(0, 8)
+hwidCorner.Parent = hwidFrame
+
+local hwidTitle = Instance.new("TextLabel")
+hwidTitle.Parent = hwidFrame
+hwidTitle.BackgroundTransparency = 1
+hwidTitle.Position = UDim2.new(0, 12, 0, 4)
+hwidTitle.Size = UDim2.new(1, -110, 0, 20)
+hwidTitle.Font = Enum.Font.GothamBold
+hwidTitle.Text = "\240\159\148\146 YOUR HARDWARE ID"
+hwidTitle.TextColor3 = Color3.fromRGB(255, 200, 100)
+hwidTitle.TextSize = 12
+hwidTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local hwidValue = Instance.new("TextLabel")
+hwidValue.Parent = hwidFrame
+hwidValue.BackgroundTransparency = 1
+hwidValue.Position = UDim2.new(0, 12, 0, 24)
+hwidValue.Size = UDim2.new(1, -110, 0, 20)
+hwidValue.Font = Enum.Font.Gotham
+hwidValue.Text = tostring(hwid):sub(1, 22) .. "..."
+hwidValue.TextColor3 = Color3.fromRGB(180, 180, 180)
+hwidValue.TextSize = 11
+hwidValue.TextXAlignment = Enum.TextXAlignment.Left
+
+local hwidCopyBtn = Instance.new("TextButton")
+hwidCopyBtn.Parent = hwidFrame
+hwidCopyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
+hwidCopyBtn.BorderSizePixel = 0
+hwidCopyBtn.Position = UDim2.new(1, -90, 0, 9)
+hwidCopyBtn.Size = UDim2.new(0, 78, 0, 32)
+hwidCopyBtn.Font = Enum.Font.GothamBold
+hwidCopyBtn.Text = "\240\159\147\139 COPY"
+hwidCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+hwidCopyBtn.TextSize = 12
+
+local hwidCopyCorner = Instance.new("UICorner")
+hwidCopyCorner.CornerRadius = UDim.new(0, 6)
+hwidCopyCorner.Parent = hwidCopyBtn
+
+hwidCopyBtn.MouseButton1Click:Connect(function()
+    setclipboard(tostring(hwid))
+    hwidCopyBtn.Text = "\226\156\133 COPIED"
+    hwidValue.Text = tostring(hwid)
+    status.setText("\240\159\148\146 Your hardware id was copied. Put it in the checkpoint's HWID field to lock a key to this machine.")
+    task.delay(2, function()
+        if hwidCopyBtn and hwidCopyBtn.Parent then
+            hwidCopyBtn.Text = "\240\159\147\139 COPY"
+            hwidValue.Text = tostring(hwid):sub(1, 22) .. "..."
+        end
+    end)
+end)
+
 -- ============ DROPDOWN ============
 local dropdownFrame = Instance.new("Frame")
 dropdownFrame.Parent = welcomeContent
@@ -1254,22 +1328,6 @@ updateScriptButtons("Slap Battles")
 
 -- Clear the saved key. It does not revoke the key - the server still has it -
 -- it only forgets it on this machine.
-createButton(welcomeContent, "\240\159\148\147 FORGET THE SAVED KEY", Color3.fromRGB(255, 255, 255), Color3.fromRGB(90, 90, 130), function()
-    local gone = deleteAll4Files()
-    keyVerified = false
-    keyExpiry = nil
-    actualExpiry = nil
-    stopCountdown()
-    updateCountdownDisplay(countdownElements, nil, false)
-    if gone == 4 then
-        status.setText("\240\159\148\147 The saved key was forgotten. Enter it again to load scripts.")
-    elseif gone == 0 then
-        status.setText("\226\154\160\239\184\143 This executor cannot delete files, so the key will still be here next time. Use DESTROY GUI and clear the executor's file list instead.")
-    else
-        status.setText("\226\154\160\239\184\143 Only " .. gone .. " of the 4 files could be removed - this executor may not allow deleting them.")
-    end
-end)
-
 -- IS THE WORKER THERE AT ALL?
 --
 -- "The card says it cannot reach the key server" and "the card says the KEY
