@@ -59,19 +59,19 @@ local API_URL = "https://scripterhub-stats.dubovikstanislav51.workers.dev"
 -- The key comes back on the reward page, and the visitor types it into the
 -- Welcome tab.
 local AD_LINKS = {
-    { text = "🔗 GET KEY FROM LINKVERTISE", color = Color3.fromRGB(200, 100, 50),
+    { text = "\240\159\148\151 GET KEY FROM LINKVERTISE", color = Color3.fromRGB(200, 100, 50),
       url = "https://vietpolua.cc.cd/checkpoint/linkvertise?script=ScripterHub" },
-    { text = "💰 GET KEY FROM LOOTLABS", color = Color3.fromRGB(100, 50, 200),
+    { text = "\240\159\146\176 GET KEY FROM LOOTLABS", color = Color3.fromRGB(100, 50, 200),
       url = "https://vietpolua.cc.cd/checkpoint/lootlabs?script=ScripterHub" },
-    { text = "⚡ GET KEY FROM WORKINK", color = Color3.fromRGB(0, 128, 0),
+    { text = "\226\154\161 GET KEY FROM WORKINK", color = Color3.fromRGB(0, 128, 0),
       url = "https://vietpolua.cc.cd/checkpoint/workink?script=ScripterHub" },
 }
 
 -- SOCIAL LINKS
 local SOCIAL_LINKS = {
-    { text = "📺 YOUTUBE CHANNEL", color = Color3.fromRGB(255, 0, 0),
+    { text = "\240\159\147\186 YOUTUBE CHANNEL", color = Color3.fromRGB(255, 0, 0),
       url = "https://www.youtube.com/@Scripter-Coder" },
-    { text = "💬 DISCORD SERVER", color = Color3.fromRGB(88, 101, 242),
+    { text = "\240\159\146\172 DISCORD SERVER", color = Color3.fromRGB(88, 101, 242),
       url = "https://discord.gg/v5swRqZzBG" },
 }
 
@@ -132,26 +132,83 @@ local function urlEncode(s)
     end))
 end
 
--- ============ PLAIN TEXT HTTP ============
--- HttpGet only. No headers, no body, no JSON.
+-- ============ PLAIN TEXT HTTP, WITH EVERY FALLBACK THERE IS ============
+-- The card has to work on executors that do not all have the same HTTP
+-- function, so it tries them in order and says which one worked:
+--
+--   1. game:HttpGet   the Roblox one, and the one most executors keep
+--   2. request        the http library most executors provide
+--   3. syn.request    the old global
+--   4. http.request   the http library, by its full name
+--   5. httpget        the old global
+--
+-- IT SAYS WHAT WENT WRONG. "Could not reach the key server" and nothing
+-- else is not a diagnosis: it does not say whether the request never left,
+-- whether the answer was empty, or whether the executor simply has no HTTP
+-- at all. The card keeps the last error and shows it.
+local LAST_HTTP_ERROR = ""
+
 local function httpGet(url)
+    local tried = {}
+
+    -- 1. game:HttpGet
     if type(_HTTPGET) == "function" then
         local ok, body = pcall(function()
             return _HTTPGET(url)
         end)
-        if ok and type(body) == "string" then
-            return body
-        end
+        if ok and type(body) == "string" and body ~= "" then return body end
+        table.insert(tried, "game:HttpGet=" .. tostring(body))
+    else
+        table.insert(tried, "game:HttpGet=missing")
     end
-    -- Some executors expose request() instead of game:HttpGet.
+
+    -- 2. request
     if type(request) == "function" then
         local ok, body = pcall(function()
             return request({ Url = url, Method = "GET" })
         end)
-        if ok and type(body) == "string" then
-            return body
+        if ok and type(body) == "string" and body ~= "" then return body end
+        -- Some executors answer with a table.
+        if ok and type(body) == "table" and type(body.Body) == "string" and body.Body ~= "" then
+            return body.Body
         end
+        table.insert(tried, "request=" .. tostring(body))
     end
+
+    -- 3. syn.request
+    if type(syn) == "table" and type(syn.request) == "function" then
+        local ok, body = pcall(function()
+            return syn.request({ Url = url, Method = "GET" })
+        end)
+        if ok and type(body) == "string" and body ~= "" then return body end
+        if ok and type(body) == "table" and type(body.Body) == "string" and body.Body ~= "" then
+            return body.Body
+        end
+        table.insert(tried, "syn.request=" .. tostring(body))
+    end
+
+    -- 4. the http library
+    if type(http) == "table" and type(http.request) == "function" then
+        local ok, body = pcall(function()
+            return http.request(url)
+        end)
+        if ok and type(body) == "string" and body ~= "" then return body end
+        if ok and type(body) == "table" and type(body.Body) == "string" and body.Body ~= "" then
+            return body.Body
+        end
+        table.insert(tried, "http.request=" .. tostring(body))
+    end
+
+    -- 5. httpget
+    if type(httpget) == "function" then
+        local ok, body = pcall(function()
+            return httpget(url)
+        end)
+        if ok and type(body) == "string" and body ~= "" then return body end
+        table.insert(tried, "httpget=" .. tostring(body))
+    end
+
+    LAST_HTTP_ERROR = table.concat(tried, " | ")
     return nil
 end
 
@@ -166,7 +223,10 @@ local function verifyKey(key)
 
     local body = httpGet(API_URL .. "/sh/keycheck?k=" .. urlEncode(key) .. "&h=" .. urlEncode(hwid))
     if not body then
-        return { success = false, code = "NETWORK", message = "Could not reach the key server." }
+        return {
+            success = false, code = "NETWORK",
+            message = "Could not reach the key server. Tried: " .. tostring(LAST_HTTP_ERROR)
+        }
     end
 
     body = tostring(body):gsub("%s+$", "")
@@ -231,12 +291,12 @@ end
 local function formatTimeLeft(expiryTimestamp)
     if not expiryTimestamp or expiryTimestamp == 0 or expiryTimestamp == "0"
         or expiryTimestamp == "LIFETIME" then
-        return "LIFETIME", "∞", "∞", "∞", "∞"
+        return "LIFETIME", "\226\136\158", "\226\136\158", "\226\136\158", "\226\136\158"
     end
 
     local expiryNum = tonumber(expiryTimestamp)
     if not expiryNum then
-        return "LIFETIME", "∞", "∞", "∞", "∞"
+        return "LIFETIME", "\226\136\158", "\226\136\158", "\226\136\158", "\226\136\158"
     end
 
     local remaining = expiryNum - os.time()
@@ -274,7 +334,7 @@ print("API URL: " .. API_URL)
 -- A key handed over in the environment is used as the starting point.
 local providedKey = getProvidedKey()
 if providedKey then
-    print("🔑 Key provided in the environment")
+    print("\240\159\148\145 Key provided in the environment")
     writeFile(KEY_FILE, providedKey)
 end
 
@@ -298,7 +358,7 @@ if isWhitelisted then
     actualExpiry = nil
     currentKeyIsLifetime = true
     saveAll4Files("WHITELISTED_" .. tostring(hwid), "LIFETIME")
-    print("✅ Whitelisted user!")
+    print("\226\156\133 Whitelisted user!")
 else
     local savedKey = readFile(KEY_FILE)
     local savedExpiry = readFile(EXPIRY_FILE)
@@ -316,7 +376,7 @@ else
                 actualExpiry = nil
                 currentKeyIsLifetime = true
                 saveAll4Files(savedKey, "LIFETIME")
-                print("✅ Lifetime key valid!")
+                print("\226\156\133 Lifetime key valid!")
             else
                 actualExpiry = validation.expiry
                 keyExpiry = actualExpiry
@@ -327,18 +387,18 @@ else
 
                 if actualExpiry and actualExpiry > 0 and os.time() > actualExpiry then
                     keyVerified = false
-                    print("❌ Key is expired!")
+                    print("\226\157\140 Key is expired!")
                     deleteAll4Files()
                 else
                     keyVerified = true
                     saveAll4Files(savedKey, actualExpiry)
                     local daysLeft = math.floor(((actualExpiry or 0) - os.time()) / 86400)
-                    print("✅ Key valid! Expires in " .. tostring(daysLeft) .. " days")
+                    print("\226\156\133 Key valid! Expires in " .. tostring(daysLeft) .. " days")
                 end
             end
         else
             keyVerified = false
-            print("❌ Saved key invalid: " .. tostring(validation.message))
+            print("\226\157\140 Saved key invalid: " .. tostring(validation.message))
             deleteAll4Files()
         end
     else
@@ -396,7 +456,7 @@ closeBtn.BorderSizePixel = 0
 closeBtn.Position = UDim2.new(1, -45, 0, 10)
 closeBtn.Size = UDim2.new(0, 35, 0, 30)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.Text = "✕"
+closeBtn.Text = "\226\156\149"
 closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.TextSize = 18
 
@@ -425,7 +485,7 @@ welcomeTabBtn.BorderSizePixel = 0
 welcomeTabBtn.Position = UDim2.new(0, 10, 0, 5)
 welcomeTabBtn.Size = UDim2.new(0, 120, 0, 35)
 welcomeTabBtn.Font = Enum.Font.GothamBold
-welcomeTabBtn.Text = "🏠 Welcome"
+welcomeTabBtn.Text = "\240\159\143\160 Welcome"
 welcomeTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 welcomeTabBtn.TextSize = 14
 
@@ -440,7 +500,7 @@ linksTabBtn.BorderSizePixel = 0
 linksTabBtn.Position = UDim2.new(0, 140, 0, 5)
 linksTabBtn.Size = UDim2.new(0, 120, 0, 35)
 linksTabBtn.Font = Enum.Font.GothamBold
-linksTabBtn.Text = "🔗 Links"
+linksTabBtn.Text = "\240\159\148\151 Links"
 linksTabBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 linksTabBtn.TextSize = 14
 
@@ -540,7 +600,7 @@ local function createCountdownTimer(parent)
     titleLabel.Position = UDim2.new(0, 12, 0, 8)
     titleLabel.Size = UDim2.new(1, -24, 0, 25)
     titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.Text = "⏰ TIME STATUS"
+    titleLabel.Text = "\226\143\176 TIME STATUS"
     titleLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
     titleLabel.TextSize = 16
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -614,21 +674,21 @@ local function updateCountdownDisplay(countdownElements, expiry)
     local status, days, hours, minutes, seconds = formatTimeLeft(expiry)
 
     if status == "LIFETIME" then
-        countdownElements.statusLabel.Text = "Status: 🌟 LIFETIME ACCESS (Never Expires)"
+        countdownElements.statusLabel.Text = "Status: \240\159\140\159 LIFETIME ACCESS (Never Expires)"
         countdownElements.statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-        countdownElements.daysLabel.Text = "Days: ∞"
-        countdownElements.hoursLabel.Text = "Hours: ∞"
-        countdownElements.minutesLabel.Text = "Minutes: ∞"
-        countdownElements.secondsLabel.Text = "Seconds: ∞"
+        countdownElements.daysLabel.Text = "Days: \226\136\158"
+        countdownElements.hoursLabel.Text = "Hours: \226\136\158"
+        countdownElements.minutesLabel.Text = "Minutes: \226\136\158"
+        countdownElements.secondsLabel.Text = "Seconds: \226\136\158"
     elseif status == "EXPIRED" then
-        countdownElements.statusLabel.Text = "Status: ❌ EXPIRED"
+        countdownElements.statusLabel.Text = "Status: \226\157\140 EXPIRED"
         countdownElements.statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
         countdownElements.daysLabel.Text = "Days: 0"
         countdownElements.hoursLabel.Text = "Hours: 0"
         countdownElements.minutesLabel.Text = "Minutes: 0"
         countdownElements.secondsLabel.Text = "Seconds: 0"
     else
-        countdownElements.statusLabel.Text = "Status: ✅ ACTIVE"
+        countdownElements.statusLabel.Text = "Status: \226\156\133 ACTIVE"
         countdownElements.statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
         countdownElements.daysLabel.Text = "Days: " .. days
         countdownElements.hoursLabel.Text = "Hours: " .. hours
@@ -805,11 +865,11 @@ local function createStatusLabel(parent, initialText)
 
     local function setText(newText)
         label.Text = newText
-        if string.find(newText, "✅") then
+        if string.find(newText, "\226\156\133") then
             label.TextColor3 = Color3.fromRGB(100, 255, 100)
-        elseif string.find(newText, "❌") or string.find(newText, "Expired") then
+        elseif string.find(newText, "\226\157\140") or string.find(newText, "Expired") then
             label.TextColor3 = Color3.fromRGB(255, 100, 100)
-        elseif string.find(newText, "⚠️") then
+        elseif string.find(newText, "\226\154\160\239\184\143") then
             label.TextColor3 = Color3.fromRGB(255, 200, 100)
         else
             label.TextColor3 = Color3.fromRGB(100, 200, 255)
@@ -823,26 +883,26 @@ end
 createLabel(welcomeContent, "Hello " .. playerName .. "!", 18, Color3.fromRGB(100, 200, 255))
 
 local countdownElements = createCountdownTimer(welcomeContent)
-local status = createStatusLabel(welcomeContent, "⚠️ No key found | Enter your key below")
+local status = createStatusLabel(welcomeContent, "\226\154\160\239\184\143 No key found | Enter your key below")
 
 -- Update status based on saved key
 if isWhitelisted then
-    status.setText("✅ Whitelisted User! LIFETIME access granted")
+    status.setText("\226\156\133 Whitelisted User! LIFETIME access granted")
     updateCountdownDisplay(countdownElements, nil)
 elseif keyVerified then
     if keyExpiry and keyExpiry > 0 then
         if os.time() > keyExpiry then
-            status.setText("❌ Key Expired! Get a new key from Links tab")
+            status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
             updateCountdownDisplay(countdownElements, 0)
             keyVerified = false
         else
             updateCountdownDisplay(countdownElements, keyExpiry)
             local daysLeft = math.floor((keyExpiry - os.time()) / 86400)
-            status.setText("✅ Key Active! " .. daysLeft .. " days remaining")
+            status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
         end
     else
         updateCountdownDisplay(countdownElements, nil)
-        status.setText("✅ Key Active! LIFETIME access granted")
+        status.setText("\226\156\133 Key Active! LIFETIME access granted")
     end
 end
 
@@ -861,7 +921,7 @@ local function startCountdown(expiry)
             updateCountdownDisplay(countdownElements, keyExpiry)
             if os.time() > keyExpiry then
                 keyVerified = false
-                status.setText("❌ Key Expired! Get a new key from Links tab")
+                status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
                 updateCountdownDisplay(countdownElements, 0)
                 break
             end
@@ -875,18 +935,18 @@ if keyVerified and keyExpiry and keyExpiry > 0 then
 end
 
 -- ============ KEY REDEMPTION TEXTBOX ============
-local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...", "✓ Verify", function(value)
+local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...", "\226\156\147 Verify", function(value)
     if keyVerified then
-        status.setText("✅ Already verified! You can load scripts.")
+        status.setText("\226\156\133 Already verified! You can load scripts.")
         return
     end
 
     if not value or value == "" then
-        status.setText("❌ Key cannot be blank!")
+        status.setText("\226\157\140 Key cannot be blank!")
         return
     end
 
-    status.setText("🔄 Validating key with the server...")
+    status.setText("\240\159\148\132 Validating key with the server...")
 
     local validation = verifyKey(value)
     print("Validation result: " .. tostring(validation.success))
@@ -926,23 +986,23 @@ local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...
             startCountdown(expiryValue)
             updateCountdownDisplay(countdownElements, expiryValue)
             local daysLeft = math.floor((expiryValue - os.time()) / 86400)
-            status.setText("✅ Key Active! " .. daysLeft .. " days remaining")
+            status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
         else
             updateCountdownDisplay(countdownElements, nil)
-            status.setText("✅ Key Active! LIFETIME access granted")
+            status.setText("\226\156\133 Key Active! LIFETIME access granted")
         end
     else
         if validation.code == "EXPIRED" then
-            status.setText("❌ Key Expired! Get a new key from Links tab")
+            status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
             updateCountdownDisplay(countdownElements, 0)
         elseif validation.code == "HWID" then
-            status.setText("🔒 HWID Locked! This key is on another machine.")
+            status.setText("\240\159\148\146 HWID Locked! This key is on another machine.")
         elseif validation.code == "BANNED" then
-            status.setText("🚫 Key Blacklisted!")
+            status.setText("\240\159\154\171 Key Blacklisted!")
         elseif validation.code == "INVALID" then
-            status.setText("❌ Invalid Key! Get a valid key from Links tab")
+            status.setText("\226\157\140 Invalid Key! Get a valid key from Links tab")
         else
-            status.setText("⚠️ " .. tostring(validation.message or "Unknown error. Contact @scripter_0"))
+            status.setText("\226\154\160\239\184\143 " .. tostring(validation.message or "Unknown error. Contact @scripter_0"))
         end
     end
 end)
@@ -955,7 +1015,7 @@ if keyVerified and not isWhitelisted then
     end
 end
 
-createParagraph(welcomeContent, "💎 LIFETIME KEY OFFER", "If you want to have a key for Lifetime access, you can pay $20 for it. In order to buy, DM me on Discord: @scripter_0")
+createParagraph(welcomeContent, "\240\159\146\142 LIFETIME KEY OFFER", "If you want to have a key for Lifetime access, you can pay $20 for it. In order to buy, DM me on Discord: @scripter_0")
 
 -- ============ DROPDOWN ============
 local dropdownFrame = Instance.new("Frame")
@@ -976,7 +1036,7 @@ selectedBtn.BorderSizePixel = 0
 selectedBtn.Position = UDim2.new(0, 10, 0, 8)
 selectedBtn.Size = UDim2.new(1, -20, 0, 34)
 selectedBtn.Font = Enum.Font.GothamBold
-selectedBtn.Text = "🎮 Slap Battles"
+selectedBtn.Text = "\240\159\142\174 Slap Battles"
 selectedBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 selectedBtn.TextSize = 14
 selectedBtn.TextXAlignment = Enum.TextXAlignment.Left
@@ -991,7 +1051,7 @@ arrowLabel.BackgroundTransparency = 1
 arrowLabel.Position = UDim2.new(1, -30, 0, 0)
 arrowLabel.Size = UDim2.new(0, 25, 1, 0)
 arrowLabel.Font = Enum.Font.GothamBold
-arrowLabel.Text = "▼"
+arrowLabel.Text = "\226\150\188"
 arrowLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 arrowLabel.TextSize = 16
 arrowLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1064,7 +1124,7 @@ local function updateScriptButtons(gameName)
         btn.BorderSizePixel = 0
         btn.Size = UDim2.new(0, 250, 0, 45)
         btn.Font = Enum.Font.GothamBold
-        btn.Text = "🚀 LOAD " .. script.name
+        btn.Text = "\240\159\154\128 LOAD " .. script.name
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
         btn.TextSize = 14
 
@@ -1089,11 +1149,11 @@ local function updateScriptButtons(gameName)
 
         btn.MouseButton1Click:Connect(function()
             if not keyVerified and not isWhitelisted then
-                status.setText("❌ Please enter a valid key first!")
+                status.setText("\226\157\140 Please enter a valid key first!")
                 return
             end
             if keyExpiry and keyExpiry > 0 and os.time() > keyExpiry then
-                status.setText("❌ Your key has expired! Get a new key from Links tab")
+                status.setText("\226\157\140 Your key has expired! Get a new key from Links tab")
                 return
             end
             destroyUIAndLoadHub(script.url)
@@ -1113,7 +1173,7 @@ for _, option in ipairs(options) do
     optBtn.BorderSizePixel = 0
     optBtn.Size = UDim2.new(1, 0, 0, 32)
     optBtn.Font = Enum.Font.Gotham
-    optBtn.Text = "🎮 " .. option
+    optBtn.Text = "\240\159\142\174 " .. option
     optBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
     optBtn.TextSize = 13
     optBtn.TextXAlignment = Enum.TextXAlignment.Left
@@ -1130,13 +1190,13 @@ for _, option in ipairs(options) do
     end)
 
     optBtn.MouseButton1Click:Connect(function()
-        selectedBtn.Text = "🎮 " .. option
+        selectedBtn.Text = "\240\159\142\174 " .. option
         currentGame = option
         dropdownVisible = false
         dropdownItemsFrame.Visible = false
-        arrowLabel.Text = "▼"
+        arrowLabel.Text = "\226\150\188"
         dropdownFrame.Size = UDim2.new(1, -20, 0, 50)
-        status.setText("🎮 Selected: " .. option)
+        status.setText("\240\159\142\174 Selected: " .. option)
         updateScriptButtons(option)
     end)
 end
@@ -1145,7 +1205,7 @@ end
 selectedBtn.MouseButton1Click:Connect(function()
     dropdownVisible = not dropdownVisible
     dropdownItemsFrame.Visible = dropdownVisible
-    arrowLabel.Text = dropdownVisible and "▲" or "▼"
+    arrowLabel.Text = dropdownVisible and "\226\150\178" or "\226\150\188"
     if dropdownVisible then
         local totalHeight = #options * 34 + 4
         dropdownFrame.Size = UDim2.new(1, -20, 0, 50 + totalHeight)
@@ -1160,30 +1220,46 @@ updateScriptButtons("Slap Battles")
 
 -- Clear the saved key. It does not revoke the key - the server still has it -
 -- it only forgets it on this machine.
-createButton(welcomeContent, "🔓 FORGET THE SAVED KEY", Color3.fromRGB(255, 255, 255), Color3.fromRGB(90, 90, 130), function()
+createButton(welcomeContent, "\240\159\148\147 FORGET THE SAVED KEY", Color3.fromRGB(255, 255, 255), Color3.fromRGB(90, 90, 130), function()
     deleteAll4Files()
     keyVerified = false
     keyExpiry = nil
     actualExpiry = nil
     stopCountdown()
     updateCountdownDisplay(countdownElements, 0)
-    status.setText("🔓 The saved key was forgotten. Enter it again to load scripts.")
+    status.setText("\240\159\148\147 The saved key was forgotten. Enter it again to load scripts.")
+end)
+
+-- IS THE WORKER THERE AT ALL?
+--
+-- "The card says it cannot reach the key server" and "the card says the KEY
+-- is invalid" look the same from the outside, and only one of them is the
+-- card's fault. This asks the worker for nothing - it just says hello - and
+-- shows the answer, or what the last attempt said.
+createButton(welcomeContent, "\240\159\147\186 TEST THE CONNECTION", Color3.fromRGB(255, 255, 255), Color3.fromRGB(60, 60, 90), function()
+    status.setText("\240\159\146\166 Asking the key server...")
+    local body = httpGet(API_URL .. "/sh/ping")
+    if body then
+        status.setText("\226\156\133 Server reached: " .. tostring(body):sub(1, 60))
+    else
+        status.setText("\226\157\140 No answer. Tried: " .. tostring(LAST_HTTP_ERROR):sub(1, 120))
+    end
 end)
 
 -- Destroy GUI button
-createButton(welcomeContent, "🗑️ DESTROY GUI", Color3.fromRGB(255, 255, 255), Color3.fromRGB(100, 100, 100), function()
+createButton(welcomeContent, "\240\159\151\145\239\184\143 DESTROY GUI", Color3.fromRGB(255, 255, 255), Color3.fromRGB(100, 100, 100), function()
     stopCountdown()
     screenGui:Destroy()
     _G.ScripterHub_UILoaded = nil
 end)
 
 -- ============ BUILD LINKS TAB ============
-createLabel(linksContent, "📋 GET YOUR KEY HERE", 16, Color3.fromRGB(100, 200, 255))
+createLabel(linksContent, "\240\159\147\139 GET YOUR KEY HERE", 16, Color3.fromRGB(100, 200, 255))
 
 for _, link in ipairs(AD_LINKS) do
     createButton(linksContent, link.text, Color3.fromRGB(255, 255, 255), link.color, function()
         setclipboard(link.url)
-        status.setText("📋 Link copied! Finish the checkpoint, then paste your key in the Welcome tab.")
+        status.setText("\240\159\147\139 Link copied! Finish the checkpoint, then paste your key in the Welcome tab.")
     end)
 end
 
@@ -1192,11 +1268,11 @@ spacer.Parent = linksContent
 spacer.BackgroundTransparency = 1
 spacer.Size = UDim2.new(1, 0, 0, 10)
 
-createLabel(linksContent, "📱 SOCIAL LINKS", 16, Color3.fromRGB(100, 200, 255))
+createLabel(linksContent, "\240\159\147\177 SOCIAL LINKS", 16, Color3.fromRGB(100, 200, 255))
 
 for _, link in ipairs(SOCIAL_LINKS) do
     createButton(linksContent, link.text, Color3.fromRGB(255, 255, 255), link.color, function()
         setclipboard(link.url)
-        status.setText("📋 Link copied!")
+        status.setText("\240\159\147\139 Link copied!")
     end)
 end

@@ -7981,6 +7981,25 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             });
         }
 
+        // ---------- GET /sh/ping : IS THE WORKER THERE? ----------
+        //
+        // For the key card's "test connection" button. It exists because
+        // "the card says it cannot reach the server" and "the card says the
+        // KEY is invalid" look identical from the outside, and the second
+        // one is the card's fault while the first one is the network's.
+        //
+        // Plain text, one word, no key and nothing to guess.
+        if (url.pathname === '/sh/ping') {
+            return new Response('SHPONG', {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
+
         // ---------- GET /sh/keycheck?k=<license>&h=<hwid> : PLAIN-TEXT KEY CHECK ----------
         //
         // FOR THE KEY CARD INSIDE THE GAME.

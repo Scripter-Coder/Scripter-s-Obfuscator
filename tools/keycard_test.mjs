@@ -34,6 +34,36 @@ function check(name, cond, detail = '') {
     else { fails++; console.log('  FAIL ' + name + (detail ? ' - ' + detail : '')); }
 }
 
+// The real worker, a mocked KV, a real D1 shape. It is set up FIRST, because
+// the card's own routes are checked against it.
+const store = new Map();
+const KV = {
+    async get(k) { return store.has(k) ? store.get(k) : null; },
+    async put(k, v) { store.set(k, String(v)); },
+    async delete(k) { store.delete(k); },
+    _store: store
+};
+const env = {
+    LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev',
+    SH_OWNER_CODE_HASH: OWNER_CODE_HASH, SH_SESSION_SECRET: 's', SH_DB: makeD1Shape()
+};
+const worker = (await import('../For Cloudflare/worker.js')).default;
+
+async function call(method, path, { body, ip = '1.2.3.4', ua = 'Mozilla/5.0', token } = {}) {
+    const headers = { 'User-Agent': ua };
+    if (ip) headers['CF-Connecting-IP'] = ip;
+    if (token) headers['X-SH-Token'] = token;
+    const sendBody = body && method !== 'GET' && method !== 'HEAD';
+    if (sendBody) headers['Content-Type'] = 'application/json';
+    const req = new Request('https://t.workers.dev' + path, {
+        method, headers, body: sendBody ? JSON.stringify(body) : undefined
+    });
+    return worker.fetch(req, env, { waitUntil(p) { try { p && p.catch(() => { }); } catch (e) { } } });
+}
+async function ping() {
+    return call('GET', '/sh/ping', { ua: 'Roblox/570' });
+}
+
 // ---------------------------------------------------------------------------
 console.log('THE KEY CARD PARSES');
 // ---------------------------------------------------------------------------
@@ -115,23 +145,78 @@ console.log('THE FOUR FILES ARE STILL THERE');
 
 // ---------------------------------------------------------------------------
 console.log('');
+console.log('THE SOURCE IS PURE ASCII, AND THE EMOJI SURVIVE IT');
+// ---------------------------------------------------------------------------
+//
+// A .lua file is served as "text/x-lua" with NO charset, and an executor
+// that decodes the response with the charset it guessed - and the guess for
+// an unknown text type is usually Latin-1 - turns every emoji into "a-oe..."
+// garbage. GitHub Pages does the same for a file it cannot place.
+//
+// So the source is pure ASCII: every emoji is written as its UTF-8 bytes in
+// decimal escapes ("\240\159\148\151" is a chain link), and Roblox renders
+// the bytes as UTF-8 exactly as before.
+//
+// THE ESCAPES HAVE TO ROUND-TRIP. The first attempt walked the file by code
+// unit, so every emoji was split in half and each half encoded to the
+// replacement character - the card would have shown nothing at all where the
+// emoji were, and the source would still have been "pure ASCII", so the
+// check that said "pure ASCII" was happy while the card was broken.
+{
+    const pureAscii = ![...src].some(c => c.codePointAt(0) > 127);
+    check('the source is pure ASCII', pureAscii,
+        'the file still has non-ascii characters in it');
+
+    // The escapes, decoded back to BYTES and then read as UTF-8.
+    const asBytes = src.replace(/\\(\d{1,3})/g, (m, n) => String.fromCharCode(Number(n)));
+    const decoded = Buffer.from(asBytes, 'latin1').toString('utf8');
+    const emoji = [...decoded].filter(c => c.codePointAt(0) > 127);
+    check('and there are emoji in it', emoji.length > 40, 'found ' + emoji.length);
+    check('and none of them is the replacement character',
+        !emoji.some(c => c.codePointAt(0) === 0xFFFD),
+        'an emoji was split in half and lost');
+    // The ones that matter, by name.
+    for (const [name, ch] of [['the house', '\u{1F3E0}'], ['the tick', '\u{2705}'],
+        ['the cross', '\u{274C}'], ['the chain', '\u{1F517}'], ['the key', '\u{1F511}'],
+        ['the infinity', '\u{221E}']]) {
+        check('and ' + name + ' is still there', emoji.indexOf(ch) !== -1,
+            'the escape for it is wrong');
+    }
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('THE CARD CAN ASK WHETHER THE WORKER IS THERE');
+// ---------------------------------------------------------------------------
+{
+    const res = await ping();
+    const body = (await res.text()).trim();
+    check('the ping answers', res.status === 200, 'status ' + res.status);
+    check('and it is plain text', body.indexOf('SHPONG') === 0, body.slice(0, 60));
+    check('and the card asks for it', /\/sh\/ping/.test(src), 'the card has no ping');
+    check('and the card has a button for it', /TEST THE CONNECTION/.test(src),
+        'the card has no connection test');
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('THE CARD SAYS WHAT WENT WRONG, NOT JUST "IT DID NOT WORK"');
+// ---------------------------------------------------------------------------
+{
+    // "Could not reach the key server" and nothing else is not a diagnosis.
+    check('the card tries more than one http function',
+        /game:HttpGet/.test(src) && /request/.test(src) && /syn\.request/.test(src)
+        && /http\.request/.test(src) && /httpget/.test(src),
+        'a fallback is missing');
+    check('and it keeps the last error', /LAST_HTTP_ERROR/.test(src),
+        'the card does not keep the error');
+    check('and it shows it', /Tried: /.test(src), 'the card does not show the error');
+}
+// ---------------------------------------------------------------------------
+console.log('');
 console.log('THE ANSWER THE WORKER GIVES IS THE ANSWER THE CARD PARSES');
 // ---------------------------------------------------------------------------
 {
-    // The real worker, a mocked KV, a real D1 shape.
-    const store = new Map();
-    const KV = {
-        async get(k) { return store.has(k) ? store.get(k) : null; },
-        async put(k, v) { store.set(k, String(v)); },
-        async delete(k) { store.delete(k); },
-        _store: store
-    };
-    const env = {
-        LOADERS_KV: KV, SH_SETUP_TOKEN: 'T', SH_BASE_URL: 'https://t.workers.dev',
-        SH_OWNER_CODE_HASH: OWNER_CODE_HASH, SH_SESSION_SECRET: 's', SH_DB: makeD1Shape()
-    };
-    const worker = (await import('../For Cloudflare/worker.js')).default;
-
     const login = await worker.fetch(new Request('https://t.workers.dev/sh/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: OWNER_CODE_PLAIN })

@@ -383,6 +383,28 @@ The route is a **check**, not an auth: it does not bind the hardware and it
 does not mint a token. The script's own gate (`/sh/session`) does that, on
 the delivery, where it belongs.
 
+**THE SOURCE IS PURE ASCII.** GitHub Pages serves a `.lua` file as
+`text/x-lua` with **no charset**, and a client that decodes the response
+with the charset it guessed — and the guess for an unknown text type is
+usually Latin-1 — turns every emoji into `âœ…` garbage. So every emoji in
+the card is written as its UTF-8 bytes in decimal escapes:
+
+```lua
+text = "\240\159\148\151 GET KEY FROM LINKVERTISE"   -- a chain link
+```
+
+A Lua string is a byte string, so Roblox renders the bytes as UTF-8 exactly
+as before, and **no** charset, copy-paste or download can mangle the source
+any more.
+
+**THE CARD ASKS WHETHER THE WORKER IS THERE.** "Could not reach the key
+server" and "the key is invalid" look identical from the outside, and only
+one of them is the card's fault. There is a **📺 TEST THE CONNECTION**
+button that asks the worker for nothing (`GET /sh/ping` answers `SHPONG`)
+and shows the answer — or what the last attempt said, because the card tries
+`game:HttpGet`, `request`, `syn.request`, `http.request` and `httpget` in
+turn and remembers which ones it tried.
+
 The card reads the key from `getgenv().ScripterHubKey` (the name the site
 uses) or `getgenv().KEY`, keeps the four files it has always kept, and
 counts down once a second instead of once a frame.
