@@ -1667,3 +1667,57 @@ The owner's cap is the ceiling, and it is the OWNER's rule: a reward with
 extending off refuses the request whatever the visitor asks.
 
 ---
+## D41 - The key card speaks plain text, because some executors cannot do JSON
+
+The owner's own in-game key card checked keys against their old API, which
+spoke JSON:
+
+```lua
+local jsonData = _JSONENCODE(data or {})
+local response = _HTTPPOST(url, headers, jsonData)
+local decoded = _JSONDECODE(response)
+```
+
+**Some executors cannot do that.** Not "do it badly" - cannot: Opiumware and a
+few others have no `HttpService:JSONEncode`, so the card died on a nil index
+long before the key was ever checked. A key system that speaks JSON is dead
+on those executors, and the failure looks like "the script does nothing"
+rather than "this executor cannot do JSON".
+
+So the card speaks **plain text**, and the server grew one route that does
+too:
+
+```
+GET <worker>/sh/keycheck?k=<key>&h=<hwid>
+
+    SHOK <expiresAtMs> <lifetime>      the key is good
+    SHERR invalid|banned|expired|hwid  it is not
+```
+
+No headers, no body, no encoder, no decoder. The only parsing is
+`string.match` on one line, and the answer never contains the key.
+
+**IT IS A CHECK, NOT AN AUTH.** It does not bind the hardware and it does
+not mint a token - the script's own gate (`/sh/session`) does that, on the
+delivery, where it belongs. A key card that locked the key to the machine it
+was typed on would break the script on every other machine, and the card is
+not the gate.
+
+**THE EXPIRY IS IN THE ANSWER** because a card that says "valid" without
+saying "until when" has to ask twice.
+
+Two smaller things were fixed in the card while it was being rewritten:
+
+- it looked for `getgenv().KEY`, and the site sets `getgenv().ScripterHubKey`
+  - so a key handed over by the obfuscator was never picked up. Both names
+  are read now, and the site's comes first;
+- the countdown was connected to `RunService.Heartbeat` and rewrote four
+  labels **every frame** - sixty times a second, for a clock that shows
+  seconds, and it kept running after the key had expired. It is one thread
+  now, once a second, and it stops when the key does.
+
+The card lives in `scripterhub_keycard.lua`, and `tools/keycard_test.mjs`
+asserts the two properties that are easy to lose: no JSON anywhere in the
+code, and the worker's real answers read by the card's real patterns.
+
+---

@@ -7446,9 +7446,65 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const map = await loadLicenses(env);
             const key = String(body.key || '');
             if (!map[key]) return jsonResponse({ ok: false, error: 'no such key' }, 404);
+            const rec = map[key] || {};
             delete map[key];
             await saveLicenses(env, map);
-            return jsonResponse({ ok: true });
+            // A REWARD KEY ALSO LIVES IN THE REWARD LEDGER.
+            //
+            // Deleting only the mirror left the key in the ledger, so the
+            // visitor's table still listed it - a key that cannot be used and
+            // cannot be got rid of. "Delete" has to delete it.
+            let ledger = 0;
+            if (rec.source === 'reward' || rec.rewardId) {
+                try {
+                    if (await rewardEnsureLedger(env)) {
+                        const del = await q(env.SH_DB, 'DELETE FROM reward_keys WHERE key_text=?', key);
+                        ledger = changesOf(del);
+                    }
+                } catch (e) { /* the license is gone either way */ }
+            }
+            return jsonResponse({ ok: true, ledgerRows: ledger });
+        }
+
+        // OWNER: EDIT A LICENSE ON THE SERVER.
+        //
+        // The panel's own keys are edited in the browser and pushed with the
+        // next sync. A REWARD key cannot be: it is not in the browser's list
+        // (it must not be - the list is what the sync sends, and a local copy
+        // would be a stale copy), so editing it has to be a server operation.
+        //
+        // The expiry is moved in BOTH places, because the gate reads one and
+        // the visitor's table reads the other.
+        if (url.pathname === '/sh/license-edit' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const map = await loadLicenses(env);
+            const key = String(body.key || '').slice(0, 200);
+            const rec = map[key];
+            if (!rec) return jsonResponse({ ok: false, error: 'no such key' }, 404);
+            if (body.note !== undefined) rec.note = String(body.note || '').slice(0, 300);
+            if (body.discordId !== undefined) rec.discordId = String(body.discordId || '').slice(0, 64);
+            if (body.hwid !== undefined) rec.hwid = String(body.hwid || '').slice(0, 300);
+            if (body.expiresAt !== undefined) rec.expiresAt = Math.max(0, Number(body.expiresAt) || 0);
+            if (body.projectId !== undefined) rec.projectId = String(body.projectId || '').slice(0, 60);
+            if (body.banned !== undefined) {
+                rec.banned = !!body.banned;
+                rec.banReason = rec.banned ? String(body.banReason || rec.banReason || 'No reason provided').slice(0, 300) : '';
+            }
+            await saveLicenses(env, map);
+            // THE LEDGER, IF IT IS A REWARD KEY.
+            let ledger = 0;
+            if ((rec.source === 'reward' || rec.rewardId) && body.expiresAt !== undefined) {
+                try {
+                    if (await rewardEnsureLedger(env)) {
+                        const up = await q(env.SH_DB, 'UPDATE reward_keys SET expires=? WHERE key_text=?',
+                            rec.expiresAt, key);
+                        ledger = changesOf(up);
+                    }
+                } catch (e) { /* the license moved; the ledger is the mirror */ }
+            }
+            return jsonResponse({ ok: true, ledgerRows: ledger, expiresAt: rec.expiresAt });
         }
 
         if (url.pathname === '/sh/license-reset' && request.method === 'POST') {
@@ -7915,6 +7971,74 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             }
             if (!result.ok) S.threatsBlocked++;
             ctx.waitUntil(notifyAuthDiscord(env, result));
+            return new Response(body, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
+
+        // ---------- GET /sh/keycheck?k=<license>&h=<hwid> : PLAIN-TEXT KEY CHECK ----------
+        //
+        // FOR THE KEY CARD INSIDE THE GAME.
+        //
+        // Some executors cannot do JSON. Not "cannot do JSON well" - cannot:
+        // Opiumware and a few others have no HttpService:JSONEncode, so every
+        // key system that speaks JSON is dead on them, and the script that
+        // carried it dies with a nil index long before the key is ever
+        // checked.
+        //
+        // So this route speaks PLAIN TEXT, and nothing else does:
+        //
+        //     SHOK <expiresAtMs> <lifetime>     the key is good
+        //     SHERR invalid|banned|expired|hwid  it is not
+        //
+        // It is a CHECK, not an auth: it does not bind the hardware and it
+        // does not mint a token. The script's own gate (/sh/session) does
+        // that, and it does it on the delivery, where it belongs. A key card
+        // that locked the key to the machine it was typed on would break the
+        // script on every other machine, and the card is not the gate.
+        //
+        // The expiry is in the answer because the card counts it down, and
+        // "valid" without "until when" makes a card that has to ask twice.
+        //
+        // The key is never in the response, and the answer says nothing about
+        // any key other than the one that was asked about.
+        const keycheckMatch = url.pathname.match(/^\/sh\/keycheck$/);
+        if (keycheckMatch) {
+            // The same limit that protects /sh/auth: a key is 192 characters
+            // of CSPRNG, and a guesser is stopped by the limiter, not by the
+            // alphabet.
+            {
+                const rl = rateLimit('auth', rateIdentity(request, url));
+                if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
+            }
+            if (!env.LOADERS_KV) return methodNotAllowed();
+            const key = String(url.searchParams.get('k') || '').slice(0, 200);
+            const hwid = String(url.searchParams.get('h') || '').slice(0, 300);
+            let body = 'SHERR invalid';
+            if (!key) {
+                body = 'SHERR invalid';
+            } else if (await isKillswitchOn(env)) {
+                body = 'SHERR killswitch';
+            } else {
+                const lic = await loadLicenses(env);
+                const rec = lic[key];
+                // A key that is not bound to any hardware can be read from
+                // anywhere, so the hardware is only checked when the key
+                // HAS one. Same rule as the gate.
+                const verdict = classifyLicense(rec, hwid, Date.now(), '');
+                if (verdict.code === 'ok') {
+                    // expiresAt 0 means it never expires.
+                    const expires = Number(rec.expiresAt) || 0;
+                    body = 'SHOK ' + expires + ' ' + (expires ? '0' : '1');
+                } else {
+                    body = 'SHERR ' + verdict.code;
+                }
+            }
             return new Response(body, {
                 status: 200,
                 headers: {

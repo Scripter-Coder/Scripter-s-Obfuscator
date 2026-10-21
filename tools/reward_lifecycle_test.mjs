@@ -375,6 +375,60 @@ console.log('A REPEATED FORGERY IS BLOCKED, A SINGLE ONE IS NOT');
 
 // ---------------------------------------------------------------------------
 console.log('');
+console.log('THE KEY CHECK SPEAKS PLAIN TEXT, BECAUSE SOME EXECUTORS CANNOT DO JSON');
+// ---------------------------------------------------------------------------
+{
+    const res = await call('GET', '/sh/keycheck?k=' + encodeURIComponent(earnedKey) + '&h=hwid-9');
+    const body = (await res.text()).trim();
+    check('it answers 200', res.status === 200, 'status ' + res.status);
+    check('and the answer is TEXT, not JSON', body.indexOf('{') !== 0, body.slice(0, 80));
+    check('and it says the key is good', body.indexOf('SHOK ') === 0, body.slice(0, 80));
+    check('and it gives the expiry', /SHOK \d+ \d/.test(body), body.slice(0, 80));
+    check('and it never echoes the key', body.indexOf(earnedKey) === -1, body.slice(0, 80));
+    const ct = res.headers.get('Content-Type') || '';
+    check('and the content type is text', ct.indexOf('text/plain') === 0, ct);
+
+    const bad = await call('GET', '/sh/keycheck?k=NOT-A-KEY&h=hwid-9');
+    const badBody = (await bad.text()).trim();
+    check('and a made-up key is refused', badBody.indexOf('SHERR invalid') === 0, badBody.slice(0, 80));
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('THE OWNER CAN EDIT AND DELETE A KEY THAT LIVES ON THE SERVER');
+// ---------------------------------------------------------------------------
+{
+    const edit = await j(await call('POST', '/sh/license-edit', {
+        token: owner.token,
+        body: { key: earnedKey, note: 'Edited by the owner', expiresAt: Date.now() + 3600000 }
+    }));
+    check('the edit is accepted', edit.ok === true, JSON.stringify(edit).slice(0, 160));
+    const map = JSON.parse(KV._store.get('sh_licenses') || '{}');
+    check('and the note moved', map[earnedKey].note === 'Edited by the owner',
+        'note = ' + map[earnedKey].note);
+    const ledger = await env.SH_DB.prepare('SELECT expires FROM reward_keys WHERE key_text=?').bind(earnedKey).all();
+    const rows = ledger.results || ledger;
+    check('and the LEDGER expiry moved too', Number(rows[0].expires) === Number(edit.expiresAt),
+        'ledger = ' + rows[0].expires + ' vs ' + edit.expiresAt);
+
+    // And the delete takes it out of BOTH places.
+    const del = await j(await call('POST', '/sh/license-delete', {
+        token: owner.token, body: { key: earnedKey }
+    }));
+    check('the delete is accepted', del.ok === true, JSON.stringify(del).slice(0, 160));
+    const after = JSON.parse(KV._store.get('sh_licenses') || '{}');
+    check('and the key is out of the license map', !after[earnedKey], 'the key is still there');
+    const gone = await env.SH_DB.prepare('SELECT COUNT(*) AS n FROM reward_keys WHERE key_text=?').bind(earnedKey).all();
+    const grows = gone.results || gone;
+    check('and out of the reward ledger', Number(grows[0].n) === 0, 'rows = ' + grows[0].n);
+    // A key that is gone cannot be used.
+    const check2 = await call('GET', '/sh/keycheck?k=' + encodeURIComponent(earnedKey) + '&h=hwid-9');
+    const check2Body = (await check2.text()).trim();
+    check('and it does not open anything', check2Body.indexOf('SHERR invalid') === 0, check2Body.slice(0, 80));
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
 console.log('A VISITOR WITH A PROOF THE PROVIDER DOES NOT KNOW IS NOT PUNISHED');
 // ---------------------------------------------------------------------------
 {

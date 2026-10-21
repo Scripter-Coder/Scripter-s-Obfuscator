@@ -362,8 +362,32 @@ Each reward also has a **🔑 Keys** button, which lists every key that
 reward has paid out: when it was issued, when it ends, and whether it is
 active, expired or revoked.
 
-### The hammer (🔨)
+### The key card inside the game
 
+`scripterhub_keycard.lua` is the owner's own in-game card: the big UI, the
+key box, the countdown, the ad links and the script buttons.
+
+**It does not use JSON.** Not "we avoid JSON" - JSON is not used at all,
+because some executors have no `HttpService:JSONEncode` and a key system
+that speaks JSON is dead on them. Everything is one plain-text `HttpGet` and
+one `string.match`:
+
+```
+GET <worker>/sh/keycheck?k=<key>&h=<hwid>
+
+    SHOK <expiresAtMs> <lifetime>      the key is good
+    SHERR invalid|banned|expired|hwid  it is not
+```
+
+The route is a **check**, not an auth: it does not bind the hardware and it
+does not mint a token. The script's own gate (`/sh/session`) does that, on
+the delivery, where it belongs.
+
+The card reads the key from `getgenv().ScripterHubKey` (the name the site
+uses) or `getgenv().KEY`, keeps the four files it has always kept, and
+counts down once a second instead of once a frame.
+
+### The hammer (🔨)
 An expired key is not a key any more: the gate refuses it and the script
 dies with "License expired". If the owner has allowed it — **➕ Allow
 Extending**, with **Max Hours** as the ceiling and **Extend Hours** as the

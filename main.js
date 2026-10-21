@@ -2377,6 +2377,123 @@ function shServerKeyAction(key, action) {
       .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
 }
 
+// DELETE A REWARD KEY, COMPLETELY.
+//
+// "Completely" means both places it lives: the license map (which is what
+// the gate reads) and the reward ledger (which is what the visitor's table
+// shows). Deleting only the first left the key in the ledger - a key that
+// could not be used and could not be got rid of.
+function shServerKeyDelete(key) {
+    if (!key) return;
+    if (!confirm('Delete this key completely?\n\nThe visitor loses it, and it is gone from the reward ledger too. This cannot be undone.')) return;
+    shOwnerApi('sh/license-delete', { token: shOwnerToken(), key: key })
+        .then(function (d) {
+            if (d && d.ok) {
+                showNotification('Deleted', 'The key is gone.', 'success');
+            } else {
+                showNotification('Refused', (d && d.error) || 'the server refused the delete', 'warning', 6000);
+            }
+            return shLoadRewardKeys(true);
+        })
+        .then(function () { renderKeys(); })
+        .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
+}
+
+// THE SETTINGS DIALOG FOR A KEY THAT LIVES ON THE SERVER.
+//
+// The same fields the panel's own keys have, and the same Save, but the
+// save goes to the worker: this key is not in the browser's list, and it
+// must not be put in it.
+function openServerKeySettingsUI(key) {
+    var rec = null;
+    if (shRewardKeyCache) {
+        for (var i = 0; i < shRewardKeyCache.length; i++) {
+            if (shRewardKeyCache[i].key === key) rec = shRewardKeyCache[i];
+        }
+    }
+    if (!rec) { showNotification('Error', 'Key not found.', 'error'); return; }
+    var expiryDate = rec.expires ? new Date(rec.expires) : null;
+    var dateVal = expiryDate ? expiryDate.getFullYear() + '-' + String(expiryDate.getMonth() + 1).padStart(2, '0') + '-' + String(expiryDate.getDate()).padStart(2, '0') : '';
+    var timeVal = expiryDate ? String(expiryDate.getHours()).padStart(2, '0') + ':' + String(expiryDate.getMinutes()).padStart(2, '0') : '';
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = `
+        <div class="modal" style="max-width: 560px; padding: 28px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h2 style="font-size:20px; margin:0;">✏️ Edit Ad-Reward Key</h2>
+                <div style="display:flex; gap:8px;">
+                    <button onclick="shServerKeySave('${key}')" class="btn btn-primary" style="padding:8px 18px;">💾 Save</button>
+                    <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="padding:8px 18px;">Cancel</button>
+                </div>
+            </div>
+            <div style="background:rgba(20,20,35,0.6); border-radius:12px; padding:14px; margin-bottom:14px;">
+                <div style="color:#8a6bff; font-size:12px; margin-bottom:4px;">earned from an ad reward</div>
+                <div style="color:#66ccff; font-family:monospace; font-size:12px; word-break:break-all;">Key: ${rec.key}</div>
+            </div>
+            <div class="form-group" style="display:flex; gap:16px;">
+                <span style="color:#8888aa; font-size:13px; flex:1;">Total HWID Resets: <strong style="color:#fff;">${rec.hwidResets || 0}</strong></span>
+                <span style="color:#8888aa; font-size:13px; flex:1;">Total Executions: <strong style="color:#fff;">${rec.executions || 0}</strong></span>
+            </div>
+            <div class="form-group"><label>Expiry (date + time, empty = never)</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="date" id="srvKeyExpiryDate" value="${dateVal}" style="flex:1;">
+                    <input class="sh-input" type="time" id="srvKeyExpiryTime" value="${timeVal}" style="flex:1;">
+                </div>
+            </div>
+            <div class="form-group"><label>Note</label><input type="text" id="srvKeyNote" value="${(rec.note || '').replace(/"/g, '&quot;')}" placeholder="Just a plain text (optional)"></div>
+            <div class="form-group"><label>Discord ID</label><input type="text" id="srvKeyDiscordId" value="${rec.discordId || ''}" placeholder="Discord ID (optional)"></div>
+            <div class="form-group"><label>HWID</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="srvKeyHwid" value="${rec.hwid || ''}" placeholder="HWID (optional)" style="flex:1;">
+                    <button onclick="shServerKeyAction('${key}', 'hwid')" class="btn btn-close-dropdown">🔄 Reset</button>
+                </div>
+            </div>
+            <div class="form-group"><label>⛔ Blacklist User - Reason:</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="srvKeyBanReason" value="${(rec.banReason || '').replace(/"/g, '&quot;')}" placeholder="Blacklist reason (optional)" style="flex:1;">
+                    <button onclick="shServerKeyAction('${key}', '${rec.banned ? 'unban' : 'ban'}')" class="btn btn-danger">${rec.banned ? 'Unban' : 'Blacklist'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+// SAVE A SERVER KEY. The expiry moves in both places at once: the gate reads
+// one and the visitor's table reads the other.
+function shServerKeySave(key) {
+    if (!key) return;
+    var dateEl = document.getElementById('srvKeyExpiryDate');
+    var timeEl = document.getElementById('srvKeyExpiryTime');
+    var expiresAt = 0;
+    if (dateEl && dateEl.value) {
+        var d = new Date(dateEl.value + 'T' + ((timeEl && timeEl.value) ? timeEl.value : '00:00'));
+        if (!isNaN(d.getTime())) expiresAt = d.getTime();
+    }
+    var body = {
+        token: shOwnerToken(), key: key,
+        note: document.getElementById('srvKeyNote') ? document.getElementById('srvKeyNote').value.trim() : '',
+        discordId: document.getElementById('srvKeyDiscordId') ? document.getElementById('srvKeyDiscordId').value.trim() : '',
+        hwid: document.getElementById('srvKeyHwid') ? document.getElementById('srvKeyHwid').value.trim() : '',
+        expiresAt: expiresAt
+    };
+    shOwnerApi('sh/license-edit', body)
+        .then(function (d) {
+            if (d && d.ok) {
+                showNotification('Saved', 'Key details updated.', 'success');
+                var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+                if (modal) modal.remove();
+            } else {
+                showNotification('Refused', (d && d.error) || 'the server refused the save', 'warning', 6000);
+            }
+            return shLoadRewardKeys(true);
+        })
+        .then(function () { renderKeys(); })
+        .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
+}
+
 function userKeysFiltered() {
     var keyData = loadKeys();
     var q = userKeysState.search.toLowerCase();
@@ -2432,16 +2549,21 @@ function renderKeys() {
         var k = normalizeKey(slice[i]);
         var st = keyStatusOf(k);
         var daysText = k.banned ? '-' : (k.expires ? Math.max(0, Math.ceil((k.expires - Date.now()) / 86400000)) : '∞');
-        // A REWARD KEY IS NOT THE OWNER'S TO DELETE.
+        // A REWARD KEY IS NOT THE OWNER'S TO DELETE - BUT IT IS THE OWNER'S
+        // TO EDIT.
         //
         // It belongs to a reward: the visitor earned it, the reward's ledger
         // holds it, and the worker mints and extends it. The local actions -
         // "Save" and "Delete" - would write to the owner's local list, and
         // the local list is what the sync sends to the worker. So a reward
-        // key gets the server's actions instead, and no Delete at all.
+        // key gets the server's actions instead: its own settings dialog, a
+        // delete that removes it from the ledger as well, and the hardware
+        // and ban controls.
         var actions;
         if (k.serverOnly) {
             actions = '<span style="display:flex; gap:4px;">'
+                + '<button onclick="openServerKeySettingsUI(\'' + k.key + '\')" class="btn-sm btn-sm-edit" title="Edit this key">⚙️ Settings</button>'
+                + '<button onclick="shServerKeyDelete(\'' + k.key + '\')" class="btn-sm btn-sm-danger" title="Remove this key completely">🗑️ Delete</button>'
                 + '<button onclick="shServerKeyAction(\'' + k.key + '\', \'hwid\')" class="btn-sm btn-sm-edit" title="Clear the hardware lock">🔄 HWID</button>'
                 + (k.banned
                     ? '<button onclick="shServerKeyAction(\'' + k.key + '\', \'unban\')" class="btn-sm btn-sm-edit">✅ Unban</button>'
@@ -8053,6 +8175,9 @@ window.shOwnerApi = shOwnerApi;
 // calls these from the rows it renders.
 window.shLoadRewardKeys = shLoadRewardKeys;
 window.shServerKeyAction = shServerKeyAction;
+window.shServerKeyDelete = shServerKeyDelete;
+window.shServerKeySave = shServerKeySave;
+window.openServerKeySettingsUI = openServerKeySettingsUI;
 window.runDiagnostics = runDiagnostics;
 window.shMintUserToken = shMintUserToken;
 window.shSaveUserToken = shSaveUserToken;
