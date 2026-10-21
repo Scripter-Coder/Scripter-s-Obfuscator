@@ -1318,6 +1318,73 @@ async function blacklistAdd(env, fp, ip, reason, rid) {
 }
 
 // ---------------------------------------------------------------------------
+// THE FORGERY COUNTER
+// ---------------------------------------------------------------------------
+//
+// HOW MANY TIMES THIS FINGERPRINT HAS BEEN CAUGHT WITH A PROOF THE PROVIDER
+// DID NOT RECOGNISE.
+//
+// IT IS NOT A BAN. It is the thing that decides WHEN a ban starts.
+//
+// The owner asked for a bypass attempt to cost something, and it used to
+// cost nothing at all: the page said "that click could not be verified" and
+// the visitor pressed again. A bypass that only ever produces an error
+// message is not a block - it is a button.
+//
+// So the attempts are counted, and the ones that pile up are blocked for a
+// while. The FIRST ones are free, and that is the important part:
+//
+//   The provider answers "I do not know this click" for an INVENTED proof
+//   and for a proof that EXPIRED. Nothing in the answer tells the two
+//   apart. A Linkvertise hash lives for ten seconds, so an honest visitor
+//   whose ad took eleven seconds gets exactly the same answer as a cheater.
+//   Punishing the first one punishes the honest majority, which is how this
+//   system ended up banning its owner for clicking Verify on a checkpoint he
+//   had already done.
+//
+// THREE strikes, then a minute that doubles. The count is on the
+// FINGERPRINT and never on the address: an address is shared by a whole
+// household, and a block keyed on one is collateral.
+//
+// A successful verification CLEARS the count, so an honest visitor who had
+// one unlucky proof is not carrying it around.
+const RFORG_PREFIX = 'sh_rfg_';
+const REWARD_FORGERY_TRIES = 3;
+const REWARD_FORGERY_TTL_MS = 30 * 60 * 1000;
+
+function forgeryKey(fp, rid) {
+    return RFORG_PREFIX + String(fp || '') + '_' + String(rid || '');
+}
+
+// COUNT ONE MORE FAILED PROOF. Returns the number of attempts.
+async function forgeryNote(env, fp, rid, reason) {
+    if (!env.LOADERS_KV || !fp) return 0;
+    const key = forgeryKey(fp, rid);
+    let n = 0;
+    try {
+        const raw = await env.LOADERS_KV.get(key);
+        if (raw) {
+            const e = JSON.parse(raw);
+            n = Number(e && e.n) || 0;
+        }
+    } catch (e) { n = 0; }
+    n += 1;
+    try {
+        await env.LOADERS_KV.put(key, JSON.stringify({
+            n: n, rid: rid || '', fp: fp || '',
+            reason: String(reason || '').slice(0, 120), at: Date.now()
+        }), { expirationTtl: Math.ceil(REWARD_FORGERY_TTL_MS / 1000) });
+    } catch (e) { /* a KV hiccup must not cost the visitor the key */ }
+    return n;
+}
+
+// THE PROOF WAS REAL. The count goes back to zero.
+async function forgeryClear(env, fp, rid) {
+    if (!env.LOADERS_KV || !fp) return;
+    try { await env.LOADERS_KV.delete(forgeryKey(fp, rid)); } catch (e) { }
+}
+
+// ---------------------------------------------------------------------------
 // provider verification
 // ---------------------------------------------------------------------------
 //
@@ -6138,7 +6205,27 @@ async function handleRequest(request, env, ctx) {
                     error: 'this build has no server-held key, so the script would be published in a form that cannot execute. Re-obfuscate it (this is a client/server version mismatch).'
                 }, 400);
             }
-            if (body.keyless === true) {
+            // THE GATE WINS OVER "FREE FOR EVERYONE".
+            //
+            // The panel offers two switches that contradict each other:
+            //
+            //   "Free For Everyone"  anyone may execute this, no key
+            //   "Require Key"        a valid key is required on every run
+            //
+            // The upload used to take the FREE branch whenever the first one
+            // was ticked, and the free branch never wrote `authRequired` - so
+            // a script the owner had ticked BOTH of them was published with no
+            // gate at all. The loader then asked the visitor for a key, the
+            // key was never checked, and the script ran for everybody. The
+            // owner's own panel said the script was protected, and it was not:
+            //
+            //     "keyless": true          <- no authRequired
+            //
+            // A script that demands a key is a KEYED script, whatever else
+            // the upload said. The gate is the stricter promise, so the gate
+            // wins.
+            const wantAuth = body.authRequired === true;
+            if (body.keyless === true && !wantAuth) {
                 const plainCode = String(body.plainCode || '');
                 const cipher = String(body.cipher || '');
                 if (!plainCode) return jsonResponse({ ok: false, error: 'plainCode is required for keyless scripts (the obfuscated code)' }, 400);
@@ -7306,8 +7393,43 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 };
                 n++;
             }
+            // THE REWARD KEYS ARE NOT THE PANEL'S TO DELETE.
+            //
+            // This route is a FULL REPLACE: the map the panel sends becomes
+            // the whole license list. That is right for the keys the owner
+            // typed - the panel is their source of truth - and it was a
+            // DISASTER for the keys a VISITOR earned.
+            //
+            // A reward key is minted on the server, in the visitor's browser,
+            // against a reward the owner configured. It has never been in the
+            // owner's local list, so every panel action - adding a key,
+            // banning one, resetting a HWID, mass generating, or the "Sync
+            // Licenses Now" button - replaced the map with a list that did
+            // NOT contain it and DELETED IT.
+            //
+            // The visitor's key then died at the gate with "Invalid key",
+            // hours after they earned it, because the owner had touched the
+            // Keys tab in between. The D1 row survived (nothing ever deletes
+            // there) but the gate reads the KV map.
+            //
+            // So the keys that were minted by a reward are carried over, whole,
+            // when the panel does not mention them. The panel can still ban
+            // one, reset its HWID or extend it - those routes edit the map in
+            // place - it just cannot delete one by accident.
+            let kept = 0;
+            try {
+                const current = await loadLicenses(env);
+                for (const k of Object.keys(current)) {
+                    if (Object.prototype.hasOwnProperty.call(out, k)) continue;
+                    const rec = current[k] || {};
+                    const isReward = rec.source === 'reward' || !!rec.rewardId;
+                    if (!isReward) continue;
+                    out[k] = rec;
+                    kept++;
+                }
+            } catch (e) { /* a reconcile failure must not lose the panel's keys */ }
             await saveLicenses(env, out);
-            return jsonResponse({ ok: true, count: n });
+            return jsonResponse({ ok: true, count: n, keptRewardKeys: kept });
         }
 
         if (url.pathname === '/sh/licenses' && request.method === 'GET') {
@@ -9348,6 +9470,159 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             return jsonResponse({ ok: true, keys: keys, key: minted, maxed: false });
         }
 
+        // VISITOR: put more time on a key that ran out.
+        //
+        // The hammer button next to an expired key.
+        //
+        // A key that has EXPIRED is not a key any more: the gate refuses it,
+        // the script dies with "License expired", and the visitor is told to
+        // earn another one - which means watching every ad again, for time
+        // they have already paid for with their attention.
+        //
+        // The owner turned this on deliberately ("Allow Extending"), with a
+        // cap ("Max Hours") so nobody can walk a key out to ten years. So the
+        // hammer adds the owner's "Extend Hours" to the key, never past the
+        // cap, and the ledger and the license mirror are updated together.
+        //
+        // IT IS THE OWNER'S RULE, NOT THE VISITOR'S: a reward with
+        // allowExtending off refuses the request, whatever the visitor asks.
+        if (url.pathname === '/sh/reward/extend' && request.method === 'POST') {
+            const limited = rewardRate(request, url, 'reward-claim');
+            if (limited) return limited;
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+
+            const rid = String(body.rid || '').slice(0, 40);
+            const fp = String(body.fp || '').slice(0, 64);
+            const want = String(body.key || '').slice(0, 400);
+            const ip = reqIp(request);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'This reward link is no longer valid.' }, 404);
+            if (!r.allowExtending) {
+                return jsonResponse({ ok: false, error: 'This reward does not allow extending keys.' }, 403);
+            }
+
+            const bl = await blacklistGet(env, fp, ip);
+            if (bl) return jsonResponse({ ok: false, error: 'blacklisted', until: bl.until, strikes: bl.strikes, reason: bl.reason });
+
+            const resolvedE = await resolveSes(env, rid, fp, ip, await grantSecret(env));
+            const ses = resolvedE.ses;
+            if (!ses) return jsonResponse({ ok: false, error: 'No session - open the reward first.' }, 400);
+            if (ses.fp && fp && ses.fp !== fp) return jsonResponse({ ok: false, error: 'blacklisted' }, 403);
+
+            // The key has to be THIS visitor's, and it has to be one of the keys
+            // this reward actually issued - the row is looked up by the ledger,
+            // not by whatever string arrived in the body.
+            if (!(await rewardEnsureLedger(env))) return jsonResponse({ ok: false, error: 'The key ledger is not available.' }, 503);
+            let rows = [];
+            try {
+                const res = await qAll(env.SH_DB,
+                    'SELECT key_text, at, expires FROM reward_keys WHERE rid=? AND sid=? ORDER BY ordinal',
+                    rid, resolvedE.sid);
+                rows = Array.isArray(res) ? res : ((res && res.results) || []);
+            } catch (e) { rows = []; }
+            const row = rows.find(function (k) { return k.key_text === want; });
+            if (!row) return jsonResponse({ ok: false, error: 'That key is not one of yours.' }, 403);
+
+            const hours = Math.min(Math.max(Number(r.extHours) || 6, 0.05), 168);
+            const capMs = r.maxHours ? r.maxHours * 3600000 : 0;
+            const now = Date.now();
+            // FROM NOW, NOT FROM THE OLD EXPIRY.
+            //
+            // Adding to the old expiry would let a visitor who waited a week
+            // press the button once and get a week back, and it would walk
+            // past the cap the owner set. The hammer buys time from now, and it
+            // stops at the cap.
+            let next = now + hours * 3600000;
+            if (capMs) next = Math.min(next, now + capMs);
+            if (next <= Number(row.expires) || 0) {
+                // Already at the cap, or not expired yet.
+                return jsonResponse({
+                    ok: false,
+                    error: capMs && (Number(row.expires) >= now + capMs - 1000)
+                        ? 'This key has reached the maximum time the owner allows.'
+                        : 'That key has not expired yet.',
+                    expires: Number(row.expires) || 0
+                }, 400);
+            }
+
+            await q(env.SH_DB, 'UPDATE reward_keys SET expires=? WHERE rid=? AND sid=? AND key_text=?',
+                next, rid, resolvedE.sid, row.key_text);
+
+            // THE MIRROR GOES WITH IT.
+            //
+            // The gate reads the D1 licenses table, and the owner's panel
+            // reads the license map. If only the ledger moved, the key would
+            // still read as expired in the place that decides.
+            const map = await loadLicenses(env);
+            if (map[row.key_text]) {
+                map[row.key_text].expiresAt = next;
+                if (map[row.key_text].capMs) {
+                    const cap = Number(map[row.key_text].capMs);
+                    if (cap) map[row.key_text].expiresAt = Math.min(next, now + cap);
+                }
+                await saveLicenses(env, map);
+            }
+
+            ctx.waitUntil(notifyTelemetry(env, {
+                event: 'reward.extended', outcome: 'ok', rid: rid,
+                hours: hours, at: now
+            }));
+            return jsonResponse({
+                ok: true, key: row.key_text, expires: next,
+                hours: hours, capped: capMs ? next >= now + capMs : false
+            });
+        }
+
+        // OWNER: every key this reward has issued, whoever holds it.
+        //
+        // The visitor's table shows the keys of ONE session - the visitor's
+        // own. The owner needs the whole list: how many keys the reward has
+        // paid out, when they were issued, when they run out, and which
+        // browser each one belongs to.
+        //
+        // The reward keys live in their own ledger, not in the owner's Keys
+        // tab, so this is the only way to see them. The list is read-only
+        // here: a key is extended by the visitor's hammer button or revoked
+        // from the license list.
+        if (url.pathname === '/sh/reward/keys' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { body = {}; }
+            if (!(await isOwnerSessionOrAccount(env, url, body, request))) {
+                return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            }
+            const rid = String(body.rid || '').slice(0, 40);
+            if (!rid) return jsonResponse({ ok: false, error: 'no reward' }, 400);
+            const r = await loadReward(env, rid);
+            if (!r) return jsonResponse({ ok: false, error: 'unknown reward' }, 404);
+            let rows = [];
+            if (await rewardEnsureLedger(env)) {
+                try {
+                    const res = await qAll(env.SH_DB,
+                        'SELECT sid, ordinal, key_text, at, expires FROM reward_keys WHERE rid=? ORDER BY at DESC',
+                        rid);
+                    rows = Array.isArray(res) ? res : ((res && res.results) || []);
+                } catch (e) { rows = []; }
+            }
+            const out = rows.map(function (k) {
+                return {
+                    sid: String(k.sid || ''), ordinal: Number(k.ordinal) || 0,
+                    key: String(k.key_text || ''), at: Number(k.at) || 0,
+                    expires: Number(k.expires) || 0
+                };
+            });
+            // The license mirror knows which of them are revoked or banned.
+            const map = await loadLicenses(env);
+            for (const k of out) {
+                const rec = map[k.key];
+                k.revoked = !!(rec && rec.banned);
+                k.hwid = rec ? String(rec.hwid || '') : '';
+                k.executions = rec ? Number(rec.executions) || 0 : 0;
+            }
+            return jsonResponse({ ok: true, rid: rid, keys: out, total: out.length });
+        }
+
         // VISITOR: report a bypass attempt. Held server-side, keyed on
         // fingerprint AND ip, so clearing site data does not clear the ban.
         if (url.pathname === '/sh/reward/block' && request.method === 'POST') {
@@ -9645,15 +9920,42 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // Those two are what the anti-bypass feature is actually for.
                 // Removing them would have turned "stop cheating" into "never
                 // detect anything".
+                //
+                // THE LIST IS THE SAME ONE THE OTHER ROUTES USE, plus the two
+                // that were missing from it.
+                //
+                // This used to be a shorter list of its own, and the two it
+                // was missing were exactly the two that punished honest
+                // visitors:
+                //
+                //   click-unknown  the provider said "I do not know this
+                //                  click". For Linkvertise that is {"status":
+                //                  false} - and a hash that expired in the ten
+                //                  seconds it lives for gives the SAME answer
+                //                  as an invented one. So an honest visitor
+                //                  whose ad took eleven seconds was told he was
+                //                  bypassing the ad, and banned for it. The
+                //                  provider's own documentation says the hash
+                //                  is short lived, so this was going to happen
+                //                  to somebody, every single day.
+                //   postback-unauthenticated  the provider's postback arrived
+                //                  without the shared secret, which is a
+                //                  configuration fault, not a visitor's.
                 const TRANSIENT = ['no-click-id', 'too-fast', 'lv-unreachable', 'wi-unreachable',
-                    'll-unreachable', 'lv-api-', 'wi-not-confirmed', 'll-api-'];
+                    'll-unreachable', 'lv-api-', 'wi-not-confirmed', 'll-api-',
+                    'click-unknown', 'postback-unauthenticated'];
                 const isTransient = TRANSIENT.some(function (r) {
                     return verdict.reason === r || String(verdict.reason).indexOf(r) === 0;
                 });
 
                 // MISCONFIGURED IS THE OWNER'S PROBLEM, NOT THE VISITOR'S.
-                if (verdict.reason === 'no-auth-token' || verdict.reason === 'no-api-key'
-                    || verdict.reason === 'unknown-provider' || verdict.reason === 'unverifiable-provider') {
+                //
+                // The whole list, not four reasons out of it. "Invalid token."
+                // and "the endpoint is wrong" are the OWNER's mistakes - the
+                // token in the dashboard, the address in the panel - and they
+                // used to fall through to the strike below, so a visitor was
+                // banned for the owner's typo.
+                if (isConfigReason(verdict.reason)) {
                     return rewardCallbackPage(origin, 'failed', verdict.reason);
                 }
 
@@ -9662,11 +9964,46 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                         event: 'reward.unverified', outcome: 'unverified', rid: rid,
                         reason: verdict.reason, provider: provider, at: now
                     }));
+                    // A PROOF THE PROVIDER DOES NOT RECOGNISE IS COUNTED, EVEN
+                    // THOUGH IT IS NOT PUNISHED YET.
+                    //
+                    // This is the "bypass attempt" the owner asked to be
+                    // blocked for a while, and it is the hardest one to
+                    // classify: the provider answers "I do not know this
+                    // click" for an INVENTED proof and for a proof that
+                    // expired in the ten seconds it lives for. Nothing in the
+                    // answer tells the two apart.
+                    //
+                    // So the first ones are FREE - an honest visitor whose ad
+                    // took eleven seconds is not a cheater, and punishing him
+                    // is punishing the honest majority - and the ones that
+                    // pile up are not. A bypass that only ever produces an
+                    // error message is not a block, it is a button the cheater
+                    // can press again.
+                    if (verdict.reason === 'click-unknown') {
+                        const tries = await forgeryNote(env, ses.fp, rid, verdict.reason);
+                        if (tries >= REWARD_FORGERY_TRIES) {
+                            const blocked = await blacklistAdd(env, ses.fp, '',
+                                'checkpoint ' + (i + 1) + ' via ' + provider + ': '
+                                + verdict.reason + ' (attempt ' + tries + ')', rid);
+                            ctx.waitUntil(notifyTelemetry(env, {
+                                event: 'reward.blocked', outcome: 'blocked', rid: rid,
+                                reason: verdict.reason, provider: provider, at: now
+                            }));
+                            return rewardCallbackPage(origin, 'failed', verdict.reason,
+                                blocked ? blocked.until : now + REWARD_BLACKLIST_MS);
+                        }
+                    }
                     // No strike, no ban, no lockout. The visitor can retry, and
                     // so can their phone.
                     return rewardCallbackPage(origin, 'unverified', verdict.reason);
                 }
 
+                // A BYPASS THAT SKIPPED THE STEP. The callback arrived without
+                // the confirm parameter the Verify button adds, or with a
+                // nonce that was already spent. That is not a mistake, it is
+                // the thing the feature exists for - so it costs a minute
+                // straight away.
                 const entry = await blacklistAdd(env, ses.fp, '',
                     'checkpoint ' + (i + 1) + ' via ' + provider + ': ' + verdict.reason, rid);
                 ctx.waitUntil(notifyTelemetry(env, {
@@ -9826,11 +10163,36 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
         });
         if (!raw.ok) {
             if (isTransientReason(raw.reason)) {
+                // A PROOF THE PROVIDER DOES NOT RECOGNISE IS COUNTED, NOT
+                // PUNISHED. YET.
+                //
+                // The provider says the same thing for an invented proof and
+                // for one that expired on the way here, so the first ones are
+                // free - and the ones that pile up are not. That is what turns
+                // "the page said no" into "the page said no, and you have to
+                // wait a minute".
+                if (raw.reason === 'click-unknown') {
+                    const tries = await forgeryNote(env, fp, rid, raw.reason);
+                    if (tries >= REWARD_FORGERY_TRIES) {
+                        const blocked = await blacklistAdd(env, fp, '',
+                            'checkpoint ' + (i + 1) + ': ' + raw.reason
+                            + ' (attempt ' + tries + ')', rid);
+                        return jsonResponse({
+                            ok: false, error: 'blacklisted',
+                            until: blocked ? blocked.until : now + REWARD_BLACKLIST_MS,
+                            strikes: blocked ? blocked.strikes : 1,
+                            reason: 'too many unverified clicks'
+                        }, 403);
+                    }
+                }
                 return jsonResponse({ ok: false, error: 'Not counted yet - ' + raw.reason, transient: true });
             }
             return jsonResponse({ ok: false, error: 'That click was not confirmed by the provider.', reason: raw.reason });
         }
-        // It is real. Park it, so the replay guard is in place for anything
+        // It is real. The count of failed proofs goes back to zero: a visitor
+        // who had one unlucky proof is not carrying it around.
+        await forgeryClear(env, fp, rid);
+        // Park it, so the replay guard is in place for anything
         // that arrives with the same proof later.
         await parkClick(env, clickId, {
             r: rid, i: i, at: now, ip: '', provider: cp.provider,
@@ -9846,6 +10208,9 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
         if (pj.r !== rid || pj.i !== i) {
             return jsonResponse({ ok: false, error: 'That click belongs to a different checkpoint.' });
         }
+        // A parked click is a click the provider already confirmed, so the
+        // count of failed proofs goes back to zero.
+        await forgeryClear(env, fp, rid);
     }
 
     // THE IP THE PROVIDER SAW, AGAINST THE IP ASKING FOR THE REWARD.

@@ -1508,3 +1508,162 @@ JSON shape, and only for a click it has actually seen. A mock that is more
 permissive than the provider is not a test, it is a way of losing a bug (D35).
 
 ---
+## D37 - "Require Key" is a gate, and the gate wins
+
+The owner published a script with **Require Key** ticked, ran it with
+
+```lua
+getgenv().ScripterHubKey = "TEST"
+loadstring(game:HttpGet(".../sh/ScripterHub2686282153"))()
+```
+
+and it **ran**. No "invalid key", no notification, nothing. The script was
+free for everybody and the panel said it was protected.
+
+**It was not a bug in the key check. The key check was never switched on.**
+
+The script's live metadata said:
+
+```json
+{"name":"test", "keyless": true}
+```
+
+There was no `authRequired` at all. The upload had taken the **free** branch,
+because the editor offers two switches side by side and never said they
+contradict each other:
+
+- **🌐 Free For Everyone** - anyone may execute it, no key
+- **🔑 Require Key** - a valid key is required on every run
+
+Tick both and the free branch won, and the free branch never wrote the gate.
+The loader still asked the visitor for a key - it always did - and the
+server never checked it.
+
+**THE GATE IS THE STRICTER PROMISE, SO THE GATE WINS.** Three places, so
+that no client can talk the server out of it:
+
+- the **panel** refuses to publish a script as free while it demands a key
+  (`main.js`), and says so;
+- the **upload** carries `authRequired` in both branches;
+- the **worker** treats a script that says `authRequired` as a KEYED script
+  whatever else the upload said. The gate is decided on the server, so a
+  stale panel cannot publish an ungated script.
+
+**THE CLIENT GATE CANNOT OPEN WHEN IT HAS NOTHING TO CHECK.** The embedded
+key list was thrown away in favour of the server check - which is right - but
+the fall-through case was "no keys, so no gate", and the panel's own message
+said the opposite ("the script will reject everyone"). The panel was right.
+A gate with an empty list now refuses everybody, and says why.
+
+The proof, against the deployed worker:
+
+```
+wrong key  -> SHERR invalid
+empty key  -> SHERR invalid
+real key   -> SHS sid_3978def1a49b37e0c6a595f34f900b6531c9e72bf0519623
+```
+
+The last one is the key the owner EARNED by finishing a checkpoint. A
+checkpoint key is a real license - it was always meant to be - and it opens
+the script.
+
+---
+
+## D38 - The panel's sync must not delete the keys a visitor earned
+
+The license route is a **full replace**: the map the panel sends becomes the
+whole license list. That is right for the keys the owner typed - the panel is
+their source of truth - and it was a disaster for the keys a **visitor**
+earned.
+
+A reward key is minted on the server, in the visitor's browser, against a
+reward the owner configured. It has never been in the owner's local list. So
+every panel action - adding a key, banning one, resetting a HWID, mass
+generating, or the "Sync Licenses Now" button - replaced the map with a list
+that did not contain it, and **deleted it**.
+
+The visitor's key then died at the gate with "Invalid key", hours after they
+earned it, because the owner had touched the Keys tab in between. The D1 row
+survived (nothing ever deletes there) but the gate reads the KV map.
+
+**THE REWARD KEYS ARE NOT THE PANEL'S TO DELETE.** The route now carries
+over every record that a reward minted and the panel did not mention. The
+panel can still ban one, reset its HWID or extend it - those routes edit the
+map in place - it just cannot delete one by accident.
+
+**AND THEY MUST NOT BE COPIED INTO THE PANEL'S LIST EITHER.** The local list
+is what the panel sends, so a local copy of a reward key would be a STALE
+copy the moment the visitor extended it, and the next panel action would
+push the old expiry back over the new one. They are fetched, shown, and
+acted on through the server - never written into the browser's list.
+
+---
+
+## D39 - A repeated forgery is a block; a single one is a message
+
+The owner asked: a bypass attempt shows "that click could not be verified",
+and then nothing happens. The same thing can be done again, and again, and
+again. A bypass that only ever produces an error message is not a block, it
+is a button.
+
+**THE ATTEMPTS ARE COUNTED, AND THE THIRD ONE COSTS A MINUTE.**
+
+The counting is the careful part, because the provider cannot tell a forgery
+from an unlucky proof:
+
+| what the provider says | what it means | what it costs |
+|---|---|---|
+| "I do not know this click" | an invented proof, **or** a proof that expired in the ten seconds it lives for | counted; nothing until the third |
+| "not verified yet" | the provider has not reported back | nothing |
+| "the token is wrong" | the OWNER's token | nothing |
+| "the endpoint is wrong" | the OWNER's address | nothing |
+
+A Linkvertise hash lives for ten seconds, so an honest visitor whose ad took
+eleven seconds gets **exactly** the same answer as a cheater. Punishing the
+first one punishes the honest majority - which is how this system ended up
+banning its own owner for clicking Verify on a checkpoint he had already
+done. So the first two are free, the count is on the **fingerprint** and
+never on the address, and a successful verification clears it.
+
+**TWO BUGS WERE FIXED ALONGSIDE IT**, both of which punished honest
+visitors:
+
+- the signed callback path had its own, shorter list of "not yet" reasons,
+  and it was missing `click-unknown` - so an expired hash earned a strike on
+  the **first** offence, which is the exact case the provider's own
+  documentation warns about;
+- the same path checked four of the eight "the owner's setup is wrong"
+  reasons, so a wrong token or a wrong endpoint - the OWNER's typo - fell
+  through to a strike against the visitor.
+
+Both now use the one list.
+
+---
+
+## D40 - An expired key can be bought back, up to the owner's cap
+
+A key that has run out is not a key: the gate refuses it and the script
+dies with "License expired". The visitor is told to earn another one, which
+means watching every ad again, for time they have already paid for with
+their attention.
+
+The owner had already turned the feature on - "Allow Extending", with a cap
+in hours and an "Extend Hours" amount - and **nothing consumed it**. There
+was no route, no UI, and the cap was written to the license record and then
+never read.
+
+Now there is a **🔨** next to an expired key. It:
+
+- adds the owner's hours **from now**, not from the old expiry - adding to
+  the old expiry would let a visitor who waited a week press it once and get
+  a week back;
+- stops at the owner's cap, and says so when the cap is reached;
+- moves the **ledger** and the **license mirror** together, because the gate
+  reads one and the owner sees the other;
+- belongs to the visitor's own session, so nobody can extend somebody else's
+  key.
+
+The owner's cap is the ceiling, and it is the OWNER's rule: a reward with
+extending off refuses the request whatever the visitor asks.
+
+---

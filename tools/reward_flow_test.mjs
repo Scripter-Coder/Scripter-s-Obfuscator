@@ -415,6 +415,19 @@ console.log('the earned key comes from the server');
         check('it copies with the clipboard API', /navigator\.clipboard\.writeText/.test(src));
         check('and falls back when that is refused', /execCommand\('copy'\)/.test(src));
         check('and selects the key as the last resort', /selectNodeContents/.test(src));
+        // THE BUTTON HAS TO GO BACK TO THE CLIPBOARD GLYPH.
+        //
+        // The glyph is drawn by render(), from a state variable - and the page
+        // only re-renders itself every four seconds WHILE THE REWARD IS STILL
+        // IN PROGRESS. A key only exists once the reward is complete, so the
+        // poll is stopped by then and nothing was ever going to draw the
+        // button back: it stayed on the green tick for the rest of the visit.
+        //
+        // The reported symptom was exactly that: copy the key, and the button
+        // never changes back.
+        check('and the button goes back to the clipboard glyph',
+            /setTimeout\(function \(\) \{ shCopiedKey = ''; render\(\); \}/.test(src),
+            'the reset timer does not redraw the button');
     }
     const body = extractScript(rewardHtml, 'reward.html')
         .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');

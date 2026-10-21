@@ -593,6 +593,18 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // to enforce. Anything unrecognised falls back to 'anyone'
             // server-side, so a malformed value can never over-restrict.
             payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
+            // THE GATE IS SENT EVEN IN THE FREE BRANCH.
+            //
+            // The free branch is taken when "Free For Everyone" is ticked. It
+            // used to never carry `authRequired`, so a script the owner had
+            // ticked BOTH of (Require Key + Free For Everyone) was published
+            // with no gate at all - the loader asked the visitor for a key and
+            // nobody ever checked it.
+            //
+            // The worker treats the gate as the stricter promise and wins, but
+            // the client must not depend on that to be correct: say what the
+            // owner asked for.
+            if (requireAuth) payload.authRequired = true;
         } else {
             payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
             // plainCode GOES TO THE SERVER FOR A KEYED SCRIPT TOO.
@@ -2287,10 +2299,97 @@ function normalizeKey(k) {
     return k;
 }
 
+// THE KEYS A VISITOR EARNED, AS THE SERVER HAS THEM.
+//
+// A reward key is minted on the SERVER, in the visitor's browser, when they
+// finish the checkpoints. It has never been in the owner's local list - the
+// owner never typed it and never saw it - so the Keys tab showed nothing,
+// and the owner could not see who had earned a key or when one runs out.
+//
+// THEY MUST NOT BE PUT IN THE LOCAL LIST.
+//
+// The local list is the source of truth for the sync: the panel sends it to
+// the worker and the worker replaces the license map with it. A local copy
+// of a reward key would therefore be a STALE copy the moment the visitor
+// extended it, and the next panel action would push the old expiry back over
+// the new one.
+//
+// So they are fetched, kept here, and shown - and the worker preserves them
+// on its side when the panel syncs.
+var shRewardKeyCache = null;
+
+// Fetch the reward-issued keys from the worker.
+async function shLoadRewardKeys(force) {
+    if (shRewardKeyCache && !force) return shRewardKeyCache;
+    var map = null;
+    try {
+        var res = await shOwnerApi('sh/licenses', null);
+        map = (res && res.licenses) ? res.licenses : null;
+    } catch (e) { map = null; }
+    var out = [];
+    if (map) {
+        var keys = Object.keys(map);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            var rec = map[k] || {};
+            // A reward key is tagged by the worker when it is minted.
+            if (rec.source !== 'reward' && !rec.rewardId) continue;
+            out.push({
+                id: 'rwk_' + k.slice(0, 20),
+                key: k,
+                source: 'reward',
+                rewardId: rec.rewardId || '',
+                serverOnly: true,
+                note: rec.note || '',
+                discordId: rec.discordId || '',
+                hwid: rec.hwid || '',
+                hwidResets: rec.hwidResets || 0,
+                executions: rec.executions || 0,
+                banned: !!rec.banned,
+                banReason: rec.banReason || '',
+                expires: Number(rec.expiresAt) || 0,
+                createdAt: '',
+                used: false
+            });
+        }
+    }
+    shRewardKeyCache = out;
+    return out;
+}
+
+// A reward key lives on the server, so its actions go to the server and are
+// never written into the local list.
+function shServerKeyAction(key, action) {
+    if (!key) return;
+    var p;
+    if (action === 'ban') p = shOwnerApi('sh/license-ban', { token: shOwnerToken(), key: key, banned: true, reason: 'Banned from the panel' });
+    else if (action === 'unban') p = shOwnerApi('sh/license-ban', { token: shOwnerToken(), key: key, banned: false, reason: '' });
+    else if (action === 'hwid') p = shOwnerApi('sh/license-reset', { token: shOwnerToken(), key: key });
+    else return;
+    p.then(function (d) {
+        if (d && d.ok) {
+            showNotification('Done', action === 'hwid' ? 'HWID cleared.' : (action === 'ban' ? 'Key banned.' : 'Key unbanned.'), 'success');
+        } else {
+            showNotification('Refused', (d && d.error) || 'the server refused that', 'warning', 6000);
+        }
+        return shLoadRewardKeys(true);
+    }).then(function () { renderKeys(); })
+      .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
+}
+
 function userKeysFiltered() {
     var keyData = loadKeys();
     var q = userKeysState.search.toLowerCase();
-    var list = keyData.keys;
+    var list = (keyData.keys || []).slice();
+    // The keys a visitor earned are on the server, not in here.
+    if (shRewardKeyCache) {
+        for (var i = 0; i < shRewardKeyCache.length; i++) {
+            var rk = shRewardKeyCache[i];
+            var dup = false;
+            for (var j = 0; j < list.length; j++) { if (list[j].key === rk.key) { dup = true; break; } }
+            if (!dup) list.push(rk);
+        }
+    }
     if (q) {
         list = list.filter(function(k) {
             normalizeKey(k);
@@ -2333,18 +2432,36 @@ function renderKeys() {
         var k = normalizeKey(slice[i]);
         var st = keyStatusOf(k);
         var daysText = k.banned ? '-' : (k.expires ? Math.max(0, Math.ceil((k.expires - Date.now()) / 86400000)) : '∞');
+        // A REWARD KEY IS NOT THE OWNER'S TO DELETE.
+        //
+        // It belongs to a reward: the visitor earned it, the reward's ledger
+        // holds it, and the worker mints and extends it. The local actions -
+        // "Save" and "Delete" - would write to the owner's local list, and
+        // the local list is what the sync sends to the worker. So a reward
+        // key gets the server's actions instead, and no Delete at all.
+        var actions;
+        if (k.serverOnly) {
+            actions = '<span style="display:flex; gap:4px;">'
+                + '<button onclick="shServerKeyAction(\'' + k.key + '\', \'hwid\')" class="btn-sm btn-sm-edit" title="Clear the hardware lock">🔄 HWID</button>'
+                + (k.banned
+                    ? '<button onclick="shServerKeyAction(\'' + k.key + '\', \'unban\')" class="btn-sm btn-sm-edit">✅ Unban</button>'
+                    : '<button onclick="shServerKeyAction(\'' + k.key + '\', \'ban\')" class="btn-sm btn-sm-danger">⛔ Ban</button>')
+                + '</span>';
+        } else {
+            actions = '<span style="display:flex; gap:4px;"><button onclick="openKeySettingsUI(\'' + k.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button><button onclick="deleteKey(\'' + k.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button></span>';
+        }
         html += '<div class="keys-table-row">' +
             '<span><button onclick="copyText(\'' + k.key + '\')" class="btn-sm btn-sm-primary" title="Copy Key">📋 Copy</button></span>' +
             '<span style="font-family:monospace; word-break:break-all;">' + k.key + '</span>' +
             '<span>' + (k.discordId || 'Nothing') + '</span>' +
             '<span style="color:' + st.color + ';">' + st.text + '</span>' +
-            '<span>' + (k.note || '-') + '</span>' +
+            '<span>' + (k.note || '-') + (k.serverOnly ? ' <span style="color:#8a6bff;">· ad reward</span>' : '') + '</span>' +
             '<span>' + (k.executions || 0) + '</span>' +
             '<span>' + (k.hwidResets || 0) + '</span>' +
             '<span>' + daysText + '</span>' +
             '<span>' + (k.banned ? 'Yes' : 'N/A') + '</span>' +
             '<span>' + (k.banReason || '-') + '</span>' +
-            '<span style="display:flex; gap:4px;"><button onclick="openKeySettingsUI(\'' + k.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button><button onclick="deleteKey(\'' + k.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button></span>' +
+            actions +
             '</div>';
     }
     html += '</div>';
@@ -5186,7 +5303,12 @@ function switchTab(tabName) {
     if (target) { target.style.display = 'block'; }
     if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); } }
     if (tabName === 'scripts') { renderProjects(); }
-    if (tabName === 'keys') { renderKeys(); }
+    if (tabName === 'keys') {
+        renderKeys();
+        // The keys a visitor earned live on the server, so they are fetched
+        // when the tab is opened rather than being kept in the browser.
+        shLoadRewardKeys().then(function () { renderKeys(); }).catch(function () { });
+    }
     if (tabName === 'rewards') { renderRewardsTab(); }
 }
 
@@ -5900,7 +6022,22 @@ function confirmCreateScript(projectId) {
     // the payload in executors; for FREE scripts it gates the WEBSITE key
     // page only (executors run free scripts with no key, but the code can
     // only be VIEWED on the website with the key).
-    var isKeyless = freeForEveryone;
+    //
+    // REQUIRE KEY WINS OVER FREE FOR EVERYONE.
+    //
+    // The two switches contradict each other: one says "anyone may run this,
+    // no key", the other says "a valid key is required on every run". The
+    // script used to be published with whichever the FREE branch decided,
+    // and the free branch never carried the gate - so a script with BOTH
+    // ticked ran for everybody, and the panel said it was protected.
+    //
+    // The gate is the stricter promise, so the gate wins, and the owner is
+    // told that it did - silently turning a key off is how a paid script ends
+    // up given away.
+    var isKeyless = freeForEveryone && !requireKey;
+    if (requireKey && freeForEveryone) {
+        showNotification('Require Key wins', 'This script requires a valid key on every run, so "Free For Everyone" was turned off for it.', 'warning', 6000);
+    }
     if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code or upload a file.', 'error'); return; }
     // ---- BIG-SCRIPT GUARD: validate + size feedback BEFORE the heavy work
@@ -6579,7 +6716,10 @@ function generateLoadstring(projectId, scriptId) {
     }
     proceedWithGenerate(projectId, script);
     function proceedWithGenerate(projectId, script) {
-    var isKeyless = !!script.keyless || !!script.freeForEveryone;
+    // REQUIRE KEY WINS OVER FREE FOR EVERYONE, on this path too. The flag
+    // that reaches the worker decides whether the script has a gate at all,
+    // so it must not be "free" while the script still demands a key.
+    var isKeyless = (!!script.keyless || !!script.freeForEveryone) && !script.requireKey;
     if (!script.specialKey) {
         showNotification('Special Key Needed', 'This script has no Special Key yet. Edit the script and set one - it encrypts the script (paid) or gates the website page (free).', 'warning', 7000);
         return;
@@ -6950,7 +7090,14 @@ function confirmEditScript(projectId, scriptId) {
     if (!name) { showNotification('Error', 'Script name is required.', 'error'); return; }
     // The Special Key is ALWAYS required (paid: decrypts in executors;
     // free: gates the website page only - executors run it keyless)
-    var isKeyless = freeForEveryone;
+    //
+    // REQUIRE KEY WINS OVER FREE FOR EVERYONE - same rule as on create. The
+    // free branch never carried the gate, so a script with both ticked was
+    // published with no gate at all and ran for everybody.
+    var isKeyless = freeForEveryone && !requireKey;
+    if (requireKey && freeForEveryone) {
+        showNotification('Require Key wins', 'This script requires a valid key on every run, so "Free For Everyone" was turned off for it.', 'warning', 6000);
+    }
     if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     // syntax-check BEFORE the heavy re-obfuscation work
@@ -7899,6 +8046,13 @@ window.__shUsersRef = function () { return users; };
 // the escape hatch for a stale owner code should be reachable from a test.
 window.shForgetOwnerCode = shForgetOwnerCode;
 window.shOwnerApi = shOwnerApi;
+// The reward-issued keys, and the actions on them.
+//
+// main.js is a <script type="module">, so its top-level declarations are NOT
+// on window, and an inline onclick= resolves in global scope. The Keys tab
+// calls these from the rows it renders.
+window.shLoadRewardKeys = shLoadRewardKeys;
+window.shServerKeyAction = shServerKeyAction;
 window.runDiagnostics = runDiagnostics;
 window.shMintUserToken = shMintUserToken;
 window.shSaveUserToken = shSaveUserToken;

@@ -82,7 +82,7 @@
     "keeper:autopublish": "py \"Storage Keeper/tests/test_tunnel_autopublish.py\"",
     "test:threelayer": "node tools/three_layer_flow_test.mjs",
     "test:clipboard": "node tools/clipboard_guard_test.mjs",
-    "test:reward": "node tools/reward_security_test.mjs && node tools/reward_static_postback_test.mjs && node tools/reward_completable_test.mjs && node tools/reward_routes_test.mjs && node tools/reward_ban_fairness_test.mjs && node tools/reward_flow_test.mjs"
+    "test:reward": "node tools/reward_security_test.mjs && node tools/reward_static_postback_test.mjs && node tools/reward_completable_test.mjs && node tools/reward_routes_test.mjs && node tools/reward_ban_fairness_test.mjs && node tools/reward_flow_test.mjs && node tools/reward_lifecycle_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

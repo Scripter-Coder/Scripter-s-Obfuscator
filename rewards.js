@@ -171,7 +171,7 @@ async function shRewardMigrateAll() {
 // ?v= on and nothing in index.html to rewrite. Without this the visitor's
 // browser keeps whatever copy of the page it already has, and a fix to the ad
 // flow does not reach anyone who had the page open.
-const REWARD_PAGE_STAMP = '94aea81b57f1';
+const REWARD_PAGE_STAMP = 'a7f6f1656720';
 
 function rewardLink(r) {
     if (!r.rid) return '';
@@ -255,6 +255,7 @@ function renderRewardsTab() {
 
         html += '<div class="reward-actions">';
         html += '<button onclick="openCheckpointManagerUI(\'' + r.id + '\')" class="btn-sm btn-sm-primary">➕ Add Checkpoint</button>';
+        html += '<button onclick="shShowRewardKeys(\'' + r.id + '\')" class="btn-sm btn-sm-edit">🔑 Keys</button>';
         html += '<button onclick="openRewardSettingsUI(\'' + r.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button>';
         html += '<button onclick="deleteReward(\'' + r.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button>';
         html += '</div></div>';
@@ -406,6 +407,77 @@ async function deleteReward(id) {
         return;
     }
     shNotify('Deleted', 'Reward deleted. The old link no longer works.', 'warning');
+}
+
+// ---------- The keys a reward has issued ----------
+//
+// EVERY KEY THIS REWARD HAS PAID OUT, AND WHO HOLDS IT.
+//
+// The Keys tab shows the keys the OWNER typed. The reward keys are a
+// different thing: they are minted on the server when a visitor finishes the
+// checkpoints, they live in their own ledger, and until now there was
+// nowhere in the panel that could show them. So the owner could not see who
+// had earned a key, how many had been given away, or when one runs out.
+//
+// The list is read-only. A key is extended by the visitor's hammer button
+// (if the owner allows it) and revoked from the license list.
+async function shShowRewardKeys(id) {
+    var found = findReward(id);
+    if (!found) return;
+    var r = found.reward;
+    var rid = r.rid || '';
+    if (!rid) { shNotify('No reward id', 'This reward has no server id yet - save it once first.', 'warning'); return; }
+    shNotify('Loading...', 'Asking the server which keys this reward has issued.', 'info', 2000);
+    var res = null;
+    try {
+        res = await window.shOwnerApi('sh/reward/keys', { rid: rid });
+    } catch (e) { res = { ok: false, error: 'network' }; }
+    if (!res || !res.ok) {
+        shNotify('Could not load the keys', (res && res.error) || 'the reward server did not answer', 'error', 8000);
+        return;
+    }
+    var keys = res.keys || [];
+    var overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    var rows = '';
+    if (!keys.length) {
+        rows = '<p style="color:#8888aa">No keys yet. Nobody has finished the checkpoints.</p>';
+    } else {
+        rows = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+            + '<tr style="color:#8888aa;text-align:left"><th style="padding:6px">Key</th>'
+            + '<th style="padding:6px">Issued</th><th style="padding:6px">Ends</th>'
+            + '<th style="padding:6px">State</th></tr>';
+        var now = Date.now();
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i] || {};
+            var expired = (Number(k.expires) || 0) <= now;
+            var state = k.revoked ? 'revoked' : (expired ? 'expired' : 'active');
+            var colour = k.revoked ? '#ff6b6b' : (expired ? '#ffb020' : '#66ff66');
+            rows += '<tr style="border-top:1px solid rgba(255,255,255,.07)">'
+                + '<td style="padding:6px;font-family:ui-monospace,monospace;word-break:break-all">'
+                + escapeHtml(String(k.key || '').slice(0, 24)) + '…</td>'
+                + '<td style="padding:6px;white-space:nowrap">' + shRewardTime(Number(k.at) || 0) + '</td>'
+                + '<td style="padding:6px;white-space:nowrap">' + shRewardTime(Number(k.expires) || 0) + '</td>'
+                + '<td style="padding:6px;color:' + colour + '">' + state
+                + (k.hwid ? ' · 🔒 ' + escapeHtml(String(k.hwid).slice(0, 12)) : '') + '</td></tr>';
+        }
+        rows += '</table>';
+    }
+    overlay.innerHTML = '<div class="modal" style="max-width:720px;padding:26px;max-height:86vh;overflow-y:auto;">'
+        + '<h3 style="margin:0 0 4px">🔑 Keys issued by "' + escapeHtml(r.name || '') + '"</h3>'
+        + '<p style="color:#8888aa;font-size:12px;margin:0 0 14px">' + keys.length + ' key(s) issued. '
+        + 'These are the keys visitors earned by completing the checkpoints.</p>'
+        + rows
+        + '<div style="text-align:right;margin-top:18px"><button class="btn btn-sm" onclick="this.closest(\'.overlay\').remove()">Close</button></div>'
+        + '</div>';
+    document.body.appendChild(overlay);
+}
+
+function shRewardTime(ms) {
+    if (!ms) return '-';
+    try {
+        return new Date(ms).toLocaleString();
+    } catch (e) { return String(ms); }
 }
 
 // ---------- Reward Settings ----------

@@ -325,6 +325,68 @@ Being honest about this is part of the feature.
 - **An IP mismatch does not punish anybody.** It refuses the completion and
   records it. Changing your IP address, sharing a NAT or using a VPN must
   never cost a visitor a lockout.
+- **A key earned from a checkpoint is a real license.** It is in the same
+  license map as the keys the owner typed, so it opens the owner's scripts
+  exactly like one. The panel's sync cannot delete it, and the Keys tab
+  shows it.
+- **A repeated forgery is a block; a single one is a message.** The provider
+  cannot tell an invented proof from a proof that expired in the ten seconds
+  it lives for, so the first two attempts cost nothing and the third costs
+  a minute. The count is on the fingerprint, never on the address, and a
+  successful verification clears it.
+
+---
+
+## 4b. What the owner sees, and what the visitor can do with a key
+
+### The owner's key list
+
+The **Users Keys** tab shows two things now:
+
+- the keys the owner typed, which live in the browser and are pushed to the
+  worker as a mirror;
+- the keys a **visitor earned** by completing a checkpoint, which are minted
+  on the server and live in the reward ledger.
+
+The earned ones are marked **· ad reward**. They are fetched from the
+worker when the tab is opened, and they are never written into the browser's
+list — the browser's list is what the panel syncs, and a stale copy of a
+reward key would push the old expiry back over a key the visitor had just
+extended.
+
+Their buttons are the server's, not the panel's: **🔄 HWID** and
+**⛔ Ban**. There is no **Delete** — a reward key belongs to its reward, and
+the worker will not let a panel sync delete it.
+
+Each reward also has a **🔑 Keys** button, which lists every key that
+reward has paid out: when it was issued, when it ends, and whether it is
+active, expired or revoked.
+
+### The hammer (🔨)
+
+An expired key is not a key any more: the gate refuses it and the script
+dies with "License expired". If the owner has allowed it — **➕ Allow
+Extending**, with **Max Hours** as the ceiling and **Extend Hours** as the
+amount — a **🔨** appears next to the expired key in the visitor's table.
+
+Pressing it adds the owner's hours **from now**, never past the cap, and
+moves the ledger and the license mirror together. The worker refuses it for
+a reward that has extending turned off, and refuses it for a key that is
+not the visitor's.
+
+### What a bypass attempt costs
+
+| what happened | what the visitor gets | what it costs |
+|---|---|---|
+| the provider has not reported back yet | "Not verified yet" | nothing |
+| the proof expired on the way here | "Not counted yet" | nothing the first two times |
+| the same thing again and again | the same message | **a one-minute block on the third attempt** |
+| the owner pasted the wrong token or URL | the owner is told | nothing — it is the owner's mistake |
+| the click was made on another network | the completion is refused | nothing, and nobody is banned |
+
+The block is on the **fingerprint**, never on the address, and it is a
+minute that doubles for a persistent offender. It is exactly the same
+penalty a nonce replay has always had.
 
 ---
 

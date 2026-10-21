@@ -616,6 +616,37 @@ function buildSecurityWrapper(options, meta) {
             ' end',
             'end'
         );
+    } else if (options.keyGate) {
+        // A GATE WITH NO KEYS IN IT IS A GATE THAT REFUSES EVERYBODY.
+        //
+        // This used to fall through to the "no key required" branch below,
+        // which published ScripterHubKeyValid = true and let the payload run.
+        // The owner's own panel says the opposite:
+        //
+        //     "Require Key is ON but you have no active keys! Generate keys
+        //      in the Users Keys tab first - the script will reject everyone."
+        //
+        // The panel was right and the code was not. A script that asks for a
+        // key and holds none must refuse, not wave everybody through: the
+        // moment the owner's key list is empty, the whole point of the switch
+        // is gone, and the script is being given away for free.
+        //
+        // The server gate refuses the delivery anyway, but the client gate is
+        // what runs when the body came from somewhere else, and a gate that
+        // OPENS when it has nothing to check is not a gate.
+        var S3 = n[31], GENV3 = n[32];
+        parts.push(
+            'do',
+            ' local ' + GENV3 + '=(getgenv and getgenv()) or _G',
+            ' ' + GENV3 + '.ScripterHubKeyValid=false',
+            ' ' + GENV3 + '.ScripterHubKeyIncorrect=false',
+            ' ' + GENV3 + '.ScripterHubKeyExpired=false',
+            ' ' + GENV3 + '.ScripterHubKeyStatus="No keys are configured for this script"',
+            ' ' + GENV3 + '.ScripterHubWebsiteStatus="Online"',
+            ' print("[ScripterHub] No keys are configured for this script. The owner has to issue one before it will run.")',
+            ' return',
+            'end'
+        );
     } else {
         // no key gate - still expose the API globals
         var S2 = n[31], API2 = n[32], GENV2 = n[33];
