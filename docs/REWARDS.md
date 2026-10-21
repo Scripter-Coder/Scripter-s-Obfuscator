@@ -109,11 +109,18 @@ that never completes.
    verification request.
 6. Press **🧪 Test this provider**. The panel asks Linkvertise itself and
    shows the answer. **Do this before you share the link.**
-7. Optional: paste your Linkvertise **link / zone id** into the optional
-   field. It stops a click id from *another* campaign counting. Only fill it
-   in if Linkvertise returns that id in the click data — the test button tells
-   you, because a provider whose answer never mentions your link would refuse
-   every honest click.
+7. The **Verification URL** field can be left empty. The worker uses the
+   address Linkvertise documents:
+
+   ```
+   POST https://publisher.linkvertise.com/api/v1/anti_bypassing
+        ?token=<64 char anti-bypass token>&hash=<64 char hash>
+   ```
+
+   It is the address from Linkvertise's own *Anti Bypass Documentation*. Fill
+   the field in only if you want to pin a different one — and note that a
+   saved address is a **preference, not a lock-out**: if it does not answer,
+   the documented one is tried as well, and whichever answers replaces it.
 
 **What Linkvertise actually sends, and why the old code could never work.**
 
@@ -137,33 +144,51 @@ So the worker recognises `hash` as the proof (it used to look for `click_id`,
 visitor, or for a test), and the verification happens at the callback, where
 Linkvertise is actually answering.
 
-The documented answers are read, not assumed:
+**The answers are JSON, not prose.** The API answers
+
+```json
+{"status": true}
+```
+
+and the older sources describe the same thing in plain text (`TRUE` /
+`FALSE` / `Invalid token.`). Both shapes are read, and the meaning is the
+same:
 
 | The provider says | It means |
 |---|---|
-| `TRUE` | the hash was found and deleted — the visit was real |
-| `FALSE` | the hash was not found — it expired, or was already used |
-| `Invalid token.` | the API token is wrong — a **configuration** problem |
+| `{"status":true}` | the hash was found and deleted — the visit was real |
+| `{"status":false}` | the hash was not found — it expired, or was already used |
+| `{"status":"Invalid token."}` | the API token is wrong — a **configuration** problem |
 
-`FALSE` and `Invalid token.` are not the same thing and are not treated the
-same way. `FALSE` usually means the ten seconds ran out, which is **not the
-visitor's fault** and earns them no penalty. `Invalid token.` means the token
-is wrong, which is **not the visitor's fault** either.
+`{"status":false}` and `Invalid token.` are not the same thing and are not
+treated the same way. `false` usually means the ten seconds ran out, which is
+**not the visitor's fault** and earns them no penalty. `Invalid token.` means
+the token is wrong, which is **not the visitor's fault** either.
+
+**There is no "which campaign was this click on" check, and there cannot be
+one.** The answer is `{"status":true}` — it says the visit was real and
+nothing else, so it does not name the link the click came from. A check that
+looked for your link id in the answer would refuse **every** honest click,
+because the answer never contains it. The single use of the hash, the
+provider's own answer and the IP binding are what stand between a real visit
+and a forged one.
 
 **If the verification URL is not right.** The exact address is Linkvertise's
 business, so it is editable on the checkpoint, and the **Test this provider**
 button settles it in one click: the worker calls the address with a proof that
 cannot exist and shows the provider's literal answer.
 
-- the provider answered `FALSE` → the address and the token are right;
+- the provider answered `{"status":false}` → the address and the token are right;
 - the provider answered `Invalid token.` → the token is wrong;
 - the provider answered "not found" → the address is wrong;
 - the provider accepted a proof that does not exist → it is not checking
   anything, and it must not be used for a paid reward.
 
-When the field is **empty**, the worker tries the addresses it knows and
-reports the one that answered, so the owner can paste that in. The test button
-is therefore a discovery tool, not just a check.
+When the field is **empty**, the worker uses the documented address. If that
+address ever stops answering, the worker falls back to searching for it — but
+only after the known address has been tried, and only three times per
+checkpoint, because the search is a burst of requests to the provider and the
+hash only lives for ten seconds.
 
 ### LootLabs
 

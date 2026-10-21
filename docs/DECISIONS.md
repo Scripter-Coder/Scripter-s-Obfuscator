@@ -1443,3 +1443,68 @@ The regression test is the obvious one: after the claim, the STATE route
 must show the key that was just issued.
 
 ---
+﻿
+## D36 - The endpoint was in the documentation, and the answer is JSON
+
+The Linkvertise checkpoints did not progress. The panel said "the endpoint is
+wrong", and the worker had been searching for the endpoint for a long time:
+hundreds of addresses on `api.linkvertise.com` and
+`publisher.linkvertise.com`, none of which answered.
+
+**The endpoint is in Linkvertise's own documentation.** It is called *Anti
+Bypass Documentation*, it is linked from the publisher dashboard, and it says:
+
+    POST publisher.linkvertise.com/api/v1/anti_bypassing
+         ?token=<64 char token>&hash=<64 char hash>
+
+Two things were wrong before that, and both of them are worth keeping.
+
+**ONE: the answer is JSON.** The documentation's table is written in prose
+(`TRUE` / `FALSE` / `Invalid token.`), but the API answers
+
+    {"status":true}             the hash was found and deleted
+    {"status":false}            the hash was not found
+    {"status":"Invalid token."} the token is wrong
+
+The old reader treated "an object with data in it" as a pass. So a
+`{"status":false}` - the hash was NOT found - could have been read as a
+verified click. The reader now looks at `status` explicitly: `true` is a
+pass, `false` is "not verified yet", and `Invalid token.` is a configuration
+problem.
+
+**TWO: a saved address must not be a lock-out.** The endpoint search had
+written `https://api.linkvertise.com/api/v1/anticlick` into the checkpoint -
+an address that answers (with a redirect to the API root), which is exactly
+why it was believed. The worker then used that address and nothing else, for
+ever. The checkpoint was wedged, and the only way out was to edit the field
+by hand.
+
+So a saved address is now a **preference**:
+
+1. the address the owner set is tried;
+2. then the **documented** address;
+3. then the search, which is a burst and is bounded to three fruitless
+   searches per checkpoint.
+
+And whichever address answers **replaces** the saved one, even if the saved
+one did not answer. A stale address cannot wedge a checkpoint.
+
+**The known address is asked on its own.** The search used to run in
+parallel with the known addresses - sixteen requests to the provider for one
+visitor's click. A provider that starts rate limiting throttles the one
+request that matters, the one carrying the live hash, and the hash lives for
+ten seconds. So the known address goes first, alone, and the burst only runs
+if it did not answer.
+
+**THE REGRESSION TESTS** say the three things that must not change:
+
+- the provider is asked at the documented address;
+- it is asked **once** - no burst next to the one request that carries the
+  live hash;
+- a stale address does not wedge the checkpoint.
+
+The mock now answers exactly like the real API - the documented route, the
+JSON shape, and only for a click it has actually seen. A mock that is more
+permissive than the provider is not a test, it is a way of losing a bug (D35).
+
+---

@@ -768,8 +768,25 @@ var VERIFIABLE = { test: 1, linkvertise: 1, lootlabs: 1, workink: 1 };
 // not a promise: the address is editable, and the "Test this provider" button
 // asks the provider itself and shows the literal answer, so a wrong address is
 // a two-second diagnosis instead of a silent "the ads do not work".
+//
+// LINKVERTISE:
+//
+//     POST publisher.linkvertise.com/api/v1/anti_bypassing
+//          ?token=<64 char anti-bypass token>&hash=<64 char hash>
+//
+// The hash is appended to the target link by Linkvertise, lives for ten
+// seconds, and is deleted when it is verified. The answers are JSON:
+//
+//     {"status":true}             the hash was found and deleted
+//     {"status":false}            the hash was not found
+//     {"status":"Invalid token."} the token is wrong
+//
+// The address that used to be here - api.linkvertise.com/api/v1/anticlick -
+// is not in the documentation. It answered, which is why it was believed, and
+// it is how a checkpoint ended up pointing at an address that knows nothing
+// about anti-bypass.
 var PROVIDER_VERIFY_URL = {
-    linkvertise: 'https://api.linkvertise.com/api/v1/anticlick',
+    linkvertise: 'https://publisher.linkvertise.com/api/v1/anti_bypassing',
     workink: 'https://api.work.ink/confirm/v2'
 };
 
@@ -931,7 +948,9 @@ function providerFieldsHtml(provider, st, rid, index) {
     if (spec.needs === 'authToken') {
         html += '<div class="form-group"><label>API Token</label>'
             + '<input type="text" id="cpAuthToken" value="' + escAttr(st.authToken || '') + '" placeholder="Linkvertise Settings &rarr; Account &rarr; Anti Bypassing">'
-            + '<div class="field-hint">Stored on the server only. It is never included in the share link.</div></div>';
+            + '<div class="field-hint">The <strong>anti-bypass token</strong> - 64 characters - from '
+            + '<strong>Settings &rarr; Account &rarr; Anti Bypassing</strong>. '
+            + 'Stored on the server only. It is never included in the share link, and it is never sent to the visitor\'s browser.</div></div>';
     } else if (spec.needs === 'apiKey') {
         html += '<div class="form-group"><label>API Key</label>'
             + '<input type="text" id="cpApiKey" value="' + escAttr(st.apiKey || '') + '" placeholder="Provider developer dashboard">'
@@ -964,18 +983,26 @@ function providerFieldsHtml(provider, st, rid, index) {
         // The worker checks every click with Linkvertise's own API, so a click
         // has to be a real click. It does NOT have to be a click on YOUR
         // campaign: a click from somebody else's campaign is still a real
-        // click, and it would pass. Pinning the link id closes that, because
-        // the answer then has to mention YOUR link.
+        // click, and it would pass. Pinning the link id would close that -
+        // IF the answer named the campaign.
         //
-        // It is opt-in because the answer's exact shape is Linkvertise's, not
-        // ours: if their API does not return the link id for a click, setting
-        // this would refuse every honest click. Leave it empty if you are not
-        // sure - the click id, the single use and the IP binding still apply.
-        html += '<div class="form-group"><label>Link / Zone ID <span style="opacity:.6">(optional)</span></label>'
-            + '<input type="text" id="cpLinkId" value="' + escAttr(st.linkId || '') + '" placeholder="Your Linkvertise link or zone id">'
-            + '<div class="field-hint">Only fill this in if Linkvertise returns it in the click data. '
-            + 'It stops a click id from another campaign from counting. '
-            + 'If you are not sure, leave it empty - every honest click is then still checked against Linkvertise\'s API.</div></div>';
+        // IT DOES NOT. The anti-bypass answer is {"status":true}: it says the
+        // visit was real and nothing else. It does not name the link the
+        // click came from. So a check that looked for the link id in the
+        // answer would refuse EVERY honest click, because the answer never
+        // contains it - and the field would be a switch that turns the reward
+        // off.
+        //
+        // It is therefore kept only as a note, and it is NOT used to refuse
+        // anything. The one-time use of the hash, the provider's own answer
+        // and the IP binding are what stand between a real visit and a forged
+        // one.
+        html += '<div class="form-group"><label>Link / Zone ID <span style="opacity:.6">(note only)</span></label>'
+            + '<input type="text" id="cpLinkId" value="' + escAttr(st.linkId || '') + '" placeholder="Your Linkvertise link or zone id" disabled>'
+            + '<div class="field-hint">Linkvertise\'s anti-bypass answer is <code>{"status":true}</code> - '
+            + 'it says the visit was real and does not name the campaign, so this cannot be checked against '
+            + 'your link and is not used to refuse anything. '
+            + 'The single use of the hash, the provider\'s own answer and the IP binding still apply.</div></div>';
     }
     if (PROVIDER_VERIFY_URL[provider]) {
         // WHERE THE PROVIDER'S VERIFICATION API LIVES.

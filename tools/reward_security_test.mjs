@@ -78,35 +78,42 @@ const KNOWN_CLICKS = new Set(['click-one', 'click-two', 'click-up', 'hash-with-p
 
 globalThis.fetch = async (u, o) => {
     const url = String(u);
-    if (/linkvertise\.com\/api\//.test(url)) {
+    if (url.indexOf('linkvertise.com') !== -1) {
         asked.push(url);
         // The outage comes FIRST: a provider that is down answers nothing on
         // any address, which is the difference between "not verified yet" and
         // "the endpoint is wrong".
         if (providerMode === 'down') throw new Error('provider down');
-        // Only the real route answers. Anything else on the API host answers
-        // the way the real API does for an unknown route, so a wrong
-        // verification url is diagnosed as a wrong url and not as a working
-        // one.
-        if (url.indexOf('/api/v1/anticlick') === -1) {
+        // Only the REAL route answers:
+        //
+        //     POST publisher.linkvertise.com/api/v1/anti_bypassing
+        //          ?token=<64 char token>&hash=<64 char hash>
+        //
+        // Anything else on the API host answers the way the real API does for
+        // an unknown route, so a wrong verification url is diagnosed as a
+        // wrong url and not as a working one.
+        if (url.indexOf('publisher.linkvertise.com/api/v1/anti_bypassing') === -1) {
             return new Response(JSON.stringify({ success: false, error: true, messages: ['Not Found!'], state: 404 }),
                 { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
-        if (providerMode === 'refuse') return new Response('FALSE', { status: 200 });
+        if (providerMode === 'refuse') return new Response(JSON.stringify({ status: false }), { status: 200 });
         if (providerMode === 'empty') return new Response('{}', { status: 200 });
-        // THE DOCUMENTED SHAPE. Linkvertise's anti-bypass answers in plain
-        // text: "TRUE" when the hash was found and deleted, "FALSE" when it was
-        // not. A diagnostic probe carries a hash that cannot exist, and gets
-        // the "FALSE" that proves the endpoint and the token are right.
+        // THE REAL SHAPE. Linkvertise's anti-bypass API answers in JSON:
+        //
+        //     {"status":true}    the hash was found and deleted
+        //     {"status":false}   the hash was not found
+        //
+        // A diagnostic probe carries a hash that cannot exist, and gets the
+        // false that proves the endpoint and the token are right.
         //
         // IT ONLY CONFIRMS A CLICK IT HAS SEEN. The stub used to say yes to
         // everything, which is not how a provider behaves and it hid the
         // question this test exists to answer.
         const m = url.match(/[?&]hash=([^&]+)/);
         const hash = m ? decodeURIComponent(m[1]) : '';
-        if (hash.indexOf('sh-diagnostic') === 0) return new Response('FALSE', { status: 200 });
-        if (KNOWN_CLICKS.has(hash)) return new Response('TRUE', { status: 200 });
-        return new Response('FALSE', { status: 200 });
+        if (hash.indexOf('sh-diagnostic') === 0) return new Response(JSON.stringify({ status: false }), { status: 200 });
+        if (KNOWN_CLICKS.has(hash)) return new Response(JSON.stringify({ status: true }), { status: 200 });
+        return new Response(JSON.stringify({ status: false }), { status: 200 });
     }
     return realFetch(u, o);
 };
@@ -347,6 +354,7 @@ console.log('THE REAL LINKVERTISE SHAPE');
     const s = await openSession(FPH);
     check('a session opens', s.ok === true);
     clock += 30000;
+    const askedBefore = asked.length;
     const pb = await raw('/sh/cp/linkvertise?r=' + RID + '&i=0&site=' + encodeURIComponent(SITE)
         + '&hash=' + 'a'.repeat(64));
     check('the provider redirect with ?hash= is accepted', pb.status === 302,
@@ -356,6 +364,15 @@ console.log('THE REAL LINKVERTISE SHAPE');
     check('and the provider was asked about the hash',
         asked.some(u => u.indexOf('hash=' + 'a'.repeat(64)) !== -1),
         'the hash was never sent to the provider');
+    // The endpoint is documented, so it is known, and a KNOWN address is asked
+    // on its own. The search is a burst, and a burst next to the one request
+    // that matters is how a provider starts rate limiting.
+    check('and it was asked at the documented address',
+        asked.slice(askedBefore).some(u => u.indexOf('publisher.linkvertise.com/api/v1/anti_bypassing') !== -1),
+        'asked at ' + (asked.slice(askedBefore)[0] || 'nothing'));
+    check('and it was asked ONCE',
+        asked.length - askedBefore === 1,
+        'the provider was asked ' + (asked.length - askedBefore) + ' times');
 }
 
 console.log('');
@@ -365,10 +382,12 @@ console.log('THE OWNER CAN ASK THE PROVIDER WHETHER IT IS CONFIGURED');
     check('the test route answers', probe.ok === true, JSON.stringify(probe).slice(0, 160));
     check('and it says the provider is usable', probe.usable === true,
         'verdict=' + probe.verdict + ' answer=' + String(probe.answer).slice(0, 80));
-    check('and it shows the provider\'s own answer', String(probe.answer).indexOf('FALSE') !== -1,
+    // The provider's own answer is shown, so the owner sees exactly what the
+    // API said. Linkvertise's anti-bypass answers in JSON.
+    check('and it shows the provider\'s own answer', String(probe.answer).indexOf('status') !== -1,
         'answer=' + String(probe.answer).slice(0, 80));
     check('and it names the address that answered',
-        String(probe.url).indexOf('/api/v1/anticlick') !== -1, 'url=' + String(probe.url));
+        String(probe.url).indexOf('/api/v1/anti_bypassing') !== -1, 'url=' + String(probe.url));
 
     // A wrong endpoint must be diagnosed, not swallowed.
     const saved = await call('POST', '/sh/reward/save', {
@@ -384,8 +403,14 @@ console.log('THE OWNER CAN ASK THE PROVIDER WHETHER IT IS CONFIGURED');
     });
     check('a checkpoint with a wrong verification url saves', saved.ok === true, JSON.stringify(saved).slice(0, 160));
     const bad = await call('POST', '/sh/reward/test-provider', { rid: RID, index: 0, token: OWNER.token });
-    check('and the test says the endpoint is wrong', bad.usable === false,
+    // A SAVED ADDRESS IS A PREFERENCE, NOT A LOCK-OUT. A checkpoint that was
+    // once pointed at a wrong address used to stay wrong forever, and the only
+    // way out was to edit the field by hand. Now the documented address is
+    // tried as well, so a stale one cannot wedge the checkpoint.
+    check('and a wrong saved address does not wedge it', bad.usable === true,
         'verdict=' + bad.verdict);
+    check('and the address that answered is the documented one',
+        String(bad.url || '').indexOf('anti_bypassing') !== -1, 'url=' + String(bad.url));
     // Put it back.
     await call('POST', '/sh/reward/save', {
         token: OWNER.token,

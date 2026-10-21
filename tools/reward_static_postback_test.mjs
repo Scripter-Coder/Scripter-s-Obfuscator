@@ -162,14 +162,18 @@ console.log('a click the provider reported completes the checkpoint');
     const asked = [];
     globalThis.fetch = async (u, o) => {
         const url = String(u);
-        if (url.indexOf('linkvertise.com') !== -1) {
+        if (url.indexOf('publisher.linkvertise.com/api/v1/anti_bypassing') !== -1) {
             asked.push(url);
             const m = url.match(/[?&](?:click_id|hash)=([^&]+)/);
             const id = m ? decodeURIComponent(m[1]) : '';
-            // The answer the real provider gives: "TRUE" for a click it has,
-            // "FALSE" for one it does not.
-            if (KNOWN_CLICKS.has(id)) return new Response('TRUE', { status: 200 });
-            return new Response('FALSE', { status: 200 });
+            // The answer the real provider gives: {"status":true} for a click
+            // it has, {"status":false} for one it does not.
+            if (KNOWN_CLICKS.has(id)) return new Response(JSON.stringify({ status: true }), { status: 200 });
+            return new Response(JSON.stringify({ status: false }), { status: 200 });
+        }
+        if (url.indexOf('linkvertise.com') !== -1) {
+            return new Response(JSON.stringify({ success: false, error: true, messages: ['Not Found!'], state: 404 }),
+                { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
         return realFetch(u, o);
     };
