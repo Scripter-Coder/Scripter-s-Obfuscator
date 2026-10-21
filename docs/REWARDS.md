@@ -386,8 +386,8 @@ the delivery, where it belongs.
 **THE SOURCE IS PURE ASCII.** GitHub Pages serves a `.lua` file as
 `text/x-lua` with **no charset**, and a client that decodes the response
 with the charset it guessed — and the guess for an unknown text type is
-usually Latin-1 — turns every emoji into `âœ…` garbage. So every emoji in
-the card is written as its UTF-8 bytes in decimal escapes:
+usually Latin-1 — turns every emoji into mojibake. So every emoji in the
+card is written as its UTF-8 bytes in decimal escapes:
 
 ```lua
 text = "\240\159\148\151 GET KEY FROM LINKVERTISE"   -- a chain link

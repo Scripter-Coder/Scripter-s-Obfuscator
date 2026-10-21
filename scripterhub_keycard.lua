@@ -85,6 +85,11 @@ local TIMESTAMP_FILE = "ScripterHub_Timestamp_" .. userId .. ".txt"
 -- Every executor is a little different, so nothing here assumes a function
 -- exists: if the executor has no readfile, the key is simply not remembered
 -- between runs, and the card still works for this session.
+--
+-- The write and delete FUNCTIONS REPORT WHAT THEY DID. The old card called
+-- them and said nothing, so a key that could not be deleted looked exactly
+-- like a key that had been deleted - and the "forget" button did nothing at
+-- all, with no word about why.
 local function stopCountdown()
     if countdownThread then
         pcall(function() task.cancel(countdownThread) end)
@@ -105,22 +110,26 @@ local function readFile(filename)
     return nil
 end
 
+-- returns true when the file was actually written
 local function writeFile(filename, data)
     if type(_WRITEFILE) ~= "function" then
-        return
+        return false
     end
-    pcall(function()
+    local ok = pcall(function()
         _WRITEFILE(filename, tostring(data))
     end)
+    return ok == true
 end
 
+-- returns true when the file was actually deleted
 local function deleteFile(filename)
     if type(_DELFILE) ~= "function" then
-        return
+        return false
     end
-    pcall(function()
+    local ok = pcall(function()
         _DELFILE(filename)
     end)
+    return ok == true
 end
 
 -- ============ URL ENCODING ============
@@ -280,15 +289,34 @@ local function saveAll4Files(key, expiry)
 end
 
 -- ============ DELETE ALL 4 FILES ============
+-- It says how many of them it actually removed. A "forget" button that
+-- silently does nothing is worse than no button at all: the visitor presses
+-- it, the key is still there next time, and nothing explains why.
 local function deleteAll4Files()
-    deleteFile(KEY_FILE)
-    deleteFile(HWID_FILE)
-    deleteFile(EXPIRY_FILE)
-    deleteFile(TIMESTAMP_FILE)
+    local gone = 0
+    if deleteFile(KEY_FILE) then gone = gone + 1 end
+    if deleteFile(HWID_FILE) then gone = gone + 1 end
+    if deleteFile(EXPIRY_FILE) then gone = gone + 1 end
+    if deleteFile(TIMESTAMP_FILE) then gone = gone + 1 end
+    return gone
 end
 
 -- ============ TIME FORMATTING FUNCTION ============
-local function formatTimeLeft(expiryTimestamp)
+-- FOUR STATES, AND THE DIFFERENCE MATTERS:
+--
+--   NOKEY     there is no key at all. The counters show "-", NOT infinity.
+--              Infinity means "this key never expires", and showing it when
+--              there is no key at all is a lie - the old card showed
+--              "Days: inf" on a fresh install, which reads like a lifetime
+--              key that was already earned.
+--   LIFETIME  the key never expires. The counters show infinity, which is
+--              what infinity is for.
+--   ACTIVE    the key has time left.
+--   EXPIRED   the time is up.
+local function formatTimeLeft(expiryTimestamp, hasKey)
+    if not hasKey then
+        return "NOKEY", "-", "-", "-", "-"
+    end
     if not expiryTimestamp or expiryTimestamp == 0 or expiryTimestamp == "0"
         or expiryTimestamp == "LIFETIME" then
         return "LIFETIME", "\226\136\158", "\226\136\158", "\226\136\158", "\226\136\158"
@@ -406,63 +434,160 @@ else
     end
 end
 
+-- ============ THE LOOK ============
+-- One place for every colour, so the card reads as one thing.
+local C = {
+    bg = Color3.fromRGB(14, 15, 22),
+    panel = Color3.fromRGB(22, 24, 34),
+    panel2 = Color3.fromRGB(28, 30, 42),
+    line = Color3.fromRGB(48, 52, 70),
+    text = Color3.fromRGB(238, 240, 248),
+    dim = Color3.fromRGB(140, 146, 172),
+    accent = Color3.fromRGB(124, 92, 255),
+    accent2 = Color3.fromRGB(56, 189, 248),
+    good = Color3.fromRGB(74, 222, 128),
+    warn = Color3.fromRGB(255, 184, 77),
+    bad = Color3.fromRGB(255, 99, 110),
+    muted = Color3.fromRGB(62, 66, 88),
+}
+
+local function round(obj, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 10)
+    c.Parent = obj
+    return c
+end
+
+local function stroke(obj, colour, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = colour or C.line
+    s.Thickness = thickness or 1
+    s.Transparency = 0.55
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = obj
+    return s
+end
+
+local function gradient(obj, a, b, rotation)
+    local g = Instance.new("UIGradient")
+    g.Color = ColorSequence.new(a, b)
+    g.Rotation = rotation or 0
+    g.Parent = obj
+    return g
+end
+
 -- ============ CREATE MAIN GUI ============
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "ScripterHub"
 screenGui.Parent = game.CoreGui
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 50
+
+local shadow = Instance.new("Frame")
+shadow.Name = "Shadow"
+shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+shadow.BackgroundTransparency = 0.55
+shadow.BorderSizePixel = 0
+shadow.Position = UDim2.new(0.5, -344, 0.5, -244)
+shadow.Size = UDim2.new(0, 700, 0, 550)
+shadow.ZIndex = 1
+shadow.Parent = screenGui
+round(shadow, 18)
 
 -- Main Frame (Big UI)
 local mainFrame = Instance.new("Frame")
 mainFrame.Parent = screenGui
-mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+mainFrame.BackgroundColor3 = C.bg
 mainFrame.BorderSizePixel = 0
 mainFrame.Position = UDim2.new(0.5, -350, 0.5, -250)
 mainFrame.Size = UDim2.new(0, 700, 0, 550)
 mainFrame.Active = true
 mainFrame.Draggable = true
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 12)
-mainCorner.Parent = mainFrame
+mainFrame.ClipsDescendants = true
+mainFrame.ZIndex = 2
+round(mainFrame, 16)
+stroke(mainFrame, C.line, 1)
+gradient(mainFrame, Color3.fromRGB(20, 22, 32), Color3.fromRGB(12, 13, 19), 90)
 
 -- Title Bar
 local titleBar = Instance.new("Frame")
 titleBar.Parent = mainFrame
-titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+titleBar.BackgroundColor3 = Color3.fromRGB(24, 26, 38)
 titleBar.BorderSizePixel = 0
-titleBar.Size = UDim2.new(1, 0, 0, 50)
+titleBar.Size = UDim2.new(1, 0, 0, 56)
+titleBar.ZIndex = 3
+gradient(titleBar, Color3.fromRGB(38, 30, 74), Color3.fromRGB(18, 20, 30), 0)
 
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 12)
-titleCorner.Parent = titleBar
+local titleBarLine = Instance.new("Frame")
+titleBarLine.Parent = titleBar
+titleBarLine.BackgroundColor3 = C.accent
+titleBarLine.BackgroundTransparency = 0.25
+titleBarLine.BorderSizePixel = 0
+titleBarLine.Position = UDim2.new(0, 0, 1, -2)
+titleBarLine.Size = UDim2.new(1, 0, 0, 2)
+titleBarLine.ZIndex = 4
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Parent = titleBar
 titleLabel.BackgroundTransparency = 1
-titleLabel.Position = UDim2.new(0, 15, 0, 0)
-titleLabel.Size = UDim2.new(0.8, 0, 1, 0)
+titleLabel.Position = UDim2.new(0, 18, 0, 0)
+titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.Text = "SCRIPTER HUB"
-titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-titleLabel.TextSize = 22
+titleLabel.TextColor3 = C.text
+titleLabel.TextSize = 20
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.ZIndex = 4
+
+local titleSub = Instance.new("TextLabel")
+titleSub.Parent = titleBar
+titleSub.BackgroundTransparency = 1
+titleSub.Position = UDim2.new(0, 18, 0, 30)
+titleSub.Size = UDim2.new(0.6, 0, 0, 18)
+titleSub.Font = Enum.Font.Gotham
+titleSub.Text = "welcome back, " .. tostring(playerName)
+titleSub.TextColor3 = C.dim
+titleSub.TextSize = 12
+titleSub.TextXAlignment = Enum.TextXAlignment.Left
+titleSub.ZIndex = 4
+
+-- THE STATE PILL. It says what the key is, in the corner, and it is the
+-- first thing you see.
+local statePill = Instance.new("Frame")
+statePill.Parent = titleBar
+statePill.BackgroundColor3 = C.muted
+statePill.BorderSizePixel = 0
+statePill.Position = UDim2.new(1, -150, 0, 14)
+statePill.Size = UDim2.new(0, 105, 0, 28)
+statePill.ZIndex = 4
+round(statePill, 14)
+
+local statePillText = Instance.new("TextLabel")
+statePillText.Parent = statePill
+statePillText.BackgroundTransparency = 1
+statePillText.Size = UDim2.new(1, 0, 1, 0)
+statePillText.Font = Enum.Font.GothamBold
+statePillText.Text = "\226\151\143  NO KEY"
+statePillText.TextColor3 = C.dim
+statePillText.TextSize = 12
+statePillText.ZIndex = 5
 
 -- Close Button
 local closeBtn = Instance.new("TextButton")
 closeBtn.Parent = titleBar
-closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+closeBtn.BackgroundColor3 = C.panel2
 closeBtn.BorderSizePixel = 0
-closeBtn.Position = UDim2.new(1, -45, 0, 10)
-closeBtn.Size = UDim2.new(0, 35, 0, 30)
+closeBtn.Position = UDim2.new(1, -42, 0, 14)
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
 closeBtn.Font = Enum.Font.GothamBold
 closeBtn.Text = "\226\156\149"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextSize = 18
-
-local closeCorner = Instance.new("UICorner")
-closeCorner.CornerRadius = UDim.new(0, 6)
-closeCorner.Parent = closeBtn
+closeBtn.TextColor3 = C.dim
+closeBtn.TextSize = 14
+closeBtn.ZIndex = 5
+round(closeBtn, 8)
+closeBtn.MouseEnter:Connect(function() closeBtn.TextColor3 = C.text end)
+closeBtn.MouseLeave:Connect(function() closeBtn.TextColor3 = C.dim end)
 
 closeBtn.MouseButton1Click:Connect(function()
     stopCountdown()
@@ -473,71 +598,64 @@ end)
 -- ============ TAB BUTTONS ============
 local tabButtonsFrame = Instance.new("Frame")
 tabButtonsFrame.Parent = mainFrame
-tabButtonsFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+tabButtonsFrame.BackgroundColor3 = C.bg
+tabButtonsFrame.BackgroundTransparency = 0.4
 tabButtonsFrame.BorderSizePixel = 0
-tabButtonsFrame.Position = UDim2.new(0, 0, 0, 50)
-tabButtonsFrame.Size = UDim2.new(1, 0, 0, 45)
+tabButtonsFrame.Position = UDim2.new(0, 0, 0, 56)
+tabButtonsFrame.Size = UDim2.new(1, 0, 0, 46)
+tabButtonsFrame.ZIndex = 3
 
-local welcomeTabBtn = Instance.new("TextButton")
-welcomeTabBtn.Parent = tabButtonsFrame
-welcomeTabBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
-welcomeTabBtn.BorderSizePixel = 0
-welcomeTabBtn.Position = UDim2.new(0, 10, 0, 5)
-welcomeTabBtn.Size = UDim2.new(0, 120, 0, 35)
-welcomeTabBtn.Font = Enum.Font.GothamBold
-welcomeTabBtn.Text = "\240\159\143\160 Welcome"
-welcomeTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-welcomeTabBtn.TextSize = 14
+local function makeTab(text, x)
+    local b = Instance.new("TextButton")
+    b.Parent = tabButtonsFrame
+    b.BackgroundColor3 = C.panel
+    b.BackgroundTransparency = 0.6
+    b.BorderSizePixel = 0
+    b.Position = UDim2.new(0, x, 0, 8)
+    b.Size = UDim2.new(0, 130, 0, 30)
+    b.Font = Enum.Font.GothamBold
+    b.Text = text
+    b.TextColor3 = C.dim
+    b.TextSize = 13
+    b.ZIndex = 4
+    round(b, 8)
+    return b
+end
 
-local welcomeCorner = Instance.new("UICorner")
-welcomeCorner.CornerRadius = UDim.new(0, 6)
-welcomeCorner.Parent = welcomeTabBtn
-
-local linksTabBtn = Instance.new("TextButton")
-linksTabBtn.Parent = tabButtonsFrame
-linksTabBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
-linksTabBtn.BorderSizePixel = 0
-linksTabBtn.Position = UDim2.new(0, 140, 0, 5)
-linksTabBtn.Size = UDim2.new(0, 120, 0, 35)
-linksTabBtn.Font = Enum.Font.GothamBold
-linksTabBtn.Text = "\240\159\148\151 Links"
-linksTabBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-linksTabBtn.TextSize = 14
-
-local linksCorner = Instance.new("UICorner")
-linksCorner.CornerRadius = UDim.new(0, 6)
-linksCorner.Parent = linksTabBtn
+local welcomeTabBtn = makeTab("\240\159\143\160  WELCOME", 14)
+local linksTabBtn = makeTab("\240\159\148\151  LINKS", 154)
 
 -- ============ CONTENT CONTAINERS ============
-local welcomeContent = Instance.new("ScrollingFrame")
-welcomeContent.Parent = mainFrame
-welcomeContent.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-welcomeContent.BorderSizePixel = 0
-welcomeContent.Position = UDim2.new(0, 10, 0, 105)
-welcomeContent.Size = UDim2.new(1, -20, 1, -115)
-welcomeContent.CanvasSize = UDim2.new(0, 0, 0, 0)
-welcomeContent.ScrollBarThickness = 6
-welcomeContent.Visible = true
+local function makeContent()
+    local f = Instance.new("ScrollingFrame")
+    f.Parent = mainFrame
+    f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0
+    f.Position = UDim2.new(0, 16, 0, 114)
+    f.Size = UDim2.new(1, -32, 1, -128)
+    f.CanvasSize = UDim2.new(0, 0, 0, 0)
+    f.ScrollBarThickness = 5
+    f.ScrollBarImageColor3 = C.muted
+    f.AutomaticCanvasSize = Enum.AutomaticSize.None
+    f.ZIndex = 3
+    return f
+end
 
-local linksContent = Instance.new("ScrollingFrame")
-linksContent.Parent = mainFrame
-linksContent.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-linksContent.BorderSizePixel = 0
-linksContent.Position = UDim2.new(0, 10, 0, 105)
-linksContent.Size = UDim2.new(1, -20, 1, -115)
-linksContent.CanvasSize = UDim2.new(0, 0, 0, 0)
-linksContent.ScrollBarThickness = 6
+local welcomeContent = makeContent()
+local linksContent = makeContent()
 linksContent.Visible = false
 
-local welcomeLayout = Instance.new("UIListLayout")
-welcomeLayout.Parent = welcomeContent
-welcomeLayout.SortOrder = Enum.SortOrder.LayoutOrder
-welcomeLayout.Padding = UDim.new(0, 12)
+local function makeLayout(parent)
+    local l = Instance.new("UIListLayout")
+    l.Parent = parent
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Padding = UDim.new(0, 12)
+    l.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    return l
+end
 
-local linksLayout = Instance.new("UIListLayout")
-linksLayout.Parent = linksContent
-linksLayout.SortOrder = Enum.SortOrder.LayoutOrder
-linksLayout.Padding = UDim.new(0, 12)
+local welcomeLayout = makeLayout(welcomeContent)
+local linksLayout = makeLayout(linksContent)
 
 local function updateCanvas(frame, layout)
     frame.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
@@ -551,209 +669,276 @@ linksLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     updateCanvas(linksContent, linksLayout)
 end)
 
-welcomeTabBtn.MouseButton1Click:Connect(function()
-    welcomeContent.Visible = true
-    linksContent.Visible = false
-    welcomeTabBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
-    welcomeTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    linksTabBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
-    linksTabBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-end)
+local function selectTab(which)
+    welcomeContent.Visible = (which == "welcome")
+    linksContent.Visible = (which == "links")
+    welcomeTabBtn.BackgroundTransparency = (which == "welcome") and 0 or 0.6
+    welcomeTabBtn.TextColor3 = (which == "welcome") and C.text or C.dim
+    linksTabBtn.BackgroundTransparency = (which == "links") and 0 or 0.6
+    linksTabBtn.TextColor3 = (which == "links") and C.text or C.dim
+end
 
-linksTabBtn.MouseButton1Click:Connect(function()
-    welcomeContent.Visible = false
-    linksContent.Visible = true
-    linksTabBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
-    linksTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    welcomeTabBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
-    welcomeTabBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-end)
+welcomeTabBtn.MouseButton1Click:Connect(function() selectTab("welcome") end)
+linksTabBtn.MouseButton1Click:Connect(function() selectTab("links") end)
 
 -- ============ HELPER FUNCTIONS ============
 local function createLabel(parent, text, textSize, textColor)
     local label = Instance.new("TextLabel")
     label.Parent = parent
     label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, -20, 0, 30)
+    label.Size = UDim2.new(1, -20, 0, 26)
     label.Font = Enum.Font.GothamBold
     label.Text = text
-    label.TextColor3 = textColor or Color3.fromRGB(255, 255, 255)
-    label.TextSize = textSize or 16
+    label.TextColor3 = textColor or C.text
+    label.TextSize = textSize or 15
     label.TextXAlignment = Enum.TextXAlignment.Left
+    label.LayoutOrder = 1
     return label
 end
 
-local function createCountdownTimer(parent)
+-- A PANEL: the rounded card everything sits on.
+local function createPanel(parent, height, order)
     local frame = Instance.new("Frame")
     frame.Parent = parent
-    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    frame.BackgroundColor3 = C.panel
     frame.BorderSizePixel = 0
-    frame.Size = UDim2.new(1, -20, 0, 120)
+    frame.Size = UDim2.new(1, -20, 0, height)
+    frame.LayoutOrder = order or 10
+    frame.ZIndex = 3
+    round(frame, 12)
+    stroke(frame, C.line, 1)
+    return frame
+end
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
+-- THE COUNTDOWN. Four panels, a value and a caption, and the value is the
+-- thing you look at.
+local function createCountdownTimer(parent)
+    local frame = createPanel(parent, 128)
 
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Parent = frame
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Position = UDim2.new(0, 12, 0, 8)
-    titleLabel.Size = UDim2.new(1, -24, 0, 25)
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.Text = "\226\143\176 TIME STATUS"
-    titleLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
-    titleLabel.TextSize = 16
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    local head = Instance.new("TextLabel")
+    head.Parent = frame
+    head.BackgroundTransparency = 1
+    head.Position = UDim2.new(0, 16, 0, 10)
+    head.Size = UDim2.new(1, -32, 0, 22)
+    head.Font = Enum.Font.GothamBold
+    head.Text = "\226\143\176  TIME LEFT"
+    head.TextColor3 = C.accent2
+    head.TextSize = 14
+    head.TextXAlignment = Enum.TextXAlignment.Left
+    head.ZIndex = 4
 
     local statusLabel = Instance.new("TextLabel")
     statusLabel.Parent = frame
     statusLabel.BackgroundTransparency = 1
-    statusLabel.Position = UDim2.new(0, 12, 0, 35)
-    statusLabel.Size = UDim2.new(1, -24, 0, 20)
-    statusLabel.Font = Enum.Font.GothamBold
-    statusLabel.Text = "Status: Checking..."
-    statusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
-    statusLabel.TextSize = 13
+    statusLabel.Position = UDim2.new(0, 16, 0, 32)
+    statusLabel.Size = UDim2.new(1, -32, 0, 18)
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Text = "Waiting for a key"
+    statusLabel.TextColor3 = C.dim
+    statusLabel.TextSize = 12
     statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.ZIndex = 4
 
-    local daysLabel = Instance.new("TextLabel")
-    daysLabel.Parent = frame
-    daysLabel.BackgroundTransparency = 1
-    daysLabel.Position = UDim2.new(0, 12, 0, 58)
-    daysLabel.Size = UDim2.new(0.5, -6, 0, 20)
-    daysLabel.Font = Enum.Font.GothamBold
-    daysLabel.Text = "Days: 0"
-    daysLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    daysLabel.TextSize = 14
-    daysLabel.TextXAlignment = Enum.TextXAlignment.Left
+    local boxes = {}
+    local names = { "DAYS", "HOURS", "MINUTES", "SECONDS" }
+    for i = 1, 4 do
+        local box = Instance.new("Frame")
+        box.Parent = frame
+        box.BackgroundColor3 = C.panel2
+        box.BorderSizePixel = 0
+        box.Position = UDim2.new(0, 14 + (i - 1) * 84, 0, 58)
+        box.Size = UDim2.new(0, 78, 0, 56)
+        box.ZIndex = 4
+        round(box, 10)
 
-    local hoursLabel = Instance.new("TextLabel")
-    hoursLabel.Parent = frame
-    hoursLabel.BackgroundTransparency = 1
-    hoursLabel.Position = UDim2.new(0.5, 6, 0, 58)
-    hoursLabel.Size = UDim2.new(0.5, -6, 0, 20)
-    hoursLabel.Font = Enum.Font.GothamBold
-    hoursLabel.Text = "Hours: 0"
-    hoursLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    hoursLabel.TextSize = 14
-    hoursLabel.TextXAlignment = Enum.TextXAlignment.Left
+        local value = Instance.new("TextLabel")
+        value.Parent = box
+        value.BackgroundTransparency = 1
+        value.Position = UDim2.new(0, 0, 0, 6)
+        value.Size = UDim2.new(1, 0, 0, 30)
+        value.Font = Enum.Font.GothamBold
+        value.Text = "-"
+        value.TextColor3 = C.text
+        value.TextSize = 22
+        value.ZIndex = 5
 
-    local minutesLabel = Instance.new("TextLabel")
-    minutesLabel.Parent = frame
-    minutesLabel.BackgroundTransparency = 1
-    minutesLabel.Position = UDim2.new(0, 12, 0, 82)
-    minutesLabel.Size = UDim2.new(0.5, -6, 0, 20)
-    minutesLabel.Font = Enum.Font.GothamBold
-    minutesLabel.Text = "Minutes: 0"
-    minutesLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    minutesLabel.TextSize = 14
-    minutesLabel.TextXAlignment = Enum.TextXAlignment.Left
+        local caption = Instance.new("TextLabel")
+        caption.Parent = box
+        caption.BackgroundTransparency = 1
+        caption.Position = UDim2.new(0, 0, 0, 34)
+        caption.Size = UDim2.new(1, 0, 0, 16)
+        caption.Font = Enum.Font.Gotham
+        caption.Text = names[i]
+        caption.TextColor3 = C.dim
+        caption.TextSize = 10
+        caption.ZIndex = 5
 
-    local secondsLabel = Instance.new("TextLabel")
-    secondsLabel.Parent = frame
-    secondsLabel.BackgroundTransparency = 1
-    secondsLabel.Position = UDim2.new(0.5, 6, 0, 82)
-    secondsLabel.Size = UDim2.new(0.5, -6, 0, 20)
-    secondsLabel.Font = Enum.Font.GothamBold
-    secondsLabel.Text = "Seconds: 0"
-    secondsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    secondsLabel.TextSize = 14
-    secondsLabel.TextXAlignment = Enum.TextXAlignment.Left
+        boxes[i] = { value = value, caption = caption }
+    end
 
     return {
         frame = frame,
         statusLabel = statusLabel,
-        daysLabel = daysLabel,
-        hoursLabel = hoursLabel,
-        minutesLabel = minutesLabel,
-        secondsLabel = secondsLabel
+        dayValue = boxes[1].value,
+        hourValue = boxes[2].value,
+        minuteValue = boxes[3].value,
+        secondValue = boxes[4].value,
     }
 end
 
-local function updateCountdownDisplay(countdownElements, expiry)
-    local status, days, hours, minutes, seconds = formatTimeLeft(expiry)
+local function updateCountdownDisplay(countdownElements, expiry, hasKey)
+    local status, days, hours, minutes, seconds = formatTimeLeft(expiry, hasKey)
 
-    if status == "LIFETIME" then
-        countdownElements.statusLabel.Text = "Status: \240\159\140\159 LIFETIME ACCESS (Never Expires)"
-        countdownElements.statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-        countdownElements.daysLabel.Text = "Days: \226\136\158"
-        countdownElements.hoursLabel.Text = "Hours: \226\136\158"
-        countdownElements.minutesLabel.Text = "Minutes: \226\136\158"
-        countdownElements.secondsLabel.Text = "Seconds: \226\136\158"
+    if status == "NOKEY" then
+        countdownElements.statusLabel.Text = "No key on this device yet"
+        countdownElements.statusLabel.TextColor3 = C.dim
+        countdownElements.dayValue.Text = "-"
+        countdownElements.hourValue.Text = "-"
+        countdownElements.minuteValue.Text = "-"
+        countdownElements.secondValue.Text = "-"
+        countdownElements.dayValue.TextColor3 = C.dim
+        countdownElements.hourValue.TextColor3 = C.dim
+        countdownElements.minuteValue.TextColor3 = C.dim
+        countdownElements.secondValue.TextColor3 = C.dim
+    elseif status == "LIFETIME" then
+        countdownElements.statusLabel.Text = "\240\159\140\159  LIFETIME ACCESS - this key never expires"
+        countdownElements.statusLabel.TextColor3 = C.good
+        countdownElements.dayValue.Text = "\226\136\158"
+        countdownElements.hourValue.Text = "\226\136\158"
+        countdownElements.minuteValue.Text = "\226\136\158"
+        countdownElements.secondValue.Text = "\226\136\158"
+        countdownElements.dayValue.TextColor3 = C.good
+        countdownElements.hourValue.TextColor3 = C.good
+        countdownElements.minuteValue.TextColor3 = C.good
+        countdownElements.secondValue.TextColor3 = C.good
     elseif status == "EXPIRED" then
-        countdownElements.statusLabel.Text = "Status: \226\157\140 EXPIRED"
-        countdownElements.statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-        countdownElements.daysLabel.Text = "Days: 0"
-        countdownElements.hoursLabel.Text = "Hours: 0"
-        countdownElements.minutesLabel.Text = "Minutes: 0"
-        countdownElements.secondsLabel.Text = "Seconds: 0"
+        countdownElements.statusLabel.Text = "\226\157\140  EXPIRED - get a new key from the Links tab"
+        countdownElements.statusLabel.TextColor3 = C.bad
+        countdownElements.dayValue.Text = "0"
+        countdownElements.hourValue.Text = "0"
+        countdownElements.minuteValue.Text = "0"
+        countdownElements.secondValue.Text = "0"
+        countdownElements.dayValue.TextColor3 = C.bad
+        countdownElements.hourValue.TextColor3 = C.bad
+        countdownElements.minuteValue.TextColor3 = C.bad
+        countdownElements.secondValue.TextColor3 = C.bad
     else
-        countdownElements.statusLabel.Text = "Status: \226\156\133 ACTIVE"
-        countdownElements.statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-        countdownElements.daysLabel.Text = "Days: " .. days
-        countdownElements.hoursLabel.Text = "Hours: " .. hours
-        countdownElements.minutesLabel.Text = "Minutes: " .. minutes
-        countdownElements.secondsLabel.Text = "Seconds: " .. seconds
+        countdownElements.statusLabel.Text = "\226\156\133  ACTIVE"
+        countdownElements.statusLabel.TextColor3 = C.good
+        countdownElements.dayValue.Text = days
+        countdownElements.hourValue.Text = hours
+        countdownElements.minuteValue.Text = minutes
+        countdownElements.secondValue.Text = seconds
+        countdownElements.dayValue.TextColor3 = C.text
+        countdownElements.hourValue.TextColor3 = C.text
+        countdownElements.minuteValue.Text = C.text
+        countdownElements.secondValue.TextColor3 = C.text
     end
 end
 
-local function createParagraph(parent, title, content)
-    local frame = Instance.new("Frame")
-    frame.Parent = parent
-    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-    frame.BorderSizePixel = 0
-    frame.Size = UDim2.new(1, -20, 0, 70)
+-- THE STATUS BANNER. It has an accent bar on the left whose colour follows
+-- the state, so the state is readable from across the screen.
+local function createStatusLabel(parent, initialText)
+    local frame = createPanel(parent, 46)
+    frame.BackgroundTransparency = 0.15
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
+    local bar = Instance.new("Frame")
+    bar.Parent = frame
+    bar.BackgroundColor3 = C.warn
+    bar.BorderSizePixel = 0
+    bar.Position = UDim2.new(0, 0, 0, 8)
+    bar.Size = UDim2.new(0, 4, 1, -16)
+    bar.ZIndex = 4
+    round(bar, 2)
 
+    local label = Instance.new("TextLabel")
+    label.Parent = frame
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 16, 0, 0)
+    label.Size = UDim2.new(1, -32, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.Text = initialText
+    label.TextColor3 = C.warn
+    label.TextSize = 13
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 4
+
+    local function setText(newText)
+        label.Text = newText
+        local colour = C.accent2
+        if string.find(newText, "\226\156\133") or string.find(newText, "Active") then
+            colour = C.good
+        elseif string.find(newText, "\226\157\140") or string.find(newText, "Expired") then
+            colour = C.bad
+        elseif string.find(newText, "\226\154\160\239\184\143") or string.find(newText, "Invalid") then
+            colour = C.warn
+        end
+        label.TextColor3 = colour
+        bar.BackgroundColor3 = colour
+    end
+
+    return { label = label, setText = setText }
+end
+
+-- THE PILL, in the corner. It follows the same states as the banner.
+local function setStatePill(text, colour)
+    statePillText.Text = "\226\151\143  " .. text
+    statePillText.TextColor3 = colour
+    statePill.BackgroundColor3 = colour
+    statePill.BackgroundTransparency = 0.8
+end
+
+local function createParagraph(parent, title, content, order)
+    local frame = createPanel(parent, 76, order)
     local titleLabel = Instance.new("TextLabel")
     titleLabel.Parent = frame
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Position = UDim2.new(0, 12, 0, 8)
-    titleLabel.Size = UDim2.new(1, -24, 0, 20)
+    titleLabel.Position = UDim2.new(0, 16, 0, 10)
+    titleLabel.Size = UDim2.new(1, -32, 0, 20)
     titleLabel.Font = Enum.Font.GothamBold
     titleLabel.Text = title
-    titleLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
-    titleLabel.TextSize = 14
+    titleLabel.TextColor3 = C.warn
+    titleLabel.TextSize = 13
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.ZIndex = 4
 
     local contentLabel = Instance.new("TextLabel")
     contentLabel.Parent = frame
     contentLabel.BackgroundTransparency = 1
-    contentLabel.Position = UDim2.new(0, 12, 0, 30)
-    contentLabel.Size = UDim2.new(1, -24, 0, 35)
+    contentLabel.Position = UDim2.new(0, 16, 0, 32)
+    contentLabel.Size = UDim2.new(1, -32, 0, 38)
     contentLabel.Font = Enum.Font.Gotham
     contentLabel.Text = content
-    contentLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    contentLabel.TextColor3 = C.dim
     contentLabel.TextSize = 12
     contentLabel.TextXAlignment = Enum.TextXAlignment.Left
     contentLabel.TextWrapped = true
+    contentLabel.ZIndex = 4
 
     return frame
 end
 
-local function createButton(parent, text, textColor, bgColor, callback)
+local function createButton(parent, text, textColor, bgColor, callback, order)
     local button = Instance.new("TextButton")
     button.Parent = parent
-    button.BackgroundColor3 = bgColor or Color3.fromRGB(40, 100, 200)
+    button.BackgroundColor3 = bgColor or C.accent
     button.BorderSizePixel = 0
-    button.Size = UDim2.new(1, -20, 0, 45)
+    button.Size = UDim2.new(1, -20, 0, 44)
     button.Font = Enum.Font.GothamBold
     button.Text = text
     button.TextColor3 = textColor or Color3.fromRGB(255, 255, 255)
-    button.TextSize = 14
+    button.TextSize = 13
+    button.LayoutOrder = order or 10
+    button.ZIndex = 4
+    round(button, 10)
+    stroke(button, bgColor or C.accent, 1)
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = button
-
-    local originalColor = bgColor or Color3.fromRGB(40, 100, 200)
+    local originalColor = bgColor or C.accent
     local hoverColor = Color3.fromRGB(
-        math.min(originalColor.R * 255 + 20, 255),
-        math.min(originalColor.G * 255 + 20, 255),
-        math.min(originalColor.B * 255 + 20, 255)
+        math.min(originalColor.R * 255 + 22, 255),
+        math.min(originalColor.G * 255 + 22, 255),
+        math.min(originalColor.B * 255 + 22, 255)
     )
 
     button.MouseEnter:Connect(function()
@@ -777,54 +962,60 @@ local function destroyUIAndLoadHub(hubUrl)
     loadstring(game:HttpGet(hubUrl))()
 end
 
-local function createTextboxWithButton(parent, placeholder, buttonText, callback)
-    local frame = Instance.new("Frame")
-    frame.Parent = parent
-    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-    frame.BorderSizePixel = 0
-    frame.Size = UDim2.new(1, -20, 0, 50)
+-- A ROW OF TWO BUTTONS, for the pairs that belong together.
+local function createButtonRow(parent)
+    local row = Instance.new("Frame")
+    row.Parent = parent
+    row.BackgroundTransparency = 1
+    row.Size = UDim2.new(1, -20, 0, 44)
+    row.LayoutOrder = 10
+    row.ZIndex = 3
+    local layout = Instance.new("UIListLayout")
+    layout.Parent = row
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    layout.Padding = UDim.new(0, 10)
+    return row
+end
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
+local function createTextboxWithButton(parent, placeholder, buttonText, callback, order)
+    local frame = createPanel(parent, 58, order)
 
     local textbox = Instance.new("TextBox")
     textbox.Parent = frame
-    textbox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    textbox.BackgroundColor3 = C.panel2
     textbox.BorderSizePixel = 0
-    textbox.Position = UDim2.new(0, 10, 0, 8)
-    textbox.Size = UDim2.new(1, -85, 0, 34)
+    textbox.Position = UDim2.new(0, 12, 0, 11)
+    textbox.Size = UDim2.new(1, -110, 0, 36)
     textbox.Font = Enum.Font.Gotham
     textbox.PlaceholderText = placeholder
+    textbox.PlaceholderColor3 = C.muted
     textbox.Text = ""
-    textbox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    textbox.TextSize = 14
+    textbox.TextColor3 = C.text
+    textbox.TextSize = 13
     textbox.ClearTextOnFocus = false
-
-    local textboxCorner = Instance.new("UICorner")
-    textboxCorner.CornerRadius = UDim.new(0, 6)
-    textboxCorner.Parent = textbox
+    textbox.ZIndex = 4
+    round(textbox, 8)
+    stroke(textbox, C.line, 1)
 
     local submitBtn = Instance.new("TextButton")
     submitBtn.Parent = frame
-    submitBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
+    submitBtn.BackgroundColor3 = C.accent
     submitBtn.BorderSizePixel = 0
-    submitBtn.Position = UDim2.new(1, -70, 0, 8)
-    submitBtn.Size = UDim2.new(0, 60, 0, 34)
+    submitBtn.Position = UDim2.new(1, -88, 0, 11)
+    submitBtn.Size = UDim2.new(0, 76, 0, 36)
     submitBtn.Font = Enum.Font.GothamBold
     submitBtn.Text = buttonText or "Submit"
     submitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     submitBtn.TextSize = 13
-
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 6)
-    btnCorner.Parent = submitBtn
-
+    submitBtn.ZIndex = 4
+    round(submitBtn, 8)
     submitBtn.MouseEnter:Connect(function()
-        submitBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 220)
+        submitBtn.BackgroundColor3 = Color3.fromRGB(146, 114, 255)
     end)
     submitBtn.MouseLeave:Connect(function()
-        submitBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 200)
+        submitBtn.BackgroundColor3 = C.accent
     end)
 
     local function submit()
@@ -842,68 +1033,43 @@ local function createTextboxWithButton(parent, placeholder, buttonText, callback
     return { textbox = textbox, button = submitBtn, frame = frame }
 end
 
-local function createStatusLabel(parent, initialText)
-    local frame = Instance.new("Frame")
-    frame.Parent = parent
-    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-    frame.BorderSizePixel = 0
-    frame.Size = UDim2.new(1, -20, 0, 40)
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
-
-    local label = Instance.new("TextLabel")
-    label.Parent = frame
-    label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.Font = Enum.Font.Gotham
-    label.Text = initialText
-    label.TextColor3 = Color3.fromRGB(255, 200, 100)
-    label.TextSize = 13
-    label.TextWrapped = true
-
-    local function setText(newText)
-        label.Text = newText
-        if string.find(newText, "\226\156\133") then
-            label.TextColor3 = Color3.fromRGB(100, 255, 100)
-        elseif string.find(newText, "\226\157\140") or string.find(newText, "Expired") then
-            label.TextColor3 = Color3.fromRGB(255, 100, 100)
-        elseif string.find(newText, "\226\154\160\239\184\143") then
-            label.TextColor3 = Color3.fromRGB(255, 200, 100)
-        else
-            label.TextColor3 = Color3.fromRGB(100, 200, 255)
-        end
-    end
-
-    return { label = label, setText = setText }
-end
-
 -- ============ BUILD WELCOME TAB ============
-createLabel(welcomeContent, "Hello " .. playerName .. "!", 18, Color3.fromRGB(100, 200, 255))
+createLabel(welcomeContent, "\240\159\145\139  HELLO " .. tostring(playerName), 17, C.text).LayoutOrder = 1
 
 local countdownElements = createCountdownTimer(welcomeContent)
-local status = createStatusLabel(welcomeContent, "\226\154\160\239\184\143 No key found | Enter your key below")
+countdownElements.frame.LayoutOrder = 2
+
+local status = createStatusLabel(welcomeContent, "\226\154\160\239\184\143  No key found - enter your key below")
+status.frame.LayoutOrder = 3
 
 -- Update status based on saved key
 if isWhitelisted then
-    status.setText("\226\156\133 Whitelisted User! LIFETIME access granted")
-    updateCountdownDisplay(countdownElements, nil)
+    status.setText("\226\156\133  Whitelisted user - lifetime access granted")
+    updateCountdownDisplay(countdownElements, nil, true)
+    setStatePill("ACTIVE", C.good)
 elseif keyVerified then
     if keyExpiry and keyExpiry > 0 then
         if os.time() > keyExpiry then
-            status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-            updateCountdownDisplay(countdownElements, 0)
+            status.setText("\226\157\140  Key expired - get a new key from the Links tab")
+            updateCountdownDisplay(countdownElements, 0, true)
             keyVerified = false
+            setStatePill("EXPIRED", C.bad)
         else
-            updateCountdownDisplay(countdownElements, keyExpiry)
+            updateCountdownDisplay(countdownElements, keyExpiry, true)
             local daysLeft = math.floor((keyExpiry - os.time()) / 86400)
-            status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
+            status.setText("\226\156\133  Key active - " .. daysLeft .. " days remaining")
+            setStatePill("ACTIVE", C.good)
         end
     else
-        updateCountdownDisplay(countdownElements, nil)
-        status.setText("\226\156\133 Key Active! LIFETIME access granted")
+        updateCountdownDisplay(countdownElements, nil, true)
+        status.setText("\226\156\133  Key active - lifetime access granted")
+        setStatePill("ACTIVE", C.good)
     end
+else
+    -- NO KEY. The counters show "-", not infinity: infinity means "this key
+    -- never expires", and there is no key here at all.
+    updateCountdownDisplay(countdownElements, nil, false)
+    setStatePill("NO KEY", C.dim)
 end
 
 -- THE CLOCK.
@@ -918,11 +1084,12 @@ local function startCountdown(expiry)
     if not expiry or expiry <= 0 then return end
     countdownThread = task.spawn(function()
         while keyVerified and keyExpiry and os.time() <= keyExpiry do
-            updateCountdownDisplay(countdownElements, keyExpiry)
+            updateCountdownDisplay(countdownElements, keyExpiry, true)
             if os.time() > keyExpiry then
                 keyVerified = false
-                status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-                updateCountdownDisplay(countdownElements, 0)
+                status.setText("\226\157\140  Key expired - get a new key from the Links tab")
+                updateCountdownDisplay(countdownElements, 0, true)
+                setStatePill("EXPIRED", C.bad)
                 break
             end
             task.wait(1)
@@ -935,18 +1102,18 @@ if keyVerified and keyExpiry and keyExpiry > 0 then
 end
 
 -- ============ KEY REDEMPTION TEXTBOX ============
-local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...", "\226\156\147 Verify", function(value)
+local keyInput = createTextboxWithButton(welcomeContent, "paste your key here...", "\226\156\147  VERIFY", function(value)
     if keyVerified then
-        status.setText("\226\156\133 Already verified! You can load scripts.")
+        status.setText("\226\156\133  Already verified - you can load your scripts.")
         return
     end
 
     if not value or value == "" then
-        status.setText("\226\157\140 Key cannot be blank!")
+        status.setText("\226\157\140  The key cannot be blank.")
         return
     end
 
-    status.setText("\240\159\148\132 Validating key with the server...")
+    status.setText("\240\159\148\132  Validating the key with the server...")
 
     local validation = verifyKey(value)
     print("Validation result: " .. tostring(validation.success))
@@ -984,28 +1151,29 @@ local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...
 
         if expiryValue and expiryValue > 0 then
             startCountdown(expiryValue)
-            updateCountdownDisplay(countdownElements, expiryValue)
+            updateCountdownDisplay(countdownElements, expiryValue, true)
             local daysLeft = math.floor((expiryValue - os.time()) / 86400)
-            status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
+            status.setText("\226\156\133  Key active - " .. daysLeft .. " days remaining")
         else
-            updateCountdownDisplay(countdownElements, nil)
-            status.setText("\226\156\133 Key Active! LIFETIME access granted")
+            updateCountdownDisplay(countdownElements, nil, true)
+            status.setText("\226\156\133  Key active - lifetime access granted")
         end
+        setStatePill("ACTIVE", C.good)
     else
         if validation.code == "EXPIRED" then
-            status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-            updateCountdownDisplay(countdownElements, 0)
+            status.setText("\226\157\140  Key expired - get a new key from the Links tab")
+            updateCountdownDisplay(countdownElements, 0, false)
         elseif validation.code == "HWID" then
-            status.setText("\240\159\148\146 HWID Locked! This key is on another machine.")
+            status.setText("\240\159\148\146  HWID locked - this key is on another machine.")
         elseif validation.code == "BANNED" then
-            status.setText("\240\159\154\171 Key Blacklisted!")
+            status.setText("\240\159\154\171  This key is blacklisted.")
         elseif validation.code == "INVALID" then
-            status.setText("\226\157\140 Invalid Key! Get a valid key from Links tab")
+            status.setText("\226\157\140  Invalid key - get a valid one from the Links tab.")
         else
-            status.setText("\226\154\160\239\184\143 " .. tostring(validation.message or "Unknown error. Contact @scripter_0"))
+            status.setText("\226\154\160\239\184\143  " .. tostring(validation.message or "Unknown error. Contact @scripter_0"))
         end
     end
-end)
+end, 4)
 
 -- Pre-fill textbox if key exists
 if keyVerified and not isWhitelisted then
@@ -1015,35 +1183,33 @@ if keyVerified and not isWhitelisted then
     end
 end
 
-createParagraph(welcomeContent, "\240\159\146\142 LIFETIME KEY OFFER", "If you want to have a key for Lifetime access, you can pay $20 for it. In order to buy, DM me on Discord: @scripter_0")
+createParagraph(welcomeContent, "\240\159\146\142  LIFETIME KEY OFFER", "If you want a key for lifetime access, you can pay $20 for it. DM me on Discord: @scripter_0", 5)
 
 -- ============ DROPDOWN ============
 local dropdownFrame = Instance.new("Frame")
 dropdownFrame.Parent = welcomeContent
-dropdownFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+dropdownFrame.BackgroundColor3 = C.panel
 dropdownFrame.BorderSizePixel = 0
 dropdownFrame.Size = UDim2.new(1, -20, 0, 50)
 dropdownFrame.ClipsDescendants = true
-
-local dropdownCorner = Instance.new("UICorner")
-dropdownCorner.CornerRadius = UDim.new(0, 8)
-dropdownCorner.Parent = dropdownFrame
+dropdownFrame.LayoutOrder = 6
+dropdownFrame.ZIndex = 3
+round(dropdownFrame, 12)
+stroke(dropdownFrame, C.line, 1)
 
 local selectedBtn = Instance.new("TextButton")
 selectedBtn.Parent = dropdownFrame
-selectedBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+selectedBtn.BackgroundColor3 = C.panel2
 selectedBtn.BorderSizePixel = 0
 selectedBtn.Position = UDim2.new(0, 10, 0, 8)
 selectedBtn.Size = UDim2.new(1, -20, 0, 34)
 selectedBtn.Font = Enum.Font.GothamBold
-selectedBtn.Text = "\240\159\142\174 Slap Battles"
-selectedBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-selectedBtn.TextSize = 14
+selectedBtn.Text = "\240\159\142\174  Slap Battles"
+selectedBtn.TextColor3 = C.text
+selectedBtn.TextSize = 13
 selectedBtn.TextXAlignment = Enum.TextXAlignment.Left
-
-local selectedCorner = Instance.new("UICorner")
-selectedCorner.CornerRadius = UDim.new(0, 6)
-selectedCorner.Parent = selectedBtn
+selectedBtn.ZIndex = 4
+round(selectedBtn, 8)
 
 local arrowLabel = Instance.new("TextLabel")
 arrowLabel.Parent = selectedBtn
@@ -1052,22 +1218,21 @@ arrowLabel.Position = UDim2.new(1, -30, 0, 0)
 arrowLabel.Size = UDim2.new(0, 25, 1, 0)
 arrowLabel.Font = Enum.Font.GothamBold
 arrowLabel.Text = "\226\150\188"
-arrowLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-arrowLabel.TextSize = 16
+arrowLabel.TextColor3 = C.dim
+arrowLabel.TextSize = 14
 arrowLabel.TextXAlignment = Enum.TextXAlignment.Center
+arrowLabel.ZIndex = 5
 
 local dropdownItemsFrame = Instance.new("Frame")
 dropdownItemsFrame.Parent = dropdownFrame
-dropdownItemsFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+dropdownItemsFrame.BackgroundColor3 = C.panel2
 dropdownItemsFrame.BorderSizePixel = 0
 dropdownItemsFrame.Position = UDim2.new(0, 10, 0, 45)
 dropdownItemsFrame.Size = UDim2.new(1, -20, 0, 0)
 dropdownItemsFrame.Visible = false
 dropdownItemsFrame.ClipsDescendants = true
-
-local dropdownItemsCorner = Instance.new("UICorner")
-dropdownItemsCorner.CornerRadius = UDim.new(0, 6)
-dropdownItemsCorner.Parent = dropdownItemsFrame
+dropdownItemsFrame.ZIndex = 4
+round(dropdownItemsFrame, 8)
 
 local dropdownItemsLayout = Instance.new("UIListLayout")
 dropdownItemsLayout.Parent = dropdownItemsFrame
@@ -1078,14 +1243,16 @@ dropdownItemsLayout.Padding = UDim.new(0, 2)
 local scriptButtonsContainer = Instance.new("Frame")
 scriptButtonsContainer.Parent = welcomeContent
 scriptButtonsContainer.BackgroundTransparency = 1
-scriptButtonsContainer.Size = UDim2.new(1, 0, 0, 55)
+scriptButtonsContainer.Size = UDim2.new(1, 0, 0, 52)
+scriptButtonsContainer.LayoutOrder = 7
+scriptButtonsContainer.ZIndex = 3
 
 local scriptButtonsLayout = Instance.new("UIListLayout")
 scriptButtonsLayout.Parent = scriptButtonsContainer
 scriptButtonsLayout.FillDirection = Enum.FillDirection.Horizontal
 scriptButtonsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 scriptButtonsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-scriptButtonsLayout.Padding = UDim.new(0, 15)
+scriptButtonsLayout.Padding = UDim.new(0, 12)
 
 local currentGame = "Slap Battles"
 local dropdownVisible = false
@@ -1122,21 +1289,20 @@ local function updateScriptButtons(gameName)
         btn.Parent = scriptButtonsContainer
         btn.BackgroundColor3 = script.color
         btn.BorderSizePixel = 0
-        btn.Size = UDim2.new(0, 250, 0, 45)
+        btn.Size = UDim2.new(0, 250, 0, 42)
         btn.Font = Enum.Font.GothamBold
-        btn.Text = "\240\159\154\128 LOAD " .. script.name
+        btn.Text = "\240\159\154\128  LOAD " .. script.name
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.TextSize = 14
-
-        local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 8)
-        corner.Parent = btn
+        btn.TextSize = 13
+        btn.ZIndex = 4
+        round(btn, 10)
+        stroke(btn, script.color, 1)
 
         local originalColor = script.color
         local hoverColor = Color3.fromRGB(
-            math.min(originalColor.R * 255 + 20, 255),
-            math.min(originalColor.G * 255 + 20, 255),
-            math.min(originalColor.B * 255 + 20, 255)
+            math.min(originalColor.R * 255 + 22, 255),
+            math.min(originalColor.G * 255 + 22, 255),
+            math.min(originalColor.B * 255 + 22, 255)
         )
 
         btn.MouseEnter:Connect(function()
@@ -1149,11 +1315,11 @@ local function updateScriptButtons(gameName)
 
         btn.MouseButton1Click:Connect(function()
             if not keyVerified and not isWhitelisted then
-                status.setText("\226\157\140 Please enter a valid key first!")
+                status.setText("\226\157\140  Enter a valid key first!")
                 return
             end
             if keyExpiry and keyExpiry > 0 and os.time() > keyExpiry then
-                status.setText("\226\157\140 Your key has expired! Get a new key from Links tab")
+                status.setText("\226\157\140  Your key has expired - get a new key from the Links tab.")
                 return
             end
             destroyUIAndLoadHub(script.url)
@@ -1169,34 +1335,31 @@ local options = { "Slap Battles", "Shoot Noobs And Eat Foods" }
 for _, option in ipairs(options) do
     local optBtn = Instance.new("TextButton")
     optBtn.Parent = dropdownItemsFrame
-    optBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
+    optBtn.BackgroundColor3 = C.panel2
     optBtn.BorderSizePixel = 0
     optBtn.Size = UDim2.new(1, 0, 0, 32)
     optBtn.Font = Enum.Font.Gotham
-    optBtn.Text = "\240\159\142\174 " .. option
-    optBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
-    optBtn.TextSize = 13
+    optBtn.Text = "\240\159\142\174  " .. option
+    optBtn.TextColor3 = C.text
+    optBtn.TextSize = 12
     optBtn.TextXAlignment = Enum.TextXAlignment.Left
-
-    local optCorner = Instance.new("UICorner")
-    optCorner.CornerRadius = UDim.new(0, 4)
-    optCorner.Parent = optBtn
+    optBtn.ZIndex = 5
 
     optBtn.MouseEnter:Connect(function()
-        optBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 60)
+        optBtn.BackgroundColor3 = C.muted
     end)
     optBtn.MouseLeave:Connect(function()
-        optBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
+        optBtn.BackgroundColor3 = C.panel2
     end)
 
     optBtn.MouseButton1Click:Connect(function()
-        selectedBtn.Text = "\240\159\142\174 " .. option
+        selectedBtn.Text = "\240\159\142\174  " .. option
         currentGame = option
         dropdownVisible = false
         dropdownItemsFrame.Visible = false
         arrowLabel.Text = "\226\150\188"
         dropdownFrame.Size = UDim2.new(1, -20, 0, 50)
-        status.setText("\240\159\142\174 Selected: " .. option)
+        status.setText("\240\159\142\174  Selected: " .. option)
         updateScriptButtons(option)
     end)
 end
@@ -1218,17 +1381,44 @@ end)
 -- Initialize with default
 updateScriptButtons("Slap Battles")
 
--- Clear the saved key. It does not revoke the key - the server still has it -
--- it only forgets it on this machine.
-createButton(welcomeContent, "\240\159\148\147 FORGET THE SAVED KEY", Color3.fromRGB(255, 255, 255), Color3.fromRGB(90, 90, 130), function()
-    deleteAll4Files()
+-- ============ THE THREE BUTTONS AT THE BOTTOM ============
+-- FORGET THE SAVED KEY, TEST THE CONNECTION, and DESTROY THE GUI, in one
+-- row of two and one below.
+--
+-- THE FORGET BUTTON SAYS WHAT IT DID.
+--
+-- It used to call the delete functions and say nothing, so a key that could
+-- not be deleted - because the executor has no delfile, or because the file
+-- is read-only - looked exactly like a key that had been deleted. The
+-- visitor pressed it, the key was still there next time, and nothing
+-- explained why.
+local forgetBtn = nil
+local forgetRow = createButtonRow(welcomeContent)
+forgetRow.LayoutOrder = 8
+
+forgetBtn = createButton(forgetRow, "\240\159\148\147  FORGET THE SAVED KEY", C.text, C.panel2, function()
+    local gone = deleteAll4Files()
     keyVerified = false
     keyExpiry = nil
     actualExpiry = nil
+    currentKey = nil
     stopCountdown()
-    updateCountdownDisplay(countdownElements, 0)
-    status.setText("\240\159\148\147 The saved key was forgotten. Enter it again to load scripts.")
+    updateCountdownDisplay(countdownElements, nil, false)
+    setStatePill("NO KEY", C.dim)
+    if keyInput and keyInput.textbox then
+        keyInput.textbox.Text = ""
+    end
+    if gone == 4 then
+        status.setText("\240\159\148\147  The saved key was forgotten. Enter it again to load your scripts.")
+    elseif gone == 0 then
+        status.setText("\226\154\160\239\184\143  This executor cannot delete files, so the key will still be here next time. "
+            .. "Use DESTROY GUI and clear the executor's file list instead.")
+    else
+        status.setText("\226\154\160\239\184\143  Only " .. gone .. " of the 4 files could be removed - "
+            .. "this executor may not allow deleting them.")
+    end
 end)
+forgetBtn.Size = UDim2.new(0, 300, 0, 44)
 
 -- IS THE WORKER THERE AT ALL?
 --
@@ -1236,43 +1426,42 @@ end)
 -- is invalid" look the same from the outside, and only one of them is the
 -- card's fault. This asks the worker for nothing - it just says hello - and
 -- shows the answer, or what the last attempt said.
-createButton(welcomeContent, "\240\159\147\186 TEST THE CONNECTION", Color3.fromRGB(255, 255, 255), Color3.fromRGB(60, 60, 90), function()
-    status.setText("\240\159\146\166 Asking the key server...")
+local testRow = createButtonRow(welcomeContent)
+testRow.LayoutOrder = 9
+local testBtn = createButton(testRow, "\240\159\147\186  TEST THE CONNECTION", C.text, C.panel2, function()
+    status.setText("\240\159\147\166  Asking the key server...")
     local body = httpGet(API_URL .. "/sh/ping")
     if body then
-        status.setText("\226\156\133 Server reached: " .. tostring(body):sub(1, 60))
+        status.setText("\226\156\133  Server reached: " .. tostring(body):sub(1, 60))
     else
-        status.setText("\226\157\140 No answer. Tried: " .. tostring(LAST_HTTP_ERROR):sub(1, 120))
+        status.setText("\226\157\140  No answer. Tried: " .. tostring(LAST_HTTP_ERROR):sub(1, 120))
     end
 end)
+testBtn.Size = UDim2.new(0, 300, 0, 44)
 
 -- Destroy GUI button
-createButton(welcomeContent, "\240\159\151\145\239\184\143 DESTROY GUI", Color3.fromRGB(255, 255, 255), Color3.fromRGB(100, 100, 100), function()
+createButton(welcomeContent, "\240\159\151\145\239\184\143  DESTROY GUI", C.dim, C.panel2, function()
     stopCountdown()
     screenGui:Destroy()
     _G.ScripterHub_UILoaded = nil
-end)
+end, 10)
 
 -- ============ BUILD LINKS TAB ============
-createLabel(linksContent, "\240\159\147\139 GET YOUR KEY HERE", 16, Color3.fromRGB(100, 200, 255))
+createLabel(linksContent, "\240\159\147\139  GET YOUR KEY HERE", 16, C.text).LayoutOrder = 1
+createParagraph(linksContent, "HOW IT WORKS", "1. Pick a provider below. 2. Finish the ad. 3. The key appears in your reward page. 4. Paste it in the Welcome tab.", 2)
 
-for _, link in ipairs(AD_LINKS) do
+for i, link in ipairs(AD_LINKS) do
     createButton(linksContent, link.text, Color3.fromRGB(255, 255, 255), link.color, function()
         setclipboard(link.url)
-        status.setText("\240\159\147\139 Link copied! Finish the checkpoint, then paste your key in the Welcome tab.")
-    end)
+        status.setText("\240\159\147\139  Link copied - finish the checkpoint, then paste your key in the Welcome tab.")
+    end, 10 + i)
 end
 
-local spacer = Instance.new("Frame")
-spacer.Parent = linksContent
-spacer.BackgroundTransparency = 1
-spacer.Size = UDim2.new(1, 0, 0, 10)
+createLabel(linksContent, "\240\159\147\177  SOCIAL LINKS", 16, C.text).LayoutOrder = 20
 
-createLabel(linksContent, "\240\159\147\177 SOCIAL LINKS", 16, Color3.fromRGB(100, 200, 255))
-
-for _, link in ipairs(SOCIAL_LINKS) do
+for i, link in ipairs(SOCIAL_LINKS) do
     createButton(linksContent, link.text, Color3.fromRGB(255, 255, 255), link.color, function()
         setclipboard(link.url)
-        status.setText("\240\159\147\139 Link copied!")
-    end)
+        status.setText("\240\159\147\139  Link copied!")
+    end, 20 + i)
 end

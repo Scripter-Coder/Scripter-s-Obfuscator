@@ -186,6 +186,53 @@ console.log('THE SOURCE IS PURE ASCII, AND THE EMOJI SURVIVE IT');
 
 // ---------------------------------------------------------------------------
 console.log('');
+console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
+// ---------------------------------------------------------------------------
+{
+    // The card used to show "Days: inf" on a fresh install, because the
+    // formatter returned LIFETIME for a missing expiry. Infinity means
+    // "this key never expires" - showing it when there is no key at all is
+    // a lie, and it reads like a lifetime key that was already earned.
+    check('the formatter knows the difference', /NOKEY/.test(src),
+        'there is no state for "there is no key"');
+    check('and it is told whether there is a key',
+        /formatTimeLeft\(expiryTimestamp, hasKey\)/.test(src),
+        'the formatter cannot tell a missing key from a lifetime one');
+    check('and no key shows a dash, not infinity',
+        /"NOKEY", "-", "-", "-", "-"/.test(src),
+        'a missing key still shows infinity');
+    check('and infinity is still there for a lifetime key',
+        /"LIFETIME", "\\226\\136\\158", "\\226\\136\\158"/.test(src),
+        'a lifetime key does not show infinity');
+    check('and the no-key state is used when there is no key',
+        /updateCountdownDisplay\(countdownElements, nil, false\)/.test(src),
+        'the card never asks for the no-key state');
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
+console.log('THE FORGET BUTTON SAYS WHAT IT DID');
+// ---------------------------------------------------------------------------
+{
+    // It used to call the delete functions and say nothing, so a key that
+    // could not be deleted - no delfile, or a read-only file - looked
+    // exactly like a key that had been deleted.
+    check('the delete reports whether it worked',
+        /local function deleteFile[\s\S]{0,400}return (ok == true|false)/.test(src),
+        'the delete does not report anything');
+    check('and the button counts what it removed',
+        /local gone = deleteAll4Files\(\)/.test(src) && /gone == 4/.test(src),
+        'the button does not count');
+    check('and it says so when the executor cannot delete files',
+        /cannot delete files/.test(src),
+        'the button does not explain a failure');
+    check('and the state is cleared either way',
+        /keyVerified = false/.test(src) && /setStatePill\("NO KEY"/.test(src),
+        'the card still thinks the key is there');
+}
+
+// ---------------------------------------------------------------------------
+console.log('');
 console.log('THE CARD CAN ASK WHETHER THE WORKER IS THERE');
 // ---------------------------------------------------------------------------
 {
