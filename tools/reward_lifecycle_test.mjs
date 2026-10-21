@@ -253,6 +253,10 @@ console.log('THE HAMMER: AN EXPIRED KEY CAN BE BROUGHT BACK');
     check('and it adds the owner\'s hours', ext.hours === 2, 'hours = ' + ext.hours);
     check('and the new expiry is in the future', Number(ext.expires) > before,
         'expires = ' + ext.expires);
+    // IT ADDS TO WHAT IS LEFT, IT DOES NOT REPLACE IT.
+    check('and it does not take the time the visitor already had',
+        Number(ext.expires) >= Number(ext.expires) && ext.hours === 2,
+        'expires = ' + ext.expires);
     const ledger = await env.SH_DB.prepare('SELECT expires FROM reward_keys WHERE key_text=?').bind(earnedKey).all();
     const rows = ledger.results || ledger;
     check('and the LEDGER moved', Number(rows[0].expires) === Number(ext.expires),
@@ -260,6 +264,27 @@ console.log('THE HAMMER: AN EXPIRED KEY CAN BE BROUGHT BACK');
     const mirror = JSON.parse(KV._store.get('sh_licenses') || '{}');
     check('and the LICENSE MIRROR moved', Number(mirror[earnedKey].expiresAt) === Number(ext.expires),
         'mirror = ' + mirror[earnedKey].expiresAt);
+
+    // THE HAMMER ADDS TO WHAT IS LEFT.
+    //
+    // It used to buy the hours "from now", so a visitor with five hours left
+    // would press it and be left with two. Time they already had is not
+    // taken away from them.
+    {
+        const fiveHours = Date.now() + 5 * 3600000;
+        await env.SH_DB.prepare('UPDATE reward_keys SET expires=? WHERE key_text=?').bind(fiveHours, earnedKey).run();
+        const mapA = JSON.parse(KV._store.get('sh_licenses') || '{}');
+        if (mapA[earnedKey]) { mapA[earnedKey].expiresAt = fiveHours; KV._store.set('sh_licenses', JSON.stringify(mapA)); }
+        const add = await j(await call('POST', '/sh/reward/extend', {
+            body: { rid: RID, fp: 'fp_visitor_1', key: earnedKey }
+        }));
+        check('a key that still has time is given MORE time, not less',
+            add.ok === true && Number(add.expires) >= fiveHours,
+            'expires = ' + add.expires + ', had ' + fiveHours);
+        check('and the amount added is the owner\'s amount',
+            Number(add.expires) >= fiveHours + 2 * 3600000 - 5000,
+            'expires = ' + add.expires);
+    }
 
     // The cap.
     await env.SH_DB.prepare('UPDATE reward_keys SET expires=? WHERE key_text=?').bind(1000, earnedKey).run();

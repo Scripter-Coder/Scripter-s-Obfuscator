@@ -9528,42 +9528,52 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const hours = Math.min(Math.max(Number(r.extHours) || 6, 0.05), 168);
             const capMs = r.maxHours ? r.maxHours * 3600000 : 0;
             const now = Date.now();
-            // FROM NOW, NOT FROM THE OLD EXPIRY.
+            const at = Number(row.at) || now;
+            const expires = Number(row.expires) || 0;
+            // THE HAMMER ADDS TO WHAT IS LEFT.
             //
-            // Adding to the old expiry would let a visitor who waited a week
-            // press the button once and get a week back, and it would walk
-            // past the cap the owner set. The hammer buys time from now, and it
-            // stops at the cap.
-            let next = now + hours * 3600000;
-            if (capMs) next = Math.min(next, now + capMs);
-            if (next <= Number(row.expires) || 0) {
+            // It used to buy the hours "from now", which is right for a key
+            // that has run out and WRONG for one that has not: a visitor with
+            // nineteen hours left would press it and be left with six. Time
+            // they already had is not taken away from them.
+            //
+            // So the new expiry is the later of (the old expiry, now) plus
+            // the owner's hours.
+            //
+            // The CAP is the key's whole lifetime, measured from when it was
+            // issued - not from now. A cap measured from now could be walked
+            // past by waiting, and a cap measured from the expiry could be
+            // walked past by extending.
+            let next = Math.max(expires, now) + hours * 3600000;
+            if (capMs) next = Math.min(next, at + capMs);
+            if (next <= expires || 0) {
                 // Already at the cap, or not expired yet.
                 return jsonResponse({
                     ok: false,
-                    error: capMs && (Number(row.expires) >= now + capMs - 1000)
+                    error: capMs && (expires >= at + capMs - 1000)
                         ? 'This key has reached the maximum time the owner allows.'
                         : 'That key has not expired yet.',
-                    expires: Number(row.expires) || 0
+                    expires: expires
                 }, 400);
             }
 
-            await q(env.SH_DB, 'UPDATE reward_keys SET expires=? WHERE rid=? AND sid=? AND key_text=?',
-                next, rid, resolvedE.sid, row.key_text);
-
-            // THE MIRROR GOES WITH IT.
+            // THE MIRROR FIRST, THEN THE LEDGER.
             //
             // The gate reads the D1 licenses table, and the owner's panel
             // reads the license map. If only the ledger moved, the key would
             // still read as expired in the place that decides.
+            //
+            // The cap is applied again here, against the SAME ceiling: the
+            // key's lifetime measured from when it was issued.
             const map = await loadLicenses(env);
             if (map[row.key_text]) {
+                const cap = capMs || (Number(map[row.key_text].capMs) || 0);
+                if (cap) next = Math.min(next, at + cap);
                 map[row.key_text].expiresAt = next;
-                if (map[row.key_text].capMs) {
-                    const cap = Number(map[row.key_text].capMs);
-                    if (cap) map[row.key_text].expiresAt = Math.min(next, now + cap);
-                }
                 await saveLicenses(env, map);
             }
+            await q(env.SH_DB, 'UPDATE reward_keys SET expires=? WHERE rid=? AND sid=? AND key_text=?',
+                next, rid, resolvedE.sid, row.key_text);
 
             ctx.waitUntil(notifyTelemetry(env, {
                 event: 'reward.extended', outcome: 'ok', rid: rid,
