@@ -357,7 +357,17 @@ function createState(db) {
                        -- predicate was not in the statement that shipped. It
                        -- is now asserted by G22 in
                        -- tools/security_gates_test.mjs.
-                       AND (l.hwid IS NULL OR l.hwid = sessions.hwid)))
+                       --
+                       -- AND THE SECOND HARDWARE ID.
+                       --
+                       -- The session carries the client id AND the executor's name,
+                       -- comma-joined, and the license may be locked to EITHER. The
+                       -- older locks were made with the executor's name - which is the
+                       -- same on every machine running that executor - and a key that
+                       -- used to open on a machine must not stop opening on it because
+                       -- the id source moved.
+                       AND (l.hwid IS NULL OR l.hwid = sessions.hwid
+                            OR instr(',' || sessions.hwid || ',', ',' || l.hwid || ',') > 0)))
               AND (user_id IS NULL OR EXISTS (
                     SELECT 1 FROM users u
                      WHERE u.id = sessions.user_id
@@ -2802,7 +2812,7 @@ function classifyAuthorization(o) {
     if (o.authRequired) {
         if (!o.key) return DENY.NEEDS_KEY;
         // re-uses the worker's classifyLicense contract: { code }
-        const v = o.classify(o.key, o.hwid, o.now, o.scriptProjectId);
+        const v = o.classify(o.key, o.hwid, o.now, o.scriptProjectId, o.hwid2);
         if (v.code === 'banned') return DENY.BANNED;
         if (v.code === 'expired') return DENY.EXPIRED;
         if (v.code === 'hwid') return DENY.HWID;
@@ -5225,11 +5235,22 @@ async function isKillswitchOn(env) {
     } catch (e) { return false; }
 }
 // auth decision for one license key at hwid; mutates nothing
-function classifyLicense(rec, hwid, now, projectId) {
+function classifyLicense(rec, hwid, now, projectId, hwid2) {
     if (!rec) return { code: 'invalid' };                      // no such key
     if (rec.banned) return { code: 'banned', reason: rec.banReason }; // blacklisted
     if (rec.expiresAt && rec.expiresAt <= now) return { code: 'expired' }; // expired
-    if (rec.hwid && rec.hwid !== hwid) return { code: 'hwid' }; // shared key
+    // THE HARDWARE ID, AND THE EXECUTOR'S NAME AS A SECOND CHANCE.
+    //
+    // The id the client sends and the id the key was locked to have to be
+    // the same string. There are two of them, because there have always been
+    // two: the client id (per installation, stable, different on every
+    // machine) and the executor's name (the same on every machine that runs
+    // that executor).
+    //
+    // The older locks were made with the executor's name, and they have to
+    // keep working: a key that used to open on a machine must not stop
+    // opening on it because the id source moved.
+    if (rec.hwid && rec.hwid !== hwid && (!hwid2 || rec.hwid !== hwid2)) return { code: 'hwid' }; // shared key
     // A key bound to a project only opens scripts in that project.
     //
     // The comparison is done on trimmed, lower-cased strings so that a
@@ -7418,14 +7439,70 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // place - it just cannot delete one by accident.
             let kept = 0;
             try {
-                const current = await loadLicenses(env);
-                for (const k of Object.keys(current)) {
-                    if (Object.prototype.hasOwnProperty.call(out, k)) continue;
-                    const rec = current[k] || {};
-                    const isReward = rec.source === 'reward' || !!rec.rewardId;
-                    if (!isReward) continue;
-                    out[k] = rec;
-                    kept++;
+                // THE REWARD KEYS ARE REBUILT FROM THE LEDGER, NOT CARRIED OVER
+                // FROM THE KV COPY.
+                //
+                // The first version of this carried them over from the map
+                // this request had just read. KV is EVENTUALLY CONSISTENT, and
+                // a key that was minted a minute ago is not necessarily in the
+                // copy this edge location reads - so a reward key could be
+                // dropped by the very sync that was meant to protect it. And
+                // it WAS: the owner's own reward key was deleted by a panel
+                // sync that could not see it yet.
+                //
+                // The ledger is D1, and D1 is the source of truth: it is a
+                // transaction, and it does not go stale. So the reward keys
+                // are read from there, and their license records are rebuilt
+                // from the reward's own configuration.
+                if (await rewardEnsureLedger(env)) {
+                    const rows = await qAll(env.SH_DB,
+                        'SELECT rid, key_text, expires FROM reward_keys');
+                    const list = Array.isArray(rows) ? rows : ((rows && rows.results) || []);
+                    // The gate's copy of the licenses, for the hardware lock
+                    // and the revocations. Asked for in chunks, because the
+                    // table can be large and one query per key is not.
+                    const lockOf = {};
+                    for (let i = 0; i < list.length; i += 100) {
+                        const chunk = list.slice(i, i + 100);
+                        if (!chunk.length) continue;
+                        const marks = chunk.map(function () { return '?'; }).join(',');
+                        const args = chunk.map(function (c) { return String(c.key_text || ''); });
+                        let lrows = [];
+                        try {
+                            lrows = await qAll(env.SH_DB,
+                                'SELECT key, hwid, revoked_at, revoke_reason, executions FROM licenses WHERE key IN (' + marks + ')',
+                                ...args);
+                        } catch (e) { lrows = []; }
+                        const llist = Array.isArray(lrows) ? lrows : ((lrows && lrows.results) || []);
+                        for (const l of llist) lockOf[String(l.key || '')] = l;
+                    }
+                    for (const row of list) {
+                        const k = String(row.key_text || '');
+                        if (!k) continue;
+                        if (Object.prototype.hasOwnProperty.call(out, k)) continue;
+                        const lock = lockOf[k] || null;
+                        const reward = await loadReward(env, String(row.rid || ''));
+                        const capMs = (reward && reward.allowExtending && reward.maxHours)
+                            ? reward.maxHours * 3600000 : 0;
+                        out[k] = {
+                            hwid: (lock && String(lock.hwid || '')) || '',
+                            expiresAt: Number(row.expires) || 0,
+                            banned: !!(lock && lock.revoked_at),
+                            banReason: (lock && String(lock.revoke_reason || '')) || '',
+                            discordId: '',
+                            projectId: '',
+                            projectName: '',
+                            note: 'Ad Reward: ' + String((reward && reward.name) || '').slice(0, 120),
+                            hwidResets: 0,
+                            executions: (lock && Number(lock.executions)) || 0,
+                            lastAuthAt: 0,
+                            scriptId: '',
+                            source: 'reward',
+                            rewardId: String(row.rid || ''),
+                            capMs: capMs
+                        };
+                        kept++;
+                    }
                 }
             } catch (e) { /* a reconcile failure must not lose the panel's keys */ }
             await saveLicenses(env, out);
@@ -8038,6 +8115,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!env.LOADERS_KV) return methodNotAllowed();
             const key = String(url.searchParams.get('k') || '').slice(0, 200);
             const hwid = String(url.searchParams.get('h') || '').slice(0, 300);
+            // The executor's name, which is not an id - and the id the older
+            // locks were made with. A license locked to either of them opens.
+            const hwid2 = String(url.searchParams.get('h2') || '').slice(0, 300);
             let body = 'SHERR invalid';
             if (!key) {
                 body = 'SHERR invalid';
@@ -8049,7 +8129,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // A key that is not bound to any hardware can be read from
                 // anywhere, so the hardware is only checked when the key
                 // HAS one. Same rule as the gate.
-                const verdict = classifyLicense(rec, hwid, Date.now(), '');
+                const verdict = classifyLicense(rec, hwid, Date.now(), '', hwid2);
                 if (verdict.code === 'ok') {
                     // expiresAt 0 means it never expires.
                     const expires = Number(rec.expiresAt) || 0;
@@ -8179,6 +8259,13 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const id = String(body.id || url.searchParams.get('id') || '');
                 const key = String(body.k || url.searchParams.get('k') || '').slice(0, 200);
                 const hwid = String(body.h || url.searchParams.get('h') || '').slice(0, 300);
+                // THE SECOND HARDWARE ID.
+                //
+                // The executor's own name, which is not an id at all - every
+                // machine running that executor answers the same - but it is
+                // what the older locks were made with, so a key that used to
+                // open on a machine must not stop opening on it.
+                const hwid2 = String(body.h2 || url.searchParams.get('h2') || '').slice(0, 300);
                 const userEmail = String(body.u || url.searchParams.get('u') || '').slice(0, 100);
 
                 const deny = async (reason, extra) => {
@@ -8259,7 +8346,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 // request: an isolate outlives many requests and a stale map
                 // would be a stale authorization decision.
                 const licensesCache = await loadLicenses(env);
-                const classify = (k, h, at, pid) => classifyLicense(licensesCache[k], h, at, pid);
+                const classify = (k, h, at, pid) => classifyLicense(licensesCache[k], h, at, pid, hwid2);
                 const verdict = classifyAuthorization({
                     noState: false,
                     scriptExists: !!script,
@@ -8269,7 +8356,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     userId,
                     authRequired: script.authRequired,
                     scriptProjectId: script.projectId,
-                    key, hwid, classify, now
+                    key, hwid, hwid2, classify, now
                 });
                 if (verdict) return deny(verdict);
 
@@ -8312,8 +8399,20 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const ttl = transport === 'url' ? URL_SESSION_TTL_MS : SESSION_TTL_MS;
                 let session;
                 try {
+                    // THE SESSION CARRIES BOTH HARDWARE IDS.
+                    //
+                    // The re-check at delivery time compares the session's
+                    // hardware id with the one the license was locked to. A
+                    // license locked to the executor's NAME - which is what
+                    // every older lock is - has to keep matching, so the
+                    // second id travels with the session as well.
+                    //
+                    // It is a comma-joined list, and the predicate below
+                    // matches any part of it. That keeps the older locks
+                    // working without a schema change.
+                    const sesHwid = (hwid2 && hwid2 !== hwid) ? (hwid + ',' + hwid2) : hwid;
                     session = await state.createSession({
-                        scriptId: id, licenseKey, userId, hwid, transport,
+                        scriptId: id, licenseKey, userId, hwid: sesHwid, transport,
                         ttlMs: ttl, now, ip, ua
                     });
                 } catch (e) {
@@ -11021,13 +11120,36 @@ function luaSessionBootstrap(id, base, keyless) {
         + 'end\n'
         // ---- 1. license + hardware fingerprint
         + 'local K=G and G.ScripterHubKey\n'
-        + 'local HW=(G and G.ScripterHubHwid) or (identifyexecutor and (pcall(identifyexecutor) and identifyexecutor())) or "?"\n'
+        // THE HARDWARE ID, AND THE EXECUTOR'S NAME AS A SECOND CHANCE.
+        //
+        // The id the loader sends and the id the key card sends have to be
+        // the SAME STRING, or a key locked to a hardware id never matches and
+        // a whitelist written in GUIDs never matches either.
+        //
+        // The executor's identifyexecutor() is NOT an id. On most exploits it
+        // is the executor's NAME - "Real", "Solara" - and every machine
+        // running that executor answers the same, so a key locked to it is
+        // not locked to a machine at all. It used to be the FIRST choice
+        // here, which is why the owner's own whitelist - a GUID - never
+        // matched anything.
+        //
+        // So the client id is the FIRST one: it is per installation, it is
+        // stable, and it is different on every machine. The executor's name
+        // is kept as a SECOND id, never as the first, because that is what
+        // the older locks were made with and they have to keep working.
+        + 'local HW=G and G.ScripterHubHwid\n'
+        + 'if not HW then\n'
+        + ' local ok,v=pcall(function() return game:GetService("RbxAnalyticsService"):GetClientId() end)\n'
+        + ' if ok and type(v)=="string" and v~="" then HW=v end\n'
+        + 'end\n'
+        + 'local HW2=(identifyexecutor and (pcall(identifyexecutor) and identifyexecutor())) or ""\n'
+        + 'if HW==nil or HW=="" then HW=HW2 end\n'
         + 'if KEYED and (type(K)~="string" or K=="") then\n'
         + ' DIE("License required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute.")\n'
         + ' return\n'
         + 'end\n'
         // ---- 2. mint a session. proof, not payload.
-        + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),u=tostring(G.ScripterHubUser or "")}))\n'
+        + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),h2=tostring(HW2),u=tostring(G.ScripterHubUser or "")}))\n'
         + 'if type(resp)~="string" then DIE("Could not reach the license server.") return end\n'
         + 'if resp:sub(1,6)=="SHERR " then DIE(DENYMSG(resp:sub(7):gsub("%s+$",""))) return end\n'
         + 'local S,N=resp:match("^SHS (%S+) (%S+) %S+")\n'

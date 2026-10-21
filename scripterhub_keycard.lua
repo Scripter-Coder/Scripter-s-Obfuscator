@@ -57,20 +57,39 @@ local userId = player.UserId
 --
 -- The same list, in the same order, so the value the panel holds and the
 -- value the card sends are the SAME string.
+-- THE CLIENT ID, AND THE EXECUTOR'S NAME AS A SECOND CHANCE.
+--
+-- The card used to send game:GetService("RbxAnalyticsService"):GetClientId()
+-- and nothing else, and the gate preferred the executor's name - so the two
+-- were comparing DIFFERENT STRINGS and a key locked to a hardware id never
+-- matched the card.
+--
+-- The client's id is the REAL one: it is per installation, it is stable,
+-- and it is different on every machine. It is also what the owner's own
+-- whitelist is made of - GUIDs.
+--
+-- The executor's identifyexecutor() is NOT an id: on most exploits it is the
+-- executor's NAME - "Real", "Solara" - and every machine running that
+-- executor answers the same. It is kept as a SECOND id, because that is what
+-- the older locks were made with and they have to keep working.
 local hwidSource = "the Roblox client id"
 local hwid = ""
+local hwid2 = ""
 do
     local env = (getgenv and getgenv()) or _G
     -- 1. the id the site hands over
     if env.ScripterHubHwid and tostring(env.ScripterHubHwid) ~= "" then
         hwid = tostring(env.ScripterHubHwid)
         hwidSource = "the executor environment"
-    -- 2. the executor's own hardware id - a GUID on most exploits
-    elseif type(identifyexecutor) == "function" then
-        local ok, v = pcall(identifyexecutor)
+    end
+    -- 2. the client id - the real hardware id
+    if hwid == "" then
+        local ok, v = pcall(function()
+            return game:GetService("RbxAnalyticsService"):GetClientId()
+        end)
         if ok and type(v) == "string" and v ~= "" then
             hwid = v
-            hwidSource = "identifyexecutor()"
+            hwidSource = "the Roblox client id"
         end
     end
     -- 3. the older global
@@ -81,17 +100,14 @@ do
             hwidSource = "gethwid()"
         end
     end
-    -- 4. the Roblox client id, which is what the card used to send
-    if hwid == "" then
-        local ok, v = pcall(function()
-            return game:GetService("RbxAnalyticsService"):GetClientId()
-        end)
-        if ok and type(v) == "string" and v ~= "" then
-            hwid = v
-            hwidSource = "the Roblox client id"
-        end
+    -- 4. the executor's name - the second id, and the older locks' id
+    if type(identifyexecutor) == "function" then
+        local ok, v = pcall(identifyexecutor)
+        if ok and type(v) == "string" and v ~= "" then hwid2 = v end
     end
+    if hwid == "" then hwid = hwid2 end
     if hwid == "" then hwid = "?" end
+    if hwid2 == hwid then hwid2 = "" end
 end
 local keyVerified = false
 local keyExpiry = nil
@@ -274,7 +290,9 @@ local function verifyKey(key)
         return { success = false, code = "EMPTY", message = "Key cannot be blank!" }
     end
 
-    local body = httpGet(API_URL .. "/sh/keycheck?k=" .. urlEncode(key) .. "&h=" .. urlEncode(hwid))
+    local body = httpGet(API_URL .. "/sh/keycheck?k=" .. urlEncode(key)
+        .. "&h=" .. urlEncode(hwid)
+        .. (hwid2 ~= "" and ("&h2=" .. urlEncode(hwid2)) or ""))
     if not body then
         return {
             success = false, code = "NETWORK",
@@ -1143,7 +1161,7 @@ hwidValue.BackgroundTransparency = 1
 hwidValue.Position = UDim2.new(0, 12, 0, 22)
 hwidValue.Size = UDim2.new(1, -110, 0, 20)
 hwidValue.Font = Enum.Font.Gotham
-hwidValue.Text = tostring(hwid):sub(1, 22) .. "..."
+hwidValue.Text = tostring(hwid)
 hwidValue.TextColor3 = Color3.fromRGB(180, 180, 180)
 hwidValue.TextSize = 11
 hwidValue.TextXAlignment = Enum.TextXAlignment.Left
@@ -1182,7 +1200,7 @@ hwidCopyBtn.MouseButton1Click:Connect(function()
     task.delay(2, function()
         if hwidCopyBtn and hwidCopyBtn.Parent then
             hwidCopyBtn.Text = "\240\159\147\139 COPY"
-            hwidValue.Text = tostring(hwid):sub(1, 22) .. "..."
+            hwidValue.Text = tostring(hwid)
         end
     end)
 end)

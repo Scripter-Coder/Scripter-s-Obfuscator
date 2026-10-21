@@ -240,8 +240,39 @@ console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
 
 // ---------------------------------------------------------------------------
 console.log('');
-console.log('');
-console.log('THE CARD AND THE GATE MUST USE THE SAME HARDWARE ID');
+console.log('THE CLIENT ID IS THE ID, AND THE EXECUTOR NAME IS THE SECOND ONE');
+// ---------------------------------------------------------------------------
+{
+    // The executor's identifyexecutor() is NOT an id: on most exploits it is
+    // the executor's NAME - "Real", "Solara" - and every machine running
+    // that executor answers the same. The gate preferred it, the card sent
+    // the Roblox client id, and the two were comparing DIFFERENT STRINGS, so
+    // a key locked to a hardware id never matched the card and a whitelist
+    // written in GUIDs never matched anything.
+    const workerSrc = fs.readFileSync('For Cloudflare/worker.js', 'utf8');
+    check('the gate sends the client id',
+        /GetClientId/.test(workerSrc) && /h2=/.test(workerSrc),
+        'the gate does not send the client id');
+    check('and the executor name as a second id',
+        /HW2=/.test(workerSrc),
+        'the gate does not send the executor name');
+    check('and the card does the same',
+        /GetClientId/.test(src) && /hwid2/.test(src),
+        'the card does not use the client id');
+    check('and the card sends BOTH',
+        /&h2=" \.\. urlEncode\(hwid2\)/.test(src),
+        'the card does not send the second id');
+    check('and a license locked to EITHER opens',
+        /rec\.hwid !== hwid && \(!hwid2 \|\| rec\.hwid !== hwid2\)/.test(workerSrc),
+        'the comparison still only accepts one id');
+    check('and the delivery re-check matches the list',
+        /instr\(',' \|\| sessions\.hwid/.test(workerSrc),
+        'the re-check does not look at the session list');
+    check('and it accepts the second id in that list',
+        /',' \|\| l\.hwid \|\| ','\)/.test(workerSrc),
+        'the re-check would refuse the older locks');
+}
+
 // ---------------------------------------------------------------------------
 {
     // The loader's bootstrap resolves the hardware id like this:
