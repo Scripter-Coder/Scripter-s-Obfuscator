@@ -25,7 +25,11 @@ import luaparse from 'luaparse';
 import { makeD1 as makeD1Shape } from './d1_shape.mjs';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './owner_code_test_helper.mjs';
 
-const LUA_PATH = 'scripterhub_keycard.lua';
+// The card lives in public/, because that is what the BUILD copies into the
+// site: the published site is the built one, and public/ is the one folder
+// the build copies verbatim. A file that only exists in the repository root
+// is not on the site.
+const LUA_PATH = 'public/scripterhub_keycard.lua';
 const src = fs.readFileSync(LUA_PATH, 'utf8');
 
 let fails = 0;
