@@ -48,10 +48,7 @@
   }
   // in a browser or Rhino
   else {
-    // ScripterHub hardening: prefer globalThis so the global attaches even
-    // when `this` is undefined (strict mode / module / bundled contexts).
-    var g = (typeof globalThis === 'object' && globalThis) || root || {};
-    factory((g[name] = {}));
+    factory((root[name] = {}));
   }
 }(this, 'luaparse', function (exports) {
   'use strict';
