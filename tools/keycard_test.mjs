@@ -241,6 +241,21 @@ console.log('NO KEY IS NOT THE SAME AS A LIFETIME KEY');
 // ---------------------------------------------------------------------------
 console.log('');
 console.log('');
+console.log('');
+console.log('THE CARD SETS THE FLAG THE GATE LOOKS FOR');
+// ---------------------------------------------------------------------------
+{
+    // The gate has a fast path: if the key was already validated in this
+    // session, it does not ask the server again. The card is what validates
+    // it, so the card is what sets the flag - otherwise every script the
+    // card loads would ask the server a second time about a key it just
+    // checked.
+    check('the card sets it', /env\.ScripterHub_KeyValid = true/.test(src),
+        'the card does not set the flag');
+    check('and the key itself', /env\.ScripterHubKey = value/.test(src),
+        'the card does not hand the key over');
+}
+
 console.log('THE WHITELIST IS READ, AND MATCHED');
 // ---------------------------------------------------------------------------
 {

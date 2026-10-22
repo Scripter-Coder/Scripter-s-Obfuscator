@@ -1122,8 +1122,12 @@ local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...
 
         -- Hand the key to the environment too, so a script that asks for
         -- getgenv().ScripterHubKey finds it.
+        --
+        -- And the flag the key gate looks for, so the script does not have to
+        -- ask the server a second time in the same session.
         local env = (getgenv and getgenv()) or _G
         env.ScripterHubKey = value
+        env.ScripterHub_KeyValid = true
 
         keyVerified = true
 
