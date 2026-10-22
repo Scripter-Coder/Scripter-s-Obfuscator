@@ -1721,3 +1721,63 @@ asserts the two properties that are easy to lose: no JSON anywhere in the
 code, and the worker's real answers read by the card's real patterns.
 
 ---
+
+## D42 - The vault stays on the worker
+
+Somebody deobfuscated one of the owner's scripts.
+
+Not by breaking the obfuscator. The file was copied out of the loader, and
+one function was run:
+
+    loadstring(game:HttpGet(".../sh/ScripterHub7408179245"))()
+    -- became
+    setclipboard(game:HttpGet(".../sh/ScripterHub7408179245"))
+
+The clipboard had the artifact in it. The artifact had the **vault** in it -
+every string and every number the script uses - and the key that unpacks it.
+So the whole deobfuscation was: copy the file, run one function, read the
+strings.
+
+**THE VAULT IS NOT IN THE FILE ANY MORE.**
+
+The artifact now says `local src=__SH_VAULT_B64` and the worker holds the
+blob. The init layer fetches it at runtime, with the session it has just
+proved, and hands it to the artifact before the artifact runs:
+
+    GET /sh/vault/<id>?s=<sid>&n=<nonce>
+
+That route is credentialed the same way the artifact's delivery is: a live
+session, for this script, presenting the nonce that session carries. It does
+NOT spend the session - the init layer fetches the vault FIRST and the
+artifact SECOND, and the artifact's fetch is the one that spends the nonce.
+
+**WHAT THIS ACTUALLY BUYS, STATED PLAINLY.**
+
+It is not a wall. Whoever runs the script can still intercept the fetch, and
+a determined person still gets the strings. What it removes is the thing
+that made the deobfuscation *offline*: the file that was handed over had
+everything in it, and the tool that takes a file and gives you the source
+had a job it could do in one step.
+
+Now the file has no strings in it, and the tool that takes a file and gives
+you the source has nothing to work with. The strings have to be fetched from
+the worker, at runtime, by a session - so the deobfuscation has to happen
+live, or the attacker has to go to the worker themselves, which is the
+"they will need to reach cloudflare" part.
+
+It is friction, and it is the friction that was asked for. It is NOT
+security, and pretending otherwise would be the dishonest answer: **a script
+that runs on the visitor's machine can always be read by the visitor.** The
+only real answer to that is not shipping the source, and this system ships
+it.
+
+**THE OLD BEHAVIOUR IS STILL THERE.** The option is off by default in the
+library, so every script that is already published keeps working exactly as
+it did. The site turns it on, because the site and the worker ship
+together and a script whose vault is missing would not run.
+
+`tools/vault_test.mjs` drives the real obfuscator, the real worker and the
+real init layer, and asserts that the artifact carries no vault, that the
+vault comes out of the obfuscator, that the worker serves it only to a live
+session for that script with the right nonce, and that the init layer
+fetches it before the artifact runs.

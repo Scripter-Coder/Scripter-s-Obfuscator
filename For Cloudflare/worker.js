@@ -417,7 +417,7 @@ function createState(db) {
     // the loader to know whether to prompt for a license at all.
     async function peekSession(sid, now) {
         return qOne(db, `SELECT sid, script_id, license_key, user_id, hwid, transport,
-                                created_at, expires_at, consumed_at, revoked
+                                created_at, expires_at, consumed_at, revoked, nonce
                            FROM sessions WHERE sid = ?`, sid) || null;
     }
 
@@ -952,6 +952,18 @@ const DENY = {
 // completed. The alternative - carry on as if the wait had been long enough -
 // is the behaviour being replaced, and it is why the flow paid out on demand.
 // --------------------------------------------------------------------------
+
+// THE VAULT, KEPT AWAY FROM THE ARTIFACT.
+//
+// The vault is every string and every number a script uses. It used to be
+// inside the file, with the key that unpacks it, and the whole
+// deobfuscation was: copy the file, run one function.
+//
+// Now it lives here, and the file the visitor gets has no strings in it. The
+// offline deobfuscator - the kind that takes a file and gives you the source
+// - has nothing to work with; the strings have to be fetched from the
+// worker, at runtime, by a session.
+const KV_VAULT_PREFIX = 'sh_vault_';
 
 const REWARD_PREFIX = 'sh_rw_';        // reward config
 const RSES_PREFIX   = 'sh_rs_';        // visitor session
@@ -4757,6 +4769,9 @@ async function scriptAuthz(env, id) {
         user: String((meta && meta.user) || ''),
         keyless: !!(meta && meta.keyless === true),
         authRequired: !!(meta && meta.authRequired === true),
+        // Whether the vault lives on the worker for this script. The init
+        // layer asks for it before the artifact runs.
+        hasVault: !!(meta && meta.hasVault === true),
         // The owning project, recorded at upload time.
         //
         // It was absent because nothing ever wrote it: the worker's model of a
@@ -6190,6 +6205,21 @@ async function handleRequest(request, env, ctx) {
             if (id === null) {
                 return jsonResponse({ ok: false, error: 'Not authorized to publish to that script id. Pick a new one.' }, 403);
             }
+            // THE VAULT IS STORED HERE, NOT IN THE ARTIFACT.
+            //
+            // It arrives as one base64 blob and it stays on the worker. The
+            // artifact that is stored and delivered refers to it instead of
+            // carrying it, so a copy of the file has no strings in it.
+            let hasVault = false;
+            try {
+                const vault = String(body.vault || '').slice(0, 12 * 1024 * 1024);
+                if (vault) {
+                    await env.LOADERS_KV.put(KV_VAULT_PREFIX + id, vault, { expirationTtl: LOADER_TTL });
+                    hasVault = true;
+                }
+            } catch (e) {
+                console.error('[ScripterHub] vault store failed: ' + (e && e.message));
+            }
             // ---- SPLIT-KEY (anti-static-peel): the obfuscated file is
             // missing its final layer key; store the padded key + t0 here
             // so the runtime can fetch it (executor-only, time-locked).
@@ -6351,6 +6381,7 @@ async function handleRequest(request, env, ctx) {
                 await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
                     name, user, at: Date.now(), keyHash,
                     keyless: true,
+                    hasVault: hasVault,
                     visibility: readVisibility(body),
                     webKey: !!cipher,
                     projectId: String(body.projectId || '').slice(0, 60),
@@ -6448,6 +6479,9 @@ try {
             await env.LOADERS_KV.put(KV_META_PREFIX + id, JSON.stringify({
                 name, user, at: Date.now(), keyHash,
                 authRequired: body.authRequired === true,
+                // The vault lives on the worker, so the init layer has to
+                // fetch it before the artifact runs.
+                hasVault: hasVault,
                 visibility: readVisibility(body),
                 // The owning project. Without it here a key bound to a
                 // project has nothing to be compared against and the binding
@@ -8580,6 +8614,52 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             }
         }
 
+        // ---------- GET /sh/vault/<id>?s=<sid>&n=<nonce> : THE VAULT ----------
+        //
+        // The strings and numbers of the script, fetched at runtime.
+        //
+        // It is a SESSION-CREDENTIALLED read: the caller must present a live
+        // session for THIS script and the nonce that session carries. A
+        // session is minted by /sh/session, which is where the key is
+        // checked, so the vault is behind the same door as the script.
+        //
+        // It does NOT spend the session. The init layer fetches the vault
+        // FIRST and the artifact SECOND, and the artifact's fetch is the one
+        // that spends the nonce.
+        if (url.pathname.match(/^\/sh\/vault\/(ScripterHub[0-9]{6,16})$/) && (request.method === 'GET' || request.method === 'POST')) {
+            const limited = await guardRate(env, 'deliver', rateIdentity(request, url));
+            if (limited) return limited;
+            const state = stateFor(env);
+            if (!state) return methodNotAllowed();
+            const vid = url.pathname.slice('/sh/vault/'.length);
+            const vsid = String(url.searchParams.get('s') || '').slice(0, 80);
+            const vnonce = String(url.searchParams.get('n') || '').slice(0, 80);
+            const now = Date.now();
+            const row = await state.peekSession(vsid, now);
+            const alive = row && !row.consumed_at && !row.revoked
+                && Number(row.expires_at) > now && row.script_id === vid && row.nonce === vnonce;
+            if (!alive) {
+                return new Response('SHERR no-session\n', {
+                    status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+                });
+            }
+            let vault = '';
+            try { vault = String((await env.LOADERS_KV.get(KV_VAULT_PREFIX + vid)) || ''); } catch (e) { vault = ''; }
+            if (!vault) {
+                return new Response('SHERR no-vault\n', {
+                    status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+                });
+            }
+            return new Response(vault, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
+
         // ---------- GET|POST /sh/a/<id>?s=<sid>&n=<nonce> : THE GATE ----------
         // This is the only route in the worker permitted to return artifact
         // bytes, and it is behind two atomic statements in DELIVERY RULES below.
@@ -9310,7 +9390,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // The init layer (L2). No ciphertext, no key, no script-derived
             // material - just _bsdata0, the cdn link and the handshake.
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-            return new Response(luaSessionBootstrap(id, base, script.keyless), {
+            return new Response(luaSessionBootstrap(id, base, script.keyless, !!script.hasVault), {
                 status: 200,
                 headers: {
                     'Content-Type': 'text/plain; charset=utf-8',
@@ -11142,7 +11222,7 @@ function scriptPageResponse(id, script, base) {
 // deliberately the weaker of the two (15s, URL-borne), matching D5. Both are
 // recorded server-side, so the share of traffic on the weak path stays visible
 // instead of being silently averaged in.
-function luaSessionBootstrap(id, base, keyless) {
+function luaSessionBootstrap(id, base, keyless, hasVault) {
     const KEYED = keyless ? 'false' : 'true';
     // The cdn link. It is a route on THIS worker, not on a third-party CDN:
     // the artifact must stay behind the same atomic gate (D12), so "cdn" here
@@ -11333,6 +11413,20 @@ function luaSessionBootstrap(id, base, keyless) {
         // So a spent nonce mints a FRESH session and spends that instead, once.
         // This cannot be abused: the caller already proved it may have a
         // session, and the retry is bounded at one extra session.
+        // THE VAULT IS FETCHED BEFORE THE ARTIFACT.
+        //
+        // The vault is every string and every number the script uses, and it
+        // is not in the file: the artifact asks for it here, at runtime, and
+        // the worker hands it over to the session that was just proved.
+        //
+        // It is fetched FIRST because the artifact's fetch is the one that
+        // spends the nonce. The vault route does not spend anything.
+        //
+        // Without this, the file a visitor has contains the whole script in
+        // an encrypted form and the key that unpacks it, and copying the file
+        // and running one function is the entire deobfuscation.
+        + (hasVault ? ('local VB=GET(BASE.."/sh/vault/"..ID.."?s="..S.."&n="..N)\n'
+            + 'if type(VB)=="string" and VB~="" and VB:sub(1,4)~="SHERR" then G.__SH_VAULT_B64=VB; _G.__SH_VAULT_B64=VB end\n') : '')
         + 'local body=GET(CDN.."?s="..S.."&n="..N)\n'
         // Matched, not sliced. The first draft used body:sub(1,10)=="SHERR
         // nonce", and "SHERR nonce" is ELEVEN characters - so the recovery

@@ -1836,6 +1836,25 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
         var targetUsesFFI = /\bffi\s*\./.test(code) || /require\s*\(\s*['"]ffi['"]\s*\)/.test(code);
         if (targetUsesFFI && selectedTarget !== 'luajit') throw new Error('FFI is only supported for the LuaJIT 2.1 target');
         var bcOpts = { profile: profName, staticEnv: options.staticEnv === true, hardCodeGlobals: options.hardCodeGlobals === true, compatibility: options.compatibility === true, inline: options.inline === true, unroll: options.unroll === true, debugProtect: options.debugProtect, target: selectedTarget };
+        // THE VAULT GOES TO THE WORKER INSTEAD OF INTO THE FILE.
+        //
+        // The vault is every string and every number in the script. In the
+        // file, the deobfuscator only had to copy it out and run one
+        // function. On the worker, the file has no strings in it at all and
+        // the offline deobfuscator has nothing to work with.
+        //
+        // It is opt-in: the owner turns it on, and the worker is told to
+        // expect it.
+        var vaultB64 = '';
+        if (options.serverVault) {
+            bcOpts.serverVault = true;
+            var prevOnBuild = bcOpts.onBuild;
+            bcOpts.onBuild = function (b) {
+                if (b && b.vaultB64) vaultB64 = b.vaultB64;
+                if (typeof prevOnBuild === 'function') { try { prevOnBuild(b); } catch (e) { } }
+            };
+        }
+
         if (options.seed != null) bcOpts.seedOverride = options.seed;
         if (splitMode) {
             options._vmSeedGenv = '_shs' + hex(10);
@@ -1887,6 +1906,15 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
                 vmCode = applyVmPass(code);
                 if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
             }
+        }
+        // THE VAULT LEAVES HERE, AFTER THE VM HAS RUN - the VM is what
+        // produces it.
+        //
+        // It rides out with the report, because the report is what crosses
+        // the worker boundary. The code itself is a string.
+        if (options.serverVault) {
+            if (debugInfo) debugInfo.vaultB64 = vaultB64;
+            options._vaultB64 = vaultB64;
         }
         // Surface every degradation to the caller, whatever tier we ended on.
         if (debugInfo && vmReason && String(debugInfo.vmApplied || '').indexOf('bytecode') !== 0) {

@@ -84,7 +84,8 @@
     "test:clipboard": "node tools/clipboard_guard_test.mjs",
     "test:reward": "node tools/reward_security_test.mjs && node tools/reward_static_postback_test.mjs && node tools/reward_completable_test.mjs && node tools/reward_routes_test.mjs && node tools/reward_ban_fairness_test.mjs && node tools/reward_flow_test.mjs && node tools/reward_lifecycle_test.mjs",
     "test:keycard": "node tools/keycard_test.mjs",
-    "test:keygate": "node tools/keygate_test.mjs"
+    "test:keygate": "node tools/keygate_test.mjs",
+    "test:vault": "node tools/vault_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

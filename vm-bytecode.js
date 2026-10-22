@@ -2612,7 +2612,28 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
                 _i + 1 < packed.bytes.length ? _A.charAt((_n >> 6) & 63) : '=',
                 _i + 2 < packed.bytes.length ? _A.charAt(_n & 63) : '=');
         }
-        L.push(' local src="' + _b64.join('') + '"');
+        // THE VAULT DOES NOT TRAVEL WITH THE ARTIFACT.
+        //
+        // The vault is every string and every number the script uses. It was
+        // in the file, with the key that unpacks it, so copying the file and
+        // running one function was the whole deobfuscation:
+        //
+        //     local src="<base64 of the packed vault>"
+        //     src=_b64dec(src)
+        //
+        // Now the blob stays on the worker and the artifact asks for it at
+        // runtime. The offline deobfuscator - the one that takes a file and
+        // gives you the source - has nothing to work with: the file it was
+        // given has no strings in it, and the strings need the worker.
+        //
+        // There is NO inline fallback. A fallback would put the vault back in
+        // the file and the whole thing would be theatre.
+        if (build.serverVault) {
+            build.vaultB64 = _b64.join('');
+            L.push(' local src=__SH_VAULT_B64');
+        } else {
+            L.push(' local src="' + _b64.join('') + '"');
+        }
         L.push(' local segs={' + packed.segs.join(',') + '}');
         L.push(' src=_b64dec(src)');
         L.push(' local pos=1 local fb=0');
@@ -3618,6 +3639,10 @@ export function applyBytecodeVm(src, opts) {
         ? (Number(opts.seedOverride) >>> 0) : null;
     try {
         build = compile(src, opts);
+        // Whether the vault stays on the worker. It is OFF by default: a
+        // script whose vault is somewhere else needs the worker to be
+        // reachable, and the owner turns it on deliberately.
+        build.serverVault = !!(opts.serverVault);
         if (opts.seedOverride !== undefined && opts.seedOverride !== null) build.seed = opts.seedOverride;
         if (opts.seedFromGenv) build.seedFromGenv = opts.seedFromGenv;
         var vmSrc = emitVM(build);

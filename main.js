@@ -541,6 +541,15 @@ async function shEnsureUserToken(force) {
 // key (the worker serves the executor blob directly), but browsers must
 // supply the key to view the code. That makes free scripts much harder to
 // rip from the website while keeping them free to execute in-game.
+// THE VAULT OF THE LAST OBFUSCATION, waiting for the upload.
+//
+// The vault is every string and every number in the script. It is not in the
+// artifact: the worker keeps it, and the init layer fetches it at runtime.
+//
+// It lives here rather than on the result object because the result is
+// consumed in several places that expect a plain string.
+var shVaultB64 = '';
+
 async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth) {
     if (shRateGuard('upload', SH_RATE.upload.max, SH_RATE.upload.window, 'Too Many Uploads')) return;
     try {
@@ -667,6 +676,19 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // server-key-split: worker holds the missing final-layer key
             payload.wantId = wantId;
             payload.splitKey = splitKey;
+        }
+        // THE VAULT GOES TO THE WORKER, NOT INTO THE ARTIFACT.
+        //
+        // The vault is every string and every number in the script. It used
+        // to be inside the file, with the key that unpacks it - so copying
+        // the file and running one function was the whole deobfuscation.
+        //
+        // The worker keeps it, and the init layer fetches it at runtime with
+        // the session it already proved. The file the visitor gets has no
+        // strings in it.
+        var vault = (obfResult && obfResult.vault) || shVaultB64 || '';
+        if (vault) {
+            payload.vault = vault;
         }
         // SIZE PRE-CHECK: the ceiling is the worker's single-request body limit.
         // Checked here so it fails BEFORE a long compilation rather than after
@@ -6252,6 +6274,14 @@ function confirmCreateScript(projectId) {
     // with the /sh/k fetch baked in - which then fails at runtime with
     // "Key response too short" and the script silently does nothing.
     keyless: isKeyless,
+        // THE VAULT STAYS ON THE WORKER.
+        //
+        // The vault is every string and every number in the script. In the
+        // file, the deobfuscator only had to copy it out and run one
+        // function; on the worker, the file they were given has no strings
+        // in it at all, and the strings have to be fetched at runtime with
+        // the session the script already proved.
+        serverVault: true,
     };
     // async: obfuscation of huge scripts takes a while - show progress on
     // the button for BOTH engines (the tab used to look frozen on 100k+
@@ -6473,6 +6503,17 @@ function obfuscateScriptCode(code, engine, options) {
                 // so the baked-in key URL matches the id /sh/upload will use.
                 var dbgInfo = {};
                 var wantId = shNewScriptId();
+                // THE VAULT IS KEPT ON THE WORKER, NOT IN THE FILE.
+                //
+                // The vault is every string and every number in the script.
+                // In the file, the deobfuscator only had to copy it out and
+                // run one function. On the worker, the file they were given
+                // has no strings in it at all.
+                //
+                // It is on by default here because the site and the worker
+                // ship together: a script whose vault is missing would not
+                // run, and the two are never apart.
+                var vaultForUpload = '';
                 // A KEYLESS SCRIPT GETS NO SPLIT KEY.
                 //
                 // A split key is the protection for a PAID build: the last layer never
@@ -6520,6 +6561,15 @@ function obfuscateScriptCode(code, engine, options) {
                 shObfuscateInWorker(code, 'default', withServerKey).then(function (r) {
                     var out = r.result;
                     var dbg = r.dbgInfo || {};
+                    if (dbg.vaultB64) vaultForUpload = dbg.vaultB64;
+                    shVaultB64 = vaultForUpload;
+                    // THE VAULT GOES TO THE WORKER, NOT INTO THE FILE.
+                    //
+                    // The vault is every string and every number in the
+                    // script. In the file, the deobfuscator only had to copy
+                    // it out and run one function. On the worker, the file
+                    // they were given has no strings in it at all.
+                    if (dbg.vaultB64) vaultForUpload = dbg.vaultB64;
                     // If the bytecode VM declined the source we shipped the weaker
                     // lite tier. Tell the customer rather than letting it pass as
                     // a normal build - otherwise a protection failure is invisible
@@ -6528,7 +6578,7 @@ function obfuscateScriptCode(code, engine, options) {
                         try { shShowVMFallbackNotice(dbg.vmFallback); } catch (e) { /* non-fatal */ }
                     }
                     if (dbg.splitKey && dbg.splitKey.paddedKey) {
-                        resolve({ code: out, splitKey: dbg.splitKey, wantId: wantId });
+                        resolve({ code: out, splitKey: dbg.splitKey, wantId: wantId, vault: vaultForUpload });
                     } else {
                         resolve(out);
                     }
@@ -7286,6 +7336,14 @@ function confirmEditScript(projectId, scriptId) {
     // with the /sh/k fetch baked in - which then fails at runtime with
     // "Key response too short" and the script silently does nothing.
     keyless: isKeyless,
+        // THE VAULT STAYS ON THE WORKER.
+        //
+        // The vault is every string and every number in the script. In the
+        // file, the deobfuscator only had to copy it out and run one
+        // function; on the worker, the file they were given has no strings
+        // in it at all, and the strings have to be fetched at runtime with
+        // the session the script already proved.
+        serverVault: true,
     };
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl) {
