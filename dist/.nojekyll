@@ -1,0 +1,5 @@
+# This file disables Jekyll processing on GitHub Pages.
+# Without it, GitHub Pages (when configured to "Deploy from a branch")
+# runs Jekyll on the published files, which fails on this site because the
+# site is a Vite build output, not a Jekyll site. With it, the files are
+# served as-is.
