@@ -1600,15 +1600,36 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
     if (options.cipherRounds == null) options.cipherRounds = prof.cipherRounds;
     if (options.stride == null) options.stride = prof.stride;
     // intensity: profile determines defaults, user can still override but clamped per profile
-    var rawInt = parseInt(options.intensity, 10);
-    if (isNaN(rawInt)) rawInt = prof.layerCount;
-    var intensity = Math.max(1, Math.min(30, rawInt));
-    // FAST must stay fast: never ultra, never >3 layers via auto-bump
-    if (profName === 'FAST') intensity = Math.min(intensity, 3);
-    else if (profName === 'BALANCED') { /* allow up to 10, no auto ultra */ }
-    else { // SECURE
-        if (options.ultra === true) intensity = Math.max(intensity, 22);
-        else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+    //
+    // LAYERS ARE DETERRENCE, NOT A WALL. Each layer is ~1.5 ms of work on
+    // the executor and ~1.5 KB of artifact, and the count is a constant in
+    // the file, so an analyst with the file can change it to 1. What the
+    // count buys is TIME: a deobfuscator that peels layers one at a time
+    // pays that 1.5 ms per layer, and 10 000 layers is 375 hours. There is
+    // no "infinite" - the file size and the execution time grow linearly,
+    // and executors tolerate neither forever. Ten thousand is a sane ceiling;
+    // a million is a gigabyte of Lua and a twenty-minute run.
+    //
+    // `options.layers` sets the count directly and bypasses the intensity
+    // clamp. It is capped at 100 000 and warned about, so a typo cannot
+    // produce a 100 GB artifact.
+    if (options.layers != null) {
+        var rawLayers = parseInt(options.layers, 10);
+        if (isNaN(rawLayers) || rawLayers < 1) rawLayers = prof.layerCount;
+        if (rawLayers > 100000) rawLayers = 100000;
+        var intensity = Math.max(1, Math.min(100000, rawLayers));
+        if (rawLayers > 10000 && typeof console !== 'undefined') console.warn('[ScripterHub] ' + intensity + ' layers requested - the artifact will be ~' + Math.round(intensity * 1.5 / 1024) + ' MB and take ~' + Math.round(intensity * 0.0015) + ' s to run.');
+    } else {
+        var rawInt = parseInt(options.intensity, 10);
+        if (isNaN(rawInt)) rawInt = prof.layerCount;
+        var intensity = Math.max(1, Math.min(30, rawInt));
+        // FAST must stay fast: never ultra, never >3 layers via auto-bump
+        if (profName === 'FAST') intensity = Math.min(intensity, 3);
+        else if (profName === 'BALANCED') { /* allow up to 10, no auto ultra */ }
+        else { // SECURE
+            if (options.ultra === true) intensity = Math.max(intensity, 22);
+            else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
+        }
     }
 
     // ---- SIZE-AWARE INTENSITY BUDGET -------------------------------------
@@ -1740,7 +1761,10 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
         if (legacyEstKB(_i) <= BUDGET_KB) { sizeCap = _i; break; }
     }
     var sizeClamped = false;
-    if (intensity > sizeCap) { intensity = sizeCap; sizeClamped = true; }
+    // `layers` is an explicit request: the owner asked for it by name, so it
+    // is not clamped by the size budget - they take responsibility for the
+    // size. (intensity is still clamped, because intensity is a profile knob.)
+    if (options.layers == null && intensity > sizeCap) { intensity = sizeCap; sizeClamped = true; }
 
     // Honest verdict for a given input, once the VM has (or has not) run.
     var budgetVerdict = function (baseKB) {
