@@ -25,6 +25,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # Verify the bundle was actually produced - if the build silently
+      # produced nothing, the deploy below would ship the OLD bundle and
+      # the site would keep running the old obfuscator.
+      - name: Verify bundle
+        run: |
+          set -e
+          echo "Built files:"
+          ls -la dist/
+          ls -la dist/assets/
+          test -f dist/index.html
+          test -n "$(ls dist/assets/*.js 2>/dev/null)"
+          echo "Bundle OK"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -37,4 +49,5 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
+        name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
