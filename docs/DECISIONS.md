@@ -1855,6 +1855,102 @@ script is a question, and the answer is on the worker.
 asserts that the artifact carries no inline blob, no constant table and no
 seed literal; that the analyst's move - extract the decoder, feed it the
 file's own tables, call it - recovers no string of the script; that the same
-file runs and produces the script's output once the payload is handed over;
-and that it refuses to run, with a reason, when it is not.
+file runs and produces the script's output once the payload's key material
+is handed over; and that it refuses to run, with a reason, when it is not.
+
+---
+
+## D44 - The payload is one piece list with a key slot, Luarmor's shape
+
+**D43 moved the strings off the file. D44 makes the file a Luarmor file.**
+
+D43 left the payload in one self-describing blob on the worker, with the key
+material in the same response. That response was therefore a complete
+description of the script: fetch it, parse the header, derive the seed,
+decrypt the constants, read the strings. It was one HTTP request and a
+five-line parser, and the parser was described in this file.
+
+Luarmor does not do that. Its V4 bootstrapper reads:
+
+```lua
+superflow_bytecode={"\80\124\56\156...", _bsdata0[11], "\41\245\206...", ...}
+```
+
+**ONE piece list, with HOLES in it.** The pieces are the payload, and the
+holes are where the key material goes. `_bsdata0` is not defined in that
+file at all - it comes from the enclosing bootstrapper, which fetched it.
+So the file holds a stream with gaps in it, and a stream with gaps cannot be
+parsed.
+
+**THE SAME SHAPE, HERE.**
+
+The payload is now one piece list in the file:
+
+```lua
+local sf48cbd3={12,"DwAAAAwAAAAIAAAACQAAAAMgAAAA...", "..."}
+```
+
+The `12` at the head is the KEY SLOT: twelve bytes of key material that the
+worker holds and the file does not. The runtime fills the slot and then
+decrypts the rest of the list under it.
+
+**THE FILE'S PAYLOAD IS CIPHERTEXT.** The piece list carries the encrypted
+stream, not the stream. The key material is two 32-bit words - word A is the
+vault seed, word B is the second half of the payload key - and both are mixed
+into every byte of the key stream, so one guess does not buy one byte.
+
+**THE PAYLOAD IS THE WHOLE PROGRAM.** The constant table, the encrypted
+constants and the encrypted bytecode are one stream, cut into pieces. The
+pieces are a whole number of bytes each, because a piece that needs '='
+padding loses its last bytes to a decoder that ignores the padding - and
+the artifact dies in the record decoder with a nil where a byte should
+have been. That was not a theory: it happened, twice, for a reason that
+looked like a cipher bug for an hour.
+
+**WHY SIXTY-FOUR BITS AND NOT THIRTY-TWO.** The seed alone was not enough.
+The chunk records have a known shape, so four bytes of the payload are a
+crib, and a 32-bit key is found in minutes on a GPU. Sixty-four bits is not
+found by trying. The payload cipher is a subtraction, not an XOR, because XOR
+is not available on Lua 5.1 and the artifact has to run everywhere the
+artifact runs.
+
+**THE SEED IS A FULL 32 BITS, AND THE VAULT CIPHER USES ALL OF THEM.**
+
+The old vault cipher was `seed*((p*p)%m)`, taken mod 251 - so the seed
+only ever mattered mod 251. Two hundred and fifty-one possible keys: an
+analyst holding the ciphertext tried all of them in a second and never
+needed the key material at all. The seed is now mixed with an ODD
+multiplier before the mod, which keeps it a bijection over the 32-bit
+range, and the position is mixed in after it, so every byte of the key
+stream constrains a different value. Four known bytes pin the seed
+exactly. (The vault cipher sits INSIDE the encrypted payload, so its own
+strength is the second line of defence, not the first.)
+
+**THE KEY MATERIAL IS BOUND TO THE SCRIPT.** The last four bytes of the key
+material are a checksum of the PAYLOAD - the bytes the file carries -
+folded with the seed. A checksum of the seed alone would be satisfied by
+any key material, because the check travels WITH the key, so it has to be
+against something the key does not carry. Another script's key material
+cannot open this script's payload, and the artifact says so instead of
+decoding garbage. The check is made BEFORE the payload is read, so a wrong
+key is a sentence and not a crash.
+
+**THE WORKER DID NOT CHANGE.** The route already served an opaque blob to
+a live session, and the key material is that same blob with less in it. The
+init layer fetches it before the artifact runs and hands it over in
+`__SH_VAULT_B64`, exactly as before. A script published before this change
+keeps working: its artifact and its key material were generated together,
+and the artifact knows which shape it is reading.
+
+**WHAT THIS ACTUALLY BUYS, STATED PLAINLY.**
+
+The same words as D42, and they still apply. It is not a wall. Whoever runs
+the script can still intercept the fetch, and a determined person still
+gets the strings.
+
+What it removes is the offline deobfuscation. The file that was handed
+over used to be a complete description of the script to anyone with four
+lines of Lua. Now it is a bootstrapper: the script is a question, and the
+answer is on the worker, and the question is worth 64 bits.
+
 

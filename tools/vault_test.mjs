@@ -212,7 +212,7 @@ console.log('THE WORKER KEEPS IT AND SERVES IT TO A LIVE SESSION');
         LUA.lua_close(st);
         check('without the payload the artifact refuses to run', rc !== 0,
             'it ran anyway - the file is self-contained');
-        check('and it says why', /payload is missing/.test(msg), JSON.stringify(msg.slice(0, 90)));
+        check('and it says why', /encryption key is missing/.test(msg), JSON.stringify(msg.slice(0, 90)));
     }
 }
 

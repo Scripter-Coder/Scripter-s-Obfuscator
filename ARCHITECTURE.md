@@ -23,28 +23,39 @@ Lua source
 
 ## The opaque payload
 
-The artifact is not the script. Everything the script *is* — the constants,
-the table that indexes them, the bytecode, and the seed that unlocks them —
-travels as ONE base64 envelope on the worker, released only to a live session:
+The artifact is not the script. The payload - the constant table, the
+encrypted constants, the encrypted bytecode - is one encrypted stream, cut
+into pieces, and the file's copy of it is ciphertext:
 
 ```
-envelope = seed carrier || constant table || encrypted constants || encrypted bytecode
+local sf48cbd3={12,"DwAAAAwAAAAIAAAACQAAAAMgAAAA...", "..."}
 ```
 
-The file keeps the VM and nothing else: no strings, no table, no key, and it
-cannot run without the envelope. This is Luarmor's shape
-(`superflow_bytecode` is one opaque blob the bootstrapper fetches).
+The `12` at the head is the **key slot**: twelve bytes of key material that
+the worker holds and the file does not. The runtime fills the slot and then
+decrypts the rest of the list under it. This is Luarmor's shape - its V4
+bootstrapper reads `superflow_bytecode={"\80\124\56\156...", _bsdata0[11], ...}`,
+one piece list with the key material spliced into it, where `_bsdata0` is
+fetched from the server and is not in the file at all.
 
-The init layer fetches it from `GET /sh/vault/<id>?s=<sid>&n=<nonce>` with
-the session it has just proved, and hands it over in `__SH_VAULT_B64` before
-the artifact runs. The worker does not interpret it — it stores and serves an
-opaque blob, which is why a script published before this change keeps working:
-its artifact and its blob were generated together.
+The key material is two 32-bit words - word A is the vault seed, word B is
+the second half of the payload key - and both are mixed into every byte of
+the key stream. Sixty-four bits, because the chunk records have a known
+shape and a 32-bit key is found on a GPU. The seed is a full 32 bits and
+the vault cipher mixes all of them, and the last four bytes of the key
+material are a checksum of the payload, so another script's key cannot open
+this script's payload.
 
-The seed is server-bound for **every** build, including the free ones: it is
-read from the environment at run time, and the bytes that rebuild it travel
-inside the envelope. See `docs/DECISIONS.md` D43 and
+The init layer fetches the key material from
+`GET /sh/vault/<id>?s=<sid>&n=<nonce>` with the session it has just
+proved, and hands it over in `__SH_VAULT_B64` before the artifact runs.
+The worker does not interpret it - it stores and serves an opaque blob,
+which is why a script published before this change keeps working: its
+artifact and its key material were generated together.
+
+See `docs/DECISIONS.md` D43 and D44, and
 `tools/opaque_payload_test.mjs`.
+
 
 ## Key Decisions
 

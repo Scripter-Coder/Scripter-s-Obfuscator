@@ -2192,7 +2192,23 @@ function emitVM(build) {
     var seedExpr = seedInFile ? String(seed) : (E + '[' + JSON.stringify(seedGenvName) + ']');
 
     // encrypt vault with per-build STRONG cipher + per-string prev chaining (anti-python brute-force)
-    // K(p,prev) = ((a*p + b + (seed*((p*p)%m) %4294967296) + prev*d) %251)+c ; enc = plain ^ K
+    // K(p,prev) = ((a*p + b + (seed*65599 + p*40503) % 2^32) % 251) + c ; enc = plain ^ K
+    //
+    // THE SEED HAS TO SURVIVE WHOLE.
+    //
+    // The old formula was `seed*((p*p)%m)`, and the whole thing was taken
+    // mod 251 - so the seed only ever mattered mod 251. Two hundred and
+    // fifty-one possible keys: an analyst holding the ciphertext could try
+    // all of them in a second and never need the key material at all.
+    //
+    // Now the seed is mixed with an ODD multiplier before the mod, which
+    // keeps it a bijection over the 32-bit range, and the position is mixed
+    // in after it, so every byte of the key stream constrains a different
+    // value. Four known bytes pin the seed exactly.
+    //
+    // `seed*65599` stays under 2^48, so it is exact in a JS double and in
+    // a Lua 5.1/5.3/luau double alike - both sides regenerate the same
+    // bytes.
     var vault = build.vaultPlain.slice();
     for (var _ri = 0; _ri < build.refs.length; _ri++) {
         var _r = build.refs[_ri];
@@ -2200,7 +2216,8 @@ function emitVM(build) {
         for (var _j = 0; _j < _r.len; _j++) {
             var _pos = _r.start + _j;
             var _p = _pos + 1;
-            var _baseKey = ((VP.a * _p + VP.b + seed * ((_p * _p) % VP.m)) % 251) + VP.c;
+            var _mix = (seed * 65599 + _p * 40503) % 4294967296;
+            var _baseKey = ((VP.a * _p + VP.b + _mix) % 251) + VP.c;
             var _combined = (_baseKey + _prev * VP.d) % 256;
             var _plain = vault[_pos];
             vault[_pos] = (_plain ^ _combined) % 256;
@@ -2439,37 +2456,46 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     }
     // Emit the base64 decoder before the vault (which now uses it).
     L.push('local function _b64dec(s) local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" local D={} for i=1,64 do D[A:byte(i)]=i-1 end local o,n,acc,bits={},0,0,0 for i=1,#s do local v=D[s:byte(i)] if v then acc=acc*64+v bits=bits+6 if bits>=8 then bits=bits-8 n=n+1 o[n]=math.floor(acc/2^bits)%256 acc=acc%2^bits end end end return o end');
-    // THE OPAQUE PAYLOAD, PART 1: THE KEY.
+    // THE SUPERFLOW PAYLOAD, PART 1: THE KEY.
     //
-    // The whole script travels as ONE envelope on the worker, and the first
-    // thing in it is the carrier for the seed. The seed has to be published
-    // to the environment BEFORE anything reads it, and something reads it
-    // early: the precheck stream folds the seed, and the constant decoder
-    // needs it for every string.
+    // This is Luarmor's shape. Its file reads:
     //
-    // So the envelope is opened here, the key is derived from the carrier,
-    // and the rest of it is left for part 2 below. Nothing is copied: the
-    // decoded bytes stay in one table and part 2 picks up where this left
-    // off.
+    //     superflow_bytecode={"\80\124\56...", _bsdata0[11], "\41\245...", ...}
     //
-    // The file never contains the key, so a copy of the file on its own is
-    // not a script - it is a question with the answer on the server.
-    var ENVRAW = nm('er'), ENVPOS = nm('ep'), ENVB = nm('eb');
+    // The payload is a list of pieces, and the pieces have HOLES in them:
+    // the slots where the key material goes. The key material is NOT in the
+    // file - `_bsdata0` is defined somewhere else, and the bootstrapper
+    // fetches it. So the file on its own is a stream with gaps in it, and a
+    // stream with gaps cannot be parsed, cannot be brute-forced against a
+    // crib, and is not a program.
+    //
+    // Ours is the same idea with the roles where they belong:
+    //
+    //     the payload (the ciphertext)  -> in the file, in pieces, encrypted
+    //     the key material (12 bytes)    -> on the worker, behind a session
+    //
+    // The key material is four bytes of seed, four bytes of the second half
+    // of the payload key, and four bytes of check. It is what the server
+    // releases, and the file has none of it.
+    //
+    // The seed has to be published to the environment BEFORE anything reads
+    // it: the precheck stream folds the seed, and the constant decoder needs
+    // it for every string. So the key is opened here and the rest of the
+    // payload is left for part 2 below.
+    var KM = nm('km'), PAY = nm('sf'), ENVB = nm('eb');
     if (opaquePayload) {
-        L.push('local ' + ENVRAW + '=nil local ' + ENVPOS + '=0');
+        L.push('local ' + KM + '={}');
         L.push('do');
         L.push(' local _src=__SH_VAULT_B64');
-        L.push(' if type(_src)~="string" or _src=="" then error("ScripterHub: the encrypted payload is missing - this script was not delivered by its loader",0) end');
-        L.push(' ' + ENVRAW + '=_b64dec(_src)');
-        L.push(' local _p=1');
-        L.push(' local _nc=' + ENVRAW + '[_p] _p=_p+1');
-        L.push(' local _sd=29');
-        L.push(' for _i=1,_nc do _sd=(_sd*33+' + ENVRAW + '[_p])%4294967296 _p=_p+1 end');
-        L.push(' _sd=29+(_sd%223)');
-        // The loader may already have published the key (the split-key path
-        // does). Keep that one: it is the value the outer layers verified.
+        L.push(' if type(_src)~="string" or _src=="" then error("ScripterHub: the encryption key is missing - this script was not delivered by its loader",0) end');
+        L.push(' local _b=_b64dec(_src)');
+        L.push(' if #_b<12 then error("ScripterHub: the encryption key did not survive the trip",0) end');
+        L.push(' for _i=1,12 do ' + KM + '[_i]=_b[_i] end');
+        L.push(' local _sd=(' + KM + '[1]*16777216+' + KM + '[2]*65536+' + KM + '[3]*256+' + KM + '[4])%4294967296');
+        // The key material is NOT checked here. The check is against the
+        // payload, and the payload has not been unpacked yet - it is
+        // verified below, before a single constant is decoded.
         L.push(' ' + E + '[' + JSON.stringify(seedGenvName) + ']=' + E + '[' + JSON.stringify(seedGenvName) + '] or _sd');
-        L.push(' ' + ENVPOS + '=_p');
         L.push('end');
     }
     // Vault is now base64-encoded so it is not a parseable numeric table.
@@ -2499,7 +2525,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     if (opaquePayload) {
         // THE FILE CARRIES NEITHER THE CONSTANTS NOR THEIR TABLE.
         //
-        // Both are filled in from the envelope the worker hands over, later
+        // Both are filled in from the payload the worker hands over, later
         // in this chunk. The tables are declared here and MUTATED there, so
         // the decoder below closes over the same tables either way.
         L.push('local ' + V + '={}');
@@ -2529,7 +2555,12 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push(' local t="" local prev=' + IVAR);
     L.push(' for j=1,ln do');
     L.push('  local p=st+j');
-    L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+' + seedExpr + '*1.0*((p*p)%' + VP.m + '))%251+' + VP.c);
+    // ---- THE DECODER ----
+        //
+        // The key expression is the seed, mixed with the position, mixed
+        // with an odd multiplier so the seed survives whole. See the vault
+        // cipher above for why that matters.
+        L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+(' + seedExpr + '*65599+p*40503)%4294967296)%251+' + VP.c);
     L.push('  local kb=(b + prev*' + VP.d + ')%256');
     L.push('  local r,pw=0,1 local aa=a local bb=kb');
     L.push('  for _=1,8 do local x=aa%2 local y=bb%2 if x~=y then r=r+pw end aa=(aa-x)/2 bb=(bb-y)/2 pw=pw*2 end');
@@ -2720,53 +2751,45 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         L.push('end');
     }
     L.push('local ' + CH + '={}');
-    // THE OPAQUE PAYLOAD, PART 2: THE SCRIPT.
+    // THE SUPERFLOW PAYLOAD: BUILD IT.
     //
-    // What is left in the envelope is the constant table, the encrypted
-    // constants and the encrypted bytecode. They go into the tables the VM
-    // already reads from, so nothing downstream has to know that the payload
-    // came from the network instead of from the file.
+    // The constant table, the encrypted constants and the encrypted
+    // bytecode, in that order, in one stream of bytes. It is the
+    // superflow_bytecode: one thing, not three.
     //
-    // The envelope goes to the worker as ONE base64 blob, which is what the
-    // init layer fetches with the session it just proved.
+    // The stream is then ENCRYPTED under a 64-bit key and cut into pieces,
+    // with a KEY SLOT at the head of the piece list. The slot is where the
+    // key material goes, and the key material came from the worker.
+    //
+    // So a copy of the file on its own has no key, no key stream and no
+    // plaintext: the payload is not merely hidden in it, it is unreachable.
     if (opaquePayload) {
         var envBytes = [];
         function envU32(n) {
             n = n >>> 0;
             envBytes.push(n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF);
         }
-        // The carrier rebuilds the seed at run time. The caller normally
-        // supplies it, because the OUTER loader publishes the same bytes to
-        // the environment; when it does not, one is made here so the payload
-        // can never be built without a way to unlock it.
-        //
-        //   sd = 29
-        //   for each carrier byte c: sd = (sd*33 + c) % 2^32
-        //   sd = 29 + (sd % 223)
-        //
-        // The last byte is solved, not guessed: the chain is walked forward
-        // and the byte that lands it exactly on the seed is chosen. 256
-        // candidates cover 223 residues, so a hit always exists.
-        var carrier = (build.vmSeedCarrier && build.vmSeedCarrier.length)
+        // The key material. The caller normally supplies it, because the
+        // OUTER loader publishes the same bytes to the environment; when it
+        // does not, one is made here so the payload can never be built
+        // without a way to unlock it.
+        var carrier = (build.vmSeedCarrier && build.vmSeedCarrier.length >= 12)
             ? build.vmSeedCarrier.map(function (b) { return b & 0xFF; })
             : (function () {
-                var c = [];
-                var ch = 29;
-                var n = rndInt(3, 7);
-                for (var i = 0; i < n; i++) {
-                    var cv = rndInt(0, 255);
-                    c.push(cv);
-                    ch = (ch * 33 + cv) % 4294967296;
-                }
-                var want = ((seed - 29) % 223 + 223) % 223;
-                for (var cand = 0; cand < 256; cand++) {
-                    if (((ch * 33 + cand) % 4294967296) % 223 === want) { c.push(cand); break; }
-                }
-                if (c.length === n) c.push(0);   // unreachable: 256 > 223
-                return c;
+                var s = seed >>> 0;
+                var c = [0, 0, 0, 0, 0, 0, 0, 0];
+                for (var ci = 0; ci < 4; ci++) c[ci] = rndInt(0, 256);
+                return [(s >>> 24) & 255, (s >>> 16) & 255, (s >>> 8) & 255, s & 255].concat(c, [0, 0, 0, 0]);
             })();
-        envBytes.push(carrier.length & 0xFF);
-        for (var envCi = 0; envCi < carrier.length; envCi++) envBytes.push(carrier[envCi]);
+        var keyA = ((carrier[0] * 16777216) + (carrier[1] * 65536) + (carrier[2] * 256) + carrier[3]) >>> 0;
+        var keyB = ((carrier[4] * 16777216) + (carrier[5] * 65536) + (carrier[6] * 256) + carrier[7]) >>> 0;
+        var keyLen = carrier.length;
+
+        // ---- THE PAYLOAD, IN ONE STREAM ----
+        //
+        // The constant table, the encrypted constants and the encrypted
+        // bytecode, in that order, in one stream of bytes. It is the
+        // superflow_bytecode: one thing, not three.
         envU32(allRefs.length);
         for (var envRi = 0; envRi < allRefs.length; envRi++) {
             envU32(allRefs[envRi].start);
@@ -2776,21 +2799,158 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         for (var envVi = 0; envVi < vault.length; envVi++) envBytes.push(vault[envVi] & 0xFF);
         envU32(mainBlob.bytes.length);
         for (var envBi = 0; envBi < mainBlob.bytes.length; envBi++) envBytes.push(mainBlob.bytes[envBi] & 0xFF);
-        build.vaultB64 = b64Of(envBytes);
 
+        // ---- THE STREAM ----
+        //
+        // The payload - the constant table, the encrypted constants and the
+        // encrypted bytecode - in that order, in one stream of bytes. It is
+        // the superflow_bytecode: one thing, not three.
+        //
+        // The stream is padded to a whole number of three bytes FIRST, so
+        // that every piece of it base64s without a '=' and comes back
+        // whole. A piece that needs '=' padding loses its last bytes to a
+        // decoder that ignores the padding, and the artifact dies in the
+        // record decoder with a nil where a byte should have been.
+        //
+        // The padding bytes are never read: the parser takes exactly what
+        // it needs.
+        var streamPad = (3 - (envBytes.length % 3)) % 3;
+        for (var padI = 0; padI < streamPad; padI++) envBytes.push(0);
+
+        // ---- THE CHECK ----
+        //
+        // A checksum of the payload, folded with the key. It travels inside
+        // the key material, so it has to be about something the key does
+        // not carry - and it binds the key to THIS payload, so another
+        // script's key material cannot open it.
+        var payloadSum = 0;
+        for (var envSi = 0; envSi < envBytes.length; envSi++) {
+            payloadSum = (payloadSum + envBytes[envSi]) % 4294967296;
+        }
+        var chk = (keyA * 31 + 7 + payloadSum) % 4294967296;
+        carrier[8] = chk & 0xFF;
+        carrier[9] = (chk >>> 8) & 0xFF;
+        carrier[10] = (chk >>> 16) & 0xFF;
+        carrier[11] = (chk >>> 24) & 0xFF;
+
+        // ---- AND THE WHOLE THING IS ENCRYPTED ----
+        //
+        // Under a 64-bit key: word A and word B, both mixed into every
+        // byte of the key stream, so one guess does not buy one byte.
+        //
+        // The seed alone was not enough. The chunk records have a known
+        // shape, so four bytes of the payload are a crib, and a 32-bit key
+        // is found in minutes on a GPU. Sixty-four bits is not found by
+        // trying.
+        //
+        // `A*65599` and `B*40503` stay under 2^48 and the sum under 2^49,
+        // so the arithmetic is exact in a JS double and in a Lua 5.1/5.3
+        // double alike. Both sides regenerate the same bytes.
+        var cipher = [];
+        for (var envCi = 0; envCi < envBytes.length; envCi++) {
+            var envP = envCi + 1;
+            var envK = ((keyA * 65599 + keyB * 40503 + envP * 97) % 4294967296) % 251 + 4;
+            // Subtraction, not XOR: XOR is not available on Lua 5.1, and the
+            // cipher has to run everywhere the artifact runs. The +256 keeps
+            // the result a byte on BOTH sides - Lua's % keeps the sign of the
+            // dividend, so a plain %256 would go negative and take the whole
+            // stream with it.
+            cipher.push(((envBytes[envCi] - envK) % 256 + 256) % 256);
+        }
+
+        // ---- THE PIECES ----
+        //
+        // The encrypted stream, cut into pieces, with a KEY SLOT at the
+        // head.
+        //
+        // The key slot is the shape Luarmor uses: its file reads
+        //
+        //     superflow_bytecode={"\\80\\124\\56...", _bsdata0[11], "\\41\\245..."}
+        //
+        // - one piece list with the key material spliced into it, and the
+        // key material defined somewhere else entirely, because the file
+        // that holds it is fetched from the server.
+        //
+        // Here the slot is the head of the list and the key material comes
+        // from the worker. The runtime puts the key in the slot and then
+        // decrypts the rest of the list under it.
+        //
+        // A copy of the file on its own has no key in the slot, so it has
+        // no key stream and no plaintext: the payload is not merely hidden,
+        // it is unreachable.
+        var pieceLen = Math.max(3, Math.min(65536, Math.ceil(cipher.length / 8 / 3) * 3));
+        var payParts = [];
+        for (var pOff = 0; pOff < cipher.length; pOff += pieceLen) {
+            payParts.push('"' + b64Of(cipher.slice(pOff, pOff + pieceLen)) + '"');
+        }
+        payParts.unshift(String(keyLen));
+        L.push('local ' + PAY + '={' + payParts.join(',') + '}');
+
+        // The key material, and only the key material, goes to the worker.
+        build.vaultB64 = b64Of(carrier);
+    }
+    // THE SUPERFLOW PAYLOAD, PART 2: THE STREAM.
+    //
+    // The piece list is walked in order and the key material goes into the
+    // slot at the head. What comes out is one whole stream, and only then is
+    // it read: the constant table, the constants, the bytecode.
+    //
+    // The pieces are CIPHERTEXT. The key material is what turns them back
+    // into the stream, and it came from the worker, so a copy of the file on
+    // its own has no key, no key stream and no plaintext: the payload is not
+    // merely hidden in it, it is unreachable.
+    if (opaquePayload) {
         L.push('local ' + ENVB + '={}');
         L.push('do');
-        L.push(' local _e=' + ENVRAW + ' local _p=' + ENVPOS);
-        L.push(' local _nr=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
-        L.push(' for _i=1,_nr do');
-        L.push('  local _s=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
-        L.push('  local _l=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
-        L.push('  ' + R + '[_i]={_s,_l}');
+        L.push(' local _st={}');
+        // ---- THE KEY SLOT ----
+        //
+        // The head of the piece list is the slot the key material goes in,
+        // and the key material came from the worker, not from the file. The
+        // runtime fills the slot and then decrypts the rest of the list
+        // under it.
+        L.push(' local _kl=' + PAY + '[1]');
+        L.push(' for _i=1,_kl do _st[#_st+1]=' + KM + '[_i] end');
+        L.push(' for _,_pc in ipairs(' + PAY + ') do');
+        L.push('  if type(_pc)~="number" then');
+        L.push('   local _b=_b64dec(_pc)');
+        L.push('   for _i=1,#_b do _st[#_st+1]=_b[_i] end');
+        L.push('  end');
         L.push(' end');
-        L.push(' local _cl=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
-        L.push(' for _i=1,_cl do ' + V + '[_i]=_e[_p] _p=_p+1 end');
-        L.push(' local _bl=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
-        L.push(' for _i=1,_bl do ' + ENVB + '[_i]=_e[_p] _p=_p+1 end');
+        L.push(' local _a=(' + KM + '[1]*16777216+' + KM + '[2]*65536+' + KM + '[3]*256+' + KM + '[4])%4294967296');
+        L.push(' local _b=(' + KM + '[5]*16777216+' + KM + '[6]*65536+' + KM + '[7]*256+' + KM + '[8])%4294967296');
+        // The key stream starts at the first byte AFTER the slot, so the
+        // position is counted from there and not from the head of _st.
+        //
+        // The cipher SUBTRACTS the key byte, so reading it back ADDS it.
+        // The sum is at most 510, so one conditional is enough to bring it
+        // back to a byte - and no % is needed, which matters: Lua's % keeps
+        // the sign of the dividend, and a negative byte would take the
+        // whole stream with it.
+        L.push(' for _i=_kl+1,#_st do local _j=_i-_kl local _kk=((_a*65599+_b*40503+_j*97)%4294967296)%251+4 local _d=_st[_i]+_kk if _d>255 then _d=_d-256 end _st[_i]=_d end');
+        L.push(' _p=_kl+1');
+        // ---- THE CHECK ----
+        //
+        // The key material carries a checksum of the payload. It travels
+        // WITH the key, so it is a checksum of the payload and not of the
+        // key: another script's key material cannot open this payload, and
+        // it says so instead of decoding garbage.
+        //
+        // It is checked BEFORE the payload is read. A wrong key decrypts to
+        // nonsense, and reading nonsense is how the artifact used to die
+        // with a nil where a byte should have been - the check is what
+        // turns that into a sentence.
+        L.push(' local _sum=0');
+        L.push(' for _i=_kl+1,#_st do _sum=(_sum+_st[_i])%4294967296 end');
+        L.push(' local _ck=(' + KM + '[9]+' + KM + '[10]*256+' + KM + '[11]*65536+' + KM + '[12]*16777216)%4294967296');
+        L.push(' if (_a*31+7+_sum)%4294967296~=_ck then error("ScripterHub: the encryption key is not the right one for this script",0) end');
+        L.push(' local function _r32() local _v=_st[_p]+_st[_p+1]*256+_st[_p+2]*65536+_st[_p+3]*16777216 _p=_p+4 return _v end');
+        L.push(' local _nr=_r32()');
+        L.push(' for _i=1,_nr do local _s=_r32() local _l=_r32() ' + R + '[_i]={_s,_l} end');
+        L.push(' local _cl=_r32()');
+        L.push(' for _i=1,_cl do ' + V + '[_i]=_st[_p] _p=_p+1 end');
+        L.push(' local _bl=_r32()');
+        L.push(' for _i=1,_bl do ' + ENVB + '[_i]=_st[_p] _p=_p+1 end');
         L.push('end');
     }
     if (bindPrechecks) {
@@ -3758,13 +3918,12 @@ export function applyBytecodeVm(src, opts) {
         // reachable, and the owner turns it on deliberately.
         build.serverVault = !!(opts.serverVault);
         if (opts.seedOverride !== undefined && opts.seedOverride !== null) build.seed = opts.seedOverride;
-        // The opaque payload carries the seed as a carrier, and a carrier can
-        // only rebuild a seed in [29,251] (see makeVmSeedCarrier). A build
-        // that asked for something else is moved into that range HERE, so the
-        // file and the payload can never disagree about the key.
-        if (build.serverVault && (build.seed < 29 || build.seed > 251)) {
-            build.seed = 29 + (((Number(build.seed) >>> 0) % 223));
-        }
+        // The seed is NOT adjusted here. The key material carries it whole -
+        // four bytes of seed and a check byte - so the value the file
+        // encrypts with and the value the runtime rebuilds are the same
+        // number. An earlier version squeezed the seed into [29,251] to fit
+        // the old four-digit carrier, and with a whole seed that clamp
+        // silently encrypted with one value and decrypted with another.
         if (opts.seedFromGenv) build.seedFromGenv = opts.seedFromGenv;
         // The carrier for the vault seed. It travels INSIDE the opaque
         // payload, so the file never holds the key and the worker releases

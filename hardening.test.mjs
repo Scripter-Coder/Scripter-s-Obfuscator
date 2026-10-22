@@ -29,18 +29,18 @@ console.log('[H1] VM cipher formulas are randomized per build...');
     for (let i = 0; i < 12; i++) {
         const vm = applyBytecodeVm(src);
         assert(vm, 'bytecode VM must succeed on this trivial script');
-        // blob cipher: anchored on the stable head "((i*i*A" and the stable
+        // blob cipher: anchored on the stable head "((lp*lp*A" and the stable
         // tail ")%4294967296)%251+4", capturing the coefficient terms in
-        // between. The emitter varies how many terms it emits (the current
-        // form is "A+i*B+C+(D)"), so pinning the exact term count would make
-        // this assertion describe one build shape instead of the property
-        // under test, which is that no static signature survives a rebuild.
-        const blobM = vm.match(/\(\(i\*i\*(\d+)(.+?)\)%4294967296\)%251\+4/);
+        // between. The emitter varies the terms per build (BP.a/b/c + the
+        // segment key), so pinning the exact term count would describe one
+        // build shape instead of the property under test, which is that no
+        // static signature survives a rebuild.
+        const blobM = vm.match(/\(\(lp\*lp\*(\d+)(.+?)\)%4294967296\)%251\+4/);
         assert(blobM, 'blob cipher line present');
-        // vault cipher signature: "(A*p+B+SEEDM*((p*p)%M))%251+C"
-        const vaultM = vm.match(/\((\d+)\*p\+(\d+)\+\S*\*\(\(p\*p\)%(\d+)\)\)%251\+(\d+)/);
+        // vault cipher signature: "(A*p+B+(SEEDM*65599+p*40503)%2^32)%251+C"
+        const vaultM = vm.match(/\((\d+)\*p\+(\d+)\+\S*\*65599\+p\*40503\)%4294967296\)%251\+(\d+)/);
         assert(vaultM, 'vault cipher line present');
-        sigs.add(blobM[1] + blobM[2] + '|' + (vaultM ? vaultM[1] + vaultM[2] + vaultM[3] + vaultM[4] : ''));
+        sigs.add(blobM[1] + blobM[2] + '|' + (vaultM ? vaultM[1] + vaultM[2] + vaultM[3] : ''));
     }
     assert.strictEqual(sigs.size >= 6, true, 'at least 6 distinct cipher shapes in 12 builds (got ' + sigs.size + ')');
     console.log('    OK:', sigs.size, 'distinct cipher shapes across 12 builds');
@@ -71,12 +71,13 @@ console.log('[H3] decoy vault runs + decoy refs + decoy chunks (real code intact
         // directly, but the refs table length > 0 and (in most builds) >
         // the real count. Instead assert the VAULT grew beyond the real
         // plaintext length (decoy runs appended).
-        const vaultM = vm.match(/local v[0-9a-f]{6}=\{([\d,]+)\}/);
+        const vaultM = vm.match(/local v[0-9a-f]{6}=_b64dec\("([^"]+)"\)/);
         assert(vaultM, 'vault table present');
-        const vaultLen = vaultM[1].split(',').length;
-        // real plaintext: "DECOY_RAN","yes","t","i","ipairs","v",... ~<200B
-        // with decoy runs (3-8 x 4-24B) it can only be larger; assert a
-        // sane minimum to confirm emission, and record len spread
+        // the vault is now base64-encoded, so the size is the length of the
+        // base64 string (which is proportional to the byte count). A decoy
+        // run adds 4-24 bytes, which is 6-32 base64 chars, so a vault carrying
+        // the decoy runs is clearly longer than the real constants alone.
+        const vaultLen = (vaultM[1] || '').length;
         sawBigVault += (vaultLen > 60) ? 1 : 0;
         sawDecoyRefs += /local r[0-9a-f]{6}=\{[\d,{}]+\}/.test(vm) ? 1 : 0;
         // run it

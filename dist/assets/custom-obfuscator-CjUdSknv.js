@@ -66,42 +66,53 @@ function rndInt(min, max) { return min + rnd(max - min + 1); }
 // The bytecode VM's seed is what unlocks the constant vault - every string
 // and every number the script uses. It must never be a literal in the file.
 //
-// The carrier is a short list of bytes that the runtime folds back into the
-// seed:
+// Luarmor calls this the key material: the payload in the file has HOLES
+// where the key goes, and the key comes from the server, and the runtime
+// splices it back in. The file on its own is a stream with gaps in it, and
+// a stream with gaps cannot be parsed.
 //
-//     sd = 29
-//     for each carrier byte c: sd = (sd*33 + c) % 2^32
-//     sd = 29 + (sd % 223)
+// The carrier is that key. It is TWELVE bytes:
 //
-// so the seed lands in [29, 251]. The chain runs through 2^32, which stays
-// exact in a JS double and in a Lua 5.1/5.3/luau double alike, so both
-// sides always regenerate the same stream.
+//     b1 b2 b3 b4   word A - the vault seed, big endian
+//     b5 b6 b7 b8   word B - the second half of the payload's key
+//     c1 c2 c3 c4   a check, filled in by the emitter
 //
-// The last carrier byte is SOLVED, not guessed: the chain is walked forward
-// and then the byte that lands the result exactly on the wanted seed is
-// chosen. 256 candidates cover 223 residues, so a hit always exists.
+// WHY TWO WORDS AND NOT ONE.
 //
-// It travels in two places, and both are server-held: inside the opaque
-// payload (so the VM can find it without the file) and after the split-key
-// bytes (so the outer loader can publish it to the environment).
-function makeVmSeedCarrier(seedValue, pickByte) {
-    var pick = pickByte || function (n) { return rndInt(0, n); };
-    var carrier = [];
-    var nCar = 3 + Math.floor(pick(5));            // 3..7 noise bytes
-    var chain = 29;
-    for (var cIdx = 0; cIdx < nCar; cIdx++) {
-        var cv = pick(255);
-        carrier.push(cv);
-        chain = (chain * 33 + cv) % 4294967296;
-    }
-    var want = ((seedValue - 29) % 223 + 223) % 223;
-    var cLast = -1;
-    for (var cand = 0; cand < 256; cand++) {
-        if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
-    }
-    if (cLast < 0) cLast = 0;                      // unreachable: 256 > 223
-    carrier.push(cLast);
-    return carrier;
+// The seed alone was not enough. The payload is a file the analyst can
+// hold and try guesses against - the chunk records have a known shape, so
+// four bytes of the payload are a crib - and a 32-bit key is found in
+// minutes on a GPU. A key has to be bigger than the patience of the
+// person holding the file.
+//
+// So the payload is encrypted under a 64-bit key: word A and word B, both
+// mixed into every byte of the key stream. Sixty-four bits is not found
+// by trying.
+//
+// The check is a checksum of the PLAIN payload, and it travels inside the
+// key. A checksum of the key alone would be satisfied by any key
+// material - the check travels WITH the key - so it has to be against
+// something the key does not carry.
+//
+// TWELVE BYTES, NOT FIVE, because the payload is cut into pieces and
+// every piece has to be a whole number of bytes for its base64 to survive
+// the trip - a piece that needs '=' padding loses its last bytes to a
+// decoder that ignores the padding. The key opens the payload, and the
+// payload opens at a twelve-byte offset.
+//
+// The seed (word A) is a full 32 bits. An 8-bit seed (the old carrier)
+// was four decimal digits of entropy, and four decimal digits is
+// nothing: it was found by trying 223 values.
+function makeVmSeedCarrier(seedValue) {
+    var s = Number(seedValue) >>> 0;
+    return [
+        (s >>> 24) & 255,
+        (s >>> 16) & 255,
+        (s >>> 8) & 255,
+        s & 255,
+        rndInt(0, 256), rndInt(0, 256), rndInt(0, 256), rndInt(0, 256),
+        0, 0, 0, 0
+    ];
 }
 function hex(len) {
     var c = '0123456789abcdef', s = '';
@@ -1039,10 +1050,13 @@ function buildLoader(src, layerCount, options) {
         // ---- VM SEED CARRIER (server-bound vault seed): the bytecode
         // VM's vault seed is split into carrier numbers appended AFTER
         // the key bytes. The worker response is "SHK t0 chk key... car...";
-        // the Lua side rebuilds the seed via a djb2 chain and writes it
-        // to genv. The seed literal is NEVER in the file. The chain math:
-        //   sd = 29; for each car c: sd = (sd*33 + c) % 2^32; sd = 29 + sd%223
-        // 2^32 laundering keeps JS doubles and Lua 5.1/5.3 identical.
+        // the Lua side rebuilds the seed from the first four carrier numbers
+        // and writes it to genv. The seed literal is NEVER in the file.
+        //
+        // The carrier is twelve bytes: four of seed, four of the second
+        // half of the payload key, four of check. The loader cannot check
+        // it - the check is about the payload, and the loader has no
+        // payload - so it publishes the seed and the VM does the rest.
         //
         // THE CARRIER IS BUILT ONCE. The same bytes travel inside the opaque
         // payload (so the VM can find the seed without the file) and here
@@ -1050,7 +1064,7 @@ function buildLoader(src, layerCount, options) {
         // the SAME bytes, so the carrier is made by the caller and reused.
         if (options._vmSeedValue !== undefined && options._vmSeedValue !== null) {
             if (!options._vmSeedCarrier || !options._vmSeedCarrier.length) {
-                options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
+                options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue);
             }
             padded = padded.concat(options._vmSeedCarrier);
         }
@@ -1350,10 +1364,25 @@ function buildLoader(src, layerCount, options) {
             out.push(' do');
             out.push('  local car={}');
             out.push('  for j=3+KL,#' + PT + ' do car[#car+1]=' + PT + '[j] end');
-            out.push('  if #car>0 then');
-            out.push('   local sd=29');
-            out.push('   for j=1,#car do sd=(sd*33+car[j])%4294967296 end');
-            out.push('   sd=29+(sd%223)');
+            // THE NUMBERS AFTER THE KEY BYTES ARE THE KEY MATERIAL.
+            //
+            // Four bytes of seed, big endian, then four bytes of the second
+            // half of the payload key, then four bytes of check.
+            //
+            // The seed is at the HEAD of the carrier, so it is read from
+            // the front - the carrier's length is not known here, and it does
+            // not need to be: the seed is always the first four numbers.
+            //
+            // The check is a checksum of the PAYLOAD, not of the seed: a
+            // checksum of the seed would be satisfied by any key material,
+            // because the check travels WITH the key. So the loader cannot
+            // verify it - it has no payload - and the VM verifies it after
+            // the payload is unpacked, before a single constant is decoded.
+            //
+            // The loader publishes the seed and nothing else.
+            out.push('  if #car>=4 then');
+            out.push('   local sd=0');
+            out.push('   for j=1,4 do sd=(sd*256+car[j])%4294967296 end');
             out.push('   local g=(getgenv and getgenv()) or _G');
             out.push('   g[' + JSON.stringify(options._vmSeedGenv) + ']=sd');
             out.push('  end');
@@ -1897,8 +1926,12 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
         // in the file.
         if (splitMode || options.serverVault) {
             options._vmSeedGenv = '_shs' + hex(10);
-            options._vmSeedValue = rndInt(29, 251);
-            options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
+            // A FULL 32-BIT SEED. It used to be a number in [29,251] - four
+            // decimal digits of entropy, which is nothing: 223 values, and
+            // a seed that short is found by trying them. The key material
+            // carries the whole thing now.
+            options._vmSeedValue = Math.floor(Math.random() * 4294967296) >>> 0;
+            options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue);
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
             bcOpts.vmSeedCarrier = options._vmSeedCarrier;

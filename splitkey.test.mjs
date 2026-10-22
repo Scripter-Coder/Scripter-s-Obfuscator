@@ -199,11 +199,13 @@ console.log('[S8] VM seed carrier: seed never embedded, carrier derives it...');
     const padded2 = dbg.splitKey.paddedKey;
     const keyLen2 = dbg.splitKey.keyLen;
     const carriers = padded2.slice(keyLen2);
-    assert.ok(carriers.length >= 3, 'carrier bytes must ride the split-key response');
-    let chain = 29;
-    for (const c of carriers) chain = (chain * 33 + c) % 4294967296;
-    const derived = 29 + (chain % 223);
-    assert.ok(derived >= 29 && derived <= 251, 'derived seed in range');
+    assert.ok(carriers.length >= 4, 'carrier bytes must ride the split-key response');
+    // The carrier is twelve bytes: four of seed (big endian), four of the
+    // second half of the payload key, four of check. The seed is at the HEAD
+    // of the carrier.
+    let derived = 0;
+    for (let j = 1; j <= 4; j++) derived = (derived * 256 + carriers[j - 1]) >>> 0;
+    assert.ok(derived >= 0 && derived <= 0xFFFFFFFF, 'derived seed is a 32-bit number');
     // the old literal genv write must be gone (a dump could read it)
     const seedWrite = obf.match(/g\.[_a-zA-Z0-9]+=\d{2,3}\s*end/g);
     assert.ok(!seedWrite, 'no literal VM-seed genv write in the file');
