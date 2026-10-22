@@ -51,3 +51,8 @@ jobs:
       - id: deployment
         name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
+# NOTE: if this step fails with "Failed to create deployment" or the site
+# still shows the OLD obfuscator after a green run, the Pages source is set
+# to "Deploy from a branch" instead of "GitHub Actions". Fix it once in the
+# repo settings: Settings -> Pages -> Build and deployment -> Source ->
+# "GitHub Actions". With that set, every push to main redeploys dist/.
