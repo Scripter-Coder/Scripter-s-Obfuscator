@@ -60,6 +60,49 @@ function validateLuaSource(code) {
 // ---------- helpers ----------
 function rnd(n) { return Math.floor(Math.random() * n); }
 function rndInt(min, max) { return min + rnd(max - min + 1); }
+
+// THE CARRIER FOR THE VAULT SEED.
+//
+// The bytecode VM's seed is what unlocks the constant vault - every string
+// and every number the script uses. It must never be a literal in the file.
+//
+// The carrier is a short list of bytes that the runtime folds back into the
+// seed:
+//
+//     sd = 29
+//     for each carrier byte c: sd = (sd*33 + c) % 2^32
+//     sd = 29 + (sd % 223)
+//
+// so the seed lands in [29, 251]. The chain runs through 2^32, which stays
+// exact in a JS double and in a Lua 5.1/5.3/luau double alike, so both
+// sides always regenerate the same stream.
+//
+// The last carrier byte is SOLVED, not guessed: the chain is walked forward
+// and then the byte that lands the result exactly on the wanted seed is
+// chosen. 256 candidates cover 223 residues, so a hit always exists.
+//
+// It travels in two places, and both are server-held: inside the opaque
+// payload (so the VM can find it without the file) and after the split-key
+// bytes (so the outer loader can publish it to the environment).
+function makeVmSeedCarrier(seedValue, pickByte) {
+    var pick = pickByte || function (n) { return rndInt(0, n); };
+    var carrier = [];
+    var nCar = 3 + Math.floor(pick(5));            // 3..7 noise bytes
+    var chain = 29;
+    for (var cIdx = 0; cIdx < nCar; cIdx++) {
+        var cv = pick(255);
+        carrier.push(cv);
+        chain = (chain * 33 + cv) % 4294967296;
+    }
+    var want = ((seedValue - 29) % 223 + 223) % 223;
+    var cLast = -1;
+    for (var cand = 0; cand < 256; cand++) {
+        if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
+    }
+    if (cLast < 0) cLast = 0;                      // unreachable: 256 > 223
+    carrier.push(cLast);
+    return carrier;
+}
 function hex(len) {
     var c = '0123456789abcdef', s = '';
     for (var i = 0; i < len; i++) s += c[rnd(16)];
@@ -1000,34 +1043,15 @@ function buildLoader(src, layerCount, options) {
         // to genv. The seed literal is NEVER in the file. The chain math:
         //   sd = 29; for each car c: sd = (sd*33 + c) % 2^32; sd = 29 + sd%223
         // 2^32 laundering keeps JS doubles and Lua 5.1/5.3 identical.
+        //
+        // THE CARRIER IS BUILT ONCE. The same bytes travel inside the opaque
+        // payload (so the VM can find the seed without the file) and here
+        // (so the loader can publish it to the environment). They have to be
+        // the SAME bytes, so the carrier is made by the caller and reused.
         if (options._vmSeedValue !== undefined && options._vmSeedValue !== null) {
-            options._vmSeedCarrier = [];
-            // 3-7 random numbers 0..255 followed by the derivation tail:
-            // the FINAL value must derive exactly _vmSeedValue, so we
-            // append 2 numbers that force the chain to land on the seed:
-            // work the chain forward, then append numbers so the last
-            // step is sd = 29 + ((...)*33 + c2) % 223 where the dots are
-            // already known - solve c2 by construction below.
-            var nCar = rndInt(3, 7);
-            var chain = 29;
-            for (var cIdx = 0; cIdx < nCar; cIdx++) {
-                var cv = rndInt(0, 255);
-                options._vmSeedCarrier.push(cv);
-                chain = (chain * 33 + cv) % 4294967296;
+            if (!options._vmSeedCarrier || !options._vmSeedCarrier.length) {
+                options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
             }
-            // choose the LAST carrier cLast so that
-            //   29 + ((chain*33 + cLast) % 4294967296) % 223 == seed
-            // => (chain*33 + cLast) % 4294967296 % 223 == seed - 29
-            // cLast range 0..255: try all and pick the first hit (always
-            // exists: 256 candidates cover 223 residues)
-            var want = ((options._vmSeedValue - 29) % 223 + 223) % 223;
-            var cLast = -1;
-            for (var cand = 0; cand < 256; cand++) {
-                if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
-            }
-            if (cLast < 0) { cLast = 0; /* unreachable: 256 > 223 */ }
-            options._vmSeedCarrier.push(cLast);
-            // append the carriers to the padded key the worker will serve
             padded = padded.concat(options._vmSeedCarrier);
         }
         options.splitKey.paddedKey = padded;
@@ -1856,11 +1880,28 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
         }
 
         if (options.seed != null) bcOpts.seedOverride = options.seed;
-        if (splitMode) {
+        // THE SEED IS NEVER IN THE FILE.
+        //
+        // The bytecode VM's seed unlocks the constant vault - every string
+        // and every number the script uses. It used to be a literal in the
+        // file for every build without a split key, which made "copy the
+        // file, run one function" the whole deobfuscation.
+        //
+        // Now it is always read from the environment at run time, and the
+        // bytes that rebuild it travel with the opaque payload on the
+        // worker. The split-key path additionally publishes it from the key
+        // response, so both routes land on the same value.
+        //
+        // The opaque payload needs this whether or not there is a split key:
+        // a free script has no key response, and its seed still must not be
+        // in the file.
+        if (splitMode || options.serverVault) {
             options._vmSeedGenv = '_shs' + hex(10);
             options._vmSeedValue = rndInt(29, 251);
+            options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
+            bcOpts.vmSeedCarrier = options._vmSeedCarrier;
         }
         // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
         // FAIL LOUD, NOT SILENT.
@@ -1902,7 +1943,11 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
                 // instead of degrading, for callers that would rather fail
                 // the build than hand out a reversibly-protected script.
                 if (options.strictVm) throw new Error('Bytecode VM failed and strictVm is set, refusing to ship the lite fallback: ' + (vmReason || 'unknown reason'));
+                // The lite tier has no VM, so it has no vault and no seed.
+                // Clearing the carrier keeps the split key free of bytes
+                // that nothing will ever read.
                 options._vmSeedGenv = null;
+                options._vmSeedCarrier = null;
                 vmCode = applyVmPass(code);
                 if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
             }
@@ -2017,6 +2062,7 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
             _canary: options._canary,
             _vmSeedGenv: options._vmSeedGenv,
             _vmSeedValue: options._vmSeedValue,
+            _vmSeedCarrier: options._vmSeedCarrier,
             _debug: options._debug
         };
         loader = buildLoader(loader, 1, innerOpts);

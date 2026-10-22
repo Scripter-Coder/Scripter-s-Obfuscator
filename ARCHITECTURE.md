@@ -21,6 +21,31 @@ Lua source
   → fengari (Lua 5.3 VM in JS) for differential testing; native lua* when available via src/targets/*
 ```
 
+## The opaque payload
+
+The artifact is not the script. Everything the script *is* — the constants,
+the table that indexes them, the bytecode, and the seed that unlocks them —
+travels as ONE base64 envelope on the worker, released only to a live session:
+
+```
+envelope = seed carrier || constant table || encrypted constants || encrypted bytecode
+```
+
+The file keeps the VM and nothing else: no strings, no table, no key, and it
+cannot run without the envelope. This is Luarmor's shape
+(`superflow_bytecode` is one opaque blob the bootstrapper fetches).
+
+The init layer fetches it from `GET /sh/vault/<id>?s=<sid>&n=<nonce>` with
+the session it has just proved, and hands it over in `__SH_VAULT_B64` before
+the artifact runs. The worker does not interpret it — it stores and serves an
+opaque blob, which is why a script published before this change keeps working:
+its artifact and its blob were generated together.
+
+The seed is server-bound for **every** build, including the free ones: it is
+read from the environment at run time, and the bytes that rebuild it travel
+inside the envelope. See `docs/DECISIONS.md` D43 and
+`tools/opaque_payload_test.mjs`.
+
 ## Key Decisions
 
 - **JS-only**: No `gcc` needed for `lua51`; `fengari` is differential reference for 5.1. Native targets (`lua52/53/54/luajit/luau`) are honest `NOT_IMPLEMENTED` until `lua.exe -v` passes (see `TOOLS_TARGETS.md`).

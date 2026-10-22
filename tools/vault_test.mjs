@@ -17,10 +17,13 @@
 
 import fs from 'node:fs';
 import luaparse from 'luaparse';
+import * as fengari from 'fengari';
 import { applyCustomObfuscator } from '../custom-obfuscator.js';
 import { vmBCSetLuaparse } from '../vm-bytecode.js';
 import { makeD1 as makeD1Shape } from './d1_shape.mjs';
 import { OWNER_CODE_PLAIN, OWNER_CODE_HASH } from './owner_code_test_helper.mjs';
+
+const LUA = fengari.lua, AUX = fengari.lauxlib, LIB = fengari.lualib;
 
 // The bytecode VM needs a parser.
 vmBCSetLuaparse(luaparse);
@@ -42,7 +45,9 @@ const SOURCE = [
     'function Greeter.secret()',
     '  return "a very secret literal that must not travel in the file"',
     'end',
-    'return Greeter.greet("world") .. "|" .. Greeter.secret()'
+    'local _r = Greeter.greet("world") .. "|" .. Greeter.secret()',
+    '_G.__SH_VAULT_RESULT = _r',
+    'return _r'
 ].join('\n');
 
 let artifact = '';
@@ -66,6 +71,18 @@ let vault = '';
     check('and the string it protects is not in the file',
         artifact.indexOf('a very secret literal') === -1,
         'the literal is in the file');
+    // The constant TABLE must not be in the file either: it said how many
+    // strings the script has and how long each one is.
+    const constTables = [...artifact.matchAll(/^local\s+\w+\s*=\s*(\{.*\})\s*$/gm)]
+        .filter(t => [...t[1].matchAll(/\{(\d+),(\d+)\}/g)].length >= 3);
+    check('and the constant table is not in the file',
+        constTables.length === 0,
+        constTables.length + ' table(s) of {start,len} pairs are still there');
+    // And the artifact must be useless without the payload.
+    check('and the artifact cannot run without it',
+        artifact.indexOf('__SH_VAULT_B64') !== -1 &&
+        !/local\s+\w+\s*=\s*_b64dec\("[A-Za-z0-9+/=]{100,}"/.test(artifact),
+        'the file still carries a payload of its own');
     // Without the option, the vault stays in the file - that is the old
     // behaviour, and it has to stay that way for the scripts that are
     // already published.
@@ -158,6 +175,45 @@ console.log('THE WORKER KEEPS IT AND SERVES IT TO A LIVE SESSION');
     check('and the init layer itself carries no vault',
         initBody.indexOf(vault) === -1,
         'the vault is in the init layer');
+
+    // THE WHOLE PATH, END TO END.
+    //
+    // The payload the worker served is handed to the artifact exactly the
+    // way the init layer hands it over, and the artifact runs. This is the
+    // proof that moving the script out of the file did not move it out of
+    // reach: the script still runs, and it still runs off the worker's copy.
+    {
+        const st = AUX.luaL_newstate();
+        LIB.luaL_openlibs(st);
+        LUA.lua_pushstring(st, fengari.to_luastring(servedBody));
+        LUA.lua_setglobal(st, '__SH_VAULT_B64');
+        const chunk = AUX.luaL_loadstring(st, fengari.to_luastring(artifact));
+        check('the artifact compiles', chunk === 0,
+            chunk === 0 ? '' : fengari.to_jsstring(LUA.lua_tostring(st, -1)));
+        const rc = chunk === 0 ? LUA.lua_pcall(st, 0, 0, 0) : -1;
+        check('and it runs on the payload the worker served', rc === 0,
+            rc === 0 ? '' : fengari.to_jsstring(LUA.lua_tostring(st, -1)));
+        LUA.lua_getglobal(st, '__SH_VAULT_RESULT');
+        const got = LUA.lua_isnil(st, -1) ? '' : fengari.to_jsstring(LUA.lua_tostring(st, -1));
+        LUA.lua_pop(st, 1);
+        LUA.lua_close(st);
+        check('and it produces the script\'s own output',
+            got === 'hello world|a very secret literal that must not travel in the file',
+            JSON.stringify(got));
+    }
+
+    // And without the payload it is not a script at all.
+    {
+        const st = AUX.luaL_newstate();
+        LIB.luaL_openlibs(st);
+        const chunk = AUX.luaL_loadstring(st, fengari.to_luastring(artifact));
+        const rc = chunk === 0 ? LUA.lua_pcall(st, 0, 0, 0) : -1;
+        const msg = rc === 0 ? '' : fengari.to_jsstring(LUA.lua_tostring(st, -1));
+        LUA.lua_close(st);
+        check('without the payload the artifact refuses to run', rc !== 0,
+            'it ran anyway - the file is self-contained');
+        check('and it says why', /payload is missing/.test(msg), JSON.stringify(msg.slice(0, 90)));
+    }
 }
 
 console.log('');

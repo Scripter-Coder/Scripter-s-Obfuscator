@@ -39,6 +39,10 @@
         .keycopy:hover { background: rgba(108,59,255,0.45); color: #fff; }
         .keycopy.copied { background: rgba(0,204,68,0.35); border-color: rgba(0,204,68,0.5); color: #66ff66; }
         .keycopy.failed { background: rgba(255,107,107,0.3); border-color: rgba(255,107,107,0.5); color: #ff6b6b; }
+        /* The hammer: buy more time on a key that ran out. */
+        .keyextend { border: 1px solid rgba(255,170,60,0.4); background: rgba(255,150,40,0.16); color: #ffc46b; border-radius: 7px; cursor: pointer; font-size: 11px; padding: 3px 7px; margin-left: 6px; vertical-align: middle; font-family: inherit; line-height: 1.3; transition: all .2s; }
+        .keyextend:hover { background: rgba(255,150,40,0.4); color: #fff; }
+        .keyextend:disabled { opacity: .5; cursor: not-allowed; }
         .status-active { color: #66ff66; } .status-expired { color: #ff6b6b; }
         .notif { position: fixed; top: 20px; right: 20px; left: 20px; background: linear-gradient(135deg, #0ca84c, #66ff66); color: #fff; padding: 14px 20px; border-radius: 12px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.5); opacity: 0; transform: translateY(-20px); transition: all .35s; z-index: 100; text-align: center; }
         .notif.show { opacity: 1; transform: translateY(0); }
@@ -278,7 +282,19 @@
                     // than in the click handler, so nothing user-supplied is
                     // ever interpolated into code.
                     + ' <button type="button" class="keycopy' + (shCopiedKey === k.key ? ' copied' : '') + '" data-k="' + esc(k.key) + '" title="Copy this key">'
-                    + (shCopiedKey === k.key ? '✅' : '📋') + '</button></td>'
+                    + (shCopiedKey === k.key ? '✅' : '📋') + '</button>'
+                    // THE HAMMER. A key that has run out is not a key any
+                    // more: the gate refuses it and the script dies with
+                    // "License expired". The owner can allow the time to be
+                    // bought back - "Allow Extending", with a cap - and this
+                    // is where the visitor spends it.
+                    //
+                    // It only appears on an EXPIRED key, and only when the
+                    // owner allows it, and it says how much it costs.
+                    + (expired && cfg.allowExtending
+                        ? ' <button type="button" class="keyextend" data-k="' + esc(k.key) + '" title="Add ' + (cfg.extHours || 6) + ' more hours">🔨 +' + (cfg.extHours || 6) + 'h</button>'
+                        : '')
+                    + '</td>'
                     + '<td>' + fmtLeft(k.expires - Date.now()) + '</td>'
                     + '<td class="' + (expired ? 'status-expired' : 'status-active') + '">'
                     + (expired ? 'expired' : 'active') + '</td></tr>';
@@ -306,6 +322,35 @@
         for (var i = 0; i < copies.length; i++) {
             copies[i].onclick = function () { shCopyKey(this.getAttribute('data-k'), this); };
         }
+        // The hammer buttons on the expired keys.
+        var hammers = document.querySelectorAll('.keyextend');
+        for (var j = 0; j < hammers.length; j++) {
+            hammers[j].onclick = function () { shExtendKey(this.getAttribute('data-k'), this); };
+        }
+    }
+
+    // BUY MORE TIME ON A KEY THAT RAN OUT.
+    //
+    // The worker decides whether it is allowed: the owner has to have turned
+    // "Allow Extending" on, and the key has to have run out, and the cap
+    // ("Max Hours") has to have room left. The page only offers the button
+    // and shows the answer.
+    function shExtendKey(key, btn) {
+        if (!key) return;
+        if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+        api('/sh/reward/extend', { method: 'POST', body: { rid: rid, fp: FP, key: key } })
+            .then(function (r) {
+                if (!r || !r.ok) {
+                    notify(r && r.error ? String(r.error) : 'That key could not be extended.');
+                    if (btn) { btn.disabled = false; btn.textContent = '🔨'; }
+                    return;
+                }
+                notify('Key extended - ' + (r.hours || 0) + ' more hours.');
+                refresh();
+            })
+            .catch(function () {
+                if (btn) { btn.disabled = false; btn.textContent = '🔨'; }
+            });
     }
 
     // COPY A KEY.
@@ -326,7 +371,17 @@
         function done(ok) {
             shCopiedKey = ok ? text : '';
             if (shCopiedTimer) clearTimeout(shCopiedTimer);
-            shCopiedTimer = setTimeout(function () { shCopiedKey = ''; }, 1600);
+            // THE BUTTON GOES BACK TO THE CLIPBOARD GLYPH.
+            //
+            // The glyph is drawn by render(), from the state variable - and
+            // the page only re-renders itself every four seconds WHILE THE
+            // REWARD IS STILL IN PROGRESS. A key only exists once the reward
+            // is complete, so the poll is already stopped by then and nothing
+            // was ever going to draw the button back: it stayed on the green
+            // tick for the rest of the visit.
+            //
+            // So the timer draws it back itself.
+            shCopiedTimer = setTimeout(function () { shCopiedKey = ''; render(); }, 1600);
             render();
         }
         function fallback() {

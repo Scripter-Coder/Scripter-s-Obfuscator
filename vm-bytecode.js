@@ -2135,7 +2135,24 @@ function emitVM(build) {
     // dispatch and every non-table strategy was collapsed into it, so only two
     // shapes were ever emitted and NUMERIC/STATE_OP/MIXED were unreachable.
     var dispatcherStrategy = pickDispatcher(seed, profileName);
+    // THE OPAQUE PAYLOAD (the Luarmor shape).
+    //
+    // When the payload travels to the worker, the FILE must not carry any of
+    // the script: not the constants, not the constant table, not the key.
+    //
+    // It used to carry two of the three. The constant table - how many
+    // strings the script has, where each one starts, how long it is - was
+    // plain text in the file, and the encrypted constants were beside it.
+    // The seed was a literal in the file for every build that had no split
+    // key, which made an offline analyst's job a single function call.
+    //
+    // Now all of it goes into ONE envelope on the worker, and the file is a
+    // bootstrapper that asks for it: superflow_bytecode, exactly.
+    var opaquePayload = !!build.serverVault;
     var seedGenvName = build.seedFromGenv || null;
+    // The opaque payload always needs a server-held key, so the seed is
+    // ALWAYS read from the environment at run time and never from the file.
+    if (opaquePayload && !seedGenvName) seedGenvName = nm('sg');
     var seedInFile = !seedGenvName;
 
     function nm(p) { return p + hex(6); }
@@ -2422,30 +2439,79 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     }
     // Emit the base64 decoder before the vault (which now uses it).
     L.push('local function _b64dec(s) local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" local D={} for i=1,64 do D[A:byte(i)]=i-1 end local o,n,acc,bits={},0,0,0 for i=1,#s do local v=D[s:byte(i)] if v then acc=acc*64+v bits=bits+6 if bits>=8 then bits=bits-8 n=n+1 o[n]=math.floor(acc/2^bits)%256 acc=acc%2^bits end end end return o end');
+    // THE OPAQUE PAYLOAD, PART 1: THE KEY.
+    //
+    // The whole script travels as ONE envelope on the worker, and the first
+    // thing in it is the carrier for the seed. The seed has to be published
+    // to the environment BEFORE anything reads it, and something reads it
+    // early: the precheck stream folds the seed, and the constant decoder
+    // needs it for every string.
+    //
+    // So the envelope is opened here, the key is derived from the carrier,
+    // and the rest of it is left for part 2 below. Nothing is copied: the
+    // decoded bytes stay in one table and part 2 picks up where this left
+    // off.
+    //
+    // The file never contains the key, so a copy of the file on its own is
+    // not a script - it is a question with the answer on the server.
+    var ENVRAW = nm('er'), ENVPOS = nm('ep'), ENVB = nm('eb');
+    if (opaquePayload) {
+        L.push('local ' + ENVRAW + '=nil local ' + ENVPOS + '=0');
+        L.push('do');
+        L.push(' local _src=__SH_VAULT_B64');
+        L.push(' if type(_src)~="string" or _src=="" then error("ScripterHub: the encrypted payload is missing - this script was not delivered by its loader",0) end');
+        L.push(' ' + ENVRAW + '=_b64dec(_src)');
+        L.push(' local _p=1');
+        L.push(' local _nc=' + ENVRAW + '[_p] _p=_p+1');
+        L.push(' local _sd=29');
+        L.push(' for _i=1,_nc do _sd=(_sd*33+' + ENVRAW + '[_p])%4294967296 _p=_p+1 end');
+        L.push(' _sd=29+(_sd%223)');
+        // The loader may already have published the key (the split-key path
+        // does). Keep that one: it is the value the outer layers verified.
+        L.push(' ' + E + '[' + JSON.stringify(seedGenvName) + ']=' + E + '[' + JSON.stringify(seedGenvName) + '] or _sd');
+        L.push(' ' + ENVPOS + '=_p');
+        L.push('end');
+    }
     // Vault is now base64-encoded so it is not a parseable numeric table.
     // An attacker can no longer do /local vXXXXXX=\\{([\\d,]+)\\}/ to pull
     // the ciphertext; they must first reverse the base64 decoder.
     var _vA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    var _vB64 = [];
-    for (var _vi = 0; _vi < vault.length; _vi += 3) {
-        var _v0 = vault[_vi];
-        var _v1 = _vi + 1 < vault.length ? vault[_vi + 1] : 0;
-        var _v2 = _vi + 2 < vault.length ? vault[_vi + 2] : 0;
-        var _vn = (_v0 << 16) | (_v1 << 8) | _v2;
-        _vB64.push(_vA.charAt((_vn >> 18) & 63), _vA.charAt((_vn >> 12) & 63),
-            _vi + 1 < vault.length ? _vA.charAt((_vn >> 6) & 63) : '=',
-            _vi + 2 < vault.length ? _vA.charAt(_vn & 63) : '=');
+    function b64Of(bytes) {
+        var out = [];
+        for (var i = 0; i < bytes.length; i += 3) {
+            var b0 = bytes[i];
+            var b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+            var b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+            var n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(_vA.charAt((n >> 18) & 63), _vA.charAt((n >> 12) & 63),
+                i + 1 < bytes.length ? _vA.charAt((n >> 6) & 63) : '=',
+                i + 2 < bytes.length ? _vA.charAt(n & 63) : '=');
+        }
+        return out.join('');
     }
-    L.push('local ' + V + '=_b64dec("' + _vB64.join('') + '")');
-    L.push('local ' + C + '={}');
     // ---- refs: REAL refs first (their indices are baked into the
     // bytecode), then DECOY refs pointing into the decoy region. Same
     // shape {start,len}; only real ids are ever dereferenced.
-    var refParts = build.refs.map(function (r) { return '{' + r.start + ',' + r.len + '}'; });
+    var allRefs = build.refs.slice();
     for (var drr = 0; drr < decoyRefSpans.length; drr++) {
-        refParts.push('{' + decoyRefSpans[drr].start + ',' + decoyRefSpans[drr].len + '}');
+        allRefs.push({ start: decoyRefSpans[drr].start, len: decoyRefSpans[drr].len });
     }
-    L.push('local ' + R + '={' + refParts.join(',') + '}');
+    if (opaquePayload) {
+        // THE FILE CARRIES NEITHER THE CONSTANTS NOR THEIR TABLE.
+        //
+        // Both are filled in from the envelope the worker hands over, later
+        // in this chunk. The tables are declared here and MUTATED there, so
+        // the decoder below closes over the same tables either way.
+        L.push('local ' + V + '={}');
+        L.push('local ' + C + '={}');
+        L.push('local ' + R + '={}');
+    } else {
+        var _vB64 = b64Of(vault);
+        L.push('local ' + V + '=_b64dec("' + _vB64 + '")');
+        L.push('local ' + C + '={}');
+        var refParts = allRefs.map(function (r) { return '{' + r.start + ',' + r.len + '}'; });
+        L.push('local ' + R + '={' + refParts.join(',') + '}');
+    }
     L.push('local ' + NC + '={}');
     // Loader-only prechecks run before the main stream is decoded. SEEDV
     // starts as the build seed; each verified result is folded into a
@@ -2601,41 +2667,16 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         // table. An attacker can no longer do /local src=\\{([\\d,]+)\\}/ to
         // pull the raw ciphertext out; they must first reverse the base64
         // decoder, which is itself obfuscated and per-build randomized.
-        var _A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-        var _b64 = [];
-        for (var _i = 0; _i < packed.bytes.length; _i += 3) {
-            var _b0 = packed.bytes[_i];
-            var _b1 = _i + 1 < packed.bytes.length ? packed.bytes[_i + 1] : 0;
-            var _b2 = _i + 2 < packed.bytes.length ? packed.bytes[_i + 2] : 0;
-            var _n = (_b0 << 16) | (_b1 << 8) | _b2;
-            _b64.push(_A.charAt((_n >> 18) & 63), _A.charAt((_n >> 12) & 63),
-                _i + 1 < packed.bytes.length ? _A.charAt((_n >> 6) & 63) : '=',
-                _i + 2 < packed.bytes.length ? _A.charAt(_n & 63) : '=');
-        }
-        // THE VAULT DOES NOT TRAVEL WITH THE ARTIFACT.
         //
-        // The vault is every string and every number the script uses. It was
-        // in the file, with the key that unpacks it, so copying the file and
-        // running one function was the whole deobfuscation:
-        //
-        //     local src="<base64 of the packed vault>"
-        //     src=_b64dec(src)
-        //
-        // Now the blob stays on the worker and the artifact asks for it at
-        // runtime. The offline deobfuscator - the one that takes a file and
-        // gives you the source - has nothing to work with: the file it was
-        // given has no strings in it, and the strings need the worker.
-        //
-        // There is NO inline fallback. A fallback would put the vault back in
-        // the file and the whole thing would be theatre.
-        if (build.serverVault) {
-            build.vaultB64 = _b64.join('');
-            L.push(' local src=__SH_VAULT_B64');
+        // srcExpr produces the BYTE ARRAY. In the opaque-payload build it is
+        // the slice the envelope reader already unpacked; otherwise it is the
+        // inline base64 decoded on the spot.
+        if (opaquePayload) {
+            L.push(' local src=' + ENVB);
         } else {
-            L.push(' local src="' + _b64.join('') + '"');
+            L.push(' local src=_b64dec("' + b64Of(packed.bytes) + '")');
         }
         L.push(' local segs={' + packed.segs.join(',') + '}');
-        L.push(' src=_b64dec(src)');
         L.push(' local pos=1 local fb=0');
         L.push(' for si=1,#segs do');
         L.push('  local sk=((' + keyExpr + ')*31+si*2654435761+fb)%4294967296 local st=pos');
@@ -2679,6 +2720,79 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         L.push('end');
     }
     L.push('local ' + CH + '={}');
+    // THE OPAQUE PAYLOAD, PART 2: THE SCRIPT.
+    //
+    // What is left in the envelope is the constant table, the encrypted
+    // constants and the encrypted bytecode. They go into the tables the VM
+    // already reads from, so nothing downstream has to know that the payload
+    // came from the network instead of from the file.
+    //
+    // The envelope goes to the worker as ONE base64 blob, which is what the
+    // init layer fetches with the session it just proved.
+    if (opaquePayload) {
+        var envBytes = [];
+        function envU32(n) {
+            n = n >>> 0;
+            envBytes.push(n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF);
+        }
+        // The carrier rebuilds the seed at run time. The caller normally
+        // supplies it, because the OUTER loader publishes the same bytes to
+        // the environment; when it does not, one is made here so the payload
+        // can never be built without a way to unlock it.
+        //
+        //   sd = 29
+        //   for each carrier byte c: sd = (sd*33 + c) % 2^32
+        //   sd = 29 + (sd % 223)
+        //
+        // The last byte is solved, not guessed: the chain is walked forward
+        // and the byte that lands it exactly on the seed is chosen. 256
+        // candidates cover 223 residues, so a hit always exists.
+        var carrier = (build.vmSeedCarrier && build.vmSeedCarrier.length)
+            ? build.vmSeedCarrier.map(function (b) { return b & 0xFF; })
+            : (function () {
+                var c = [];
+                var ch = 29;
+                var n = rndInt(3, 7);
+                for (var i = 0; i < n; i++) {
+                    var cv = rndInt(0, 255);
+                    c.push(cv);
+                    ch = (ch * 33 + cv) % 4294967296;
+                }
+                var want = ((seed - 29) % 223 + 223) % 223;
+                for (var cand = 0; cand < 256; cand++) {
+                    if (((ch * 33 + cand) % 4294967296) % 223 === want) { c.push(cand); break; }
+                }
+                if (c.length === n) c.push(0);   // unreachable: 256 > 223
+                return c;
+            })();
+        envBytes.push(carrier.length & 0xFF);
+        for (var envCi = 0; envCi < carrier.length; envCi++) envBytes.push(carrier[envCi]);
+        envU32(allRefs.length);
+        for (var envRi = 0; envRi < allRefs.length; envRi++) {
+            envU32(allRefs[envRi].start);
+            envU32(allRefs[envRi].len);
+        }
+        envU32(vault.length);
+        for (var envVi = 0; envVi < vault.length; envVi++) envBytes.push(vault[envVi] & 0xFF);
+        envU32(mainBlob.bytes.length);
+        for (var envBi = 0; envBi < mainBlob.bytes.length; envBi++) envBytes.push(mainBlob.bytes[envBi] & 0xFF);
+        build.vaultB64 = b64Of(envBytes);
+
+        L.push('local ' + ENVB + '={}');
+        L.push('do');
+        L.push(' local _e=' + ENVRAW + ' local _p=' + ENVPOS);
+        L.push(' local _nr=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
+        L.push(' for _i=1,_nr do');
+        L.push('  local _s=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
+        L.push('  local _l=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
+        L.push('  ' + R + '[_i]={_s,_l}');
+        L.push(' end');
+        L.push(' local _cl=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
+        L.push(' for _i=1,_cl do ' + V + '[_i]=_e[_p] _p=_p+1 end');
+        L.push(' local _bl=_e[_p]+_e[_p+1]*256+_e[_p+2]*65536+_e[_p+3]*16777216 _p=_p+4');
+        L.push(' for _i=1,_bl do ' + ENVB + '[_i]=_e[_p] _p=_p+1 end');
+        L.push('end');
+    }
     if (bindPrechecks) {
         L.push('-- VM_PRECHECK_STREAM');
         emitEncryptedBlob(PBL, preBlob, seedExpr);
@@ -3644,7 +3758,18 @@ export function applyBytecodeVm(src, opts) {
         // reachable, and the owner turns it on deliberately.
         build.serverVault = !!(opts.serverVault);
         if (opts.seedOverride !== undefined && opts.seedOverride !== null) build.seed = opts.seedOverride;
+        // The opaque payload carries the seed as a carrier, and a carrier can
+        // only rebuild a seed in [29,251] (see makeVmSeedCarrier). A build
+        // that asked for something else is moved into that range HERE, so the
+        // file and the payload can never disagree about the key.
+        if (build.serverVault && (build.seed < 29 || build.seed > 251)) {
+            build.seed = 29 + (((Number(build.seed) >>> 0) % 223));
+        }
         if (opts.seedFromGenv) build.seedFromGenv = opts.seedFromGenv;
+        // The carrier for the vault seed. It travels INSIDE the opaque
+        // payload, so the file never holds the key and the worker releases
+        // it only to a live session.
+        if (opts.vmSeedCarrier) build.vmSeedCarrier = opts.vmSeedCarrier;
         var vmSrc = emitVM(build);
         if (opts.onBuild) opts.onBuild(build);
         return vmSrc;

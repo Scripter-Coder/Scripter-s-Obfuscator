@@ -60,6 +60,49 @@ function validateLuaSource(code) {
 // ---------- helpers ----------
 function rnd(n) { return Math.floor(Math.random() * n); }
 function rndInt(min, max) { return min + rnd(max - min + 1); }
+
+// THE CARRIER FOR THE VAULT SEED.
+//
+// The bytecode VM's seed is what unlocks the constant vault - every string
+// and every number the script uses. It must never be a literal in the file.
+//
+// The carrier is a short list of bytes that the runtime folds back into the
+// seed:
+//
+//     sd = 29
+//     for each carrier byte c: sd = (sd*33 + c) % 2^32
+//     sd = 29 + (sd % 223)
+//
+// so the seed lands in [29, 251]. The chain runs through 2^32, which stays
+// exact in a JS double and in a Lua 5.1/5.3/luau double alike, so both
+// sides always regenerate the same stream.
+//
+// The last carrier byte is SOLVED, not guessed: the chain is walked forward
+// and then the byte that lands the result exactly on the wanted seed is
+// chosen. 256 candidates cover 223 residues, so a hit always exists.
+//
+// It travels in two places, and both are server-held: inside the opaque
+// payload (so the VM can find it without the file) and after the split-key
+// bytes (so the outer loader can publish it to the environment).
+function makeVmSeedCarrier(seedValue, pickByte) {
+    var pick = pickByte || function (n) { return rndInt(0, n); };
+    var carrier = [];
+    var nCar = 3 + Math.floor(pick(5));            // 3..7 noise bytes
+    var chain = 29;
+    for (var cIdx = 0; cIdx < nCar; cIdx++) {
+        var cv = pick(255);
+        carrier.push(cv);
+        chain = (chain * 33 + cv) % 4294967296;
+    }
+    var want = ((seedValue - 29) % 223 + 223) % 223;
+    var cLast = -1;
+    for (var cand = 0; cand < 256; cand++) {
+        if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
+    }
+    if (cLast < 0) cLast = 0;                      // unreachable: 256 > 223
+    carrier.push(cLast);
+    return carrier;
+}
 function hex(len) {
     var c = '0123456789abcdef', s = '';
     for (var i = 0; i < len; i++) s += c[rnd(16)];
@@ -616,6 +659,37 @@ function buildSecurityWrapper(options, meta) {
             ' end',
             'end'
         );
+    } else if (options.keyGate) {
+        // A GATE WITH NO KEYS IN IT IS A GATE THAT REFUSES EVERYBODY.
+        //
+        // This used to fall through to the "no key required" branch below,
+        // which published ScripterHubKeyValid = true and let the payload run.
+        // The owner's own panel says the opposite:
+        //
+        //     "Require Key is ON but you have no active keys! Generate keys
+        //      in the Users Keys tab first - the script will reject everyone."
+        //
+        // The panel was right and the code was not. A script that asks for a
+        // key and holds none must refuse, not wave everybody through: the
+        // moment the owner's key list is empty, the whole point of the switch
+        // is gone, and the script is being given away for free.
+        //
+        // The server gate refuses the delivery anyway, but the client gate is
+        // what runs when the body came from somewhere else, and a gate that
+        // OPENS when it has nothing to check is not a gate.
+        var S3 = n[31], GENV3 = n[32];
+        parts.push(
+            'do',
+            ' local ' + GENV3 + '=(getgenv and getgenv()) or _G',
+            ' ' + GENV3 + '.ScripterHubKeyValid=false',
+            ' ' + GENV3 + '.ScripterHubKeyIncorrect=false',
+            ' ' + GENV3 + '.ScripterHubKeyExpired=false',
+            ' ' + GENV3 + '.ScripterHubKeyStatus="No keys are configured for this script"',
+            ' ' + GENV3 + '.ScripterHubWebsiteStatus="Online"',
+            ' print("[ScripterHub] No keys are configured for this script. The owner has to issue one before it will run.")',
+            ' return',
+            'end'
+        );
     } else {
         // no key gate - still expose the API globals
         var S2 = n[31], API2 = n[32], GENV2 = n[33];
@@ -969,34 +1043,15 @@ function buildLoader(src, layerCount, options) {
         // to genv. The seed literal is NEVER in the file. The chain math:
         //   sd = 29; for each car c: sd = (sd*33 + c) % 2^32; sd = 29 + sd%223
         // 2^32 laundering keeps JS doubles and Lua 5.1/5.3 identical.
+        //
+        // THE CARRIER IS BUILT ONCE. The same bytes travel inside the opaque
+        // payload (so the VM can find the seed without the file) and here
+        // (so the loader can publish it to the environment). They have to be
+        // the SAME bytes, so the carrier is made by the caller and reused.
         if (options._vmSeedValue !== undefined && options._vmSeedValue !== null) {
-            options._vmSeedCarrier = [];
-            // 3-7 random numbers 0..255 followed by the derivation tail:
-            // the FINAL value must derive exactly _vmSeedValue, so we
-            // append 2 numbers that force the chain to land on the seed:
-            // work the chain forward, then append numbers so the last
-            // step is sd = 29 + ((...)*33 + c2) % 223 where the dots are
-            // already known - solve c2 by construction below.
-            var nCar = rndInt(3, 7);
-            var chain = 29;
-            for (var cIdx = 0; cIdx < nCar; cIdx++) {
-                var cv = rndInt(0, 255);
-                options._vmSeedCarrier.push(cv);
-                chain = (chain * 33 + cv) % 4294967296;
+            if (!options._vmSeedCarrier || !options._vmSeedCarrier.length) {
+                options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
             }
-            // choose the LAST carrier cLast so that
-            //   29 + ((chain*33 + cLast) % 4294967296) % 223 == seed
-            // => (chain*33 + cLast) % 4294967296 % 223 == seed - 29
-            // cLast range 0..255: try all and pick the first hit (always
-            // exists: 256 candidates cover 223 residues)
-            var want = ((options._vmSeedValue - 29) % 223 + 223) % 223;
-            var cLast = -1;
-            for (var cand = 0; cand < 256; cand++) {
-                if (((chain * 33 + cand) % 4294967296) % 223 === want) { cLast = cand; break; }
-            }
-            if (cLast < 0) { cLast = 0; /* unreachable: 256 > 223 */ }
-            options._vmSeedCarrier.push(cLast);
-            // append the carriers to the padded key the worker will serve
             padded = padded.concat(options._vmSeedCarrier);
         }
         options.splitKey.paddedKey = padded;
@@ -1805,12 +1860,48 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
         var targetUsesFFI = /\bffi\s*\./.test(code) || /require\s*\(\s*['"]ffi['"]\s*\)/.test(code);
         if (targetUsesFFI && selectedTarget !== 'luajit') throw new Error('FFI is only supported for the LuaJIT 2.1 target');
         var bcOpts = { profile: profName, staticEnv: options.staticEnv === true, hardCodeGlobals: options.hardCodeGlobals === true, compatibility: options.compatibility === true, inline: options.inline === true, unroll: options.unroll === true, debugProtect: options.debugProtect, target: selectedTarget };
+        // THE VAULT GOES TO THE WORKER INSTEAD OF INTO THE FILE.
+        //
+        // The vault is every string and every number in the script. In the
+        // file, the deobfuscator only had to copy it out and run one
+        // function. On the worker, the file has no strings in it at all and
+        // the offline deobfuscator has nothing to work with.
+        //
+        // It is opt-in: the owner turns it on, and the worker is told to
+        // expect it.
+        var vaultB64 = '';
+        if (options.serverVault) {
+            bcOpts.serverVault = true;
+            var prevOnBuild = bcOpts.onBuild;
+            bcOpts.onBuild = function (b) {
+                if (b && b.vaultB64) vaultB64 = b.vaultB64;
+                if (typeof prevOnBuild === 'function') { try { prevOnBuild(b); } catch (e) { } }
+            };
+        }
+
         if (options.seed != null) bcOpts.seedOverride = options.seed;
-        if (splitMode) {
+        // THE SEED IS NEVER IN THE FILE.
+        //
+        // The bytecode VM's seed unlocks the constant vault - every string
+        // and every number the script uses. It used to be a literal in the
+        // file for every build without a split key, which made "copy the
+        // file, run one function" the whole deobfuscation.
+        //
+        // Now it is always read from the environment at run time, and the
+        // bytes that rebuild it travel with the opaque payload on the
+        // worker. The split-key path additionally publishes it from the key
+        // response, so both routes land on the same value.
+        //
+        // The opaque payload needs this whether or not there is a split key:
+        // a free script has no key response, and its seed still must not be
+        // in the file.
+        if (splitMode || options.serverVault) {
             options._vmSeedGenv = '_shs' + hex(10);
             options._vmSeedValue = rndInt(29, 251);
+            options._vmSeedCarrier = makeVmSeedCarrier(options._vmSeedValue, function (n) { return rndInt(0, n); });
             bcOpts.seedFromGenv = options._vmSeedGenv;
             bcOpts.seedOverride = options._vmSeedValue;
+            bcOpts.vmSeedCarrier = options._vmSeedCarrier;
         }
         // FAST prefers lite VM-pass (1 ms vs 179 ms bytecode) — measurable profile diff
         // FAIL LOUD, NOT SILENT.
@@ -1852,10 +1943,23 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
                 // instead of degrading, for callers that would rather fail
                 // the build than hand out a reversibly-protected script.
                 if (options.strictVm) throw new Error('Bytecode VM failed and strictVm is set, refusing to ship the lite fallback: ' + (vmReason || 'unknown reason'));
+                // The lite tier has no VM, so it has no vault and no seed.
+                // Clearing the carrier keeps the split key free of bytes
+                // that nothing will ever read.
                 options._vmSeedGenv = null;
+                options._vmSeedCarrier = null;
                 vmCode = applyVmPass(code);
                 if (debugInfo && vmCode !== code) debugInfo.vmApplied = 'lite';
             }
+        }
+        // THE VAULT LEAVES HERE, AFTER THE VM HAS RUN - the VM is what
+        // produces it.
+        //
+        // It rides out with the report, because the report is what crosses
+        // the worker boundary. The code itself is a string.
+        if (options.serverVault) {
+            if (debugInfo) debugInfo.vaultB64 = vaultB64;
+            options._vaultB64 = vaultB64;
         }
         // Surface every degradation to the caller, whatever tier we ended on.
         if (debugInfo && vmReason && String(debugInfo.vmApplied || '').indexOf('bytecode') !== 0) {
@@ -1958,6 +2062,7 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
             _canary: options._canary,
             _vmSeedGenv: options._vmSeedGenv,
             _vmSeedValue: options._vmSeedValue,
+            _vmSeedCarrier: options._vmSeedCarrier,
             _debug: options._debug
         };
         loader = buildLoader(loader, 1, innerOpts);

@@ -1781,3 +1781,80 @@ real init layer, and asserts that the artifact carries no vault, that the
 vault comes out of the obfuscator, that the worker serves it only to a live
 session for that script with the right nonce, and that the init layer
 fetches it before the artifact runs.
+
+---
+
+## D43 - The file is not the script: one opaque payload, Luarmor's shape
+
+**D42 was half true, and the half that was false was the half that mattered.**
+
+D42 said the vault is not in the file any more. What actually moved to the
+worker was the **bytecode blob**. The **constant vault** - every string and
+every number the script uses - stayed in the file, in two pieces:
+
+    local v0f26a3=_b64dec("9IZyyUvFezazVtZDyadeULLvNgoA0ToO23aCJAa3I2...")   <- the constants
+    local rad429e={{85,7},{61,2},{92,7},{99,2},{15,8},...}}                    <- their table
+
+The table was plain text. It said how many strings the script has, where each
+one starts and how long it is. And the seed that unlocks the constants was a
+plain literal in the file for every build without a split key:
+
+    local b=(129*p+231+2579288592*1.0*((p*p)%4))%251+167
+
+So the "the vault is not in the file" claim was tested by looking for the
+script's literal text, which was never in the file to begin with - it was
+encrypted. The test was looking in the wrong place, and it passed.
+
+**THE MOVE THAT RECOVERED THE SCRIPT.** Take the file, find the function that
+turns a constant index into a string, feed it the two tables it reads, and
+call it in a loop. That is four lines of work and it returns every string in
+the script. `tools/opaque_payload_test.mjs` performs exactly that move, and
+before this change it printed `"hello %s #%d"` and `"scripter"` back.
+
+**THE DECISION: ONE OPAQUE PAYLOAD, AND THE FILE IS NOT THE SCRIPT.**
+
+Everything the script is - the constants, the table that indexes them, the
+bytecode, and the seed that unlocks them - now travels as ONE base64 envelope
+on the worker:
+
+    envelope = carrier || constant table || encrypted constants || encrypted bytecode
+
+The file keeps the VM and nothing else. It has no strings, no table, and no
+key, and it cannot run without the envelope. That is Luarmor's shape:
+`superflow_bytecode` is one opaque blob, the seed lives in `_bsdata0`, and
+the bootstrapper fetches the thing it needs before it can run.
+
+**THE SEED IS SERVER-BOUND FOR EVERY BUILD, NOT ONLY THE PAID ONES.**
+
+The seed now travels inside the envelope, so it is published to the
+environment at run time whether or not there is a split key. A free script
+used to carry its seed in the file, which made the free tier the easy one -
+and the free tier is the tier anybody can fetch.
+
+**THE PAYLOAD IS DELIVERED THE WAY THE BYTECODE BLOB ALREADY WAS.**
+
+The init layer fetches `/sh/vault/<id>` with the session it has just proved
+and hands it over in `__SH_VAULT_B64`. Nothing in the worker changed: the
+route already served an opaque blob to a live session, and the envelope is
+the same thing with more in it. A script published before this change still
+works, because its artifact and its blob were generated together and the
+artifact knows which shape it is reading.
+
+**WHAT THIS ACTUALLY BUYS, STATED PLAINLY.**
+
+The same words as D42, and they still apply. It is not a wall. Whoever runs
+the script can still intercept the fetch, and a determined person still gets
+the strings.
+
+What it removes is the offline deobfuscation, and that was the whole of it.
+The file that was handed over used to be a complete description of the
+script to anyone with four lines of Lua. Now it is a bootstrapper: the
+script is a question, and the answer is on the worker.
+
+**THE TEST.** `tools/opaque_payload_test.mjs` drives the real obfuscator and
+asserts that the artifact carries no inline blob, no constant table and no
+seed literal; that the analyst's move - extract the decoder, feed it the
+file's own tables, call it - recovers no string of the script; that the same
+file runs and produces the script's output once the payload is handed over;
+and that it refuses to run, with a reason, when it is not.
+
