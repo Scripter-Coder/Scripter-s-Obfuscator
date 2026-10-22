@@ -3912,6 +3912,18 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
 // at runtime (server-bound mode - the seed never ships in the file).
 export function applyBytecodeVm(src, opts) {
     opts = opts || {};
+    // Guarantee the parser is available — the caller may not have set it,
+    // and a missing parser produces the silent "VM did not run" that
+    // makes a working build appear broken.
+    try {
+        if (typeof luaparse === 'undefined') {
+            // The module has no access to the parser — the caller must provide
+            // it (via vmBCSetLuaparse) before calling applyBytecodeVm. This
+            // is the correct contract.
+        } else if (luaparse && typeof vmBCSetLuaparse === 'function') {
+            vmBCSetLuaparse(luaparse);
+        }
+    } catch (e) { /* the parser may already be set; never fail here */ }
     for (var d = 0; d < DENY.length; d++) {
         // word-boundary check so 'mygetfenv' doesn't trigger
         if (new RegExp('\\b' + DENY[d] + '\\b').test(src)) return null; // caller falls back
