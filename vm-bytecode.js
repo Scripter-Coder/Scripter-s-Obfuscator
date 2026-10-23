@@ -2961,10 +2961,6 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         emitEncryptedBlob(BL, mainBlob, seedExpr);
         emitDecode(BL);
     }
-    // Luarmor's shape: the file carries the superflow_bytecode module
-    // return at the tail, which makes the artifact look like Luarmor's
-    // bootstrap file rather than a plain script to any reader.
-    L.push('return setmetatable({},{__index=function(t,k) return t end,__call=function(t) return t end})');
     var nativeFns = (build.nativeFns || []).slice();
     var vmBridges = (build.vmBridges || []).slice();
     var VM_BRIDGE_VALUES = nm('vb');
@@ -3897,15 +3893,6 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
     L.push(' local ok,err=pcall(' + RUN + ',' + build.chunks.length + ',{})');
     L.push(' if not ok then if type(err)=="table" and err.__lph_crash then HOST_ERROR("LPH_CRASH",0) end error(err,0) end');
     L.push('end');
-    // Luarmor's shape: the file is a MODULE that returns its VM wrapped in
-    // a metatable. The outer loader runs the chunk with loadstring(...)()
-    // and discards the return value, so this does not change when the script
-    // executes - it only changes what the file looks like to a reader.
-    // Luarmor's shape: the file is a MODULE that returns its VM wrapped in
-    // a metatable. The outer loader runs the chunk with loadstring(...)()
-    // and discards the return value, so this does not change when the script
-    // executes - it only changes what the file looks like to a reader.
-    L.push('return setmetatable({},{__index=function(t,k) return t end,__call=function(t) return t end})');
     return L.join('\n');
 }
 

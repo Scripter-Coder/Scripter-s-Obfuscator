@@ -1450,6 +1450,10 @@ function buildLoader(src, layerCount, options) {
     out.push('for ' + IV + '=1,' + C + ' do ' + R + '[' + IV + ']=string.char(' + T + '[' + IV + ']) end');
     out.push('local ' + SRC + '=table.concat(' + R + ')');
     out.push(P + '=nil ' + T + '=nil ' + R + '=nil ' + K + '=nil ' + JL + '=nil ' + L + '=nil');
+    // Luarmor's shape: the file is a MODULE that returns its VM wrapped in a
+    // metatable. The outer loader runs the chunk with loadstring(...)() and
+    // discards the return value, so this does not change when the script
+    // executes - it only changes what the file looks like to a reader.
     out.push(junkLuaLines(layerCount + 20));
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
@@ -2140,6 +2144,16 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
     }
 
     if (debugInfo) debugInfo.payload = payload;
+    // Luarmor's shape: the artifact is a MODULE that returns its VM wrapped
+    // in a metatable. The outer loader runs the chunk with loadstring(...)()
+    // and discards the return value, so this does not change when the script
+    // executes - it only changes what the file looks like to a reader.
+    if (typeof loader === 'string') {
+        loader = loader + '\nreturn setmetatable({},{__index=function(t,k) return t end,__call=function(t) return t end})';
+    } else {
+        // loader may be a function (luau target) - append nothing, the
+        // VM already ran top-level and the return value is discarded.
+    }
     if (debugInfo && splitContainer && splitContainer.paddedKey) {
         debugInfo.splitKey = {
             paddedKey: splitContainer.paddedKey,
