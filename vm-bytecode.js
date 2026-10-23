@@ -2961,6 +2961,10 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         emitEncryptedBlob(BL, mainBlob, seedExpr);
         emitDecode(BL);
     }
+    // Luarmor's shape: the file carries the superflow_bytecode module
+    // return at the tail, which makes the artifact look like Luarmor's
+    // bootstrap file rather than a plain script to any reader.
+    L.push('return setmetatable({},{__index=function(t,k) return t end,__call=function(t) return t end})');
     var nativeFns = (build.nativeFns || []).slice();
     var vmBridges = (build.vmBridges || []).slice();
     var VM_BRIDGE_VALUES = nm('vb');
@@ -3915,15 +3919,16 @@ export function applyBytecodeVm(src, opts) {
     // Guarantee the parser is available — the caller may not have set it,
     // and a missing parser produces the silent "VM did not run" that
     // makes a working build appear broken.
+    // The parser must be available. In ESM it may not reach the module
+    // unless the caller passes it, but the emitter needs it for the lua51
+    // path. Try both: the module's own reference and the caller's global.
     try {
-        if (typeof luaparse === 'undefined') {
-            // The module has no access to the parser — the caller must provide
-            // it (via vmBCSetLuaparse) before calling applyBytecodeVm. This
-            // is the correct contract.
-        } else if (luaparse && typeof vmBCSetLuaparse === 'function') {
+        if (typeof luaparse !== 'undefined' && luaparse && typeof vmBCSetLuaparse === 'function') {
             vmBCSetLuaparse(luaparse);
+        } else if (typeof globalThis !== 'undefined' && globalThis.__luaparse && typeof vmBCSetLuaparse === 'function') {
+            vmBCSetLuaparse(globalThis.__luaparse);
         }
-    } catch (e) { /* the parser may already be set; never fail here */ }
+    } catch (e) { /* parser already set, or not needed for luau */ }
     for (var d = 0; d < DENY.length; d++) {
         // word-boundary check so 'mygetfenv' doesn't trigger
         if (new RegExp('\\b' + DENY[d] + '\\b').test(src)) return null; // caller falls back
