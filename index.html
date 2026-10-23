@@ -665,7 +665,7 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
          browser. The site serves source files as bare ES modules (no
          bundler), so load luaparse as a global BEFORE main.js.
          Lives in public/vendor/ so vite copies it into dist/ too. -->
-      <script src="public/vendor/luaparse.js" onerror="this.onerror=null;this.src='./vendor/luaparse.js'"></script>
+      <script src="./vendor/luaparse.js"></script>
     <!-- CACHE BUSTING. The version below must change whenever main.js changes.
          The site is served as bare ES modules straight from the repository, so
          main.js has no hash in its URL and a browser is free to serve the copy
