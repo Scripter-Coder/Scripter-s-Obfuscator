@@ -1570,6 +1570,10 @@ var ARTIFACT_BUDGET_KB = 600;
 // here, and the caller is told which one shipped.
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
+    // Luau's `continue` is not part of Lua 5.1 and luaparse cannot read it, so
+    // rewrite it into a synthetic goto that the VM compiler lowers to a jump.
+    // The goto is compiled away, so the emitted artifact stays Lua 5.1 clean.
+    code = String(code == null ? '' : code).replace(/\bcontinue\b/g, '__sh_continue()');
     var out = applyCustomObfuscatorCore(code, options, debugInfo);
     var outKB = out.length / 1024;
     if (options._budgetRetry || options.vmPass === false || outKB <= ARTIFACT_BUDGET_KB) return out;

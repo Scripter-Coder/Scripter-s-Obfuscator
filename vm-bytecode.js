@@ -303,7 +303,9 @@ function compile(src, opts) {
     // Parse the macro with the 5.3 grammar, then lower it through the VM's
     // target-width handlers instead of requiring target parser syntax.
     var rewriteHint = /\bLPH_REWRITE\b/i.test(src);
-    if (targetName === 'luau' && /\bgoto\b/.test(src.replace(/(["']).*?\1|--[^\n]*/g, ''))) throw new Error('goto is not supported by the Luau target');
+    var hasSyntheticContinue = /__sh_continue/.test(src);
+if (targetName === 'luau' && /\bgoto\b/.test(src.replace(/(["']).*?\1|--[^\n]*/g, '')) && !hasSyntheticContinue) throw new Error('goto is not supported by the Luau target');
+if (hasSyntheticContinue && targetVersion === '5.1') targetVersion = '5.2';
     var sourceForParse = (targetMod.prepareSource ? targetMod.prepareSource(src) : src);
     var ast;
     try {
@@ -1355,6 +1357,16 @@ function compile(src, opts) {
                 return;
             }
             case 'CallStatement':
+                if (s.expression && s.expression.base && s.expression.base.type === 'Identifier' && s.expression.base.name === '__sh_continue') {
+                    if (!ctx.loops.length) throw new Error('continue outside loop');
+                    var _cl = ctx.loops[ctx.loops.length - 1];
+                    var _cpops = lex.length - _cl.depth;
+                    for (var _cpp = 0; _cpp < _cpops; _cpp++) emit0(ctx, OPCODES.CLOSE);
+                    emit0(ctx, OPCODES.POPSC);
+                    if (_cl.continueLabel != null) jref(ctx, OPCODES.JMP, _cl.continueLabel);
+                    else jref(ctx, OPCODES.JMP, _cl.endLabel);
+                    return;
+                }
                 if (s.expression && s.expression.base && s.expression.base.type === 'Identifier' && s.expression.base.name === 'LPH_ATTRIBUTES') return;
                 ex(ctx, s.expression, { trunc: true });
                 emit0(ctx, OPCODES.POP);
@@ -1462,6 +1474,17 @@ function compile(src, opts) {
                 return;
             }
             case 'GotoStatement': {
+                var _gl = s.label && (s.label.name || s.label);
+                if (_gl === '__sh_continue') {
+                    if (!ctx.loops.length) throw new Error('continue outside loop');
+                    var _loop = ctx.loops[ctx.loops.length - 1];
+                    var _pops = lex.length - _loop.depth;
+                    for (var _pp = 0; _pp < _pops; _pp++) emit0(ctx, OPCODES.CLOSE);
+                    emit0(ctx, OPCODES.POPSC);
+                    if (_loop.continueLabel != null) jref(ctx, OPCODES.JMP, _loop.continueLabel);
+                    else jref(ctx, OPCODES.JMP, _loop.endLabel);
+                    return;
+                }
                 if (targetName === 'lua51' || targetName === 'luajit') throw new Error('goto unsupported for target ' + targetName);
                 var gl = s.label && (s.label.name || s.label);
                 if (!gl) throw new Error('goto missing label');
@@ -1695,16 +1718,18 @@ function compile(src, opts) {
         mark(ctx, chkL);
         jref(ctx, OPCODES.JIF, endL);
         var bodyDepth3 = lex.length; // BEFORE pushBlock: break pops the body scope too
+        var contL3 = label(ctx);
         pushBlock();
         emit0(ctx, OPCODES.PUSHSC);
         emit1(ctx, OPCODES.LLOAD, vs);
         emit1(ctx, OPCODES.LNEW, bindId(s.variable.name));
-        ctx.loops.push({ endLabel: endL, depth: bodyDepth3, isGenericFor: false });
+        ctx.loops.push({ endLabel: endL, continueLabel: contL3, depth: bodyDepth3, isGenericFor: false });
         body(ctx, s.body);
         ctx.loops.pop();
         emit0(ctx, OPCODES.CLOSE);
                 emit0(ctx, OPCODES.POPSC);
         popBlock();
+        mark(ctx, contL3);
         emit1(ctx, OPCODES.LLOAD, vs);
         emit1(ctx, OPCODES.LLOAD, vst);
         emit0(ctx, OPCODES.ADD);
@@ -1746,6 +1771,7 @@ function compile(src, opts) {
         // bind loop vars from packed (each DUP+UNPK peeks, packed intact)
         var bodyDepth4 = lex.length; // BEFORE pushBlock: break must pop
                                     // the body scope + the packed residue
+        var contL4 = label(ctx);
         pushBlock();
         emit0(ctx, OPCODES.PUSHSC);
         for (var v = 0; v < s.variables.length; v++) {
@@ -1753,12 +1779,13 @@ function compile(src, opts) {
             emit1(ctx, OPCODES.UNPK, v + 1);
             emit1(ctx, OPCODES.LNEW, bindId(s.variables[v].name));
         }
-        ctx.loops.push({ endLabel: endL, depth: bodyDepth4, isGenericFor: true });
+        ctx.loops.push({ endLabel: endL, continueLabel: contL4, depth: bodyDepth4, isGenericFor: true });
         body(ctx, s.body);
         ctx.loops.pop();
         emit0(ctx, OPCODES.CLOSE);
                 emit0(ctx, OPCODES.POPSC);
         popBlock();
+        mark(ctx, contL4);
         // c = r[1]  (DUP: peek without consuming the packed)
         emit0(ctx, OPCODES.DUP);
         emit0(ctx, OPCODES.UNPK1F);
