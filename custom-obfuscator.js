@@ -289,9 +289,9 @@ function encChain(bytes, l, cipherRounds) {
         var s = l.seed[(n1 - 1) % l.seed.length];
         var q;
         if (rounds === 1) {
-            q = ((s * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+            q = (Math.floor(((s * l.c1 * 65599 + prev * l.c2 * 40503 + n1 * 31) % 4294967296) / 65536) % 255) + 1;
         } else {
-            q = 0; for (var _r=1; _r<=rounds; _r++) q = (((q ^ s) + l.c1*(_r%3+1) + prev * l.c2 + n1 * 31 + _r*73) % 251) + 5;
+            q = 0; for (var _r=1; _r<=rounds; _r++) { var _h = ((q ^ s) + l.c1*(_r%3+1)*65599 + prev * l.c2*40503 + n1 * 31 + _r*73) % 4294967296; q = (Math.floor(_h / 65536) % 255) + 1; }
         }
         var v = (pb ^ q) + l.shift + (i % 3) * l.madd;
         out[n1 - 1] = v & 0xFF;
@@ -1442,9 +1442,9 @@ function buildLoader(src, layerCount, options) {
     out.push('  local s=kk[((n1-1)%#kk)+1]');
     var _cr2 = options.cipherRounds != null ? Math.max(1,Math.min(16,options.cipherRounds|0)) : (options._debug ? 1 : 16);
     if (_cr2 === 1) {
-        out.push('  local q=((s*c1+' + PV + '*c2+n1*'+polyNum(31)+')%'+polyNum(251)+')+'+polyNum(5));
+        out.push('  local _h=((s*c1*65599+' + PV + '*c2*40503+n1*'+polyNum(31)+')%4294967296) local q=(math.floor(_h/65536)%255)+1');
     } else {
-        out.push('  local q=0; for _r=1,'+_cr2+' do q = ((' + X + '(q, s) + c1*(_r%3+1) + ' + PV + '*c2 + n1*31 + _r*73)%251)+5 end');
+        out.push('  local q=0; for _r=1,'+_cr2+' do local _h=((' + X + '(q, s) + c1*(_r%3+1)*65599 + ' + PV + '*c2*40503 + n1*31 + _r*73)%4294967296) q=(math.floor(_h/65536)%255)+1 end');
     }
     out.push('  local v=' + T + '[n1]');
     out.push('  v=(v-sh-(i%3)*ma)%256');

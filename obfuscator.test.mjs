@@ -91,7 +91,8 @@ function decodeLoader(text) {
         let prev = e.iv;
         for (let i = 0; i < C; i++) {
             const n1 = rev ? C - i : i + 1;
-            const q = ((e.seed[(n1 - 1) % e.seed.length] * e.c1 + prev * e.c2 + n1 * 31) % 251) + 5;
+            const _h = (e.seed[(n1 - 1) % e.seed.length] * e.c1 * 65599 + prev * e.c2 * 40503 + n1 * 31) % 4294967296;
+            const q = (Math.floor(_h / 65536) % 255) + 1;
             let v = (T[n1 - 1] - e.shift - (i % 3) * e.madd) % 256;
             if (v < 0) v += 256;
             T[n1 - 1] = v ^ q;

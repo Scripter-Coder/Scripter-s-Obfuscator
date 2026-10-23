@@ -2217,7 +2217,7 @@ function emitVM(build) {
             var _pos = _r.start + _j;
             var _p = _pos + 1;
             var _mix = (seed * 65599 + _p * 40503) % 4294967296;
-            var _baseKey = ((VP.a * _p + VP.b + _mix) % 251) + VP.c;
+            var _baseKey = (Math.floor((((VP.a * _p + VP.b + _mix) % 4294967296)) / 65536) + VP.c) % 256;
             var _combined = (_baseKey + _prev * VP.d) % 256;
             var _plain = vault[_pos];
             vault[_pos] = (_plain ^ _combined) % 256;
@@ -2560,7 +2560,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         // The key expression is the seed, mixed with the position, mixed
         // with an odd multiplier so the seed survives whole. See the vault
         // cipher above for why that matters.
-        L.push('  local a=' + V + '[p] local b=(' + VP.a + '*p+' + VP.b + '+(' + seedExpr + '*65599+p*40503)%4294967296)%251+' + VP.c);
+        L.push('  local a=' + V + '[p] local _h=(' + VP.a + '*p+' + VP.b + '+(' + seedExpr + '*65599+p*40503)%4294967296)%4294967296 local b=(math.floor(_h/65536)+' + VP.c + ')%256');
     L.push('  local kb=(b + prev*' + VP.d + ')%256');
     L.push('  local r,pw=0,1 local aa=a local bb=kb');
     L.push('  for _=1,8 do local x=aa%2 local y=bb%2 if x~=y then r=r+pw end aa=(aa-x)/2 bb=(bb-y)/2 pw=pw*2 end');
@@ -2680,7 +2680,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
             var sk = blobSegKey(key, si, fb);
             for (var q = 0; q < segs[si]; q++) {
                 var p0 = q + 1;
-                var k0 = (((p0 * p0 * BP.a + p0 * BP.b + BP.c + sk) % 4294967296) % 251) + 4;
+                var k0 = (Math.floor((((p0 * p0 * BP.a + p0 * BP.b + BP.c + sk) % 4294967296)) / 65536) % 255) + 1;
                 out.push((plain[start + q] ^ k0) % 256);
             }
             for (var f = 0; f < segs[si]; f++) fb = (fb + plain[start + f]) % 4294967296;
@@ -2712,7 +2712,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         L.push(' for si=1,#segs do');
         L.push('  local sk=((' + keyExpr + ')*31+si*2654435761+fb)%4294967296 local st=pos');
         L.push('  for lp=1,segs[si] do');
-        L.push('   local a=src[pos] local b=((lp*lp*' + BP.a + '+lp*' + BP.b + '+' + BP.c + '+sk)%4294967296)%251+4');
+        L.push('   local a=src[pos] local _h=((lp*lp*' + BP.a + '+lp*' + BP.b + '+' + BP.c + '+sk)%4294967296) local b=(math.floor(_h/65536)%255)+1');
         L.push('   local r,pw=0,1');
         L.push('   for _=1,8 do local x=a%2 local y=b%2 if x~=y then r=r+pw end a=(a-x)/2 b=(b-y)/2 pw=pw*2 end');
         L.push('   ' + varName + '[pos]=r pos=pos+1');
@@ -2851,7 +2851,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         var cipher = [];
         for (var envCi = 0; envCi < envBytes.length; envCi++) {
             var envP = envCi + 1;
-            var envK = ((keyA * 65599 + keyB * 40503 + envP * 97) % 4294967296) % 251 + 4;
+            var envK = Math.floor((((keyA * 65599 + keyB * 40503 + envP * 97) % 4294967296)) / 65536) % 256;
             // Subtraction, not XOR: XOR is not available on Lua 5.1, and the
             // cipher has to run everywhere the artifact runs. The +256 keeps
             // the result a byte on BOTH sides - Lua's % keeps the sign of the
@@ -2929,7 +2929,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         // back to a byte - and no % is needed, which matters: Lua's % keeps
         // the sign of the dividend, and a negative byte would take the
         // whole stream with it.
-        L.push(' for _i=_kl+1,#_st do local _j=_i-_kl local _kk=((_a*65599+_b*40503+_j*97)%4294967296)%251+4 local _d=_st[_i]+_kk if _d>255 then _d=_d-256 end _st[_i]=_d end');
+        L.push(' for _i=_kl+1,#_st do local _j=_i-_kl local _h=(_a*65599+_b*40503+_j*97)%4294967296 local _kk=math.floor(_h/65536)%256 local _d=_st[_i]+_kk if _d>255 then _d=_d-256 end _st[_i]=_d end');
         L.push(' _p=_kl+1');
         // ---- THE CHECK ----
         //
