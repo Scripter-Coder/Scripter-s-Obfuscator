@@ -60,7 +60,11 @@ export function shRandomInt(max) {
 }
 
 export function shRandomPick(str) {
-    return str.charAt(shRandomInt(str.length));
+    // Code-point aware: a pool may contain emoji / astral characters, and
+    // str.charAt() would happily split a surrogate pair in half, producing an
+    // invalid lone surrogate. Spreading into code points keeps each pick whole.
+    const chars = [...str];
+    return chars[shRandomInt(chars.length)];
 }
 
 // ---- pools ----------------------------------------------------------------
@@ -101,18 +105,61 @@ export const SH_KEY_POOLS = {
     symbols: '-._~',
 };
 
-// Opt-in only. See the header on why.
-export const SH_KEY_UNICODE_POOL =
+// Exotic character pools. These are ON by default now: the key is meant to be a
+// long, visually noisy string (numbers, letters, symbols, emojis, glitched
+// combining marks and "gaster"-style symbols), not a short ASCII token.
+//
+// Code-point ranges are expanded at module load so the file stays readable and
+// the pools stay in sync with the Unicode blocks they describe.
+function _cpRange(a, b) {
+    let s = '';
+    for (let i = a; i <= b; i++) s += String.fromCodePoint(i);
+    return s;
+}
+
+// Emoji blocks.
+export const SH_KEY_EMOJI_POOL =
+    _cpRange(0x1F600, 0x1F64F) + // emoticons
+    _cpRange(0x1F300, 0x1F5FF) + // misc symbols & pictographs
+    _cpRange(0x1F680, 0x1F6FF) + // transport & map
+    _cpRange(0x1F900, 0x1F9FF) + // supplemental symbols & pictographs
+    _cpRange(0x1FA70, 0x1FAFF) + // symbols & pictographs extended-A
+    _cpRange(0x2600, 0x26FF) +   // misc symbols
+    _cpRange(0x2700, 0x27BF);    // dingbats
+
+// Glitched / combining-mark blocks (zalgo-style).
+export const SH_KEY_GLITCHED_POOL =
+    _cpRange(0x0300, 0x036F) + // combining diacritical marks
+    _cpRange(0x1AB0, 0x1AFF) + // combining diacritical marks extended
+    _cpRange(0x1DC0, 0x1DFF) + // combining diacritical marks supplement
+    _cpRange(0x20D0, 0x20FF) + // combining diacritical marks for symbols
+    _cpRange(0xFE20, 0xFE2F);  // combining half marks
+
+// "Gaster"-style / letterlike / symbol blocks.
+export const SH_KEY_GASTER_POOL =
+    _cpRange(0x2100, 0x214F) + // letterlike symbols
+    _cpRange(0x2190, 0x21FF) + // arrows
+    _cpRange(0x2200, 0x22FF) + // math operators
+    _cpRange(0x2300, 0x23FF) + // misc technical
+    _cpRange(0x25A0, 0x25FF) + // geometric shapes
+    _cpRange(0x2B00, 0x2BFF) + // misc symbols & arrows
     'ΩΔΞΣΦΨΛΞ♠♣♥♦♪☠⚡⚙⛨◆◇⬡⌬⧫⟐⟟∴∵⊕⊗⋈✦✧❖';
 
+// Combined exotic pool. Kept as SH_KEY_UNICODE_POOL for backwards compat.
+export const SH_KEY_UNICODE_POOL =
+    SH_KEY_EMOJI_POOL + SH_KEY_GLITCHED_POOL + SH_KEY_GASTER_POOL;
+
 const ALL_ASCII = SH_KEY_POOLS.upper + SH_KEY_POOLS.lower + SH_KEY_POOLS.digits + SH_KEY_POOLS.symbols;
+// Default pool now includes the exotic classes, so a key is visually noisy by
+// default. ASCII-only remains available via { unicode: false }.
+const ALL = ALL_ASCII + SH_KEY_UNICODE_POOL;
 
 // ---- generation -----------------------------------------------------------
 
 /**
  * Generate a key.
  *
- * @param {number} length  1..4096. Default 192.
+ * @param {number} length  1..4096. Default 1000.
  * @param {object} [opts]
  * @param {boolean} [opts.unicode]      mix in the opt-in unicode pool
  * @param {string}  [opts.pool]         override the combined ASCII pool
@@ -122,13 +169,15 @@ const ALL_ASCII = SH_KEY_POOLS.upper + SH_KEY_POOLS.lower + SH_KEY_POOLS.digits 
  */
 export function shGenerateKey(length, opts) {
     const o = opts || {};
-    const len = (length === undefined || length === null) ? 192 : Number(length);
+    const len = (length === undefined || length === null) ? 1000 : Number(length);
     if (!Number.isInteger(len) || len < 1 || len > 4096) {
         throw new Error('shGenerateKey: length must be an integer 1..4096');
     }
 
-    const pool = o.pool || (o.unicode ? ALL_ASCII + SH_KEY_UNICODE_POOL : ALL_ASCII);
-    if (!pool || pool.length < 2) throw new Error('shGenerateKey: pool needs at least 2 symbols');
+    const useUnicode = (o.unicode === undefined) ? true : !!o.unicode;
+    const pool = o.pool || (useUnicode ? ALL : ALL_ASCII);
+    const poolChars = [...pool];
+    if (!poolChars || poolChars.length < 2) throw new Error('shGenerateKey: pool needs at least 2 symbols');
 
     // Coverage guarantee. "At least one of each class" makes a generated key
     // recognisably a ScripterHub key, which is worth something for support -
@@ -137,12 +186,21 @@ export function shGenerateKey(length, opts) {
     // simply shorter.
     const require = o.require || ['upper', 'lower', 'digits', 'symbols'];
     const chars = [];
+    let curLen = 0;
     for (const cls of require) {
         const p = SH_KEY_POOLS[cls];
         if (!p) throw new Error('shGenerateKey: unknown class ' + cls);
-        if (p.length && chars.length < len) chars.push(shRandomPick(p));
+        const c = shRandomPick(p);
+        if (curLen + c.length <= len) { chars.push(c); curLen += c.length; }
     }
-    while (chars.length < len) chars.push(shRandomPick(pool));
+    while (curLen < len) {
+        const c = shRandomPick(pool);
+        if (curLen + c.length <= len) { chars.push(c); curLen += c.length; }
+        else {
+            const a = shRandomPick(ALL_ASCII);
+            chars.push(a); curLen += a.length;
+        }
+    }
 
     // Fisher-Yates, so the guaranteed class characters are not always at the
     // front - that alone would leak which positions are special.
@@ -160,9 +218,10 @@ export function shGenerateKey(length, opts) {
  */
 export function shKeyEntropyBits(length, opts) {
     const o = opts || {};
-    const pool = o.pool || (o.unicode ? ALL_ASCII + SH_KEY_UNICODE_POOL : ALL_ASCII);
-    const len = (length === undefined || length === null) ? 192 : Number(length);
-    return len * Math.log2(pool.length);
+    const useUnicode = (o.unicode === undefined) ? true : !!o.unicode;
+    const pool = o.pool || (useUnicode ? ALL : ALL_ASCII);
+    const len = (length === undefined || length === null) ? 1000 : Number(length);
+    return len * Math.log2([...pool].length);
 }
 
 /**

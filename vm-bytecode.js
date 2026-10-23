@@ -2777,9 +2777,11 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
             ? build.vmSeedCarrier.map(function (b) { return b & 0xFF; })
             : (function () {
                 var s = seed >>> 0;
-                var c = [0, 0, 0, 0, 0, 0, 0, 0];
-                for (var ci = 0; ci < 4; ci++) c[ci] = rndInt(0, 256);
-                return [(s >>> 24) & 255, (s >>> 16) & 255, (s >>> 8) & 255, s & 255].concat(c, [0, 0, 0, 0]);
+                var out = [(s >>> 24) & 255, (s >>> 16) & 255, (s >>> 8) & 255, s & 255];
+                while (out.length < 8) out.push(rndInt(0, 256));
+                out.push(0, 0, 0, 0);
+                while (out.length < 1000) out.push(rndInt(0, 256));
+                return out;
             })();
         var keyA = ((carrier[0] * 16777216) + (carrier[1] * 65536) + (carrier[2] * 256) + carrier[3]) >>> 0;
         var keyB = ((carrier[4] * 16777216) + (carrier[5] * 65536) + (carrier[6] * 256) + carrier[7]) >>> 0;
@@ -2849,7 +2851,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         var cipher = [];
         for (var envCi = 0; envCi < envBytes.length; envCi++) {
             var envP = envCi + 1;
-            var envK = ((keyA * 65599 + keyB * 40503 + envP * 97) % 4294967296) % 251 + 4;
+            var envK = ((keyA * 65599 + keyB * 40503 + envP * 97 + carrier[(envP - 1) % carrier.length] * 131) % 4294967296) % 251 + 4;
             // Subtraction, not XOR: XOR is not available on Lua 5.1, and the
             // cipher has to run everywhere the artifact runs. The +256 keeps
             // the result a byte on BOTH sides - Lua's % keeps the sign of the
@@ -2927,7 +2929,7 @@ L.push('local ' + FIXERR + '=function(m) if type(m)~="string" or not ' + SRCL + 
         // back to a byte - and no % is needed, which matters: Lua's % keeps
         // the sign of the dividend, and a negative byte would take the
         // whole stream with it.
-        L.push(' for _i=_kl+1,#_st do local _j=_i-_kl local _kk=((_a*65599+_b*40503+_j*97)%4294967296)%251+4 local _d=_st[_i]+_kk if _d>255 then _d=_d-256 end _st[_i]=_d end');
+        L.push(' for _i=_kl+1,#_st do local _j=_i-_kl local _kk=((_a*65599+_b*40503+_j*97+' + KM + '[((_j-1)%' + carrier.length + ')+1]*131)%4294967296)%251+4 local _d=_st[_i]+_kk if _d>255 then _d=_d-256 end _st[_i]=_d end');
         L.push(' _p=_kl+1');
         // ---- THE CHECK ----
         //

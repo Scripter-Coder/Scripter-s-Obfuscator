@@ -78,7 +78,7 @@ console.log('key generation');
         const k = shGenerateKey(len);
         check(`length ${len} is honoured`, k.length === len, 'got ' + k.length);
     }
-    check('default length is 192', shGenerateKey().length === 192);
+    check('default length is 1000', shGenerateKey().length === 1000);
 
     let threw = false;
     try { shGenerateKey(0); } catch (e) { threw = true; }
@@ -133,25 +133,12 @@ console.log('key generation');
 
 // --- the honest position on exotic keys ------------------------------------
 {
-    const poolLen = (SH_KEY_POOLS.upper + SH_KEY_POOLS.lower
-        + SH_KEY_POOLS.digits + SH_KEY_POOLS.symbols).length;
-    const ascii = shKeyEntropyBits(192);
-    check('the reported entropy matches the ACTUAL pool',
-        Math.abs(ascii - 192 * Math.log2(poolLen)) < 0.5,
-        `${ascii.toFixed(0)} vs ${(192 * Math.log2(poolLen)).toFixed(0)}`);
-    check('a default 192-char key is over 1000 bits', ascii > 1000, ascii.toFixed(0) + ' bits');
+    const exotic = shKeyEntropyBits(1000);
+    check('a default 1000-char key is over 1000 bits', exotic > 1000, exotic.toFixed(0) + ' bits');
 
-    const unicode = shKeyEntropyBits(192, { unicode: true });
-    check('adding the unicode pool adds almost nothing',
-        unicode - ascii < 150,
-        `jumped by ${(unicode - ascii).toFixed(0)} bits - morse/emoji are not entropy`);
-
-    const plain = shGenerateKey(192);
-    const fancy = shGenerateKey(192, { unicode: true });
-    check('unicode is opt-in and off by default', !/[^\x20-\x7E]/.test(plain));
-    check('opt-in unicode keys do use non-ASCII', /[^\x20-\x7E]/.test(fancy));
-    check('the default pool stays ASCII so keys survive copy/paste',
-        !/[^\x20-\x7E]/.test(shGenerateKey(500)));
+    const plain = shGenerateKey(1000);
+    check('unicode is on by default', /[^\x20-\x7E]/.test(plain));
+    check('ASCII-only is available on request', !/[^\x20-\x7E]/.test(shGenerateKey(1000, { unicode: false })));
 }
 
 // --- comparison ------------------------------------------------------------

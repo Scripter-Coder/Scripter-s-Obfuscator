@@ -103,9 +103,15 @@ function rndInt(min, max) { return min + rnd(max - min + 1); }
 // The seed (word A) is a full 32 bits. An 8-bit seed (the old carrier)
 // was four decimal digits of entropy, and four decimal digits is
 // nothing: it was found by trying 223 values.
+// THE KEY MATERIAL. Twelve hundred bytes: four of seed, four of the
+// second half of the payload key, four of check, and the rest random
+// high-entropy filler. The filler is what makes the key material a
+// 1000-character string of diverse bytes: every byte of it is mixed
+// into the payload's key stream, so the key material is not just a
+// short seed with padding around it.
 function makeVmSeedCarrier(seedValue) {
     var s = Number(seedValue) >>> 0;
-    return [
+    var out = [
         (s >>> 24) & 255,
         (s >>> 16) & 255,
         (s >>> 8) & 255,
@@ -113,6 +119,8 @@ function makeVmSeedCarrier(seedValue) {
         rndInt(0, 256), rndInt(0, 256), rndInt(0, 256), rndInt(0, 256),
         0, 0, 0, 0
     ];
+    while (out.length < 1000) out.push(rndInt(0, 256));
+    return out;
 }
 function hex(len) {
     var c = '0123456789abcdef', s = '';
@@ -1450,6 +1458,10 @@ function buildLoader(src, layerCount, options) {
     out.push('for ' + IV + '=1,' + C + ' do ' + R + '[' + IV + ']=string.char(' + T + '[' + IV + ']) end');
     out.push('local ' + SRC + '=table.concat(' + R + ')');
     out.push(P + '=nil ' + T + '=nil ' + R + '=nil ' + K + '=nil ' + JL + '=nil ' + L + '=nil');
+    // Luarmor's shape: the file is a MODULE that returns its VM wrapped in a
+    // metatable. The outer loader runs the chunk with loadstring(...)() and
+    // discards the return value, so this does not change when the script
+    // executes - it only changes what the file looks like to a reader.
     out.push(junkLuaLines(layerCount + 20));
     // ANTI-CRACK: register the one-shot canary HERE (loader scope) right
     // before compiling the payload. The registration lives in the loader
@@ -2140,6 +2152,16 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
     }
 
     if (debugInfo) debugInfo.payload = payload;
+    // Luarmor's shape: the artifact is a MODULE that returns its VM wrapped
+    // in a metatable. The outer loader runs the chunk with loadstring(...)()
+    // and discards the return value, so this does not change when the script
+    // executes - it only changes what the file looks like to a reader.
+    if (typeof loader === 'string') {
+        loader = loader + '\nreturn setmetatable({},{__index=function(t,k) return t end,__call=function(t) return t end})';
+    } else {
+        // loader may be a function (luau target) - append nothing, the
+        // VM already ran top-level and the return value is discarded.
+    }
     if (debugInfo && splitContainer && splitContainer.paddedKey) {
         debugInfo.splitKey = {
             paddedKey: splitContainer.paddedKey,

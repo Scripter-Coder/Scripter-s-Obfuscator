@@ -2076,7 +2076,7 @@ function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) { /* 
 function getScriptForLoader(scriptId) { return null; }
 
 // ============ GENERATE KEY ============
-// 30 characters with Uppercase + Lowercase + Numbers + Symbols
+// 1000 characters: numbers + letters + symbols + emojis + glitched + gaster fonts
 // (safe symbols only - no quotes/backslash so keys work inside Lua strings)
 // This used to build keys with Math.random(), which is a PRNG, not a random
 // source - its output is reconstructible from a few observed values. For a
@@ -2084,11 +2084,10 @@ function getScriptForLoader(scriptId) { return null; }
 // to have, so it now draws from crypto.getRandomValues via rejection sampling,
 // which also avoids the modulo bias `byte % n` introduces.
 //
-// Length is 192, which is ~1140 bits. Length is what buys security here;
-// mixing in more character classes is close to free but close to pointless, and
-// non-ASCII costs copy/paste reliability. See sh-keys.js for the full note.
+// Length is 1000 characters, mixing numbers, letters, symbols, emojis, glitched
+// combining marks and gaster-style symbols for a long, visually noisy key.
 function generateKey() {
-    return shGenerateKey(192);
+    return shGenerateKey(1000, { unicode: true });
 }
 
 // ============ KEYS SYSTEM ============
