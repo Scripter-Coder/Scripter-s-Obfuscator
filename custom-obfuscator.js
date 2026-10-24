@@ -1,4 +1,5 @@
 // ============================================================
+import { FULL_ANTI_TAMPER_B64 } from './full-anti-tamper-data.js';
 // ScripterHub Custom Obfuscator Engine v3.0
 // ------------------------------------------------------------
 // A REAL working Lua/Luau obfuscator that runs fully in JS:
@@ -1553,6 +1554,23 @@ function buildLoader(src, layerCount, options) {
         // owner debugging) - NEVER in production output (it leaked the
         // noise stride + layer count to crackers)
         result = '--[shdebug:' + JSON.stringify({ stride: stride, chk: chk, layerCount: layerCount, keyLens: layers.map(function (l) { return l.seed.length; }), slots: M, start: START }) + ']\n' + result;
+    }
+    // Full environment anti-tamper (friend's module). Opt-in: embeds ~344 KB, so
+    // it is only added when the caller explicitly requests it.
+    if (options.fullAntiTamper) {
+    try {
+        var _atB64 = FULL_ANTI_TAMPER_B64;
+        var _atSrc = '';
+        if (typeof Buffer !== 'undefined') {
+            _atSrc = Buffer.from(_atB64, 'base64').toString('utf8');
+        } else {
+            var _bin = atob(_atB64);
+            var _bytes = new Uint8Array(_bin.length);
+            for (var _i = 0; _i < _bin.length; _i++) _bytes[_i] = _bin.charCodeAt(_i);
+            _atSrc = new TextDecoder('utf-8').decode(_bytes);
+        }
+        result = 'pcall(function()\n' + _atSrc + '\nend)\n' + result;
+    } catch (e) { /* anti-tamper unavailable - continue without it */ }
     }
     return result;
 }
