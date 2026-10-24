@@ -5948,7 +5948,7 @@ function openCreateScript(projectId) {
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> 🛡️ Anti Tampering</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked><input type="checkbox" id="scriptFullAntiTamper"> Full Anti Tamper (V2) 🛡️ Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> 🔒 Anti Skidding</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> 📡 Environment Logging</label>
                 <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="scriptBytecodeVM" checked onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
@@ -6130,6 +6130,7 @@ function confirmCreateScript(projectId) {
     var specialKey = document.getElementById('scriptSpecialKey') ? document.getElementById('scriptSpecialKey').value : '';
     var description = document.getElementById('scriptDescription').value.trim();
     var antiTamper = document.getElementById('scriptAntiTamper').checked;
+    var fullAntiTamper = document.getElementById('scriptFullAntiTamper') ? document.getElementById('scriptFullAntiTamper').checked : false;
     var antiSkid = document.getElementById('scriptAntiSkid').checked;
     var envLogging = document.getElementById('scriptEnvLogging') ? document.getElementById('scriptEnvLogging').checked : false;
     // default TRUE: the VM has always been on, and silently turning it off would
@@ -6257,6 +6258,7 @@ function confirmCreateScript(projectId) {
         intensity: obfuscationIntensity,
         ultra: true,
         antiTamper: antiTamper,
+        fullAntiTamper: fullAntiTamper,
         vmPass: vmPass,
         antiSkid: antiSkid,
         hwidLock: true,
@@ -6311,6 +6313,7 @@ function confirmCreateScript(projectId) {
             name: name,
             description: description,
             antiTamper: antiTamper,
+            fullAntiTamper: fullAntiTamper,
             vmPass: vmPass,
             antiSkid: antiSkid,
         hwidLock: true,
@@ -6861,6 +6864,7 @@ function generateLoadstring(projectId, scriptId) {
         obfuscateScriptCode(script.originalCode, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
             intensity: script.obfuscationIntensity || 10,
             antiTamper: script.antiTamper !== false,
+            fullAntiTamper: !!script.fullAntiTamper,
             // read from the stored record, NOT the create-modal local: this function
             // re-obfuscates a script that was saved earlier, and there is no modal
             // open. `vmPass: vmPass` here is a ReferenceError, because the only
@@ -6914,6 +6918,7 @@ function generateLoadstring(projectId, scriptId) {
             obfuscateScriptCode(script.originalCode || script.code, script.obfuscatorEngine === 'aegis' ? 'aegis' : 'default', {
                 intensity: script.obfuscationIntensity || 10,
                 antiTamper: script.antiTamper !== false,
+            fullAntiTamper: !!script.fullAntiTamper,
                 // from the stored record - see the note on the sibling call above
                 vmPass: script.vmPass !== false,
                 antiSkid: script.antiSkid !== false,
@@ -6951,7 +6956,7 @@ function generateLoadstring(projectId, scriptId) {
                     requireKey: !!_orig.requireKey, splitKeyData: (fresh && typeof fresh === 'object' && fresh.splitKey) ? fresh.splitKey : null,
                     loaderId: (fresh && typeof fresh === 'object' && fresh.wantId) ? fresh.wantId : _orig.loaderId,
                     obfuscatorEngine: _orig.obfuscatorEngine, obfuscationIntensity: _orig.obfuscationIntensity,
-                    antiTamper: _orig.antiTamper, antiSkid: _orig.antiSkid, envLogging: !!_orig.envLogging, webhookUrl: _orig.webhookUrl || ''
+                    antiTamper: _orig.antiTamper, fullAntiTamper: !!_orig.fullAntiTamper, antiSkid: _orig.antiSkid, envLogging: !!_orig.envLogging, webhookUrl: _orig.webhookUrl || ''
                 };
                 // also handle the object-form that shUploadLoader expects: {code, splitKey, wantId}
                 _synth.splitKey = _synth.splitKeyData; _synth.wantId = _synth.loaderId;
@@ -7129,7 +7134,7 @@ function editScript(projectId, scriptId) {
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}> 🛡️ Anti Tampering</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? 'checked' : ''}><input type="checkbox" id="editScriptFullAntiTamper" ${script.fullAntiTamper ? 'checked' : ''}> Full Anti Tamper (V2) 🛡️ Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidding</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> 📡 Environment Logging</label>
                 <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="editScriptBytecodeVM" ${script.vmPass === false ? '' : 'checked'} onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
@@ -7232,6 +7237,7 @@ function confirmEditScript(projectId, scriptId) {
     var specialKey = document.getElementById('editScriptSpecialKey') ? document.getElementById('editScriptSpecialKey').value : '';
     var description = document.getElementById('editScriptDescription').value.trim();
     var antiTamper = document.getElementById('editScriptAntiTamper').checked;
+    var fullAntiTamper = document.getElementById('editScriptFullAntiTamper') ? document.getElementById('editScriptFullAntiTamper').checked : false;
     var antiSkid = document.getElementById('editScriptAntiSkid').checked;
     var envLogging = document.getElementById('editScriptEnvLogging') ? document.getElementById('editScriptEnvLogging').checked : false;
     var vmPass = document.getElementById('editScriptBytecodeVM') ? document.getElementById('editScriptBytecodeVM').checked : true;
@@ -7319,6 +7325,7 @@ function confirmEditScript(projectId, scriptId) {
         intensity: obfuscationIntensity,
         ultra: true,
         antiTamper: antiTamper,
+        fullAntiTamper: fullAntiTamper,
         vmPass: vmPass,
         antiSkid: antiSkid,
         hwidLock: true,
@@ -7371,6 +7378,7 @@ function confirmEditScript(projectId, scriptId) {
                             projects[i].scripts[j].name = name;
                             projects[i].scripts[j].description = description;
                             projects[i].scripts[j].antiTamper = antiTamper;
+                            projects[i].scripts[j].fullAntiTamper = fullAntiTamper;
                             projects[i].scripts[j].antiSkid = antiSkid;
                             projects[i].scripts[j].envLogging = envLogging;
                             projects[i].scripts[j].webhookUrl = webhookUrl;
