@@ -9,8 +9,10 @@ import { shGenerateKey } from './sh-keys.js';
 // VM pass needs a Lua parser. index.html loads vendor/luaparse.js (UMD)
 // as a plain script BEFORE this module, which sets window.luaparse -
 // works both for the raw source deploy and inside the vite bundle.
-vmSetLuaparse(window.luaparse);
-vmBCSetLuaparse(window.luaparse);
+if (typeof window !== 'undefined' && window.luaparse) {
+    vmSetLuaparse(window.luaparse);
+    vmBCSetLuaparse(window.luaparse);
+}
 
 let currentUser = null;
 let isLoggedIn = false;
@@ -6190,7 +6192,7 @@ function confirmCreateScript(projectId) {
     // LURAPH V15: accurate estimate - 8x for 12 layers, 6x for 6 layers (was 40x ultra bloat)
     var _estFactor = (obfuscationIntensity >= 12) ? 10 : (obfuscationIntensity >= 8 ? 7 : 6);
     var estObf = code.length * _estFactor; // balanced: no more x2 storage shock
-    if (window.luaparse) {
+    if (typeof window !== 'undefined' && window.luaparse) {
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
@@ -7278,7 +7280,7 @@ function confirmEditScript(projectId, scriptId) {
     if (!specialKey) { showNotification('Error', 'Your Special Key is required. For free scripts it protects the website page - executors still run it with NO key.', 'error', 7000); return; }
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     // syntax-check BEFORE the heavy re-obfuscation work
-    if (window.luaparse) {
+    if (typeof window !== 'undefined' && window.luaparse) {
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
