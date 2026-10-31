@@ -35,8 +35,20 @@ async function ensureLuaparse() {
         vmBCSetLuaparse(_luaparse);
         return _luaparse;
     }
-    const res = await fetch(new URL('../public/vendor/luaparse.js', import.meta.url));
-    const src = await res.text();
+    const candidates = [
+        new URL('../public/vendor/luaparse.js', import.meta.url),
+        new URL('../vendor/luaparse.js', import.meta.url),
+        '/vendor/luaparse.js',
+        '/public/vendor/luaparse.js',
+    ];
+    let src = null;
+    for (const c of candidates) {
+        try {
+            const res = await fetch(c);
+            if (res.ok) { src = await res.text(); break; }
+        } catch (e) { /* try next */ }
+    }
+    if (!src) throw new Error('luaparse could not be fetched');
     const fn = new Function(src);
     fn.call(globalThis);
     _luaparse = globalThis.luaparse;

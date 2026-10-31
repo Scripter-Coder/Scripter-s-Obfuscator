@@ -6828,7 +6828,15 @@ function shObfuscateLocally(code, engine, options) {
             if (m.type === 'error') { finish(reject, new Error(m.error)); return; }
         };
         worker.onerror = function (err) {
-            finish(reject, new Error((err && err.message) ? err.message : 'worker failed'));
+            // Worker died (often because luaparse could not be loaded in that
+            // browser). Fall back to the synchronous path rather than failing
+            // the whole obfuscation.
+            try {
+                var dbgF = {};
+                finish(resolve, { result: applyCustomObfuscator(code, options, dbgF), dbgInfo: dbgF });
+            } catch (e2) {
+                finish(reject, new Error((err && err.message) ? err.message : 'worker failed'));
+            }
         };
 
         worker.postMessage({ type: 'obfuscate', code: code, engine: engine, options: options });
