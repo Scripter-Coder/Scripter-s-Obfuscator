@@ -6756,6 +6756,27 @@ function shIsOutOfMemory(err) {
     return /out of memory|memory access out of bounds|allocation failed|allocating memory|heap (limit|out)|terminated/i.test(m);
 }
 
+async function shEnsureMainLuaparse() {
+    try {
+        if (typeof window !== 'undefined' && window.luaparse && typeof window.luaparse.parse === 'function') {
+            vmSetLuaparse(window.luaparse);
+            vmBCSetLuaparse(window.luaparse);
+            return window.luaparse;
+        }
+        const res = await fetch('./vendor/luaparse.js');
+        if (!res.ok) throw new Error('luaparse fetch failed');
+        const src = await res.text();
+        const fn = new Function(src);
+        fn.call(typeof window !== 'undefined' ? window : globalThis);
+        var lp = (typeof window !== 'undefined') ? window.luaparse : globalThis.luaparse;
+        if (lp && typeof lp.parse === 'function') {
+            vmSetLuaparse(lp);
+            vmBCSetLuaparse(lp);
+        }
+        return lp;
+    } catch (e) { return null; }
+}
+
 function shObfuscateLocally(code, engine, options) {
     return new Promise(function (resolve, reject) {
         var bytes = code.length;
@@ -6764,10 +6785,13 @@ function shObfuscateLocally(code, engine, options) {
         // A tiny script finishes faster than a progress panel can usefully
         // render, and flashing an overlay for 200 ms is just a flicker.
         if (bytes < 12000) {
-            try {
-                var dbg = {};
-                resolve({ result: applyCustomObfuscator(code, options, dbg), dbgInfo: dbg });
-            } catch (e) { reject(e); }
+            (async function () {
+                try {
+                    await shEnsureMainLuaparse();
+                    var dbg = {};
+                    resolve({ result: applyCustomObfuscator(code, options, dbg), dbgInfo: dbg });
+                } catch (e) { reject(e); }
+            })();
             return;
         }
 
@@ -6831,12 +6855,15 @@ function shObfuscateLocally(code, engine, options) {
             // Worker died (often because luaparse could not be loaded in that
             // browser). Fall back to the synchronous path rather than failing
             // the whole obfuscation.
-            try {
-                var dbgF = {};
-                finish(resolve, { result: applyCustomObfuscator(code, options, dbgF), dbgInfo: dbgF });
-            } catch (e2) {
-                finish(reject, new Error((err && err.message) ? err.message : 'worker failed'));
-            }
+            (async function () {
+                try {
+                    await shEnsureMainLuaparse();
+                    var dbgF = {};
+                    finish(resolve, { result: applyCustomObfuscator(code, options, dbgF), dbgInfo: dbgF });
+                } catch (e2) {
+                    finish(reject, new Error((err && err.message) ? err.message : 'worker failed'));
+                }
+            })();
         };
 
         worker.postMessage({ type: 'obfuscate', code: code, engine: engine, options: options });
