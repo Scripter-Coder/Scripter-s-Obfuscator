@@ -6193,11 +6193,18 @@ function confirmCreateScript(projectId) {
     var _estFactor = (obfuscationIntensity >= 12) ? 10 : (obfuscationIntensity >= 8 ? 7 : 6);
     var estObf = code.length * _estFactor; // balanced: no more x2 storage shock
     if (typeof window !== 'undefined' && window.luaparse) {
+        // Luau-specific syntax (continue, goto, //, type annotations, compound
+        // assignment) is not valid Lua 5.1, so luaparse cannot read it. The
+        // obfuscator lowers these constructs itself, so do not reject the upload
+        // on a parser error for them - only hard-reject plain Lua 5.1 errors.
+        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /(\+=|-=|\*=|\/=|%=\|\^=|\.\.=)/.test(code);
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
-            showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
-            return;
+            if (!_luauSpecific) {
+                showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
+                return;
+            }
         }
     }
     // FRIEND FIX (40 MB limit): warn early, plan-aware, with storage + time context.
@@ -7316,11 +7323,18 @@ function confirmEditScript(projectId, scriptId) {
     if (!code) { showNotification('Error', 'Please paste your Lua code.', 'error'); return; }
     // syntax-check BEFORE the heavy re-obfuscation work
     if (typeof window !== 'undefined' && window.luaparse) {
+        // Luau-specific syntax (continue, goto, //, type annotations, compound
+        // assignment) is not valid Lua 5.1, so luaparse cannot read it. The
+        // obfuscator lowers these constructs itself, so do not reject the upload
+        // on a parser error for them - only hard-reject plain Lua 5.1 errors.
+        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /(\+=|-=|\*=|\/=|%=\|\^=|\.\.=)/.test(code);
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
-            showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
-            return;
+            if (!_luauSpecific) {
+                showNotification('Syntax Error', 'Your script has a syntax error and cannot be obfuscated: ' + String(e.message || e), 'error', 12000);
+                return;
+            }
         }
     }
     var projects = loadProjects();

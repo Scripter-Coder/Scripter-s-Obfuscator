@@ -46,7 +46,7 @@ function validateLuaSource(code) {
     // Luau-specific syntax (continue, goto, //) is valid in Roblox but not in Lua 5.1.
     // If the code contains those, skip strict validation and let the VM passes handle it
     // (they will fallback to raw if unsupported) instead of rejecting the upload.
-    if (/\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || /\btype\b/.test(code) && /::/.test(code)) {
+    if (/\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || /\btype\b/.test(code) && /::/.test(code) || /(\+=|-=|\*=|\/=|%=\|\^=|\.\.=)/.test(code)) {
         try { parser.parse(code, { luaVersion: '5.1' }); } catch (e) { return; }
         return;
     }
@@ -1599,8 +1599,17 @@ export function applyCustomObfuscator(code, options, debugInfo) {
         var _op = _cas[_ci][0];
         var _sym = _cas[_ci][1];
         var _escOp = _op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        var _re = new RegExp('([A-Za-z_][\\w.]*)\\s*' + _escOp + '\\s*([^\\n;]+)', 'g');
-        code = code.replace(_re, '$1 = $1 ' + _sym + ' ($2)');
+        var _re = new RegExp('([A-Za-z_][A-Za-z0-9_.\\[\\]\\"\\x27]*)\\s*' + _escOp + '\\s*([^\\n;]+)', 'g');
+        code = code.replace(_re, function (_m, _left, _right) {
+            _left = String(_left).trim();
+            _right = String(_right);
+            if (!/^[A-Za-z_]/.test(_left)) return _m;
+            if (_left.indexOf('=') !== -1) return _m;
+            var _cmtIdx = _right.indexOf('--');
+            var _rhs = _right, _cmt = '';
+            if (_cmtIdx !== -1) { _rhs = _right.slice(0, _cmtIdx); _cmt = _right.slice(_cmtIdx); }
+            return _left + ' = ' + _left + ' ' + _sym + ' (' + _rhs.trim() + ')' + (_cmt ? ' ' + _cmt.trim() : '');
+        });
     }
     var out = applyCustomObfuscatorCore(code, options, debugInfo);
     var outKB = out.length / 1024;

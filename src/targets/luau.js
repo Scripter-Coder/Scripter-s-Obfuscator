@@ -70,11 +70,15 @@ function lowerCompound(src){
       else if(op=="^=") pattern = /([A-Za-z_][A-Za-z0-9_\.\[\]"']*?)\s*\^=\s*([^\n;]+)/g;
       else if(op=="..=") pattern = /([A-Za-z_][A-Za-z0-9_\.\[\]"']*?)\s*\.\.=\s*([^\n;]+)/g;
       const newOut = out.replace(pattern, (m, left, right) => {
-        left=left.trim(); right=right.trim();
+        left=String(left).trim(); right=String(right);
         if(!/^[A-Za-z_]/.test(left)) return m;
-        if(left.includes('=')) return m;
+        if(left.indexOf('=') !== -1) return m;
+        // Preserve trailing comments instead of folding them into ( ).
+        var cmtIdx = right.indexOf('--');
+        var rhs = right, cmt = '';
+        if (cmtIdx !== -1) { rhs = right.slice(0, cmtIdx); cmt = right.slice(cmtIdx); }
         changed=true;
-        return left + " = " + left + " " + bin + " " + right;
+        return left + " = " + left + " " + bin + " (" + rhs.trim() + ")" + (cmt ? " " + cmt.trim() : "");
       });
       if(newOut!==out){ out=newOut; }
     }
