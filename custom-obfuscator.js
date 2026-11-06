@@ -1592,6 +1592,16 @@ export function applyCustomObfuscator(code, options, debugInfo) {
     // rewrite it into a synthetic goto that the VM compiler lowers to a jump.
     // The goto is compiled away, so the emitted artifact stays Lua 5.1 clean.
     code = String(code == null ? '' : code).replace(/\bcontinue\b/g, '__sh_continue()');
+    // Luau compound assignment (a += 1, a -= 1, ...) is not Lua 5.1 syntax.
+    // Rewrite to plain assignment so the VM parser accepts it.
+    var _cas = [['//=', '//'], ['-=','-'], ['+=','+'], ['*=','*'], ['/=', '/'], ['^=', '^'], ['%=', '%'], ['..=', '..']];
+    for (var _ci = 0; _ci < _cas.length; _ci++) {
+        var _op = _cas[_ci][0];
+        var _sym = _cas[_ci][1];
+        var _escOp = _op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        var _re = new RegExp('([A-Za-z_][\\w.]*)\\s*' + _escOp + '\\s*([^\\n;]+)', 'g');
+        code = code.replace(_re, '$1 = $1 ' + _sym + ' ($2)');
+    }
     var out = applyCustomObfuscatorCore(code, options, debugInfo);
     var outKB = out.length / 1024;
     if (options._budgetRetry || options.vmPass === false || outKB <= ARTIFACT_BUDGET_KB) return out;
