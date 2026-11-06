@@ -1,4 +1,5 @@
 // ============================================================
+import { FULL_ANTI_TAMPER_B64 } from './full-anti-tamper-data.js';
 // ScripterHub Custom Obfuscator Engine v3.0
 // ------------------------------------------------------------
 // A REAL working Lua/Luau obfuscator that runs fully in JS:
@@ -103,9 +104,15 @@ function rndInt(min, max) { return min + rnd(max - min + 1); }
 // The seed (word A) is a full 32 bits. An 8-bit seed (the old carrier)
 // was four decimal digits of entropy, and four decimal digits is
 // nothing: it was found by trying 223 values.
+// THE KEY MATERIAL. Twelve hundred bytes: four of seed, four of the
+// second half of the payload key, four of check, and the rest random
+// high-entropy filler. The filler is what makes the key material a
+// 1000-character string of diverse bytes: every byte of it is mixed
+// into the payload's key stream, so the key material is not just a
+// short seed with padding around it.
 function makeVmSeedCarrier(seedValue) {
     var s = Number(seedValue) >>> 0;
-    return [
+    var out = [
         (s >>> 24) & 255,
         (s >>> 16) & 255,
         (s >>> 8) & 255,
@@ -113,6 +120,8 @@ function makeVmSeedCarrier(seedValue) {
         rndInt(0, 256), rndInt(0, 256), rndInt(0, 256), rndInt(0, 256),
         0, 0, 0, 0
     ];
+    while (out.length < 1000) out.push(rndInt(0, 256));
+    return out;
 }
 function hex(len) {
     var c = '0123456789abcdef', s = '';
@@ -281,9 +290,9 @@ function encChain(bytes, l, cipherRounds) {
         var s = l.seed[(n1 - 1) % l.seed.length];
         var q;
         if (rounds === 1) {
-            q = ((s * l.c1 + prev * l.c2 + n1 * 31) % 251) + 5;
+            q = (Math.floor(((s * l.c1 * 65599 + prev * l.c2 * 40503 + n1 * 31) % 4294967296) / 65536) % 255) + 1;
         } else {
-            q = 0; for (var _r=1; _r<=rounds; _r++) q = (((q ^ s) + l.c1*(_r%3+1) + prev * l.c2 + n1 * 31 + _r*73) % 251) + 5;
+            q = 0; for (var _r=1; _r<=rounds; _r++) { var _h = ((q ^ s) + l.c1*(_r%3+1)*65599 + prev * l.c2*40503 + n1 * 31 + _r*73) % 4294967296; q = (Math.floor(_h / 65536) % 255) + 1; }
         }
         var v = (pb ^ q) + l.shift + (i % 3) * l.madd;
         out[n1 - 1] = v & 0xFF;
@@ -1434,9 +1443,9 @@ function buildLoader(src, layerCount, options) {
     out.push('  local s=kk[((n1-1)%#kk)+1]');
     var _cr2 = options.cipherRounds != null ? Math.max(1,Math.min(16,options.cipherRounds|0)) : (options._debug ? 1 : 16);
     if (_cr2 === 1) {
-        out.push('  local q=((s*c1+' + PV + '*c2+n1*'+polyNum(31)+')%'+polyNum(251)+')+'+polyNum(5));
+        out.push('  local _h=((s*c1*65599+' + PV + '*c2*40503+n1*'+polyNum(31)+')%4294967296) local q=(math.floor(_h/65536)%255)+1');
     } else {
-        out.push('  local q=0; for _r=1,'+_cr2+' do q = ((' + X + '(q, s) + c1*(_r%3+1) + ' + PV + '*c2 + n1*31 + _r*73)%251)+5 end');
+        out.push('  local q=0; for _r=1,'+_cr2+' do local _h=((' + X + '(q, s) + c1*(_r%3+1)*65599 + ' + PV + '*c2*40503 + n1*31 + _r*73)%4294967296) q=(math.floor(_h/65536)%255)+1 end');
     }
     out.push('  local v=' + T + '[n1]');
     out.push('  v=(v-sh-(i%3)*ma)%256');
@@ -1546,6 +1555,23 @@ function buildLoader(src, layerCount, options) {
         // noise stride + layer count to crackers)
         result = '--[shdebug:' + JSON.stringify({ stride: stride, chk: chk, layerCount: layerCount, keyLens: layers.map(function (l) { return l.seed.length; }), slots: M, start: START }) + ']\n' + result;
     }
+    // Full environment anti-tamper (friend's module). Opt-in: embeds ~344 KB, so
+    // it is only added when the caller explicitly requests it.
+    if (options.fullAntiTamper) {
+    try {
+        var _atB64 = FULL_ANTI_TAMPER_B64;
+        var _atSrc = '';
+        if (typeof Buffer !== 'undefined') {
+            _atSrc = Buffer.from(_atB64, 'base64').toString('utf8');
+        } else {
+            var _bin = atob(_atB64);
+            var _bytes = new Uint8Array(_bin.length);
+            for (var _i = 0; _i < _bin.length; _i++) _bytes[_i] = _bin.charCodeAt(_i);
+            _atSrc = new TextDecoder('utf-8').decode(_bytes);
+        }
+        result = 'pcall(function()\n' + _atSrc + '\nend)\n' + result;
+    } catch (e) { /* anti-tamper unavailable - continue without it */ }
+    }
     return result;
 }
 
@@ -1562,6 +1588,20 @@ var ARTIFACT_BUDGET_KB = 600;
 // here, and the caller is told which one shipped.
 export function applyCustomObfuscator(code, options, debugInfo) {
     options = options || {};
+    // Luau's `continue` is not part of Lua 5.1 and luaparse cannot read it, so
+    // rewrite it into a synthetic goto that the VM compiler lowers to a jump.
+    // The goto is compiled away, so the emitted artifact stays Lua 5.1 clean.
+    code = String(code == null ? '' : code).replace(/\bcontinue\b/g, '__sh_continue()');
+    // Luau compound assignment (a += 1, a -= 1, ...) is not Lua 5.1 syntax.
+    // Rewrite to plain assignment so the VM parser accepts it.
+    var _cas = [['//=', '//'], ['-=','-'], ['+=','+'], ['*=','*'], ['/=', '/'], ['^=', '^'], ['%=', '%'], ['..=', '..']];
+    for (var _ci = 0; _ci < _cas.length; _ci++) {
+        var _op = _cas[_ci][0];
+        var _sym = _cas[_ci][1];
+        var _escOp = _op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        var _re = new RegExp('([A-Za-z_][\\w.]*)\\s*' + _escOp + '\\s*([^\\n;]+)', 'g');
+        code = code.replace(_re, '$1 = $1 ' + _sym + ' ($2)');
+    }
     var out = applyCustomObfuscatorCore(code, options, debugInfo);
     var outKB = out.length / 1024;
     if (options._budgetRetry || options.vmPass === false || outKB <= ARTIFACT_BUDGET_KB) return out;
