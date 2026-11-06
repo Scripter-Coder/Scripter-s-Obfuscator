@@ -6197,7 +6197,7 @@ function confirmCreateScript(projectId) {
         // assignment) is not valid Lua 5.1, so luaparse cannot read it. The
         // obfuscator lowers these constructs itself, so do not reject the upload
         // on a parser error for them - only hard-reject plain Lua 5.1 errors.
-        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /(\+=|-=|\*=|\/=|%=\|\^=|\.\.=)/.test(code);
+        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /\/\/=|[+\-*\/%^]=|\.\.=/.test(code);
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
@@ -7327,7 +7327,7 @@ function confirmEditScript(projectId, scriptId) {
         // assignment) is not valid Lua 5.1, so luaparse cannot read it. The
         // obfuscator lowers these constructs itself, so do not reject the upload
         // on a parser error for them - only hard-reject plain Lua 5.1 errors.
-        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /(\+=|-=|\*=|\/=|%=\|\^=|\.\.=)/.test(code);
+        var _luauSpecific = /\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || (/\btype\b/.test(code) && /::/.test(code)) || /\/\/=|[+\-*\/%^]=|\.\.=/.test(code);
         try {
             window.luaparse.parse(code, { luaVersion: '5.1' });
         } catch (e) {
