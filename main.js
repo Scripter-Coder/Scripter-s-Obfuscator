@@ -3403,7 +3403,7 @@ function refreshAnalyticsUI() {
                     var ps = loadProjects();
                     for (var i = 0; i < ps.length; i++) {
                         var scs = ps[i].scripts || [];
-                        for (var j = 0; j < scs.length; j++) { if (scs[j].loaderId) ids[scs[j].loaderId] = true; }
+                        for (var j = 0; j < scs.length; j++) { if (scs[j].id) ids[scs[j].id] = true; }
                     }
                 } catch (e) {}
                 var sum = 0;
