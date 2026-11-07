@@ -98,51 +98,26 @@ function shDisplayName(rec, fallbackKey) {
 }
 
 
-// ============ LUA SYNTAX HIGHLIGHTER (mirror div behind textarea) ============
-function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-var SH_LUA_KW=/^(?:local|function|end|if|then|else|elseif|for|do|while|repeat|until|return|break|nil|true|false|and|or|not|in|goto)(?![A-Za-z0-9_])/;
-var SH_LUA_BI=/^(?:print|type|tostring|tonumber|pcall|xpcall|error|assert|select|unpack|next|pairs|ipairs|rawget|rawset|rawequal|getmetatable|setmetatable|collectgarbage|require|load|loadstring|dofile|setfenv|getfenv|math|string|table|os|debug|coroutine|utf8|bit32|_VERSION|_G|_ENV)(?![A-Za-z0-9_])/;
-var SH_LUA_ID=/^[A-Za-z_][A-Za-z0-9_]*/;
-var SH_LUA_NUM=/^(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)/;
-var SH_LUA_STR=/^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[=*\[[\s\S]*?\]=*\])/;
-var SH_LUA_CMT=/^(?:--\[=*\[[\s\S]*?\]=*\]|--[^\n]*)/;
-var SH_LUA_OP=/^(?:==|~=|<=|>=|\.\.|<<|>>|\.\.\.|[=+\-*/%^#~&|<>\(\)\{\}\[\];:.,])/;
-function shHighlightLua(code){
-    var html='', i=0, n=code.length, m;
-    while(i<n){
-        var rest=code.slice(i);
-        if((m=SH_LUA_CMT.exec(rest))){ html+='<span class="tok-comment">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_STR.exec(rest))){ html+='<span class="tok-string">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_NUM.exec(rest))){ html+='<span class="tok-number">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_KW.exec(rest))){ html+='<span class="tok-keyword">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_BI.exec(rest))){ html+='<span class="tok-builtin">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_ID.exec(rest))){ html+='<span class="tok-ident">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else if((m=SH_LUA_OP.exec(rest))){ html+='<span class="tok-operator">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
-        else { html+=escapeHtml(code[i]); i++; }
-    }
-    return html;
-}
+// ============ CODE EDITOR WITH LINE NUMBERS ============
 function shSyncEditor(editorId){
-    var ta=document.getElementById(editorId+'Ta');
-    var mirror=document.getElementById(editorId+'Mirror');
-    var lines=document.getElementById(editorId+'Lines');
-    if(!ta||!mirror||!lines) return;
+    var ta=document.getElementById(editorId+"Ta");
+    var lines=document.getElementById(editorId+"Lines");
+    if(!ta||!lines) return;
     var raw=ta.value;
-    mirror.innerHTML=raw===''?'<span class="tok-placeholder">'+escapeHtml(ta.placeholder||'-- Paste your Lua code here...')+'</span>':shHighlightLua(raw);
-    // line numbers
-    var n=raw===''?1:raw.split('\n').length;
-    var out='';
-    for(var i=1;i<=n;i++) out+=i+'\n';
+    var n=raw===""?1:raw.split("\n").length;
+    var out="";
+    for(var i=1;i<=n;i++) out+=i+"\n";
     lines.textContent=out;
     lines.scrollTop=ta.scrollTop;
 }
 function shInitCodeEditor(editorId){
-    var ta=document.getElementById(editorId+'Ta');
+    var ta=document.getElementById(editorId+"Ta");
     if(!ta) return;
     shSyncEditor(editorId);
-    ta.addEventListener('input', function(){ shSyncEditor(editorId); });
-    ta.addEventListener('scroll', function(){ var m=document.getElementById(editorId+'Mirror'); var l=document.getElementById(editorId+'Lines'); if(m&&l){ l.scrollTop=ta.scrollTop; m.scrollTop=ta.scrollTop; } });
+    ta.addEventListener("input", function(){ shSyncEditor(editorId); });
+    ta.addEventListener("scroll", function(){ var l=document.getElementById(editorId+"Lines"); if(l) l.scrollTop=ta.scrollTop; });
 }
+
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
@@ -7418,7 +7393,7 @@ function editScript(projectId, scriptId) {
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
             </div>` : ''}
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="editScriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<div class="code-editor"><div id="editScriptCodeLines" class="code-lines"></div><div id="editScriptCodeMirror" class="code-mirror"></div><textarea id="editScriptCodeTa" class="code-ta" spellcheck="false"></textarea><textarea id="editScriptCodeRaw" style="display:none;">${script.originalCode || script.code || ""}
+            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<div class="code-editor"><div id="editScriptCodeLines" class="code-lines"></div><textarea id="editScriptCodeTa" class="code-ta" spellcheck="false"></textarea><textarea id="editScriptCodeRaw" style="display:none;">${script.originalCode || script.code || ""}
             <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
@@ -7458,7 +7433,7 @@ function editScript(projectId, scriptId) {
         editGameIdInput.addEventListener('input', function() { fetchGamePreview(this.value.trim()); });
         editGameIdInput.addEventListener('change', function() { fetchGamePreview(this.value.trim()); });
     }
-    shInitCodeEditor('editScriptCode'); var _er=document.getElementById('editScriptCodeRaw'); if(_er){ document.getElementById('editScriptCodeTa').value=_er.value; } shSyncEditor('editScriptCode');;
+    shInitCodeEditor('editScriptCode'); var _er=document.getElementById('editScriptCodeRaw'); if(_er){ document.getElementById('editScriptCodeTa').value=_er.value; } shSyncEditor('editScriptCode');
     var editFileInput = document.getElementById('editScriptFile');
     if (editFileInput) {
         editFileInput.addEventListener('change', function(e) {
