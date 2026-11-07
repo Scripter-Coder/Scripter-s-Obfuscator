@@ -97,6 +97,27 @@ function shDisplayName(rec, fallbackKey) {
     return String(rec.email || fallbackKey || '?');
 }
 
+// Line-numbered code editor helpers (display only - numbers are NOT part of the code).
+function shUpdateCodeLines(textareaId, linesId) {
+    var ta = document.getElementById(textareaId);
+    var ln = document.getElementById(linesId);
+    if (!ta || !ln) return;
+    var n = ta.value.split('\n').length;
+    if (ta.value === '') n = 1;
+    var out = '';
+    for (var i = 1; i <= n; i++) out += i + '\n';
+    ln.textContent = out;
+    ln.scrollTop = ta.scrollTop;
+}
+function shInitCodeEditor(textareaId, linesId) {
+    var ta = document.getElementById(textareaId);
+    var ln = document.getElementById(linesId);
+    if (!ta || !ln) return;
+    shUpdateCodeLines(textareaId, linesId);
+    ta.addEventListener('input', function() { shUpdateCodeLines(textareaId, linesId); });
+    ta.addEventListener('scroll', function() { if (ln) ln.scrollTop = ta.scrollTop; });
+}
+
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
 // worker URL here. Example: 'https://scripterhub-stats.yourname.workers.dev'
@@ -6097,7 +6118,7 @@ function openCreateScript(projectId) {
                 </div>
             </div>
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea></div>
+            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><div style="display:flex; align-items:stretch; border:1px solid rgba(255,255,255,0.08); border-radius:10px; overflow:hidden; background:#0a0a15; min-height:150px;"><div id="scriptCodeLines" style="padding:12px 8px; font-family:monospace; font-size:13px; color:#555577; text-align:right; user-select:none; background:rgba(255,255,255,0.03); border-right:1px solid rgba(255,255,255,0.06); min-width:44px; white-space:pre; overflow:hidden; line-height:1.5;"></div><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="flex:1; min-height:150px; font-family:monospace; font-size:13px; background:transparent; border:none; outline:none; resize:vertical; padding:12px; color:#fff; line-height:1.5;" spellcheck="false" lang="lua"></textarea></div></div>
             <div class="form-group">
                 <label>💎 Choose Obfuscator</label>
                 <select id="scriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
@@ -6166,12 +6187,14 @@ function openCreateScript(projectId) {
             var reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById('scriptCode').value = e.target.result;
+                shUpdateCodeLines('scriptCode', 'scriptCodeLines');
                 showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
             };
             reader.onerror = function() { showNotification('Error', 'Failed to read file.', 'error'); };
             reader.readAsText(file);
         });
     }
+    shInitCodeEditor('scriptCode', 'scriptCodeLines');
     // key mode hint switcher
     var keyModeSel = document.getElementById('scriptKeyMode');
     var keyModeHint = document.getElementById('scriptKeyModeHint');
@@ -7371,7 +7394,7 @@ function editScript(projectId, scriptId) {
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
             </div>` : ''}
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="editScriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;" placeholder="${(script.codeStripped || script.sourceStripped) ? 'Paste your source code here to re-attach it...' : ''}">${script.originalCode || script.code || ''}</textarea></div>
+            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<div style="display:flex; align-items:stretch; border:1px solid rgba(255,255,255,0.08); border-radius:10px; overflow:hidden; background:#0a0a15; min-height:150px;"><div id="editScriptCodeLines" style="padding:12px 8px; font-family:monospace; font-size:13px; color:#555577; text-align:right; user-select:none; background:rgba(255,255,255,0.03); border-right:1px solid rgba(255,255,255,0.06); min-width:44px; white-space:pre; overflow:hidden; line-height:1.5;"></div><textarea id="editScriptCode" style="flex:1; min-height:150px; font-family:monospace; font-size:13px; background:transparent; border:none; outline:none; resize:vertical; padding:12px; color:#fff; line-height:1.5;" placeholder="${(script.codeStripped || script.sourceStripped) ? 'Paste your source code here to re-attach it...' : ''}" spellcheck="false" lang="lua">${script.originalCode || script.code || ''}</textarea></div></div>
             <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
@@ -7411,6 +7434,7 @@ function editScript(projectId, scriptId) {
         editGameIdInput.addEventListener('input', function() { fetchGamePreview(this.value.trim()); });
         editGameIdInput.addEventListener('change', function() { fetchGamePreview(this.value.trim()); });
     }
+    shInitCodeEditor('editScriptCode', 'editScriptCodeLines');
     var editFileInput = document.getElementById('editScriptFile');
     if (editFileInput) {
         editFileInput.addEventListener('change', function(e) {
@@ -7419,6 +7443,7 @@ function editScript(projectId, scriptId) {
             var reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById('editScriptCode').value = e.target.result;
+                shUpdateCodeLines('editScriptCode', 'editScriptCodeLines');
                 showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
             };
             reader.onerror = function() { showNotification('Error', 'Failed to read file.', 'error'); };
