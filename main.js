@@ -3111,6 +3111,7 @@ function updateUIForUser(user) {
     isLoggedIn = true;
     currentUser = user;
     window.currentUser = user;
+    window._shProjectsMem = null;
     setCurrentUser(user);
     // Establish the cloud session token as soon as someone is signed in, rather
     // than waiting for the first upload. Every owner panel call authenticates
@@ -3478,6 +3479,7 @@ function logout() {
     isLoggedIn = false;
     currentUser = null;
     window.currentUser = null;
+    window._shProjectsMem = null;
     clearCurrentUser();
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
@@ -5312,11 +5314,15 @@ function exportUsers() {
 
 // ============ PROJECTS SYSTEM ==========
 function loadProjects() {
+    // Prefer the in-memory copy when it exists: it holds the full, untrimmed
+    // code/originalCode even when localStorage had to drop them for quota.
+    if (window._shProjectsMem) {
+        try { return JSON.parse(JSON.stringify(window._shProjectsMem)); } catch (e) { return window._shProjectsMem; }
+    }
     try {
         var data = localStorage.getItem('projects_' + (currentUser ? currentUser.id : ''));
         if (data) return JSON.parse(data);
-    } catch (e) { /* fall through to memory fallback */ }
-    if (window._shProjectsMem) return window._shProjectsMem;
+    } catch (e) { /* fall through */ }
     return [];
 }
 
@@ -5342,6 +5348,10 @@ function loadProjects() {
 const SH_LOCAL_BUDGET = 3.4 * 1000 * 1000;   // chars; localStorage is ~5MB
 
 function saveProjects(projects) {
+    // Keep an in-memory copy of the FULL (untrimmed) projects so that even when
+    // localStorage trims code/originalCode due to quota, the edit modal can still
+    // show the original source.
+    try { window._shProjectsMem = JSON.parse(JSON.stringify(projects)); } catch (e) { window._shProjectsMem = projects; }
     var key = 'projects_' + (currentUser ? currentUser.id : '');
 
     // One note per burst. Re-Obfuscating + Storage Note + Special Key can all
