@@ -721,7 +721,7 @@ Reason: `+String(l||"unknown");if(window.shToast)try{window.shToast(e,"error");r
                 </select>
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
             </div>`:""}
-            <div class="form-group"><label>Paste .txt/.lua Code</label><textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;">${n.originalCode||n.code||""}</textarea></div>
+            <div class="form-group"><label>Paste .txt/.lua Code</label>${n.codeStripped||n.sourceStripped?'<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>':""}<textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;" placeholder="${n.codeStripped||n.sourceStripped?"Paste your source code here to re-attach it...":""}">${n.originalCode||n.code||""}</textarea></div>
             <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${n.hwidReset?"checked":""}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
