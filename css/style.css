@@ -2747,16 +2747,20 @@ select option {
 /* ===== LUA CODE EDITOR (syntax highlighted overlay) ===== */
 .code-editor {
     position: relative;
-    display: flex;
-    align-items: flex-start;
+    width: 100%;
+    height: 210px;
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 10px;
     overflow: hidden;
     background: #0a0a15;
-    height: 210px;
 }
 .code-lines {
-    padding: 12px 8px;
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 44px;
+    padding: 12px 0;
     font-family: 'Consolas','Monaco',monospace;
     font-size: 13px;
     color: #555577;
@@ -2764,17 +2768,17 @@ select option {
     user-select: none;
     background: rgba(255,255,255,0.03);
     border-right: 1px solid rgba(255,255,255,0.06);
-    min-width: 44px;
     white-space: pre;
     overflow-y: auto;
     line-height: 1.5;
-    flex-shrink: 0;
-    height: 100%;
     z-index: 2;
 }
 .code-mirror {
     position: absolute;
-    inset: 0;
+    left: 44px;
+    top: 0;
+    right: 0;
+    bottom: 0;
     padding: 12px;
     color: transparent;
     caret-color: transparent;
@@ -2785,12 +2789,14 @@ select option {
     overflow-y: scroll;
     z-index: 1;
     pointer-events: none;
-    height: 100%;
     box-sizing: border-box;
 }
 .code-ta {
     position: absolute;
-    inset: 0;
+    left: 44px;
+    top: 0;
+    right: 0;
+    bottom: 0;
     padding: 12px;
     margin: 0;
     width: 100%;
@@ -2798,8 +2804,6 @@ select option {
     background: transparent;
     border: none;
     outline: none;
-    /* text is transparent so the syntax-highlighted mirror shows through;
-       only the caret blinks to indicate the cursor position */
     color: transparent;
     caret-color: #ffffff;
     line-height: 1.5;
@@ -2810,6 +2814,7 @@ select option {
     z-index: 3;
     cursor: text;
 }
+.code-ta::placeholder { color: transparent; }
 .code-mirror .tok-keyword   { color: #c678dd; }
 .code-mirror .tok-builtin   { color: #e5c07b; }
 .code-mirror .tok-string    { color: #61afef; }
