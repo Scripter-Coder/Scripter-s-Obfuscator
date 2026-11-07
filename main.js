@@ -97,26 +97,82 @@ function shDisplayName(rec, fallbackKey) {
     return String(rec.email || fallbackKey || '?');
 }
 
-// Line-numbered code editor helpers (display only - numbers are NOT part of the code).
-function shUpdateCodeLines(textareaId, linesId) {
-    var ta = document.getElementById(textareaId);
-    var ln = document.getElementById(linesId);
-    if (!ta || !ln) return;
-    var n = ta.value.split('\n').length;
-    if (ta.value === '') n = 1;
-    var out = '';
-    for (var i = 1; i <= n; i++) out += i + '\n';
-    ln.textContent = out;
-    ln.scrollTop = ta.scrollTop;
+// ============ LUA SYNTAX HIGHLIGHTER ============
+// Returns HTML with <span class="tok-*"> tokens so the code editor can colour
+// keywords (pink), built-ins like print (yellow), strings (blue), numbers,
+// comments and operators - purely for display; the raw value stays untouched.
+function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+var SH_LUA_KW=/^(?:local|function|end|if|then|else|elseif|for|do|while|repeat|until|return|break|nil|true|false|and|or|not|in|goto)(?![A-Za-z0-9_])/;
+var SH_LUA_BI=/^(?:print|type|tostring|tonumber|pcall|xpcall|error|assert|select|unpack|next|pairs|ipairs|rawget|rawset|rawequal|getmetatable|setmetatable|collectgarbage|require|load|loadstring|dofile|setfenv|getfenv|math|string|table|os|debug|coroutine|utf8|bit32|_VERSION|_G|_ENV)(?![A-Za-z0-9_])/;
+var SH_LUA_ID=/^[A-Za-z_][A-Za-z0-9_]*/;
+var SH_LUA_NUM=/^(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)/;
+var SH_LUA_STR=/^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[=*\[[\s\S]*?\]=*\])/;
+var SH_LUA_CMT=/^(?:--\[=*\[[\s\S]*?\]=*\]|--[^\n]*)/;
+var SH_LUA_OP=/^(?:==|~=|<=|>=|\.\.|<<|>>|\.\.\.|[=+\-*/%^#~&|<>\(\)\{\}\[\];:.,])/;
+function shHighlightLua(code){
+    var html='', i=0, n=code.length, m;
+    while(i<n){
+        var rest=code.slice(i);
+        if((m=SH_LUA_CMT.exec(rest))){ html+='<span class="tok-comment">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_STR.exec(rest))){ html+='<span class="tok-string">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_NUM.exec(rest))){ html+='<span class="tok-number">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_KW.exec(rest))){ html+='<span class="tok-keyword">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_BI.exec(rest))){ html+='<span class="tok-builtin">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_ID.exec(rest))){ html+='<span class="tok-ident">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else if((m=SH_LUA_OP.exec(rest))){ html+='<span class="tok-operator">'+escapeHtml(m[0])+'</span>'; i+=m[0].length; }
+        else { html+=escapeHtml(code[i]); i++; }
+    }
+    return html;
 }
-function shInitCodeEditor(textareaId, linesId) {
-    var ta = document.getElementById(textareaId);
-    var ln = document.getElementById(linesId);
-    if (!ta || !ln) return;
-    shUpdateCodeLines(textareaId, linesId);
-    ta.addEventListener('input', function() { shUpdateCodeLines(textareaId, linesId); });
-    ta.addEventListener('scroll', function() { if (ln) ln.scrollTop = ta.scrollTop; });
+function shRenderEditor(editorId, value){
+    var ed=document.getElementById(editorId);
+    if(!ed) return;
+    var raw=value==null?'':String(value);
+    var hidden=document.getElementById(editorId+'Raw');
+    if(hidden) hidden.value=raw;
+    ed.innerHTML=shHighlightLua(raw);
+    ed.dataset.placeholder=ed.dataset.placeholder||'-- Paste your Lua code here...';
+    if(!raw){ ed.innerHTML='<span class="tok-placeholder">'+escapeHtml(ed.dataset.placeholder)+'</span>'; }
 }
+function shUpdateCodeLines(editorId, linesId){
+    var ed=document.getElementById(editorId);
+    var ln=document.getElementById(linesId);
+    if(!ed||!ln) return;
+    var text=ed.textContent||ed.innerText||'';
+    if(text==='') text='\n';
+    var n=text.split('\n').length;
+    var out='';
+    for(var i=1;i<=n;i++) out+='\n';
+    ln.textContent=out;
+    ln.scrollTop=ed.scrollTop;
+}
+function shInitCodeEditor(editorId, linesId){
+    var ed=document.getElementById(editorId);
+    var ln=document.getElementById(linesId);
+    if(!ed||!ln) return;
+    var hidden=document.getElementById(editorId+'Raw');
+    var initial = hidden ? hidden.value : (ed.dataset.value||'');
+    shRenderEditor(editorId, initial);
+    ed.addEventListener('input', function(){
+        var sel=window.getSelection();
+        var range=sel.rangeCount?sel.getRangeAt(0):null;
+        var raw=ed.textContent||'';
+        var hidden=document.getElementById(editorId+'Raw');
+        if(hidden) hidden.value=raw;
+        ed.innerHTML=shHighlightLua(raw);
+        if(!raw){ ed.innerHTML='<span class="tok-placeholder">'+escapeHtml(ed.dataset.placeholder||'-- Paste your Lua code here...')+'</span>'; }
+        shUpdateCodeLines(editorId, linesId);
+        if(range){ try{ sel.removeAllRanges(); sel.addRange(range); }catch(e){} }
+    });
+    ed.addEventListener('scroll', function(){ if(ln) ln.scrollTop=ed.scrollTop; });
+    ed.addEventListener('paste', function(e){
+        e.preventDefault();
+        var text=(e.clipboardData||window.clipboardData).getData('text');
+        if(window.getSelection){ window.getSelection().deleteFromDocument(); }
+        document.execCommand('insertText', false, text);
+    });
+}
+
 
 // ============ CLOUDFLARE WORKER STATS ENDPOINT ============
 // Deploy "For Cloudflare/worker.js" (see that folder's README), then paste your
@@ -4535,8 +4591,6 @@ function confirmDeleteAllBots() {
     });
 }
 
-function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
-
 function filterUsers() { renderUsersList(); }
 
 // ============ CHANGE USER PLAN ============
@@ -6118,7 +6172,7 @@ function openCreateScript(projectId) {
                 </div>
             </div>
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><div style="display:flex; align-items:stretch; border:1px solid rgba(255,255,255,0.08); border-radius:10px; overflow:hidden; background:#0a0a15; min-height:150px;"><div id="scriptCodeLines" style="padding:12px 8px; font-family:monospace; font-size:13px; color:#555577; text-align:right; user-select:none; background:rgba(255,255,255,0.03); border-right:1px solid rgba(255,255,255,0.06); min-width:44px; white-space:pre; overflow-y:auto; max-height:520px; line-height:1.5;"></div><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="flex:1; min-height:150px; max-height:520px; overflow-y:auto; font-family:monospace; font-size:13px; background:transparent; border:none; outline:none; resize:none; padding:12px; color:#fff; line-height:1.5;" spellcheck="false" lang="lua"></textarea></div></div>
+            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><div class="code-editor"><div id="scriptCodeLines" class="code-lines"></div><div id="scriptCode" class="code-area" contenteditable="true" spellcheck="false" data-value=""></div><textarea id="scriptCodeRaw" style="display:none;"></textarea></div></div>
             <div class="form-group">
                 <label>💎 Choose Obfuscator</label>
                 <select id="scriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
@@ -6186,7 +6240,8 @@ function openCreateScript(projectId) {
             if (!file) return;
             var reader = new FileReader();
             reader.onload = function(e) {
-                document.getElementById('scriptCode').value = e.target.result;
+                document.getElementById('scriptCodeRaw').value = e.target.result;
+                shRenderEditor('scriptCode', e.target.result);
                 shUpdateCodeLines('scriptCode', 'scriptCodeLines');
                 showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
             };
@@ -6288,7 +6343,7 @@ function confirmCreateScript(projectId) {
     var securityUpdates = document.getElementById('scriptSecurityUpdates') ? document.getElementById('scriptSecurityUpdates').checked : true;
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
-    var code = document.getElementById('scriptCode').value.trim();
+    var code = document.getElementById('scriptCodeRaw').value.trim();
     // LURAPH V15 BALANCED: 6 VM layers + bytecode mutation - adaptive to keep storage sane.
     // Small scripts (<5k) get max protection (12 layers + LPH double VM); large scripts (>50k)
     // are capped at 6 layers with bigger stride to stay under plan limits (friend's 40 MB fix).
@@ -7394,7 +7449,7 @@ function editScript(projectId, scriptId) {
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
             </div>` : ''}
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="editScriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<div style="display:flex; align-items:stretch; border:1px solid rgba(255,255,255,0.08); border-radius:10px; overflow:hidden; background:#0a0a15; min-height:150px;"><div id="editScriptCodeLines" style="padding:12px 8px; font-family:monospace; font-size:13px; color:#555577; text-align:right; user-select:none; background:rgba(255,255,255,0.03); border-right:1px solid rgba(255,255,255,0.06); min-width:44px; white-space:pre; overflow-y:auto; max-height:520px; line-height:1.5;"></div><textarea id="editScriptCode" style="flex:1; min-height:150px; max-height:520px; overflow-y:auto; font-family:monospace; font-size:13px; background:transparent; border:none; outline:none; resize:none; padding:12px; color:#fff; line-height:1.5;" placeholder="${(script.codeStripped || script.sourceStripped) ? 'Paste your source code here to re-attach it...' : ''}" spellcheck="false" lang="lua">${script.originalCode || script.code || ''}</textarea></div></div>
+            <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<div style="display:flex; align-items:stretch; border:1px solid rgba(255,255,255,0.08); border-radius:10px; overflow:hidden; background:#0a0a15; min-height:150px;"><div id="editScriptCodeLines" style="padding:12px 8px; font-family:monospace; font-size:13px; color:#555577; text-align:right; user-select:none; background:rgba(255,255,255,0.03); border-right:1px solid rgba(255,255,255,0.06); min-width:44px; white-space:pre; overflow-y:auto; max-height:520px; line-height:1.5;"></div><div id="editScriptCode" class="code-area" contenteditable="true" spellcheck="false" data-value=""></div><textarea id="editScriptCodeRaw" style="display:none;">${script.originalCode || script.code || ""}</textarea>
             <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
@@ -7442,7 +7497,8 @@ function editScript(projectId, scriptId) {
             if (!file) return;
             var reader = new FileReader();
             reader.onload = function(e) {
-                document.getElementById('editScriptCode').value = e.target.result;
+                document.getElementById('editScriptCodeRaw').value = e.target.result;
+                shRenderEditor('editScriptCode', e.target.result);
                 shUpdateCodeLines('editScriptCode', 'editScriptCodeLines');
                 showNotification('File Loaded', 'Loaded ' + file.name, 'success', 2000);
             };
@@ -7473,7 +7529,7 @@ function confirmEditScript(projectId, scriptId) {
     var securityUpdates = document.getElementById('editScriptSecurityUpdates') ? document.getElementById('editScriptSecurityUpdates').checked : true;
     var keyTime = document.getElementById('editScriptKeyTime').value;
     var keyUnit = document.getElementById('editScriptKeyUnit').value;
-    var code = document.getElementById('editScriptCode').value.trim();
+    var code = document.getElementById('editScriptCodeRaw').value.trim();
     // LURAPH V15 BALANCED: same adaptive as create (was fixed 22 -> x2 bloat)
     var _eLen = code.length;
     var obfuscationIntensity;

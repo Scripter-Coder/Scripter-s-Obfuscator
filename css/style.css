@@ -2742,3 +2742,61 @@ select option {
 .cp-stats, .cp-avg { color: #8888aa; text-align: center; }
 
 .cp-move, .cp-actions { display: flex; gap: 4px; justify-content: center; }
+
+
+/* ===== LUA CODE EDITOR (syntax highlighted) ===== */
+.code-editor {
+    display: flex;
+    align-items: flex-start;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    overflow: hidden;
+    background: #0a0a15;
+    min-height: 150px;
+    max-height: 520px;
+}
+.code-lines {
+    padding: 12px 8px;
+    font-family: 'Consolas','Monaco',monospace;
+    font-size: 13px;
+    color: #555577;
+    text-align: right;
+    user-select: none;
+    background: rgba(255,255,255,0.03);
+    border-right: 1px solid rgba(255,255,255,0.06);
+    min-width: 44px;
+    white-space: pre;
+    overflow-y: auto;
+    line-height: 1.5;
+    flex-shrink: 0;
+}
+.code-area {
+    flex: 1;
+    min-height: 150px;
+    max-height: 520px;
+    overflow-y: auto;
+    outline: none;
+    padding: 12px;
+    color: #fff;
+    line-height: 1.5;
+    font-family: 'Consolas','Monaco',monospace;
+    white-space: pre;
+    word-wrap: normal;
+    cursor: text;
+    background: transparent;
+    border: none;
+    resize: none;
+}
+.code-area[contenteditable="true"]:empty::before {
+    content: attr(data-placeholder);
+    color: #555577;
+    display: block;
+}
+.code-area .tok-placeholder { color: #555577; }
+.code-area .tok-keyword   { color: #c678dd; }   /* local, function, end ... (pink) */
+.code-area .tok-builtin   { color: #e5c07b; }   /* print, type ... (yellow) */
+.code-area .tok-string    { color: #61afef; }   /* strings (blue) */
+.code-area .tok-number    { color: #d19a66; }   /* numbers (orange) */
+.code-area .tok-comment   { color: #5c6370; font-style: italic; }
+.code-area .tok-operator  { color: #56b6c2; }
+.code-area .tok-ident     { color: #abb2bf; }
