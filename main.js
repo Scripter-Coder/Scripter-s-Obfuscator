@@ -138,10 +138,10 @@ const SH_IMAGE_CAP = 1900000;
 window.SH_STATS_ENDPOINT = SH_STATS_ENDPOINT;
 
 // ============ HIDDEN RAW PAGE (Loadstring Creator) ============
-// Secret page: raw.html?auth=1 â€” gated by the owner access code.
+// Secret page: raw.html?auth=1 — gated by the owner access code.
 // The default code is "ScripterHub" (set in the worker). An optional extra
 // code can be added via /sh/setcode. It is kept ONLY in sessionStorage
-// (this tab, until closed) and sent over HTTPS â€” the worker stores just
+// (this tab, until closed) and sent over HTTPS — the worker stores just
 // its SHA-256. Login grants permission to claim loadstrings; it does NOT
 // expose scripts (loader links return "Method Not Allowed" in browsers).
 const SH_CODE_STORAGE_KEY = 'sh_raw_code';
@@ -170,8 +170,8 @@ function shAskForCode() {
         overlay.style.zIndex = '4000';
         overlay.innerHTML = `
             <div class="modal" style="max-width: 520px; padding: 28px; max-height:90vh; overflow-y:auto;">
-                <h2 style="font-size:20px; margin:0 0 8px;">ðŸ” Loadstring Access Code</h2>
-                <p style="color:#8888aa; font-size:12px; margin:0 0 14px;">Paste your access code once (this browser tab remembers it until you close it). It is the code set on the hidden raw page. Note: this only lets you claim loadstrings â€” scripts stay hidden and raw links show "Method Not Allowed" in browsers.</p>
+                <h2 style="font-size:20px; margin:0 0 8px;">🔐 Loadstring Access Code</h2>
+                <p style="color:#8888aa; font-size:12px; margin:0 0 14px;">Paste your access code once (this browser tab remembers it until you close it). It is the code set on the hidden raw page. Note: this only lets you claim loadstrings — scripts stay hidden and raw links show "Method Not Allowed" in browsers.</p>
                 <textarea id="shCodeInput" placeholder="ScripterHub" spellcheck="false" style="width:100%; min-height:110px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; padding:12px; font-size:12px; font-family:monospace; resize:vertical; box-sizing:border-box;"></textarea>
                 <div style="display:flex; gap:10px; margin-top:14px;">
                     <button id="shCodeSaveBtn" class="btn btn-primary" style="flex:1; padding:10px;">Save for this session</button>
@@ -535,7 +535,7 @@ async function shEnsureUserToken(force) {
 // layer key: uploaded to the worker, NEVER inside the file - a static peeler
 // always stops one layer short, and the runtime fetch is time-locked.
 // specialKey = the owner's per-script Special Key (any length). The script
-// is ENCRYPTED IN THIS BROWSER with the key (sh-crypto.js) BEFORE upload â€”
+// is ENCRYPTED IN THIS BROWSER with the key (sh-crypto.js) BEFORE upload —
 // the worker only ever receives ciphertext. The loadstring contains NO key;
 // users set it BEFORE executing via getgenv().ScripterHubKey (no in-game
 // popup GUI ships in the payload - just the getgenv read + notifications).
@@ -588,7 +588,7 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
         // normalCode is ONLY used for the Discord attachment (7MB cap).
         // Never ship a giant raw source inside the JSON body.
         if (normalCode && normalCode.length > 7 * 1024 * 1024) normalCode = '';
-        // 1) encrypt locally â€” the key never leaves this browser
+        // 1) encrypt locally — the key never leaves this browser
         const cipher = shEncryptPayload(obfCode, specialKey);
         const keyHash = await (async () => {
             const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(specialKey));
@@ -1676,21 +1676,21 @@ themes.default = themes.purple;
 // rather than Object.keys(themes) so the alias is not offered twice and the
 // presentation order is a decision instead of an accident of insertion order.
 const SH_THEME_PICKER = [
-    { name: 'red', label: 'ðŸ”´ Red' },
-    { name: 'orange', label: 'ðŸŸ  Orange' },
-    { name: 'yellow', label: 'ðŸŸ¡ Yellow' },
-    { name: 'green', label: 'ðŸŸ¢ Green' },
-    { name: 'cyan', label: 'ðŸ©µ Cyan' },
-    { name: 'blue', label: 'ðŸ”µ Blue' },
-    { name: 'purple', label: 'ðŸŸ£ Purple' },
-    { name: 'brown', label: 'ðŸŸ¤ Brown' },
-    { name: 'black', label: 'âš« Black' },
-    { name: 'white', label: 'âšª White' },
-    { name: 'pink', label: 'ðŸ©· Pink' },
-    { name: 'amethyst', label: 'ðŸ’œ Amethyst' },
-    { name: 'mint', label: 'ðŸƒ Mint' },
-    { name: 'gold', label: 'ðŸ¥‡ Gold' },
-    { name: 'aqua', label: 'ðŸŒŠ Aqua' }
+    { name: 'red', label: '🔴 Red' },
+    { name: 'orange', label: '🟠 Orange' },
+    { name: 'yellow', label: '🟡 Yellow' },
+    { name: 'green', label: '🟢 Green' },
+    { name: 'cyan', label: '🩵 Cyan' },
+    { name: 'blue', label: '🔵 Blue' },
+    { name: 'purple', label: '🟣 Purple' },
+    { name: 'brown', label: '🟤 Brown' },
+    { name: 'black', label: '⚫ Black' },
+    { name: 'white', label: '⚪ White' },
+    { name: 'pink', label: '🩷 Pink' },
+    { name: 'amethyst', label: '💜 Amethyst' },
+    { name: 'mint', label: '🍃 Mint' },
+    { name: 'gold', label: '🥇 Gold' },
+    { name: 'aqua', label: '🌊 Aqua' }
 ];
 
 // A custom colour is stored as `custom:#rrggbb`.
@@ -1846,8 +1846,6 @@ function applyTheme(themeName) {
         // record may not have the field.
         el.style.color = theme.onPrimary || '#ffffff';
     });
-    // Custom colour trigger uses the same gradient, so it needs the same ink fix -
-    // otherwise the "Custom colour" label stays white on a light (e.g. white) theme.
     document.querySelectorAll('.btn-custom-theme').forEach(function(el) {
         el.style.background = 'linear-gradient(135deg, ' + theme.primary + ', ' + theme.secondary + ')';
         el.style.color = theme.onPrimary || '#ffffff';
@@ -1978,12 +1976,12 @@ function showNotification(title, message, type, duration) {
     duration = duration || 4000;
     var container = document.getElementById('notificationContainer');
     if (!container) return;
-    var icons = { success: 'âœ…', error: 'âŒ', warning: 'âš ï¸', info: 'â„¹ï¸' };
+    var icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
     var notif = document.createElement('div');
     notif.className = 'notification ' + type;
     var iconSpan = document.createElement('span');
     iconSpan.className = 'icon';
-    iconSpan.textContent = icons[type] || 'â„¹ï¸';
+    iconSpan.textContent = icons[type] || 'ℹ️';
     var contentDiv = document.createElement('div');
     contentDiv.className = 'content';
     var titleDiv = document.createElement('div');
@@ -1996,7 +1994,7 @@ function showNotification(title, message, type, duration) {
     contentDiv.appendChild(messageDiv);
     var closeBtn = document.createElement('button');
     closeBtn.className = 'close-btn';
-    closeBtn.textContent = 'âœ•';
+    closeBtn.textContent = '✕';
     closeBtn.onclick = function() {
         notif.classList.add('hiding');
         setTimeout(function() { if (notif.parentNode) notif.remove(); }, 300);
@@ -2063,7 +2061,7 @@ document.addEventListener('keydown', function(e) {
 
 // ============ LEGACY SCRIPT STORAGE (REMOVED) ============
 // The old raw/local loader system stored full obfuscated code copies in
-// localStorage ('scriptStore' / 'scriptNames' / 'loaderStore') â€” this
+// localStorage ('scriptStore' / 'scriptNames' / 'loaderStore') — this
 // blew past the browser storage quota on every "Create Script" and
 // served no purpose anymore (raw hosting + loadstrings now live on the
 // hidden Cloudflare worker host). These are no-op stubs so old callers
@@ -2079,7 +2077,7 @@ function storeScriptForRawAccess(scriptId, code, scriptName) { /* removed: see p
 
 function getScriptForRawAccess(scriptId) { return null; }
 
-// ============ SCRIPT LOADER SYSTEM (legacy local loader â€” removed) ============
+// ============ SCRIPT LOADER SYSTEM (legacy local loader — removed) ============
 function storeScriptForLoader(scriptId, scriptCode, scriptName, loaderKey) { /* removed: see purgeLegacyScriptStores */ }
 
 function getScriptForLoader(scriptId) { return null; }
@@ -2139,7 +2137,7 @@ function saveKeys(keyData) {
 async function createKey(scriptId, keyType, expiresDays) {
     if (shRateGuard('key', SH_RATE.key.max, SH_RATE.key.window, 'Too Many Keys')) return;
     var limitErr = checkPlanLimit('keys');
-    if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return null; }
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return null; }
     var keyData = loadKeys();
     var expires = null;
     var days = parseInt(expiresDays, 10);
@@ -2191,8 +2189,8 @@ function openCreateKeyUI() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 460px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">ðŸ”‘ Create Key</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">🔑 Create Key</h2>
             <p class="sub">Generate a new key for your scripts</p>
             <div class="form-group">
                 <label>Active For (Days)</label>
@@ -2200,10 +2198,10 @@ function openCreateKeyUI() {
                 <div style="margin-top:6px; font-size:12px; color:#8888aa;">Enter the number of days the key stays active. Set <strong style="color:#66ff66;">0</strong> or leave empty for <strong style="color:#66ff66;">Unlimited</strong> (never expires).</div>
             </div>
             <div class="form-group">
-                <label style="cursor:pointer;"><input type="checkbox" id="keyUnlimited"> â™¾ï¸ Unlimited (overrides days)</label>
+                <label style="cursor:pointer;"><input type="checkbox" id="keyUnlimited"> ♾️ Unlimited (overrides days)</label>
             </div>
             <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="confirmCreateKeyUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">ðŸ”‘ Create Key</button>
+                <button onclick="confirmCreateKeyUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">🔑 Create Key</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -2311,10 +2309,10 @@ function fallbackCopy(text) {
 var userKeysState = { search: '', page: 0, pageSize: 100, listVisible: true };
 
 function keyStatusOf(k) {
-    if (k.banned) return { text: 'â›” Banned', color: '#ff4444' };
-    if (k.expires && k.expires < Date.now()) return { text: 'â° expired', color: '#ffc800' };
-    if (k.used) return { text: 'âŒ Used', color: '#ff6b6b' };
-    return { text: 'âœ… active', color: '#66ff66' };
+    if (k.banned) return { text: '⛔ Banned', color: '#ff4444' };
+    if (k.expires && k.expires < Date.now()) return { text: '⏰ expired', color: '#ffc800' };
+    if (k.used) return { text: '❌ Used', color: '#ff6b6b' };
+    return { text: '✅ active', color: '#66ff66' };
 }
 
 function normalizeKey(k) {
@@ -2452,9 +2450,9 @@ function openServerKeySettingsUI(key) {
     overlay.innerHTML = `
         <div class="modal" style="max-width: 560px; padding: 28px; max-height:90vh; overflow-y:auto;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <h2 style="font-size:20px; margin:0;">âœï¸ Edit Ad-Reward Key</h2>
+                <h2 style="font-size:20px; margin:0;">✏️ Edit Ad-Reward Key</h2>
                 <div style="display:flex; gap:8px;">
-                    <button onclick="shServerKeySave('${key}')" class="btn btn-primary" style="padding:8px 18px;">ðŸ’¾ Save</button>
+                    <button onclick="shServerKeySave('${key}')" class="btn btn-primary" style="padding:8px 18px;">💾 Save</button>
                     <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="padding:8px 18px;">Cancel</button>
                 </div>
             </div>
@@ -2477,10 +2475,10 @@ function openServerKeySettingsUI(key) {
             <div class="form-group"><label>HWID</label>
                 <div style="display:flex; gap:8px;">
                     <input type="text" id="srvKeyHwid" value="${rec.hwid || ''}" placeholder="HWID (optional)" style="flex:1;">
-                    <button onclick="shServerKeyAction('${key}', 'hwid')" class="btn btn-close-dropdown">ðŸ”„ Reset</button>
+                    <button onclick="shServerKeyAction('${key}', 'hwid')" class="btn btn-close-dropdown">🔄 Reset</button>
                 </div>
             </div>
-            <div class="form-group"><label>â›” Blacklist User - Reason:</label>
+            <div class="form-group"><label>⛔ Blacklist User - Reason:</label>
                 <div style="display:flex; gap:8px;">
                     <input type="text" id="srvKeyBanReason" value="${(rec.banReason || '').replace(/"/g, '&quot;')}" placeholder="Blacklist reason (optional)" style="flex:1;">
                     <button onclick="shServerKeyAction('${key}', '${rec.banned ? 'unban' : 'ban'}')" class="btn btn-danger">${rec.banned ? 'Unban' : 'Blacklist'}</button>
@@ -2564,21 +2562,21 @@ function renderKeys() {
     var rangeEl = document.getElementById('userKeysRange');
     if (rangeEl) rangeEl.textContent = total === 0 ? '0-0' : (start + 1) + '-' + Math.min(start + userKeysState.pageSize, total);
     if (!userKeysState.listVisible) {
-        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">Click "âœï¸ Edit Users Keys" to show the keys list.</p>';
+        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">Click "✏️ Edit Users Keys" to show the keys list.</p>';
         return;
     }
     if (total === 0) {
-        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">No keys yet. Use "âž• Add User" to create one.</p>';
+        container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">No keys yet. Use "➕ Add User" to create one.</p>';
         return;
     }
     var html = '<div class="keys-table">' +
         '<div class="keys-table-header">' +
-        '<span></span><span>ðŸ”‘ User Key</span><span>Discord ID</span><span>Status</span><span>Note</span><span>Executions</span><span>HWID Resets</span><span>Days</span><span>Ban</span><span>Reason</span><span>Actions</span>' +
+        '<span></span><span>🔑 User Key</span><span>Discord ID</span><span>Status</span><span>Note</span><span>Executions</span><span>HWID Resets</span><span>Days</span><span>Ban</span><span>Reason</span><span>Actions</span>' +
         '</div>';
     for (var i = 0; i < slice.length; i++) {
         var k = normalizeKey(slice[i]);
         var st = keyStatusOf(k);
-        var daysText = k.banned ? '-' : (k.expires ? Math.max(0, Math.ceil((k.expires - Date.now()) / 86400000)) : 'âˆž');
+        var daysText = k.banned ? '-' : (k.expires ? Math.max(0, Math.ceil((k.expires - Date.now()) / 86400000)) : '∞');
         // A REWARD KEY IS NOT THE OWNER'S TO DELETE - BUT IT IS THE OWNER'S
         // TO EDIT.
         //
@@ -2592,22 +2590,22 @@ function renderKeys() {
         var actions;
         if (k.serverOnly) {
             actions = '<span style="display:flex; gap:4px;">'
-                + '<button onclick="openServerKeySettingsUI(\'' + k.key + '\')" class="btn-sm btn-sm-edit" title="Edit this key">âš™ï¸ Settings</button>'
-                + '<button onclick="shServerKeyDelete(\'' + k.key + '\')" class="btn-sm btn-sm-danger" title="Remove this key completely">ðŸ—‘ï¸ Delete</button>'
-                + '<button onclick="shServerKeyAction(\'' + k.key + '\', \'hwid\')" class="btn-sm btn-sm-edit" title="Clear the hardware lock">ðŸ”„ HWID</button>'
+                + '<button onclick="openServerKeySettingsUI(\'' + k.key + '\')" class="btn-sm btn-sm-edit" title="Edit this key">⚙️ Settings</button>'
+                + '<button onclick="shServerKeyDelete(\'' + k.key + '\')" class="btn-sm btn-sm-danger" title="Remove this key completely">🗑️ Delete</button>'
+                + '<button onclick="shServerKeyAction(\'' + k.key + '\', \'hwid\')" class="btn-sm btn-sm-edit" title="Clear the hardware lock">🔄 HWID</button>'
                 + (k.banned
-                    ? '<button onclick="shServerKeyAction(\'' + k.key + '\', \'unban\')" class="btn-sm btn-sm-edit">âœ… Unban</button>'
-                    : '<button onclick="shServerKeyAction(\'' + k.key + '\', \'ban\')" class="btn-sm btn-sm-danger">â›” Ban</button>')
+                    ? '<button onclick="shServerKeyAction(\'' + k.key + '\', \'unban\')" class="btn-sm btn-sm-edit">✅ Unban</button>'
+                    : '<button onclick="shServerKeyAction(\'' + k.key + '\', \'ban\')" class="btn-sm btn-sm-danger">⛔ Ban</button>')
                 + '</span>';
         } else {
-            actions = '<span style="display:flex; gap:4px;"><button onclick="openKeySettingsUI(\'' + k.id + '\')" class="btn-sm btn-sm-edit">âš™ï¸ Settings</button><button onclick="deleteKey(\'' + k.id + '\')" class="btn-sm btn-sm-danger">ðŸ—‘ï¸ Delete</button></span>';
+            actions = '<span style="display:flex; gap:4px;"><button onclick="openKeySettingsUI(\'' + k.id + '\')" class="btn-sm btn-sm-edit">⚙️ Settings</button><button onclick="deleteKey(\'' + k.id + '\')" class="btn-sm btn-sm-danger">🗑️ Delete</button></span>';
         }
         html += '<div class="keys-table-row">' +
-            '<span><button onclick="copyText(\'' + k.key + '\')" class="btn-sm btn-sm-primary" title="Copy Key">ðŸ“‹ Copy</button></span>' +
+            '<span><button onclick="copyText(\'' + k.key + '\')" class="btn-sm btn-sm-primary" title="Copy Key">📋 Copy</button></span>' +
             '<span style="font-family:monospace; word-break:break-all;">' + k.key + '</span>' +
             '<span>' + (k.discordId || 'Nothing') + '</span>' +
             '<span style="color:' + st.color + ';">' + st.text + '</span>' +
-            '<span>' + (k.note || '-') + (k.serverOnly ? ' <span style="color:#8a6bff;">Â· ad reward</span>' : '') + '</span>' +
+            '<span>' + (k.note || '-') + (k.serverOnly ? ' <span style="color:#8a6bff;">· ad reward</span>' : '') + '</span>' +
             '<span>' + (k.executions || 0) + '</span>' +
             '<span>' + (k.hwidResets || 0) + '</span>' +
             '<span>' + daysText + '</span>' +
@@ -2636,7 +2634,7 @@ function userKeysPage(dir) {
 function toggleUserKeysList() {
     userKeysState.listVisible = !userKeysState.listVisible;
     var btn = document.getElementById('editUserKeysBtn');
-    if (btn) btn.textContent = userKeysState.listVisible ? 'âœï¸ Edit Users Keys' : 'ðŸ‘ï¸ Show Users Keys';
+    if (btn) btn.textContent = userKeysState.listVisible ? '✏️ Edit Users Keys' : '👁️ Show Users Keys';
     renderKeys();
 }
 
@@ -2668,8 +2666,8 @@ function openAddUserUI() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 460px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âž• Add User</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">➕ Add User</h2>
             <p class="sub">Everything is optional - a key is generated automatically</p>
             <div class="form-group"><label>User Note</label><input type="text" id="addUserNote" placeholder="Reminder note (optional)"><div class="field-hint">e.g. Ad Reward, Friend, Buyer...</div></div>
             <div class="form-group"><label>Discord ID</label><input type="text" id="addUserDiscord" placeholder="Discord ID (optional)"><div class="field-hint">Needed for /resethwid command (bot coming soon). User can also link their discord with /redeem [code]</div></div>
@@ -2681,7 +2679,7 @@ function openAddUserUI() {
                 option existed have no project recorded, so a bound key will not open them.</div></div>
             <div class="form-group"><label>Days</label><input type="number" id="addUserDays" min="0" placeholder="Days (optional)"><div class="field-hint">Days start running out once the key is redeemed. Leave blank for infinite days.</div></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="confirmAddUserUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">âž• Add User</button>
+                <button onclick="confirmAddUserUI()" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">➕ Add User</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -2691,7 +2689,7 @@ function openAddUserUI() {
 
 async function confirmAddUserUI() {
     var limitErr = checkPlanLimit('keys');
-    if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return; }
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var note = document.getElementById('addUserNote').value.trim();
     var discordId = document.getElementById('addUserDiscord').value.trim();
     var hwid = document.getElementById('addUserHwid').value.trim();
@@ -2761,29 +2759,29 @@ function openUserKeysSettingsUI() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 620px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âš™ï¸ Users Keys Settings</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">⚙️ Users Keys Settings</h2>
             <div class="settings-block">
-                <h3>ðŸ“¦ Mass Generate Keys</h3>
+                <h3>📦 Mass Generate Keys</h3>
                 <div class="field-hint">You can bulk generate keys at once</div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
                     <input class="sh-input" type="number" id="massGenAmount" min="1" max="1000" placeholder="Amount (1-1000)" style="flex:1; min-width:120px;">
                     <input class="sh-input" type="number" id="massGenDays" min="0" placeholder="Days (Optional)" style="flex:1; min-width:120px;">
                 </div>
                 <input class="sh-input" type="text" id="massGenNote" placeholder="Note (Optional)" style="width:100%; margin-top:8px;">
-                <button onclick="massGenerateKeys()" class="btn btn-primary" style="margin-top:10px; width:100%;">âš¡ Generate</button>
+                <button onclick="massGenerateKeys()" class="btn btn-primary" style="margin-top:10px; width:100%;">⚡ Generate</button>
             </div>
             <div class="settings-block">
-                <h3>ðŸ“¥ Download keys</h3>
+                <h3>📥 Download keys</h3>
                 <div class="field-hint">Useful for sellix / shoppy or any 'serial keys'. It's recommended to use JSON for import/exporting users to migrate.</div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-                    <button onclick="downloadKeysTxt()" class="btn btn-close-dropdown" style="flex:1;">ðŸ“„ Download TXT</button>
-                    <button onclick="exportKeysJson()" class="btn btn-close-dropdown" style="flex:1;">ðŸ—„ï¸ Export JSON</button>
-                    <button onclick="deleteUnusedKeys()" class="btn btn-danger" style="flex:1;">ðŸ—‘ï¸ Delete Unused</button>
+                    <button onclick="downloadKeysTxt()" class="btn btn-close-dropdown" style="flex:1;">📄 Download TXT</button>
+                    <button onclick="exportKeysJson()" class="btn btn-close-dropdown" style="flex:1;">🗄️ Export JSON</button>
+                    <button onclick="deleteUnusedKeys()" class="btn btn-danger" style="flex:1;">🗑️ Delete Unused</button>
                 </div>
             </div>
             <div class="settings-block">
-                <h3>ðŸ“¤ Import Users</h3>
+                <h3>📤 Import Users</h3>
                 <div class="field-hint">If you're migrating from another whitelist service, you can easily import your users.</div>
                 <div style="display:flex; gap:8px; margin-top:10px;">
                     <input type="file" id="importUsersFile" accept=".json" style="flex:1;">
@@ -2791,20 +2789,20 @@ function openUserKeysSettingsUI() {
                 </div>
             </div>
             <div class="settings-block">
-                <h3>ðŸ’— Mass compensate / Mass resethwid</h3>
+                <h3>💗 Mass compensate / Mass resethwid</h3>
                 <div class="field-hint">Mass compensate days for all of your users - useful if your script was unusable for some time. Mass reset HWID is useful when there's a new executor out.</div>
                 <div style="display:flex; gap:8px; margin-top:10px;">
                     <input class="sh-input" type="number" id="massCompDays" min="1" placeholder="Days" style="flex:1; min-width:80px;">
-                    <button onclick="massCompensateDays()" class="btn btn-close-dropdown" style="flex:1;">âž• Add Days</button>
-                    <button onclick="resetAllHwids()" class="btn btn-danger" style="flex:1;">ðŸ”„ Reset All HWIDS</button>
+                    <button onclick="massCompensateDays()" class="btn btn-close-dropdown" style="flex:1;">➕ Add Days</button>
+                    <button onclick="resetAllHwids()" class="btn btn-danger" style="flex:1;">🔄 Reset All HWIDS</button>
                 </div>
             </div>
             <div class="settings-block">
-                <h3>ðŸ›¡ï¸ Server Auth Controls (Luarmor model)</h3>
+                <h3>🛡️ Server Auth Controls (Luarmor model)</h3>
                 <div class="field-hint">License keys + HWID are checked SERVER-SIDE on every execution (your worker must be deployed). The kill-switch instantly fails every auth for every script - use it if a loader leaks.</div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-                    <button onclick="shLicenseSyncNow(this)" class="btn btn-close-dropdown" style="flex:1;">â˜ï¸ Sync Licenses Now</button>
-                    <button onclick="toggleKillswitch(this)" class="btn btn-danger" style="flex:1;">ðŸ›‘ Kill-Switch: OFF</button>
+                    <button onclick="shLicenseSyncNow(this)" class="btn btn-close-dropdown" style="flex:1;">☁️ Sync Licenses Now</button>
+                    <button onclick="toggleKillswitch(this)" class="btn btn-danger" style="flex:1;">🛑 Kill-Switch: OFF</button>
                 </div>
             </div>
             <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
@@ -2814,9 +2812,9 @@ function openUserKeysSettingsUI() {
 }
 
 function shLicenseSyncNow(btn) {
-    if (btn) { btn.disabled = true; btn.textContent = 'â³ Syncing...'; }
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing...'; }
     shSyncLicenses().then(function(d) {
-        if (btn) { btn.disabled = false; btn.textContent = 'â˜ï¸ Sync Licenses Now'; }
+        if (btn) { btn.disabled = false; btn.textContent = '☁️ Sync Licenses Now'; }
         showNotification(d && d.ok ? 'Licenses Synced' : 'Sync Failed', d && d.ok ? ((d.count || 0) + ' license(s) now enforced server-side.') : ((d && d.error) || 'Deploy the worker + log in as the owner first.'), d && d.ok ? 'success' : 'warning', 6000);
     });
 }
@@ -2826,7 +2824,7 @@ function toggleKillswitch(btn) {
     var on = !/ON/.test(btn.textContent);
     shSetKillswitch(on).then(function(d) {
         if (d && d.ok) {
-            btn.textContent = on ? 'ðŸ›‘ Kill-Switch: ON (every auth fails - click to disable)' : 'ðŸ›‘ Kill-Switch: OFF';
+            btn.textContent = on ? '🛑 Kill-Switch: ON (every auth fails - click to disable)' : '🛑 Kill-Switch: OFF';
             showNotification('Kill-Switch ' + (on ? 'ARMED' : 'Disarmed'), on ? 'Every license auth now fails instantly. All protected loaders are dead.' : 'License auth works again.', on ? 'warning' : 'success', 7000);
         } else {
             showNotification('Failed', (d && d.error) || 'Owner-only control (log in as Scripter, worker deployed).', 'error', 6000);
@@ -2842,7 +2840,7 @@ function massGenerateKeys() {
     var note = document.getElementById('massGenNote').value.trim();
     if (isNaN(amount) || amount < 1 || amount > 1000) { showNotification('Error', 'Amount must be between 1 and 1000.', 'error'); return; }
     var limitErr = checkPlanLimit('keys', amount);
-    if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return; }
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var days = daysRaw === '' ? null : parseInt(daysRaw, 10);
     var keyData = loadKeys();
     for (var i = 0; i < amount; i++) {
@@ -2909,7 +2907,7 @@ function importUsersFile() {
             var imported = JSON.parse(e.target.result);
             if (!Array.isArray(imported)) throw new Error('Not a valid users array');
             var limitErr = checkPlanLimit('keys', imported.length);
-            if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return; }
+            if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
             var keyData = loadKeys();
             var added = 0;
             for (var i = 0; i < imported.length; i++) {
@@ -3000,9 +2998,9 @@ function openKeySettingsUI(keyId) {
     overlay.innerHTML = `
         <div class="modal" style="max-width: 560px; padding: 28px; max-height:90vh; overflow-y:auto;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <h2 style="font-size:20px; margin:0;">âœï¸ Edit User Key Details</h2>
+                <h2 style="font-size:20px; margin:0;">✏️ Edit User Key Details</h2>
                 <div style="display:flex; gap:8px;">
-                    <button onclick="saveKeySettings('${keyId}')" class="btn btn-primary" style="padding:8px 18px;">ðŸ’¾ Save</button>
+                    <button onclick="saveKeySettings('${keyId}')" class="btn btn-primary" style="padding:8px 18px;">💾 Save</button>
                     <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="padding:8px 18px;">Cancel</button>
                 </div>
             </div>
@@ -3028,10 +3026,10 @@ function openKeySettingsUI(keyId) {
             <div class="form-group"><label>HWID</label>
                 <div style="display:flex; gap:8px;">
                     <input type="text" id="keyHwid" value="${k.hwid || ''}" placeholder="HWID (optional)" style="flex:1;">
-                    <button onclick="resetOneHwid('${keyId}')" class="btn btn-close-dropdown">ðŸ”„ Reset</button>
+                    <button onclick="resetOneHwid('${keyId}')" class="btn btn-close-dropdown">🔄 Reset</button>
                 </div>
             </div>
-            <div class="form-group"><label>â›” Blacklist User - Reason:</label>
+            <div class="form-group"><label>⛔ Blacklist User - Reason:</label>
                 <div style="display:flex; gap:8px;">
                     <input type="text" id="keyBanReason" value="${(k.banReason || '').replace(/"/g, '&quot;')}" placeholder="Blacklist reason (optional)" style="flex:1;">
                     <button onclick="blacklistKey('${keyId}')" class="btn btn-danger">${k.banned ? 'Unban' : 'Blacklist'}</button>
@@ -3188,9 +3186,9 @@ function updateUIForUser(user) {
     var dashPlan2 = document.getElementById('dashPlan2');
     if (dashUsername) dashUsername.textContent = user.username;
     setDashEmail(user.email);
-    if (dashPlan) dashPlan.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (dashPlan) dashPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (dashUsername2) dashUsername2.textContent = user.username;
-    if (dashPlan2) dashPlan2.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (dashPlan2) dashPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (dashAvatar) {
         if (user.profileImage) {
             dashAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -3211,7 +3209,7 @@ function updateUIForUser(user) {
     }
     refreshStatsUI();
     initRewards();
-    console.log('âœ… Dashboard shown for user:', user.username);
+    console.log('✅ Dashboard shown for user:', user.username);
 }
 
 // ============ EMAIL HIDE/SHOW ============
@@ -3236,7 +3234,7 @@ function toggleEmail(btn) {
     } else {
         span.dataset.email = span.textContent;
         span.dataset.hidden = '1';
-        span.textContent = 'ðŸ”’';
+        span.textContent = '🔒';
         btn.textContent = 'Show';
     }
 }
@@ -3249,7 +3247,7 @@ function normalizeMax(v) {
 }
 
 function formatSizeMB(mb) {
-    if (mb === Infinity) return 'âˆž';
+    if (mb === Infinity) return '∞';
     if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
     var v = mb < 0.01 ? 0.01 : mb;
     return parseFloat(v.toFixed(2)) + ' MB';
@@ -3301,10 +3299,10 @@ function refreshStatsUI() {
     var stats = computeStats(currentUser);
     // main dashboard + cloned tab dashboard both carry the same ids
     document.querySelectorAll('.dashboard, #tab-dashboard').forEach(function(root) {
-        setStatValue(root, 'projects', stats.projects.used, stats.projects.max === Infinity ? 'âˆž' : stats.projects.max);
-        setStatValue(root, 'keys', stats.keys.used, stats.keys.max === Infinity ? 'âˆž' : stats.keys.max);
-        setStatValue(root, 'scripts', stats.scripts.used, stats.scripts.max === Infinity ? 'âˆž' : stats.scripts.max);
-        setStatValue(root, 'storage', formatSizeMB(stats.storage.usedMB), stats.storage.maxMB === Infinity ? 'âˆž' : formatSizeMB(stats.storage.maxMB));
+        setStatValue(root, 'projects', stats.projects.used, stats.projects.max === Infinity ? '∞' : stats.projects.max);
+        setStatValue(root, 'keys', stats.keys.used, stats.keys.max === Infinity ? '∞' : stats.keys.max);
+        setStatValue(root, 'scripts', stats.scripts.used, stats.scripts.max === Infinity ? '∞' : stats.scripts.max);
+        setStatValue(root, 'storage', formatSizeMB(stats.storage.usedMB), stats.storage.maxMB === Infinity ? '∞' : formatSizeMB(stats.storage.maxMB));
         setStatBar(root, 'projects', stats.projects.used, stats.projects.max);
         setStatBar(root, 'keys', stats.keys.used, stats.keys.max);
         setStatBar(root, 'scripts', stats.scripts.used, stats.scripts.max);
@@ -3395,8 +3393,6 @@ function refreshAnalyticsUI() {
     var localThreats = 0;
     try { localThreats = (JSON.parse(localStorage.getItem('sh_threats_local') || '[]')).length; } catch (e) {}
     setAnalyticsValue('totalExecutions', countSince(a.executions, analyticsState.execRange));
-    // Pull the real execution counts from the worker (scripts post to /track on a
-    // successful run), since this page cannot observe Roblox executing a script.
     try {
         var _base = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
         if (_base) {
@@ -3454,9 +3450,9 @@ function updateDashboardTab(user) {
     var tabUsername2 = tabDashboard.querySelector('#dashUsername2');
     var tabPlan2 = tabDashboard.querySelector('#dashPlan2');
     if (tabUsername) tabUsername.textContent = user.username;
-    if (tabPlan) tabPlan.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (tabPlan) tabPlan.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (tabUsername2) tabUsername2.textContent = user.username;
-    if (tabPlan2) tabPlan2.textContent = 'ðŸ“Š Current Plan: ' + (user.plan || 'Basic');
+    if (tabPlan2) tabPlan2.textContent = '📊 Current Plan: ' + (user.plan || 'Basic');
     if (tabAvatar) {
         if (user.profileImage) {
             tabAvatar.innerHTML = '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">';
@@ -3533,7 +3529,7 @@ function logout() {
     var contents = document.querySelectorAll('.tab-content');
     for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     showNotification('Logged Out', 'You have been logged out successfully.', 'info');
-    console.log('ðŸ‘‹ Logged out');
+    console.log('👋 Logged out');
 }
 
 function handleSignup(event) {
@@ -3695,7 +3691,7 @@ function handleSignup(event) {
         shMintUserToken(email, password);
     });
     updateUIForUser(userData);
-    console.log('âœ… User signed up and logged in:', username);
+    console.log('✅ User signed up and logged in:', username);
 }
 
 function handleLogin(event) {
@@ -3746,7 +3742,7 @@ function handleLogin(event) {
                 delete cloudData.password;
                 updateUIForUser(cloudData);
                 shSyncUsersOnLogin(d.user, password);
-                console.log('âœ… User logged in (cloud):', d.user.username);
+                console.log('✅ User logged in (cloud):', d.user.username);
             } else {
                 showNotification('Error', 'Invalid email/username or password.', 'error');
             }
@@ -3811,7 +3807,7 @@ function shFinishLocalLogin(foundUser, password) {
     updateUIForUser(userData);
     // cross-device: push this login to the cloud + pull all users (owner)
     shSyncUsersOnLogin(foundUser, password);
-    console.log('âœ… User logged in:', userData.username);
+    console.log('✅ User logged in:', userData.username);
 }
 
 
@@ -3849,7 +3845,7 @@ function openDeleteAccountUI() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 440px; padding: 32px; text-align:center;">
-            <div style="font-size:52px; line-height:1;">âš ï¸</div>
+            <div style="font-size:52px; line-height:1;">⚠️</div>
             <h2 style="font-size:20px; margin:14px 0 8px 0; color:#ff4444;">Are you sure you wanna do this?</h2>
             <p style="color:#8888aa; font-size:13px; line-height:1.6;">You will lose everything included plans bought/projects/scripts/keys and more.</p>
             <div style="display:flex; gap:12px; margin-top:22px;">
@@ -4149,7 +4145,7 @@ function createUsersPanel() {
     overlay.id = 'usersPanelOverlay';
     overlay.innerHTML = `
         <div class="users-panel">
-            <div class="panel-header"><h2>ðŸ‘¥ Users List</h2><button class="panel-close" onclick="closeUsersPanel()">âœ•</button></div>
+            <div class="panel-header"><h2>👥 Users List</h2><button class="panel-close" onclick="closeUsersPanel()">✕</button></div>
             <div class="panel-search">
                 <select id="panelSearchType" onchange="renderUsersList()">
                     <option value="username">Search by Username</option>
@@ -4160,10 +4156,10 @@ function createUsersPanel() {
             <div class="panel-list" id="panelUserList"></div>
             <div class="panel-status" id="panelStatus"></div>
             <div class="panel-actions">
-                <button class="btn btn-primary" onclick="refreshUsersList()">ðŸ”„ Refresh from Cloud</button>
-                <button class="btn btn-close-dropdown" onclick="shForgetOwnerCode()" title="Forget the saved owner access code and ask again">ðŸ”‘ Re-enter Owner Code</button>
-                <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>ðŸ—‘ï¸ Remove User</button>
-                <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>ðŸ“Š Change Plan</button>
+                <button class="btn btn-primary" onclick="refreshUsersList()">🔄 Refresh from Cloud</button>
+                <button class="btn btn-close-dropdown" onclick="shForgetOwnerCode()" title="Forget the saved owner access code and ask again">🔑 Re-enter Owner Code</button>
+                <button class="btn btn-danger" id="panelDeleteBtn" onclick="panelDeleteUser()" disabled>🗑️ Remove User</button>
+                <button class="btn btn-primary" id="panelPlanBtn" onclick="panelChangePlan()" disabled>📊 Change Plan</button>
                 <button class="btn btn-close-dropdown" onclick="closeUsersPanel()">Close</button>
             </div>
         </div>
@@ -4210,7 +4206,7 @@ function renderUsersList() {
         var mail = String((user && user.email) || key || '');
         var isAdmin = user.isAdmin ? 'tag-admin' : 'tag-user';
         var isScripter = user.isScripter ? 'tag-creator' : '';
-        var roleText = user.isScripter ? 'â­ Creator' : (user.isAdmin ? 'ðŸ‘‘ Admin' : 'ðŸ‘¤ User');
+        var roleText = user.isScripter ? '⭐ Creator' : (user.isAdmin ? '👑 Admin' : '👤 User');
         var isSelected = (selectedUserEmail === key) ? 'selected' : '';
         // A nameless account still gets a tile, with a letter taken from
         // whatever it does have.
@@ -4336,8 +4332,8 @@ function renderAdminUserListFull() {
         var user = users[key];
         var createdRaw = String((user && user.createdAt) || '');
         var createdDate = createdRaw ? new Date(createdRaw).toLocaleDateString() : '-';
-        var isAdmin = user.isAdmin ? 'ðŸ‘‘ Admin' : 'ðŸ‘¤ User';
-        var isScripter = user.isScripter ? 'â­ Creator' : '';
+        var isAdmin = user.isAdmin ? '👑 Admin' : '👤 User';
+        var isScripter = user.isScripter ? '⭐ Creator' : '';
         html += `
             <div class="user-item" style="background: rgba(20,20,35,0.6); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -4348,12 +4344,12 @@ function renderAdminUserListFull() {
                         <div><strong style="color: #ffffff;">${shDisplayName(user, key)}</strong><span style="color: #8888aa; font-size: 13px; margin-left: 8px;">${user.email}</span></div>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">â­ Creator</span>' : ''}
+                        ${isScripter ? '<span style="background: rgba(255,215,0,0.2); color: #ffd700; padding: 2px 12px; border-radius: 12px; font-size: 11px;">⭐ Creator</span>' : ''}
                         <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${user.plan}</span>
                         <span style="background: rgba(255,255,255,0.05); color: #8888aa; padding: 2px 12px; border-radius: 12px; font-size: 11px;">${isAdmin}</span>
                         <span style="color: #555577; font-size: 11px;">Joined: ${createdDate}</span>
-                        ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">ðŸ—‘ï¸</button>' : ''}
-                        <button onclick="changeUserPlan(\'' + key + '\')" style="background: rgba(108,59,255,0.2); color: #8a6bff; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">ðŸ“Š</button>
+                        ${!user.isAdmin && !user.isScripter ? '<button onclick="deleteUser(\'' + key + '\')" style="background: rgba(255,50,50,0.2); color: #ff6b6b; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">🗑️</button>' : ''}
+                        <button onclick="changeUserPlan(\'' + key + '\')" style="background: rgba(108,59,255,0.2); color: #8a6bff; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;">📊</button>
                     </div>
                 </div>
             </div>
@@ -4386,7 +4382,7 @@ function deleteUser(email) {
 
 function deleteAllUsers() {
     if (!currentUser || currentUser.username !== 'Scripter') { showNotification('Access Denied', 'Only Scripter can delete all users.', 'error'); return; }
-    if (confirm('âš ï¸ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
+    if (confirm('⚠️ Are you sure you want to delete ALL users? This cannot be undone!\n\n(Scripter account will be kept)')) {
         var scripterAccount = users['dubovikstanislav51@gmail.com'];
         var adminAccount = users['admin@example.com'];
         users = {};
@@ -4468,13 +4464,13 @@ function deleteAllBotUsers() {
     overlay.style.zIndex = '4000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; max-height: 80vh; padding: 24px; display:flex; flex-direction:column;">
-            <h2 style="font-size:20px; margin:0 0 8px;">ðŸ¤– Delete All Bot Users?</h2>
+            <h2 style="font-size:20px; margin:0 0 8px;">🤖 Delete All Bot Users?</h2>
             <p style="color:#8888aa; font-size:13px; margin:0 0 14px;">Found <strong style="color:#ff6b6b;">${bots.length}</strong> account(s) that look bot-generated. Real accounts are kept. Scroll to review the list.</p>
             <div style="flex:1; overflow-y:auto; background:rgba(20,20,35,0.6); border-radius:10px; padding:10px; margin-bottom:14px; border:1px solid rgba(255,255,255,0.06);">
                 ${listItems}
             </div>
             <div style="display:flex; gap:10px;">
-                <button onclick="confirmDeleteAllBots()" class="btn btn-danger" style="flex:1; padding:10px;">ðŸ—‘ï¸ Delete ${bots.length} Bots</button>
+                <button onclick="confirmDeleteAllBots()" class="btn btn-danger" style="flex:1; padding:10px;">🗑️ Delete ${bots.length} Bots</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:10px;">Cancel</button>
             </div>
         </div>
@@ -4534,18 +4530,18 @@ function changeUserPlan(email) {
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
-        var isCurrent = user.plan === plan ? 'âœ… ' : '';
+        var isCurrent = user.plan === plan ? '✅ ' : '';
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (user.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${user.profileImage ? '<img src="' + user.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : shAvatarLetter(user)}
                 </div>
-                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${shDisplayName(user, email)} Â· Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
+                <div><h2 style="font-size: 22px; margin: 0; color: #ffffff;">Change Plan</h2><p style="color: #8888aa; margin: 2px 0 0; font-size: 14px;">${shDisplayName(user, email)} · Current: <strong style="color: #8a6bff;">${user.plan}</strong></p></div>
             </div>
             <div class="form-group"><label style="font-size: 14px;">Select New Plan</label><select id="newPlanSelect" style="width:100%; padding: 12px 16px; background: #0a0a15; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer;">${planOptions}</select></div>
             <div id="planPreviewCard" style="margin-top: 16px; padding: 16px 20px; background: rgba(20,20,35,0.6); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
@@ -4554,14 +4550,14 @@ function changeUserPlan(email) {
                     <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="previewPlanPrice">$0/month</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>ðŸ“ Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
-                    <span>ðŸ”‘ Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
-                    <span>ðŸ“œ Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
-                    <span>ðŸ’¾ Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="previewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="previewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="previewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="previewStorage">0</strong> MB</span>
                 </div>
             </div>
             <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">âœ… Confirm Change</button>
+                <button onclick="confirmChangePlan('${email}')" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
@@ -4577,10 +4573,10 @@ function updatePlanPreviewGUI(planName) {
     if (!config) return;
     document.getElementById('previewPlanName').textContent = planName;
     document.getElementById('previewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('previewProjects').textContent = config.projects === Infinity ? 'âˆž' : config.projects;
-    document.getElementById('previewKeys').textContent = config.keys === Infinity ? 'âˆž' : config.keys;
-    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? 'âˆž' : config.scripts;
-    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? 'âˆž' : config.fileSize;
+    document.getElementById('previewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('previewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('previewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('previewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmChangePlan(email) {
@@ -4617,7 +4613,7 @@ function confirmChangePlan(email) {
     // sync the plan change to the cloud (every other device). AWAITED with
     // error reporting - a silent 401 here used to mean nobody ever got
     // their plan (the old bug).
-    var btnText = 'Plan synced to the cloud âœ“';
+    var btnText = 'Plan synced to the cloud ✓';
     shPushCloudUserUpdate(email, { ...user }).then(function(d) {
         if (d && d.ok) {
             showNotification('Cloud Synced', btnText, 'success', 4000);
@@ -4637,13 +4633,13 @@ function changeOwnPlan() {
     var planOptions = '';
     for (var plan in PLAN_CONFIGS) {
         var config = PLAN_CONFIGS[plan];
-        var isCurrent = currentUser.plan === plan ? 'âœ… ' : '';
+        var isCurrent = currentUser.plan === plan ? '✅ ' : '';
         var priceDisplay = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
         planOptions += '<option value="' + plan + '" ' + (currentUser.plan === plan ? 'selected' : '') + '>' + isCurrent + plan + ' - ' + priceDisplay + '</option>';
     }
     overlay.innerHTML = `
         <div class="modal" style="max-width: 480px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
                 <div style="width: 50px; height: 50px; border-radius: 50%; background: linear-gradient(135deg, #6c3bff, #00bfff); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; overflow: hidden; flex-shrink: 0;">
                     ${currentUser.profileImage ? '<img src="' + currentUser.profileImage + '" style="width:100%;height:100%;object-fit:cover;">' : shAvatarLetter(currentUser)}
@@ -4657,14 +4653,14 @@ function changeOwnPlan() {
                     <span style="background: rgba(108,59,255,0.2); color: #8a6bff; padding: 2px 14px; border-radius: 12px; font-size: 13px;" id="ownPreviewPlanPrice">$0/month</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; color: #8888aa;">
-                    <span>ðŸ“ Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
-                    <span>ðŸ”‘ Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
-                    <span>ðŸ“œ Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
-                    <span>ðŸ’¾ Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
+                    <span>📁 Projects: <strong style="color: #ffffff;" id="ownPreviewProjects">0</strong></span>
+                    <span>🔑 Keys: <strong style="color: #ffffff;" id="ownPreviewKeys">0</strong></span>
+                    <span>📜 Scripts: <strong style="color: #ffffff;" id="ownPreviewScripts">0</strong></span>
+                    <span>💾 Storage: <strong style="color: #ffffff;" id="ownPreviewStorage">0</strong> MB</span>
                 </div>
             </div>
             <div style="display: flex; gap: 12px; margin-top: 20px;">
-                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">âœ… Confirm Change</button>
+                <button onclick="confirmOwnPlanChange()" class="btn btn-primary" style="flex:1; padding: 12px; font-size: 15px;">✅ Confirm Change</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding: 12px; font-size: 15px;">Cancel</button>
             </div>
         </div>
@@ -4680,10 +4676,10 @@ function updateOwnPlanPreviewGUI(planName) {
     if (!config) return;
     document.getElementById('ownPreviewPlanName').textContent = planName;
     document.getElementById('ownPreviewPlanPrice').textContent = config.price === 'Custom' ? 'Custom' : '$' + config.price + '/month';
-    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? 'âˆž' : config.projects;
-    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? 'âˆž' : config.keys;
-    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? 'âˆž' : config.scripts;
-    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? 'âˆž' : config.fileSize;
+    document.getElementById('ownPreviewProjects').textContent = config.projects === Infinity ? '∞' : config.projects;
+    document.getElementById('ownPreviewKeys').textContent = config.keys === Infinity ? '∞' : config.keys;
+    document.getElementById('ownPreviewScripts').textContent = config.scripts === Infinity ? '∞' : config.scripts;
+    document.getElementById('ownPreviewStorage').textContent = config.fileSize === Infinity ? '∞' : config.fileSize;
 }
 
 function confirmOwnPlanChange() {
@@ -4727,7 +4723,7 @@ function confirmOwnPlanChange() {
     delete toSend.password;
     shPushCloudUserUpdate(email, toSend).then(function (d) {
         if (d && d.ok) {
-            showNotification('Cloud Synced', 'Plan synced to the cloud âœ“', 'success', 4000);
+            showNotification('Cloud Synced', 'Plan synced to the cloud ✓', 'success', 4000);
         } else {
             showNotification('Cloud Sync Failed',
                 (d && d.error) || 'Plan saved on this device only. Sign in as the owner and try again, or use the admin panel.',
@@ -5206,7 +5202,7 @@ function shRenderThemePicker() {
             // The custom entry carries the CURRENT colour in its own text, so the
             // select shows which colour is live even though its value is the
             // sentinel. A fixed label would say "Custom" and hide the answer.
-            opts += '<option value="' + SH_CUSTOM_THEME_PREFIX + 'custom" data-sh-theme="1" id="shCustomThemeOption">ðŸŽ¨ Custom colourâ€¦</option>';
+            opts += '<option value="' + SH_CUSTOM_THEME_PREFIX + 'custom" data-sh-theme="1" id="shCustomThemeOption">🎨 Custom colour…</option>';
             sel.innerHTML = opts;
         }
         // an unknown saved name still has to select SOMETHING, or the control shows
@@ -5215,7 +5211,7 @@ function shRenderThemePicker() {
         for (var j = 0; j < SH_THEME_PICKER.length; j++) if (SH_THEME_PICKER[j].name === current) isListed = true;
         sel.value = isListed ? current : (isCustom ? SH_CUSTOM_THEME_PREFIX + 'custom' : SH_THEME_FALLBACK);
         var co = document.getElementById('shCustomThemeOption');
-        if (co) co.textContent = isCustom ? 'ðŸŽ¨ Custom colour ' + current.slice(SH_CUSTOM_THEME_PREFIX.length) : 'ðŸŽ¨ Custom colourâ€¦';
+        if (co) co.textContent = isCustom ? '🎨 Custom colour ' + current.slice(SH_CUSTOM_THEME_PREFIX.length) : '🎨 Custom colour…';
     }
 
     if (dots) {
@@ -5506,8 +5502,8 @@ function openCreateProject() {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 540px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size: 22px;">ðŸ“ Create Project</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 22px;">📁 Create Project</h2>
             <p class="sub">Fill in the details to create a new project</p>
             <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="projectName" placeholder="Enter project name" required></div>
             <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="projectDescription" placeholder="Describe your project..."></textarea></div>
@@ -5526,7 +5522,7 @@ function openCreateProject() {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="projectAllowClonedSharing"> Allow HWID Cloned Key Sharing</label>
             </div>
             <div class="field-hint" style="margin-bottom:8px;">Cloned Key Sharing = one key on different computers with same HWID (useful for server hopping scripts with multi instance on VPSes). Auto Delete runs every 15 minutes.</div>
-            <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">âœ… Create Project</button>
+            <button onclick="confirmCreateProject()" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">✅ Create Project</button>
         </div>
     `;
     document.body.appendChild(overlay);
@@ -5548,7 +5544,7 @@ function confirmCreateProject() {
     var allowClonedSharing = document.getElementById('projectAllowClonedSharing').checked;
     if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
     var limitErr = checkPlanLimit('projects');
-    if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return; }
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     var projects = loadProjects();
     for (var i = 0; i < projects.length; i++) {
         if (projects[i].name.toLowerCase() === name.toLowerCase()) {
@@ -5578,7 +5574,7 @@ function renderProjects() {
     for (var i = 0; i < projects.length; i++) {
         var project = projects[i];
         var scriptCount = project.scripts ? project.scripts.length : 0;
-        var visibilityLabel = project.visibility === 'anyone' ? 'ðŸŒ Anyone' : (project.visibility === 'friends' ? 'ðŸ‘¥ Friends' : 'ðŸ”’ Private');
+        var visibilityLabel = project.visibility === 'anyone' ? '🌐 Anyone' : (project.visibility === 'friends' ? '👥 Friends' : '🔒 Private');
         html += `
             <div class="project-card">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
@@ -5588,14 +5584,14 @@ function renderProjects() {
                         <div class="project-tags">
                             <span class="tag tag-visibility">${visibilityLabel}</span>
                             <span class="tag tag-type">${project.type.toUpperCase()}</span>
-                            <span class="tag tag-scripts">ðŸ“œ ${scriptCount} scripts</span>
+                            <span class="tag tag-scripts">📜 ${scriptCount} scripts</span>
                         </div>
                     </div>
                     <div class="project-actions">
-                        <button onclick="viewProject('${project.id}')" class="btn-sm btn-sm-primary">ðŸ“œ View Scripts</button>
-                        <button onclick="openCreateScript('${project.id}')" class="btn-sm btn-sm-primary">âž• New Script</button>
-                        <button onclick="editProject('${project.id}')" class="btn-sm btn-sm-edit">âœï¸ Edit</button>
-                        <button onclick="deleteProject('${project.id}')" class="btn-sm btn-sm-danger">ðŸ—‘ï¸ Delete</button>
+                        <button onclick="viewProject('${project.id}')" class="btn-sm btn-sm-primary">📜 View Scripts</button>
+                        <button onclick="openCreateScript('${project.id}')" class="btn-sm btn-sm-primary">➕ New Script</button>
+                        <button onclick="editProject('${project.id}')" class="btn-sm btn-sm-edit">✏️ Edit</button>
+                        <button onclick="deleteProject('${project.id}')" class="btn-sm btn-sm-danger">🗑️ Delete</button>
                     </div>
                 </div>
             </div>
@@ -6034,32 +6030,32 @@ function openCreateScript(projectId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âž• Create Script</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">➕ Create Script</h2>
             <p class="sub">Create a new script for "<strong style="color:#8a6bff;">${project.name}</strong>"</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="scriptName" placeholder="Enter script name" required></div>
-            <div class="form-group"><label>Your Special Key</label><input type="text" id="scriptSpecialKey" placeholder="Any length â€” required (protects the website page)">
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">ðŸ” Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute it in-game with NO key - the key only gates the website key page (so people can't rip your code from the browser). <strong style="color:#ff9999;">Paid:</strong> users must set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server; losing it = the script is gone forever.</div>
+            <div class="form-group"><label>Your Special Key</label><input type="text" id="scriptSpecialKey" placeholder="Any length — required (protects the website page)">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 Your script is ENCRYPTED with this key in YOUR browser before upload. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute it in-game with NO key - the key only gates the website key page (so people can't rip your code from the browser). <strong style="color:#ff9999;">Paid:</strong> users must set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server; losing it = the script is gone forever.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="scriptDescription" placeholder="Describe your script..."></textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiTamper" checked> Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptFullAntiTamper"> Full Anti Tamper V2</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> ðŸ”’ Anti Skidding</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> ðŸ“¡ Environment Logging</label>
-                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="scriptBytecodeVM" checked onchange="shBytecodeVMNote()"> ðŸ§  Bytecode VM</label>
-                <label style="margin:0; cursor:pointer;${project.type === 'key' ? '' : ' display:none;'}"><input type="checkbox" id="scriptRequireKey"> ðŸ”‘ Require Key</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptAntiSkid" checked> 🔒 Anti Skidding</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptEnvLogging"> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="scriptBytecodeVM" checked onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
+                <label style="margin:0; cursor:pointer;${project.type === 'key' ? '' : ' display:none;'}"><input type="checkbox" id="scriptRequireKey"> 🔑 Require Key</label>
             </div>
             <div class="form-group" id="scriptBytecodeVMInfo" style="display:none; margin-top:-4px; font-size:11px; color:#ffaa44; line-height:1.5;">
-                âš ï¸ <strong>Bytecode VM is OFF â€” this script ships essentially UNOBFUSCATED.</strong> Every protection layer (string encryption, control flow, number obfuscation) runs inside the VM, so unticking it does not select a lighter protection, it selects none: your source goes out in readable form. Leave it on unless you are diagnosing a script that will not run â€” if a script works with this unticked and fails with it ticked, the VM is the cause.
+                ⚠️ <strong>Bytecode VM is OFF — this script ships essentially UNOBFUSCATED.</strong> Every protection layer (string encryption, control flow, number obfuscation) runs inside the VM, so unticking it does not select a lighter protection, it selects none: your source goes out in readable form. Leave it on unless you are diagnosing a script that will not run — if a script works with this unticked and fails with it ticked, the VM is the cause.
             </div>
             <div class="form-group" id="scriptKeyGateInfo" style="display:none;">
                 <div style="padding:10px 14px; background:rgba(108,59,255,0.1); border:1px solid rgba(108,59,255,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ”‘ <strong style="color:#8a6bff;">Key System:</strong> All your <strong>active keys from the Keys tab</strong> get embedded (hashed, never readable) into the script. Users must enter a valid key (popup key card or <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>) before the script runs. Expired/used keys are rejected automatically.
+                    🔑 <strong style="color:#8a6bff;">Key System:</strong> All your <strong>active keys from the Keys tab</strong> get embedded (hashed, never readable) into the script. Users must enter a valid key (popup key card or <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>) before the script runs. Expired/used keys are rejected automatically.
                 </div>
             </div>
             <div class="form-group" id="scriptWebhookGroup" style="display:none;">
-                <label>ðŸ“¡ Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
+                <label>📡 Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
                 <input type="text" id="scriptWebhookUrl" placeholder="https://discord.com/api/webhooks/...">
                 <div style="margin-top:4px; font-size:11px; color:#8888aa;">Runs, usernames, executor, HWID, place ID etc. of everyone executing your script will be sent to this webhook and saved to their scripterhub/ log file.</div>
             </div>
@@ -6077,31 +6073,31 @@ function openCreateScript(projectId) {
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
             <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><textarea id="scriptCode" placeholder="-- Paste your Lua code here..." style="min-height:150px; font-family:monospace; font-size:13px;"></textarea></div>
             <div class="form-group">
-                <label>ðŸ’Ž Choose Obfuscator</label>
+                <label>💎 Choose Obfuscator</label>
                 <select id="scriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
                     <option value="default" selected>Default Obfuscator (Recommended)</option>
                     <option value="aegis">Aegis Obfuscator (Unavaiable)</option>
                 </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;">ðŸ’Ž <strong style="color:#ff66cc;">Default</strong>: multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger (detects loggers, spies & hooks â†’ game:Shutdown()). âš”ï¸ <strong style="color:#00ccaa;">Aegis</strong>: external Aegis engine (custom ISA + polymorphic VM) - your source is sent to the Aegis API to be obfuscated.</div>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">💎 <strong style="color:#ff66cc;">Default</strong>: multi-layer encryption + Anti-Tampering / Anti-Skidding / Anti-Logger (detects loggers, spies & hooks → game:Shutdown()). ⚔️ <strong style="color:#00ccaa;">Aegis</strong>: external Aegis engine (custom ISA + polymorphic VM) - your source is sent to the Aegis API to be obfuscated.</div>
             </div>
             <div class="form-group" style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptFreeForEveryone" ${project.type === 'free' ? 'checked' : ''}> ðŸŒ Free For Everyone</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSilentMode"> ðŸ”‡ Silent Mode</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptHeartbeat" checked> ðŸ’“ Heartbeat</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptLightningMode"> âš¡ Lightning Mode</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSecurityUpdates" checked> ðŸ”„ Enable Security Updates</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptFreeForEveryone" ${project.type === 'free' ? 'checked' : ''}> 🌐 Free For Everyone</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSilentMode"> 🔇 Silent Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptHeartbeat" checked> 💓 Heartbeat</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptLightningMode"> ⚡ Lightning Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="scriptSecurityUpdates" checked> 🔄 Enable Security Updates</label>
             </div>
-            <div class="field-hint" style="margin-bottom:10px;">ðŸŒ Free For Everyone = anyone can execute (NO key in executors - the Special Key only gates the website page). ðŸ”‡ Silent = no console outputs (not recommended). ðŸ’“ Heartbeat = more secure (recommended). âš¡ Lightning = faster but removes some inline security checks. ðŸ”„ Security Updates = stores your raw script encrypted for automated updates (recommended).</div>
+            <div class="field-hint" style="margin-bottom:10px;">🌐 Free For Everyone = anyone can execute (NO key in executors - the Special Key only gates the website page). 🔇 Silent = no console outputs (not recommended). 💓 Heartbeat = more secure (recommended). ⚡ Lightning = faster but removes some inline security checks. 🔄 Security Updates = stores your raw script encrypted for automated updates (recommended).</div>
             ${project.type === 'key' ? `
             <div class="form-group">
-                <label>ðŸ”‘ Choose How Key Works</label>
+                <label>🔑 Choose How Key Works</label>
                 <select id="scriptKeyMode" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
                     <option value="default" selected>Default (Roblox Core Notification)</option>
                     <option value="custom">Custom (You Make It)</option>
                 </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;" id="scriptKeyModeHint">ðŸ”‘ <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.</div>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;" id="scriptKeyModeHint">🔑 <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.</div>
             </div>` : ''}
-            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="scriptHWIDReset"> ðŸ”„ HWID Reset (Allow device change)</label></div>
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="scriptHWIDReset"> 🔄 HWID Reset (Allow device change)</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
                 <input type="text" id="scriptGameId" placeholder="e.g. 1234567890 or roblox.com/games/1234567890">
@@ -6114,7 +6110,7 @@ function openCreateScript(projectId) {
                 </div>
             </div>
             <div style="display:flex; gap:12px; margin-top:12px;">
-                <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">âœ… Create Script</button>
+                <button onclick="confirmCreateScript('${projectId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">✅ Create Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -6156,8 +6152,8 @@ function openCreateScript(projectId) {
     if (keyModeSel && keyModeHint) {
         keyModeSel.addEventListener('change', function() {
             keyModeHint.innerHTML = this.value === 'custom'
-                ? 'ðŸ› ï¸ <strong style="color:#00ccaa;">Custom</strong>: no built-in UI - you make your OWN key GUI! The script waits silently and exposes API globals: <code style="color:#66ff66;">ScripterHubKeyValid</code>, <code style="color:#66ff66;">ScripterHubKeyIncorrect</code>, <code style="color:#66ff66;">ScripterHubKeyExpired</code>, <code style="color:#66ff66;">ScripterHubKeyStatus</code>. Your GUI sets <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> when ready (see APIs in the Users Keys tab).'
-                : 'ðŸ”‘ <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.';
+                ? '🛠️ <strong style="color:#00ccaa;">Custom</strong>: no built-in UI - you make your OWN key GUI! The script waits silently and exposes API globals: <code style="color:#66ff66;">ScripterHubKeyValid</code>, <code style="color:#66ff66;">ScripterHubKeyIncorrect</code>, <code style="color:#66ff66;">ScripterHubKeyExpired</code>, <code style="color:#66ff66;">ScripterHubKeyStatus</code>. Your GUI sets <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> when ready (see APIs in the Users Keys tab).'
+                : '🔑 <strong style="color:#8a6bff;">Default</strong>: ScripterHub shows Roblox notifications ("Key required!", "Invalid key!", "Key accepted!") and a popup key card. Your users set <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code>.';
         });
     }
     // Roblox game thumbnail preview from Game Link/ID
@@ -6216,7 +6212,7 @@ function renderGamePreview(info) {
     var nameEl = document.getElementById('gameThumbName');
     var metaEl = document.getElementById('gameThumbMeta');
     if (nameEl) nameEl.textContent = info.name || 'Game';
-    if (metaEl) metaEl.textContent = 'Place ID: ' + info.placeId + (info.creator ? ' | ' + info.creator : '') + (info.playing ? ' | ðŸ‘¥ ' + info.playing + ' playing' : '');
+    if (metaEl) metaEl.textContent = 'Place ID: ' + info.placeId + (info.creator ? ' | ' + info.creator : '') + (info.playing ? ' | 👥 ' + info.playing + ' playing' : '');
 }
 
 // ============ CONFIRM CREATE SCRIPT ============
@@ -6331,7 +6327,7 @@ function confirmCreateScript(projectId) {
     }
     // plan limit pre-checks (accurate factor, no more x2 shock)
     var limitErr = checkPlanLimit('scripts') || checkPlanLimit('storage', 0, code.length * _estFactor);
-    if (limitErr) { showNotification('ðŸš« Limit Reached', limitErr, 'error', 6000); return; }
+    if (limitErr) { showNotification('🚫 Limit Reached', limitErr, 'error', 6000); return; }
     // collect active keys for the key gate
     var keyGateKeys = [];
     if (requireKey) {
@@ -6393,7 +6389,7 @@ function confirmCreateScript(projectId) {
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl) {
         btnEl.disabled = true;
-        btnEl.textContent = obfuscatorEngine === 'aegis' ? 'âš”ï¸ Obfuscating with Aegis...' : 'ðŸ’Ž Obfuscating ' + codeLines + ' lines...';
+        btnEl.textContent = obfuscatorEngine === 'aegis' ? '⚔️ Obfuscating with Aegis...' : '💎 Obfuscating ' + codeLines + ' lines...';
         // let the browser paint the button state before the heavy sync work
         setTimeout(function() { proceedCreate(); }, 30);
     } else {
@@ -6406,8 +6402,8 @@ function confirmCreateScript(projectId) {
         // exact storage check with the real obfuscated size
         var exactErr = checkPlanLimit('storage', 0, code.length + obfuscatedCode.length);
         if (exactErr) {
-            if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'âœ… Create Script'; }
-            showNotification('ðŸš« Limit Reached', exactErr, 'error', 6000);
+            if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
+            showNotification('🚫 Limit Reached', exactErr, 'error', 6000);
             return;
         }
         var loaderKey = 'loader_' + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
@@ -6460,8 +6456,8 @@ function confirmCreateScript(projectId) {
         if (modal) modal.remove();
         recordObfuscation();
         refreshStatsUI();
-        showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? 'âš”ï¸ Aegis Obfuscator (Unavaiable)' : 'ðŸ’Ž Default Obfuscator') + '!', 'success');
-        // also push to the hidden loader host (loadstring system) â€” silent, non-blocking
+        showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator (Unavaiable)' : '💎 Default Obfuscator') + '!', 'success');
+        // also push to the hidden loader host (loadstring system) — silent, non-blocking
         // The owning project travels with the upload so a license can be bound to it.
         window.__shUploadProject = { id: projectId, name: projects[projectIndex].name };
         shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless, requireKey).then(function(d) {
@@ -6513,7 +6509,7 @@ function confirmCreateScript(projectId) {
         // notification below renders BEHIND it. Without this the user is left
         // looking at a stuck 'Waiting for the host...' with no visible reason.
         shProgressHide();
-        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'âœ… Create Script'; }
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '✅ Create Script'; }
         showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });
     }
@@ -6740,7 +6736,7 @@ function shProgressEnsure(title) {
             + '</div>';
         document.body.appendChild(el);
     }
-    document.getElementById('shObfsTitle').textContent = title || 'Obfuscatingâ€¦';
+    document.getElementById('shObfsTitle').textContent = title || 'Obfuscating…';
     return el;
 }
 function shProgressUpdate(etaMs, elapsedMs) {
@@ -6753,7 +6749,7 @@ function shProgressUpdate(etaMs, elapsedMs) {
     // ordering bug above: the ETA was computed and then dropped on the floor,
     // with no error and nothing to notice. Recreating the panel here means a
     // missing element can never again silently swallow the estimate.
-    if (!bar || !eta || !el) { try { shProgressEnsure('Obfuscating your scriptâ€¦'); } catch (e) { return; } }
+    if (!bar || !eta || !el) { try { shProgressEnsure('Obfuscating your script…'); } catch (e) { return; } }
     bar = document.getElementById('shObfsBar');
     eta = document.getElementById('shObfsEta');
     el = document.getElementById('shObfsElapsed');
@@ -6766,7 +6762,7 @@ function shProgressUpdate(etaMs, elapsedMs) {
         eta.textContent = 'Will take around ' + shFormatDuration(Math.max(0, etaMs - elapsedMs));
     } else {
         bar.style.width = '8%';
-        eta.textContent = 'Workingâ€¦';
+        eta.textContent = 'Working…';
     }
     el.textContent = 'Elapsed: ' + shFormatDuration(elapsedMs);
 }
@@ -6896,7 +6892,7 @@ function shObfuscateLocally(code, engine, options) {
             return;
         }
 
-        var title = 'Obfuscating your scriptâ€¦';
+        var title = 'Obfuscating your script…';
         // CREATE THE PANEL FIRST, THEN FILL IT.
         //
         // These two calls were the other way round, so shProgressUpdate() ran
@@ -7170,8 +7166,8 @@ function editProject(projectId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âœï¸ Edit Project</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Project</h2>
             <div class="form-group"><label>Project Name <span class="required">*</span></label><input type="text" id="editProjectName" value="${project.name}" required></div>
             <div class="form-group"><label>Project Description <span style="color:#555577;">(optional)</span></label><textarea id="editProjectDescription">${project.description || ''}</textarea></div>
             <div class="form-group"><label>Logs Webhook <span style="color:#555577;">(optional)</span></label><input type="text" id="editProjectLogsWebhook" value="${project.logsWebhook || ''}" placeholder="https://discord.com/api/webhooks/..."></div>
@@ -7182,13 +7178,13 @@ function editProject(projectId) {
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectBlockIncognito" ${project.blockIncognito ? 'checked' : ''}> Block Incognito Mode</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectBlockVPN" ${project.blockVPN ? 'checked' : ''}> Block VPN</label>
             </div>
-            <div class="form-group"><label>Type Of Project</label><select id="editProjectType"><option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option><option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option><option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option></select></div>
             <div class="form-group" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectAllowHwidReset" ${project.allowHwidReset ? 'checked' : ''}> Allow HWID Reset</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectAutoDeleteExpired" ${project.autoDeleteExpired ? 'checked' : ''}> Auto Delete Expired Users</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editProjectAllowClonedSharing" ${project.allowClonedSharing ? 'checked' : ''}> Allow HWID Cloned Key Sharing</label>
             </div>
-            <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">ðŸ’¾ Update Project</button>
+            <div class="form-group"><label>Type Of Project</label><select id="editProjectType"><option value="free" ${project.type === 'free' ? 'selected' : ''}>Free</option><option value="key" ${project.type === 'key' ? 'selected' : ''}>Key Required</option><option value="paid" ${project.type === 'paid' ? 'selected' : ''}>Paid</option></select></div>
+            <button onclick="confirmEditProject('${projectId}')" class="btn btn-primary" style="width:100%; margin-top:8px; padding:12px;">💾 Update Project</button>
         </div>
     `;
     document.body.appendChild(overlay);
@@ -7201,12 +7197,12 @@ function confirmEditProject(projectId) {
     var alertWebhook = document.getElementById('editProjectAlertWebhook') ? document.getElementById('editProjectAlertWebhook').value.trim() : '';
     var hwidCooldown = document.getElementById('editProjectHwidCooldown') ? document.getElementById('editProjectHwidCooldown').value : '';
     var visibility = document.getElementById('editProjectVisibility').value;
-    var blockIncognito = document.getElementById('editProjectBlockIncognito').checked;
-    var blockVPN = document.getElementById('editProjectBlockVPN').checked;
-    var type = document.getElementById('editProjectType').value;
     var allowHwidReset = document.getElementById('editProjectAllowHwidReset') ? document.getElementById('editProjectAllowHwidReset').checked : false;
     var autoDeleteExpired = document.getElementById('editProjectAutoDeleteExpired') ? document.getElementById('editProjectAutoDeleteExpired').checked : false;
     var allowClonedSharing = document.getElementById('editProjectAllowClonedSharing') ? document.getElementById('editProjectAllowClonedSharing').checked : false;
+    var blockIncognito = document.getElementById('editProjectBlockIncognito').checked;
+    var blockVPN = document.getElementById('editProjectBlockVPN').checked;
+    var type = document.getElementById('editProjectType').value;
     if (!name) { showNotification('Error', 'Project name is required.', 'error'); return; }
     var projects = loadProjects();
     for (var i = 0; i < projects.length; i++) {
@@ -7221,12 +7217,12 @@ function confirmEditProject(projectId) {
             projects[i].alertWebhook = alertWebhook;
             projects[i].hwidCooldownDays = hwidCooldown ? parseInt(hwidCooldown, 10) : null;
             projects[i].visibility = visibility;
-            projects[i].blockIncognito = blockIncognito;
-            projects[i].blockVPN = blockVPN;
-            projects[i].type = type;
             projects[i].allowHwidReset = allowHwidReset;
             projects[i].autoDeleteExpired = autoDeleteExpired;
             projects[i].allowClonedSharing = allowClonedSharing;
+            projects[i].blockIncognito = blockIncognito;
+            projects[i].blockVPN = blockVPN;
+            projects[i].type = type;
             break;
         }
     }
@@ -7283,29 +7279,29 @@ function editScript(projectId, scriptId) {
     var isKeyProject = project && project.type === 'key';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 600px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âœï¸ Edit Script</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">✏️ Edit Script</h2>
             <p class="sub">Update script details</p>
             <div class="form-group"><label>Script Name <span class="required">*</span></label><input type="text" id="editScriptName" value="${script.name}" required></div>
-            <div class="form-group"><label>Your Special Key</label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length â€” required (protects the website page)">
-                <div style="margin-top:4px; font-size:11px; color:#8888aa;">ðŸ” The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute in-game with NO key - the key only gates the website key page. <strong style="color:#ff9999;">Paid:</strong> users set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server.</div>
+            <div class="form-group"><label>Your Special Key</label><input type="text" id="editScriptSpecialKey" value="${(script.specialKey || '').replace(/"/g, '&quot;')}" placeholder="Any length — required (protects the website page)">
+                <div style="margin-top:4px; font-size:11px; color:#8888aa;">🔐 The script is re-encrypted with this key in your browser on save. The loadstring does NOT contain it. <strong style="color:#66ff66;">Free For Everyone:</strong> anyone can execute in-game with NO key - the key only gates the website key page. <strong style="color:#ff9999;">Paid:</strong> users set the key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no in-game popup). It is NEVER sent to the server.</div>
             </div>
             <div class="form-group"><label>Script Description <span style="color:#555577;">(optional)</span></label><textarea id="editScriptDescription">${script.description || ''}</textarea></div>
             <div class="form-group" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiTamper" ${script.antiTamper ? "checked" : ""}> Anti Tampering</label>
                 <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptFullAntiTamper" ${script.fullAntiTamper ? "checked" : ""}> Full Anti Tamper V2</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> ðŸ”’ Anti Skidding</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> ðŸ“¡ Environment Logging</label>
-                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="editScriptBytecodeVM" ${script.vmPass === false ? '' : 'checked'} onchange="shBytecodeVMNote()"> ðŸ§  Bytecode VM</label>
-                <label style="margin:0; cursor:pointer;${isKeyProject ? '' : ' display:none;'}"><input type="checkbox" id="editScriptRequireKey" ${script.requireKey ? 'checked' : ''}> ðŸ”‘ Require Key</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptAntiSkid" ${script.antiSkid ? 'checked' : ''}> 🔒 Anti Skidding</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptEnvLogging" ${script.envLogging ? 'checked' : ''}> 📡 Environment Logging</label>
+                <label style="margin:0; cursor:pointer;" title="Compiles to the custom bytecode VM - every protection layer runs inside it, and it is the strongest obfuscation. Untick only to confirm the VM is what is breaking a script: the script will run, but it ships un-obfuscated."><input type="checkbox" id="editScriptBytecodeVM" ${script.vmPass === false ? '' : 'checked'} onchange="shBytecodeVMNote()"> 🧠 Bytecode VM</label>
+                <label style="margin:0; cursor:pointer;${isKeyProject ? '' : ' display:none;'}"><input type="checkbox" id="editScriptRequireKey" ${script.requireKey ? 'checked' : ''}> 🔑 Require Key</label>
             </div>
             <div class="form-group" id="editScriptKeyGateInfo" style="display:${script.requireKey && isKeyProject ? 'block' : 'none'};">
                 <div style="padding:10px 14px; background:rgba(108,59,255,0.1); border:1px solid rgba(108,59,255,0.25); border-radius:10px; font-size:12px; color:#8888aa;">
-                    ðŸ”‘ <strong style="color:#8a6bff;">Key System:</strong> All active keys from the Keys tab get re-embedded (hashed) when you save.
+                    🔑 <strong style="color:#8a6bff;">Key System:</strong> All active keys from the Keys tab get re-embedded (hashed) when you save.
                 </div>
             </div>
             <div class="form-group" id="editScriptWebhookGroup" style="display:${script.envLogging ? 'block' : 'none'};">
-                <label>ðŸ“¡ Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
+                <label>📡 Logging Webhook URL <span style="color:#555577;">(Discord webhook or API endpoint)</span></label>
                 <input type="text" id="editScriptWebhookUrl" value="${script.webhookUrl || ''}" placeholder="https://discord.com/api/webhooks/...">
             </div>
             <div class="form-group">
@@ -7325,32 +7321,32 @@ function editScript(projectId, scriptId) {
                 </div>
             </div>
             <div class="form-group">
-                <label>ðŸ’Ž Choose Obfuscator</label>
+                <label>💎 Choose Obfuscator</label>
                 <select id="editScriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
                     <option value="default" ${script.obfuscatorEngine !== 'aegis' ? 'selected' : ''}>Default Obfuscator (Recommended)</option>
                     <option value="aegis" ${script.obfuscatorEngine === 'aegis' ? 'selected' : ''}>Aegis Obfuscator (Unavaiable)</option>
                 </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;">âš”ï¸ Aegis sends your source to the external Aegis API to obfuscate (max 6 requests/min).</div>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">⚔️ Aegis sends your source to the external Aegis API to obfuscate (max 6 requests/min).</div>
             </div>
             <div class="form-group" style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptFreeForEveryone" ${script.freeForEveryone ? 'checked' : ''}> ðŸŒ Free For Everyone</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSilentMode" ${script.silentMode ? 'checked' : ''}> ðŸ”‡ Silent Mode</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptHeartbeat" ${script.heartbeat !== false ? 'checked' : ''}> ðŸ’“ Heartbeat</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptLightningMode" ${script.lightningMode ? 'checked' : ''}> âš¡ Lightning Mode</label>
-                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSecurityUpdates" ${script.securityUpdates !== false ? 'checked' : ''}> ðŸ”„ Enable Security Updates</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptFreeForEveryone" ${script.freeForEveryone ? 'checked' : ''}> 🌐 Free For Everyone</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSilentMode" ${script.silentMode ? 'checked' : ''}> 🔇 Silent Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptHeartbeat" ${script.heartbeat !== false ? 'checked' : ''}> 💓 Heartbeat</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptLightningMode" ${script.lightningMode ? 'checked' : ''}> ⚡ Lightning Mode</label>
+                <label style="margin:0; cursor:pointer;"><input type="checkbox" id="editScriptSecurityUpdates" ${script.securityUpdates !== false ? 'checked' : ''}> 🔄 Enable Security Updates</label>
             </div>
             ${isKeyProject ? `
             <div class="form-group">
-                <label>ðŸ”‘ Choose How Key Works</label>
+                <label>🔑 Choose How Key Works</label>
                 <select id="editScriptKeyMode" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
                     <option value="default" ${script.keyMode !== 'custom' ? 'selected' : ''}>Default (Roblox Core Notification)</option>
                     <option value="custom" ${script.keyMode === 'custom' ? 'selected' : ''}>Custom (You Make It)</option>
                 </select>
-                <div style="margin-top:6px; font-size:12px; color:#8888aa;">ðŸ› ï¸ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
+                <div style="margin-top:6px; font-size:12px; color:#8888aa;">🛠️ Custom = build your own key GUI with ScripterHubKeyValid / ScripterHubKeyStatus APIs (see Users Keys tab).</div>
             </div>` : ''}
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="editScriptFile" accept=".txt,.lua"></div>
             <div class="form-group"><label>Paste .txt/.lua Code</label>${(script.codeStripped || script.sourceStripped) ? '<div style="margin-bottom:8px; background:rgba(255,170,0,0.07); border:1px solid rgba(255,170,0,0.3); border-radius:10px; padding:10px;"><p style="color:#ffaa00; font-size:12px; margin:0 0 4px 0; font-weight:600;">Local source copy dropped (not lost)</p><p style="color:#8888aa; font-size:11px; margin:0;">Browser storage was full, so the local copy of this script code was dropped. The uploaded script and its loadstring still work. Paste your source below to re-attach it, or leave empty to keep the existing uploaded version.</p></div>' : ''}<textarea id="editScriptCode" style="min-height:150px; font-family:monospace; font-size:13px;" placeholder="${(script.codeStripped || script.sourceStripped) ? 'Paste your source code here to re-attach it...' : ''}">${script.originalCode || script.code || ''}</textarea></div>
-            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> ðŸ”„ HWID Reset</label></div>
+            <div class="form-group"><label style="cursor:pointer;"><input type="checkbox" id="editScriptHWIDReset" ${script.hwidReset ? 'checked' : ''}> 🔄 HWID Reset</label></div>
             <div class="form-group">
                 <label>Game Link/ID <span style="color:#555577;">(optional)</span></label>
                 <input type="text" id="editScriptGameId" value="${script.gameId || ''}" placeholder="e.g. 1234567890">
@@ -7363,7 +7359,7 @@ function editScript(projectId, scriptId) {
                 </div>
             </div>
             <div style="display:flex; gap:12px; margin-top:12px;">
-                <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">ðŸ’¾ Update Script</button>
+                <button onclick="confirmEditScript('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1; padding:12px; font-size:15px;">💾 Update Script</button>
                 <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="flex:1; padding:12px; font-size:15px;">Cancel</button>
             </div>
         </div>
@@ -7535,7 +7531,7 @@ function confirmEditScript(projectId, scriptId) {
     var btnEl = document.querySelector('.modal-overlay[style*="z-index: 2000"] .btn-primary');
     if (btnEl) {
         btnEl.disabled = true;
-        btnEl.textContent = obfuscatorEngine === 'aegis' ? 'âš”ï¸ Obfuscating with Aegis...' : 'ðŸ’Ž Obfuscating...';
+        btnEl.textContent = obfuscatorEngine === 'aegis' ? '⚔️ Obfuscating with Aegis...' : '💎 Obfuscating...';
     }
     obfuscateScriptCode(code, obfuscatorEngine, obfOptions).then(function(result) {
         // result: plain string (legacy/aegis) or { code, splitKey, wantId }
@@ -7546,8 +7542,8 @@ function confirmEditScript(projectId, scriptId) {
         if (newBytes > oldBytes) {
             var storageErr = checkPlanLimit('storage', 0, newBytes - oldBytes);
             if (storageErr) {
-                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'ðŸ’¾ Update Script'; }
-                showNotification('ðŸš« Limit Reached', storageErr, 'error', 6000);
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
+                showNotification('🚫 Limit Reached', storageErr, 'error', 6000);
                 return;
             }
         }
@@ -7598,7 +7594,7 @@ function confirmEditScript(projectId, scriptId) {
         if (modal) modal.remove();
         recordObfuscation();
         refreshStatsUI();
-        showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? 'âš”ï¸ Aegis' : 'ðŸ’Ž Default') + ' Obfuscator!', 'success');
+        showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
         // refresh the hidden-host loader: encrypt with the (new) special key
         // (or upload keyless), kill the old loader link (replaces) so old
         // ids stop working
@@ -7646,7 +7642,7 @@ function confirmEditScript(projectId, scriptId) {
         // notification below renders BEHIND it. Without this the user is left
         // looking at a stuck 'Waiting for the host...' with no visible reason.
         shProgressHide();
-        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'ðŸ’¾ Update Script'; }
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '💾 Update Script'; }
         showNotification('Obfuscation Failed', e.message, 'error', 9000);
     });
 }
@@ -7754,29 +7750,29 @@ function openScriptSettings(projectId, scriptId) {
     var escAttr = function(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
     var loadstringHtml = loaderUrl ? (
         '<div style="margin-top:12px; background:rgba(0,204,68,0.07); border:1px solid rgba(0,204,68,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">ðŸ“œ Loadstring (share this with users):</p>'
+        + '<p style="color:#66ff66; font-size:13px; margin:0 0 6px 0; font-weight:600;">📜 Loadstring (share this with users):</p>'
         + '<code id="shLoadstringBox" style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + loaderUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
         + '<div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">'
-        + '<button type="button" data-loadstring="' + escAttr(loaderUrl) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-primary">ðŸ“‹ Copy Loadstring</button>'
+        + '<button type="button" data-loadstring="' + escAttr(loaderUrl) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-primary">📋 Copy Loadstring</button>'
         + (loaderUrlPortable
-            ? '<button type="button" data-loadstring="' + escAttr(loaderUrlPortable) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-edit" title="Same one line, but it tries request() first. Use this one if game:HttpGet throws in the executor (some executors have a broken HttpGet).">ðŸ›Ÿ Copy portable loader</button>'
+            ? '<button type="button" data-loadstring="' + escAttr(loaderUrlPortable) + '" onclick="copyText(this.getAttribute(\'data-loadstring\'))" class="btn-sm btn-sm-edit" title="Same one line, but it tries request() first. Use this one if game:HttpGet throws in the executor (some executors have a broken HttpGet).">🛟 Copy portable loader</button>'
             : '')
         + '</div>'
         + '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">One line. It fetches the init layer from the link, the init layer fetches the encrypted script from the server after the license check - nothing about the script is in this line.</p>'
         + (isKeyless
-            ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">ðŸŒ FREE script: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only needed to VIEW the code on the website (the key page). The code is obfuscated.</p>'
+            ? '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">🌐 FREE script: anyone can execute this loadstring directly - NO key needed in executors. The Special Key is only needed to VIEW the code on the website (the key page). The code is obfuscated.</p>'
             : '<p style="color:#555577; font-size:11px; margin:8px 0 0 0;">The script is served ENCRYPTED - users must set the Special Key BEFORE executing via <code style="color:#66ccff;">getgenv().ScripterHubKey = "KEY"</code> (no popup). The loadstring itself contains NO key.</p>')
         + '</div>'
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">ðŸ“œ No loadstring yet. Re-save the script (Edit) or generate one:</p>'
-        + '<button onclick="openGenerateCodeUI(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-primary">ðŸ“¦ Generate Obfuscated Code</button>'
-        + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">âš¡ Generate Loadstring</button>'
+        + '<p style="color:#8888aa; font-size:12px; margin:0 0 8px 0;">📜 No loadstring yet. Re-save the script (Edit) or generate one:</p>'
+        + '<button onclick="openGenerateCodeUI(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-primary">📦 Generate Obfuscated Code</button>'
+        + '<button onclick="generateLoadstring(\'' + projectId + '\',\'' + scriptId + '\')" class="btn-sm btn-sm-edit">⚡ Generate Loadstring</button>'
         + '</div>'
     );
     var specialKeyHtml = script.specialKey ? (
         '<div style="margin-top:12px; background:rgba(108,59,255,0.08); border:1px solid rgba(108,59,255,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">ðŸ” Special Key (decrypts the script - NEVER in the loadstring):</p>'
+        + '<p style="color:#8a6bff; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔐 Special Key (decrypts the script - NEVER in the loadstring):</p>'
         + '<code style="color:#66ccff; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">' + script.specialKey.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>'
         + '<p style="color:#555577; font-size:11px; margin:6px 0 0 0;">' + (isKeyless
             ? 'FREE script: the key is only needed to view the code on the <strong>website</strong> key page - executors run the script with NO key.'
@@ -7784,15 +7780,15 @@ function openScriptSettings(projectId, scriptId) {
         + '</div>'
     ) : (
         '<div style="margin-top:12px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.15); border-radius:10px; padding:12px;">'
-        + '<p style="color:#8888aa; font-size:12px; margin:0;">âš ï¸ No Special Key on this script. Edit the script and set one (paid: decrypts in executors; free: gates the website page).</p>'
+        + '<p style="color:#8888aa; font-size:12px; margin:0;">⚠️ No Special Key on this script. Edit the script and set one (paid: decrypts in executors; free: gates the website page).</p>'
         + '</div>'
     );
     var keyInfoHtml = script.requireKey ? (
         '<div style="margin-top:12px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.3); border-radius:10px; padding:12px;">'
-        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">ðŸ”‘ This script requires a License Key (server-side auth):</p>'
+        + '<p style="color:#ffd700; font-size:13px; margin:0 0 6px 0; font-weight:600;">🔑 This script requires a License Key (server-side auth):</p>'
         + (script.serverAuth
-            ? '<p style="color:#66ff66; font-size:12px; margin:0 0 6px 0;">ðŸ›¡ï¸ Luarmor-model auth: the script is ONLY delivered after your user\'s key + HWID pass a live check against your worker. Keys sync automatically from the Users Keys tab (bans, expiry, HWID lock all enforced server-side).</p>'
-            : '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">âš ï¸ Local gate only (aegis engine or no key sync). Re-save with the Default engine for server-side auth.</p>')
+            ? '<p style="color:#66ff66; font-size:12px; margin:0 0 6px 0;">🛡️ Luarmor-model auth: the script is ONLY delivered after your user\'s key + HWID pass a live check against your worker. Keys sync automatically from the Users Keys tab (bans, expiry, HWID lock all enforced server-side).</p>'
+            : '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">⚠️ Local gate only (aegis engine or no key sync). Re-save with the Default engine for server-side auth.</p>')
         + '<p style="color:#8888aa; font-size:12px; margin:0 0 6px 0;">Users must add this line <strong style="color:#66ccff;">before</strong> their loadstring:</p>'
         + '<code style="color:#66ff66; font-size:12px; display:block; padding:8px; background:rgba(0,0,0,0.4); border-radius:6px; word-break:break-all;">getgenv().ScripterHubKey = "YOUR_USERS_KEY_HERE"</code>'
         + '</div>'
@@ -7811,8 +7807,8 @@ function openScriptSettings(projectId, scriptId) {
     ) : '';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 500px; padding: 32px; max-height:90vh; overflow-y:auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size:22px;">âš™ï¸ Script Settings</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size:22px;">⚙️ Script Settings</h2>
             <p class="sub">Manage "${script.name}"</p>
             ${loadstringHtml}
             ${specialKeyHtml}
@@ -7820,8 +7816,8 @@ function openScriptSettings(projectId, scriptId) {
             ${strippedHtml}
             <div class="form-group"><label>Visibility</label><select id="scriptVisibility"><option value="anyone" ${script.visibility === 'anyone' ? 'selected' : ''}>Anyone</option><option value="friends" ${script.visibility === 'friends' ? 'selected' : ''}>Friends (Soon...)</option><option value="private" ${script.visibility === 'private' ? 'selected' : ''}>Private</option></select></div>
             <div style="display:flex; gap:12px; margin-top:16px;">
-                <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">ðŸ’¾ Update Visibility</button>
-                <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">ðŸ—‘ï¸ Delete Script</button>
+                <button onclick="updateScriptVisibility('${projectId}','${scriptId}')" class="btn btn-primary" style="flex:1;">💾 Update Visibility</button>
+                <button onclick="deleteScript('${projectId}','${scriptId}')" class="btn btn-danger" style="flex:1;">🗑️ Delete Script</button>
             </div>
             <button onclick="this.closest('.modal-overlay').remove()" class="btn btn-close-dropdown" style="width:100%; margin-top:8px;">Close</button>
         </div>
@@ -7831,8 +7827,8 @@ function openScriptSettings(projectId, scriptId) {
 
 // Map the dashboard's 3-value visibility onto the server's 3-value model.
 //
-// 'friends' has no server equivalent â€” there is no friends graph on the worker
-// to authorise against â€” so it degrades to 'account', which is the honest
+// 'friends' has no server equivalent — there is no friends graph on the worker
+// to authorise against — so it degrades to 'account', which is the honest
 // meaning of "not everyone": some account is required. Defaulting to 'anyone'
 // instead would silently turn a restricted script into an unrestricted one,
 // which is the exact failure this whole change exists to stop.
@@ -7869,7 +7865,7 @@ function shLoaderIdFor(projectId, scriptId) {
 // PHASE 3: visibility is now SERVER-SIDE state, not a localStorage label.
 //
 // It used to be written here and nowhere else, so the worker never heard about
-// it and "Private" produced a loader URL identical to "Anyone" â€” the setting
+// it and "Private" produced a loader URL identical to "Anyone" — the setting
 // was decoration. The delivery gate consults scripts.visibility (KV meta + D1),
 // so a change has to reach the worker or it does not exist.
 //
@@ -8087,7 +8083,7 @@ if (page === 'home' || !page) return;
 
 // ============ EVENT LISTENERS ============
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('ðŸš€ Streaming Obfuscation System loaded');
+    console.log('🚀 Streaming Obfuscation System loaded');
     checkAuth();
     var signupForm = document.getElementById('signupForm');
     if (signupForm) { signupForm.addEventListener('submit', handleSignup); }
@@ -8097,12 +8093,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (adminBtn) { adminBtn.addEventListener('click', openAdminPanel); }
     var usersBtn = document.getElementById('usersBtn');
     if (usersBtn) { usersBtn.addEventListener('click', openUsersPanel); }
-    console.log('ðŸ“Š Users loaded:', Object.keys(users).length);
+    console.log('📊 Users loaded:', Object.keys(users).length);
 });
 
 (function() {
     var savedUser = getCurrentUser();
-    if (savedUser) { console.log('ðŸ”„ Session found, restoring...'); }
+    if (savedUser) { console.log('🔄 Session found, restoring...'); }
 })();
 
 // ============ EXPOSE FUNCTIONS TO GLOBAL ============
@@ -8260,8 +8256,8 @@ function openGenerateCodeUI(projectId, scriptId) {
     overlay.style.zIndex = '2000';
     overlay.innerHTML = `
         <div class="modal" style="max-width: 640px; padding: 28px; max-height: 92vh; overflow-y: auto;">
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">âœ•</button>
-            <h2 style="font-size: 20px; margin: 0 0 4px 0;">ðŸ“¦ Generate Obfuscated Code</h2>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+            <h2 style="font-size: 20px; margin: 0 0 4px 0;">📦 Generate Obfuscated Code</h2>
             <p class="sub" style="margin: 0 0 14px 0;">Download the obfuscated <code>.lua</code> for
                 <strong>${escapeHtml(script.name || '')}</strong>.</p>
 
@@ -8295,8 +8291,8 @@ function openGenerateCodeUI(projectId, scriptId) {
             </div>
 
             <div style="display: flex; gap: 8px; margin-top: 16px;">
-                <button onclick="shDownloadNow('${projectId}','${scriptId}')" class="btn btn-primary" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>â¬‡ï¸ Download</button>
-                <button onclick="shCopyDownloadLink('${projectId}','${scriptId}')" class="btn btn-edit" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>ðŸ”— Copy Link</button>
+                <button onclick="shDownloadNow('${projectId}','${scriptId}')" class="btn btn-primary" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>⬇️ Download</button>
+                <button onclick="shCopyDownloadLink('${projectId}','${scriptId}')" class="btn btn-edit" style="flex: 1;" ${isKeyless ? '' : 'disabled'}>🔗 Copy Link</button>
             </div>
             <div id="dlStatus" style="margin-top: 10px; font-size: 12px; color: #8888aa; text-align: center;"></div>
         </div>`;
