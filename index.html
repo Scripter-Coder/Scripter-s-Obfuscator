@@ -509,26 +509,23 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
                     <button type="button" class="btn-credit-more" onclick="toggleCreditMore(this)">+ More</button>
                     <div class="credit-more">
                     </div>
-                        <div class="credit-row"><span class="credit-row-label">🏷️ Server Name</span><span class="credit-val">Is Already come</span></div>
-                        <div class="credit-row"><span class="credit-row-label">👥 Members</span><span class="credit-val">25</span></div>
-                        <div class="credit-row"><span class="credit-row-label">🔍 Discord Server Discoverable</span><span class="credit-val">No</span></div>
-                    </div>
+                </div>
                 </div>
                 
             </div>
         </div>
 
         <!-- SETTINGS TAB -->
-        <div class="tab-content" id="tab-settings" style="display:none;">
+        <div class="tab-content" id="tab-settings" style="display:none; text-align:center;">
             <h2 style="color:#fff;">⚙️ Settings</h2>
-            <div class="settings-danger-zone" style="display:flex; flex-wrap:wrap; gap:12px;">
+            <div class="settings-danger-zone" style="display:flex; flex-wrap:wrap; gap:12px; justify-content:center;">
                 <button class="btn-settings-danger" onclick="openResetPasswordUI()">🔑 Reset Password</button>
                 <button class="btn-settings-danger" onclick="logout()">🚪 Log Out</button>
                 <button class="btn-settings-danger" onclick="disableAccount()">🚫 Disable Account</button>
                 <button class="btn-settings-danger" onclick="enableAccount()">✅ Enable Account</button>
                 <button class="btn-settings-danger" onclick="openDeleteAccountUI()">🗑️ Delete Account</button>
             </div>
-            <h3 style="color:#fff; margin-top:28px; font-size:28px; font-weight:800; font-family:'Segoe UI', 'Trebuchet MS', sans-serif; letter-spacing:0.5px; text-shadow:0 0 12px rgba(108,59,255,0.4);">?? Rules</h3>
+            <div style="max-width:760px; margin:24px auto; padding:28px; border-radius:16px; background:rgba(20,20,35,0.7); border:1px solid rgba(108,59,255,0.3); box-shadow:0 8px 32px rgba(0,0,0,0.4), 0 0 20px rgba(108,59,255,0.12); text-align:left;"><h3 style="color:#fff; margin-top:28px; font-size:28px; font-weight:800; font-family:'Segoe UI', 'Trebuchet MS', sans-serif; letter-spacing:0.5px; text-shadow:0 0 12px rgba(108,59,255,0.4);">?? Rules</h3>
         <p style="color:#c0c0d8; font-size:15px; margin:0 0 14px 0; font-family:'Segoe UI', 'Trebuchet MS', sans-serif;">These are enforced automatically. Every penalty below is a
             temporary block - your account, projects, scripts and keys are never deleted.</p>
             <div class="form-group">
@@ -548,7 +545,7 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
                     <li>Sharing your account. One person, one account.</li>
                 </ul>
             </div>
-        <p style="color:#c0c0d8; font-size:15px; margin:12px 0 0 0; font-family:'Segoe UI', 'Trebuchet MS', sans-serif;">A block expires on its own. If you think one was a mistake, ask on Discord.</p>
+        <p style="color:#c0c0d8; font-size:15px; margin:12px 0 0 0; font-family:'Segoe UI', 'Trebuchet MS', sans-serif;">A block expires on its own. If you think one was a mistake, ask on Discord.</p></div>
     </div>
 
     <!-- Signup Modal -->

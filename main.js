@@ -18,6 +18,7 @@ let currentUser = null;
 let isLoggedIn = false;
 let users = {};
 let selectedUserEmail = null;
+let currentViewProjectId = null;
 let currentProject = null;
 let currentScript = null;
 let editingScript = null;
@@ -5256,7 +5257,20 @@ function openCustomThemePicker() {
     // seeded from what is already applied, so opening the picker and picking the
     // colour you already have is a no-op rather than a reset to purple
     shRenderThemePicker();
+    var btn = wrap ? wrap.querySelector('.btn-custom-theme') : null;
+    if (btn) {
+        var r = btn.getBoundingClientRect();
+        input.style.position = 'fixed';
+        input.style.left = r.left + 'px';
+        input.style.top = r.top + 'px';
+        input.style.width = Math.max(1, r.width) + 'px';
+        input.style.height = Math.max(1, r.height) + 'px';
+        input.style.opacity = '0';
+        input.style.zIndex = '9999';
+        input.style.clip = 'auto';
+    }
     try { input.click(); } catch (e) {}
+    setTimeout(function(){ if (input) { input.style.position=''; input.style.left=''; input.style.top=''; input.style.width=''; input.style.height=''; input.style.opacity=''; input.style.zIndex=''; input.style.clip=''; } }, 200);
 }
 
 // The select's own onchange. Split out from changeTheme because the custom row
