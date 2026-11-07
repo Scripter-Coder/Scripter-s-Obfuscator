@@ -5314,8 +5314,10 @@ function exportUsers() {
 function loadProjects() {
     try {
         var data = localStorage.getItem('projects_' + (currentUser ? currentUser.id : ''));
-        return data ? JSON.parse(data) : [];
-    } catch (e) { return []; }
+        if (data) return JSON.parse(data);
+    } catch (e) { /* fall through to memory fallback */ }
+    if (window._shProjectsMem) return window._shProjectsMem;
+    return [];
 }
 
 // ============ LOCAL PROJECT STORAGE ============
@@ -5363,6 +5365,7 @@ function saveProjects(projects) {
     if (payload.length <= SH_LOCAL_BUDGET) {
         try {
             localStorage.setItem(key, payload);
+            window._shProjectsMem = projects;
             return;
         } catch (e) { /* quota smaller than assumed - fall through and trim */ }
     }
