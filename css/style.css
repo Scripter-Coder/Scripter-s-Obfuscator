@@ -2744,8 +2744,9 @@ select option {
 .cp-move, .cp-actions { display: flex; gap: 4px; justify-content: center; }
 
 
-/* ===== LUA CODE EDITOR (syntax highlighted) ===== */
+/* ===== LUA CODE EDITOR (syntax highlighted overlay) ===== */
 .code-editor {
+    position: relative;
     display: flex;
     align-items: flex-start;
     border: 1px solid rgba(255,255,255,0.08);
@@ -2769,33 +2770,49 @@ select option {
     line-height: 1.5;
     flex-shrink: 0;
     height: 100%;
+    z-index: 2;
 }
-.code-area {
-    flex: 1;
-    height: 100%;
-    overflow-y: auto;
-    outline: none;
+.code-mirror {
+    position: absolute;
+    inset: 0;
     padding: 12px;
+    color: transparent;
+    caret-color: transparent;
+    line-height: 1.5;
+    font-family: 'Consolas','Monaco',monospace;
+    white-space: pre;
+    word-wrap: normal;
+    overflow-y: scroll;
+    z-index: 1;
+    pointer-events: none;
+    height: 100%;
+    box-sizing: border-box;
+}
+.code-ta {
+    position: absolute;
+    inset: 0;
+    padding: 12px;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
     color: #fff;
     line-height: 1.5;
     font-family: 'Consolas','Monaco',monospace;
     white-space: pre;
     word-wrap: normal;
-    cursor: text;
-    background: transparent;
-    border: none;
     resize: none;
+    z-index: 3;
+    cursor: text;
 }
-.code-area[contenteditable="true"]:empty::before {
-    content: attr(data-placeholder);
-    color: #555577;
-    display: block;
-}
-.code-area .tok-placeholder { color: #555577; }
-.code-area .tok-keyword   { color: #c678dd; }   /* local, function, end ... (pink) */
-.code-area .tok-builtin   { color: #e5c07b; }   /* print, type ... (yellow) */
-.code-area .tok-string    { color: #61afef; }   /* strings (blue) */
-.code-area .tok-number    { color: #d19a66; }   /* numbers (orange) */
-.code-area .tok-comment   { color: #5c6370; font-style: italic; }
-.code-area .tok-operator  { color: #56b6c2; }
-.code-area .tok-ident     { color: #abb2bf; }
+.code-ta::placeholder { color: #555577; }
+.code-mirror .tok-keyword   { color: #c678dd; }
+.code-mirror .tok-builtin   { color: #e5c07b; }
+.code-mirror .tok-string    { color: #61afef; }
+.code-mirror .tok-number    { color: #d19a66; }
+.code-mirror .tok-comment   { color: #5c6370; font-style: italic; }
+.code-mirror .tok-operator  { color: #56b6c2; }
+.code-mirror .tok-ident     { color: #abb2bf; }
+.code-mirror .tok-placeholder { color: #555577; }
