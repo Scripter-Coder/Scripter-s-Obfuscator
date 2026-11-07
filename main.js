@@ -5253,7 +5253,33 @@ function openCustomThemePicker() {
     // seeded from what is already applied, so opening the picker and picking the
     // colour you already have is a no-op rather than a reset to purple
     shRenderThemePicker();
+    // Position the invisible colour input exactly over the styled button so the
+    // OS colour wheel opens right on the button - never in a random corner.
+    var btn = wrap ? wrap.querySelector('.btn-custom-theme') : null;
+    if (btn && input) {
+        var r = btn.getBoundingClientRect();
+        input.style.position = 'fixed';
+        input.style.left = Math.max(0, r.left) + 'px';
+        input.style.top = Math.max(0, r.top) + 'px';
+        input.style.width = Math.max(1, r.width) + 'px';
+        input.style.height = Math.max(1, r.height) + 'px';
+        input.style.opacity = '0';
+        input.style.zIndex = '2147483647';
+        input.style.cursor = 'pointer';
+    }
     try { input.click(); } catch (e) {}
+    setTimeout(function () {
+        if (input) {
+            input.style.position = '';
+            input.style.left = '';
+            input.style.top = '';
+            input.style.width = '';
+            input.style.height = '';
+            input.style.opacity = '';
+            input.style.zIndex = '';
+            input.style.cursor = '';
+        }
+    }, 250);
 }
 
 // The select's own onchange. Split out from changeTheme because the custom row
