@@ -2753,10 +2753,12 @@ select option {
     border-radius: 10px;
     overflow: hidden;
     background: #0a0a15;
-    display: flex;
-    align-items: stretch;
 }
 .code-lines {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
     width: 44px;
     padding: 12px 0;
     font-family: 'Consolas','Monaco',monospace;
@@ -2767,13 +2769,16 @@ select option {
     background: rgba(255,255,255,0.03);
     border-right: 1px solid rgba(255,255,255,0.06);
     white-space: pre;
-    overflow-y: auto;
+    overflow: hidden;
     line-height: 1.5;
-    flex-shrink: 0;
     z-index: 2;
 }
 .code-ta {
-    flex: 1;
+    position: absolute;
+    left: 44px;
+    top: 0;
+    right: 0;
+    bottom: 0;
     padding: 12px;
     margin: 0;
     background: transparent;
@@ -2784,6 +2789,7 @@ select option {
     font-family: 'Consolas','Monaco',monospace;
     white-space: pre;
     word-wrap: normal;
+    overflow-y: auto;
     resize: none;
     z-index: 3;
     cursor: text;

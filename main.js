@@ -6116,7 +6116,7 @@ function openCreateScript(projectId) {
                 </div>
             </div>
             <div class="form-group"><label>Upload .txt/.lua File <span style="color:#555577;">(optional)</span></label><input type="file" id="scriptFile" accept=".txt,.lua"></div>
-            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><div class="code-editor"><div id="scriptCodeLines" class="code-lines"></div><div id="scriptCodeMirror" class="code-mirror"></div><textarea id="scriptCodeTa" class="code-ta" placeholder="-- Paste your Lua code here..." spellcheck="false"></textarea><textarea id="scriptCodeRaw" style="display:none;"></textarea></div></div>
+            <div class="form-group"><label>Paste .txt/.lua Code <span class="required">*</span></label><div class="code-editor"><div id="scriptCodeLines" class="code-lines"></div><textarea id="scriptCodeTa" class="code-ta" placeholder="-- Paste your Lua code here..." spellcheck="false"></textarea><textarea id="scriptCodeRaw" style="display:none;"></textarea></div></div>
             <div class="form-group">
                 <label>💎 Choose Obfuscator</label>
                 <select id="scriptObfuscatorEngine" style="width:100%; padding:12px 16px; background:#0a0a15; border:1px solid rgba(255,255,255,0.08); border-radius:10px; color:#fff; font-size:14px; cursor:pointer;">
