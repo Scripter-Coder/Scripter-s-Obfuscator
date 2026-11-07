@@ -2752,8 +2752,7 @@ select option {
     border-radius: 10px;
     overflow: hidden;
     background: #0a0a15;
-    min-height: 150px;
-    max-height: 520px;
+    height: 210px;
 }
 .code-lines {
     padding: 12px 8px;
@@ -2769,11 +2768,11 @@ select option {
     overflow-y: auto;
     line-height: 1.5;
     flex-shrink: 0;
+    height: 100%;
 }
 .code-area {
     flex: 1;
-    min-height: 150px;
-    max-height: 520px;
+    height: 100%;
     overflow-y: auto;
     outline: none;
     padding: 12px;
