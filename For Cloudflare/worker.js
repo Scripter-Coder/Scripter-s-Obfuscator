@@ -860,11 +860,15 @@ async function tryDecryptAtRest(env, value) {
 // A session is short by design. 45s is long enough for an executor to
 // authenticate, fetch, decrypt and start, and short enough that a captured
 // pair is worthless almost immediately.
-const SESSION_TTL_MS = 45000;// The URL fallback (game:HttpGet cannot set headers) is strictly weaker: the
-// credential rides in a URL that can reach access logs. It gets a shorter life
-// and is counted separately, so its share of traffic stays visible instead of
-// being averaged into the strong path's numbers.
-const URL_SESSION_TTL_MS = 15000;
+const SESSION_TTL_MS = 45000; // request() path (header transport). 45s is long enough
+// for an executor to authenticate, fetch, decrypt and start, and short enough that a
+// captured pair is worthless almost immediately.
+//
+// The URL fallback (game:HttpGet cannot set headers) is strictly weaker: the
+// credential rides in a URL that can reach access logs. 15s was too short and caused
+// slow executors/expiring sessions before delivery completed ("nosession"). Sessions
+// are single-use (the nonce is spent on delivery), so a longer window is safe.
+const URL_SESSION_TTL_MS = 60000;
 
 // A multi-part chain is a long crawl by construction — an executor pulling
 // 10GB of parts needs minutes, not seconds. So the chain window is generous
