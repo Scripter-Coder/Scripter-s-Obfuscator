@@ -2345,16 +2345,18 @@ function normalizeKey(k) {
 //
 // So they are fetched, kept here, and shown - and the worker preserves them
 // on its side when the panel syncs.
-var shRewardKeyCache = null;
-
 // Fetch the reward-issued keys from the worker.
-async function shLoadRewardKeys(force) {
-    if (shRewardKeyCache && !force) return shRewardKeyCache;
+// Always fetches fresh - no cache - so newly minted keys appear immediately
+// in the owner's key list without requiring a page refresh.
+async function shLoadRewardKeys() {
     var map = null;
     try {
         var res = await shOwnerApi('sh/licenses', null);
         map = (res && res.licenses) ? res.licenses : null;
-    } catch (e) { map = null; }
+    } catch (e) {
+        console.error('[ScripterHub] reward keys load failed: ' + (e && e.message));
+        map = null;
+    }
     var out = [];
     if (map) {
         var keys = Object.keys(map);
@@ -2382,7 +2384,6 @@ async function shLoadRewardKeys(force) {
             });
         }
     }
-    shRewardKeyCache = out;
     return out;
 }
 
@@ -2401,7 +2402,7 @@ function shServerKeyAction(key, action) {
         } else {
             showNotification('Refused', (d && d.error) || 'the server refused that', 'warning', 6000);
         }
-        return shLoadRewardKeys(true);
+        return shLoadRewardKeys();
     }).then(function () { renderKeys(); })
       .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
 }
@@ -2422,7 +2423,7 @@ function shServerKeyDelete(key) {
             } else {
                 showNotification('Refused', (d && d.error) || 'the server refused the delete', 'warning', 6000);
             }
-            return shLoadRewardKeys(true);
+            return shLoadRewardKeys();
         })
         .then(function () { renderKeys(); })
         .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
@@ -2517,7 +2518,7 @@ function shServerKeySave(key) {
             } else {
                 showNotification('Refused', (d && d.error) || 'the server refused the save', 'warning', 6000);
             }
-            return shLoadRewardKeys(true);
+            return shLoadRewardKeys();
         })
         .then(function () { renderKeys(); })
         .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
