@@ -7670,23 +7670,25 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, null, body, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const key = String(body.key || '');
-            if (!map[key]) return jsonResponse({ ok: false, error: 'no such key' }, 404);
             const rec = map[key] || {};
-            delete map[key];
-            await saveLicenses(env, map);
-            // A REWARD KEY ALSO LIVES IN THE REWARD LEDGER.
-            //
-            // Deleting only the mirror left the key in the ledger, so the
-            // visitor's table still listed it - a key that cannot be used and
-            // cannot be got rid of. "Delete" has to delete it.
+            // A reward key can exist ONLY in the ledger: a panel "Sync Keys"
+            // full-replace can drop it from the mirror while the D1 ledger row
+            // survives (which is why the visitor still sees it active but the
+            // owner cannot see it to delete it). So do not require the key to
+            // be in the map - delete from BOTH places by key text.
             let ledger = 0;
-            if (rec.source === 'reward' || rec.rewardId) {
-                try {
-                    if (await rewardEnsureLedger(env)) {
-                        const del = await q(env.SH_DB, 'DELETE FROM reward_keys WHERE key_text=?', key);
-                        ledger = changesOf(del);
-                    }
-                } catch (e) { /* the license is gone either way */ }
+            try {
+                if (await rewardEnsureLedger(env)) {
+                    const del = await q(env.SH_DB, 'DELETE FROM reward_keys WHERE key_text=?', key);
+                    ledger = changesOf(del);
+                }
+            } catch (e) { /* the ledger may not be configured */ }
+            if (!map[key] && !ledger) {
+                return jsonResponse({ ok: false, error: 'no such key' }, 404);
+            }
+            if (map[key]) {
+                delete map[key];
+                await saveLicenses(env, map);
             }
             return jsonResponse({ ok: true, ledgerRows: ledger });
         }
