@@ -2345,6 +2345,12 @@ function normalizeKey(k) {
 //
 // So they are fetched, kept here, and shown - and the worker preserves them
 // on its side when the panel syncs.
+// The reward keys currently loaded from the server. Populated on EVERY fetch
+// by shLoadRewardKeys() so the other functions that read it (userKeysFiltered,
+// openServerKeySettingsUI) keep working. It is NOT used to skip a fetch - keys
+// are always fetched fresh so newly minted keys appear without a page refresh.
+var shRewardKeyCache = [];
+
 // Fetch the reward-issued keys from the worker.
 // Always fetches fresh - no cache - so newly minted keys appear immediately
 // in the owner's key list without requiring a page refresh.
@@ -2384,6 +2390,7 @@ async function shLoadRewardKeys() {
             });
         }
     }
+    shRewardKeyCache = out;
     return out;
 }
 
