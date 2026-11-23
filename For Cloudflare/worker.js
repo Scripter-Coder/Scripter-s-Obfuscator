@@ -7661,6 +7661,43 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!(await isOwnerSessionOrAccount(env, url, null, request))) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
             const map = await loadLicenses(env);
             const ks = await isKillswitchOn(env);
+
+            // MERGE THE REWARD LEDGER INTO THE VIEW.
+            //
+            // The owner's Keys tab reads this map. A reward key can exist ONLY
+            // in the D1 ledger - a "Sync Keys" full-replace drops it from the
+            // KV mirror while the ledger row survives - so reading the map
+            // alone hides those keys from the owner (they cannot be seen or
+            // deleted). Pull every ledger row in and merge it into the view by
+            // key text. This is display-only: it does NOT write the mirror, so
+            // it cannot resurrect a key the owner actually deleted.
+            try {
+                if (await rewardEnsureLedger(env)) {
+                    const rows = await qAll(env.SH_DB,
+                        'SELECT rid, sid, key_text, at, expires FROM reward_keys');
+                    const list = Array.isArray(rows) ? rows : ((rows && rows.results) || []);
+                    for (const r of list) {
+                        const k = String(r.key_text || '');
+                        if (!k) continue;
+                        const expires = Number(r.expires) || 0;
+                        if (!map[k]) {
+                            map[k] = {
+                                note: 'Ad Reward',
+                                rewardId: String(r.rid || ''),
+                                source: 'reward',
+                                expiresAt: expires,
+                                hwid: '', banned: false, banReason: '',
+                                discordId: '', hwidResets: 0, executions: 0,
+                                lastAuthAt: 0, scriptId: '', capMs: 0
+                            };
+                        } else if (expires && !Number(map[k].expiresAt)) {
+                            // Mirror copy lost its expiry - fill it from the ledger.
+                            map[k].expiresAt = expires;
+                        }
+                    }
+                }
+            } catch (e) { /* a ledger read failure must not hide the map's keys */ }
+
             return jsonResponse({ ok: true, licenses: map, killswitch: ks });
         }
 

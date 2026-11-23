@@ -2365,12 +2365,20 @@ async function shLoadRewardKeys() {
     }
     var out = [];
     if (map) {
+        // The worker now merges ledger-only keys into this map. Show every
+        // server key that is NOT already in the local list, so no key is
+        // invisible just because it lost its reward tag or lives only in the
+        // ledger. userKeysFiltered() de-dupes against the local list anyway.
+        var localKeys = {};
+        try {
+            var kd = loadKeys();
+            for (var j = 0; j < (kd.keys || []).length; j++) localKeys[kd.keys[j].key] = true;
+        } catch (e) {}
         var keys = Object.keys(map);
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
+            if (localKeys[k]) continue;
             var rec = map[k] || {};
-            // A reward key is tagged by the worker when it is minted.
-            if (rec.source !== 'reward' && !rec.rewardId) continue;
             out.push({
                 id: 'rwk_' + k.slice(0, 20),
                 key: k,
