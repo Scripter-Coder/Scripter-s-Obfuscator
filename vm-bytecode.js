@@ -40,6 +40,10 @@ import { instructionFormat, encodeChunkWords } from './src/vm/instruction-format
 
 var _bcLuaparse = null;
 export function vmBCSetLuaparse(p) { _bcLuaparse = p; }
+// Exposed so other modules (custom-obfuscator's pre-flight syntax validator)
+// can reuse the parser the host already injected, even in ESM where `require`
+// is unavailable.
+export function getBcLuaparse() { return _bcLuaparse; }
 function resolveLuaparse() {
     if (_bcLuaparse) return _bcLuaparse;
     if (typeof window !== 'undefined' && window.luaparse) return window.luaparse;

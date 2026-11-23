@@ -27,7 +27,7 @@ import { FULL_ANTI_TAMPER_B64 } from './full-anti-tamper-data.js';
 //      impossible to statically deobfuscate.
 // ============================================================
 
-import { applyBytecodeVm, vmBCSetLuaparse } from './vm-bytecode.js';
+import { applyBytecodeVm, vmBCSetLuaparse, getBcLuaparse } from './vm-bytecode.js';
 import { applyVmPass } from './vm-pass.js';
 
 // Hard pre-validation: NEVER encrypt a script that does not parse.
@@ -35,26 +35,46 @@ import { applyVmPass } from './vm-pass.js';
 // at runtime ("if F then F() end" swallows the nil) - the user gets a
 // protected file that does nothing, with no error anywhere. Reject
 // the upload with the actual parser error instead.
+function _getLuaParser() {
+    if (typeof window !== 'undefined' && window.luaparse) return window.luaparse;
+    if (typeof globalThis !== 'undefined' && globalThis.luaparse) return globalThis.luaparse;
+    // The parser injected via vmSetLuaparse/vmBCSetLuaparse (ESM hosts).
+    try { var injected = getBcLuaparse(); if (injected) return injected; } catch (e) {}
+    if (typeof require === 'function') {
+        try { return require('luaparse'); } catch (e) { return null; }
+    }
+    return null;
+}
+
+// Turn a luaparse error into a human message with the exact line and the
+// offending source line, so the owner can see WHAT the obfuscator could not
+// handle instead of getting a cryptic runtime "payload failed to load".
+function _syntaxError(code, e) {
+    var msg = String((e && e.message) || e);
+    var lineMatch = msg.match(/\[(\d+):(\d+)\]/);
+    var detail = msg;
+    if (lineMatch) {
+        var ln = parseInt(lineMatch[1], 10);
+        var lines = String(code).split(/\r?\n/);
+        var src = (lines[ln - 1] || '').trim();
+        detail = 'line ' + ln + ' (' + msg + ')' + (src ? '\n    > ' + src : '');
+    }
+    return new Error('Your script has a syntax error and cannot be obfuscated. '
+        + 'A construct on this line is not valid Lua 5.1 (the obfuscator could not process it):\n  '
+        + detail);
+}
+
 function validateLuaSource(code) {
-    var parser = null;
-    if (typeof window !== 'undefined' && window.luaparse) parser = window.luaparse;
-    else if (typeof globalThis !== 'undefined' && globalThis.luaparse) parser = globalThis.luaparse;
-    else if (typeof require === 'function') {
-        try { parser = require('luaparse'); } catch (e) { parser = null; }
-    }
+    var parser = _getLuaParser();
     if (!parser) return; // parser unavailable (tests inject later) - skip
-    // Luau-specific syntax (continue, goto, //) is valid in Roblox but not in Lua 5.1.
-    // If the code contains those, skip strict validation and let the VM passes handle it
-    // (they will fallback to raw if unsupported) instead of rejecting the upload.
-    if (/\bcontinue\b/.test(code) || /\bgoto\b/.test(code) || /\/\//.test(code) || /\btype\b/.test(code) && /::/.test(code) || /\/\/=|[+\-*\/%^]=|\.\.=/.test(code)) {
-        try { parser.parse(code, { luaVersion: '5.1' }); } catch (e) { return; }
-        return;
-    }
+    // Luau-specific syntax is rewritten by the caller before this is reached.
+    // If any slipped through and the parser still cannot read the code, that is
+    // an unsupported construct - report it with the exact line instead of
+    // silently producing a payload that fails at runtime.
     try {
         parser.parse(code, { luaVersion: '5.1' });
     } catch (e) {
-        var msg = String((e && e.message) || e);
-        throw new Error('Your script has a syntax error and cannot be obfuscated: ' + msg);
+        throw _syntaxError(code, e);
     }
 }
 
@@ -1608,9 +1628,23 @@ export function applyCustomObfuscator(code, options, debugInfo) {
             var _cmtIdx = _right.indexOf('--');
             var _rhs = _right, _cmt = '';
             if (_cmtIdx !== -1) { _rhs = _right.slice(0, _cmtIdx); _cmt = _right.slice(_cmtIdx); }
-            return _left + ' = ' + _left + ' ' + _sym + ' (' + _rhs.trim() + ')' + (_cmt ? ' ' + _cmt.trim() : '');
+            // Split any trailing block terminator (e.g. the `end` of an inline
+            // `if cond then x += 1 end`) OFF the expression and keep it OUTSIDE
+            // the parentheses. Luau allows `if cond then x += expr end` on one
+            // line; swallowing `end` into the RHS produced `x = x + (expr end)`
+            // (syntax error), and dropping it entirely broke the `if`.
+            var _expr = _rhs.trim(), _trail = '';
+            var _tm = _expr.match(/^([\s\S]*?)\s+(end|else|elseif|then|until|do)\s*$/);
+            if (_tm) { _expr = _tm[1].trim(); _trail = _tm[2]; }
+            return _left + ' = ' + _left + ' ' + _sym + ' (' + _expr + ')'
+                + (_trail ? ' ' + _trail : '') + (_cmt ? ' ' + _cmt.trim() : '');
         });
     }
+    // Validate the REWRITTEN source before encrypting. This is the safety net:
+    // if a Luau construct is unsupported or a rewrite produced invalid Lua,
+    // fail HERE with the exact line - never emit a payload that will die at
+    // runtime with "payload failed to load".
+    validateLuaSource(code);
     var out = applyCustomObfuscatorCore(code, options, debugInfo);
     var outKB = out.length / 1024;
     if (options._budgetRetry || options.vmPass === false || outKB <= ARTIFACT_BUDGET_KB) return out;
