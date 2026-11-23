@@ -464,6 +464,23 @@ async function shSaveWhitelist() {
 //
 // The list is read-only. A key is extended by the visitor's hammer button
 // (if the owner allows it) and revoked from the license list.
+// Delete a single reward key completely (both the license map and the ledger).
+// Uses /sh/license-delete, which deletes by key text from both places even when
+// the key is only in the ledger (no mirror copy).
+async function shDeleteRewardKey(btn, key) {
+    if (!key || !confirm('Delete this key completely?\n\nThe visitor loses it. This cannot be undone.')) return;
+    var d = null;
+    try {
+        d = await window.shOwnerApi('sh/license-delete', { key: key });
+    } catch (e) { d = { ok: false, error: 'network' }; }
+    if (d && d.ok) {
+        shNotify('Deleted', 'The key is gone.', 'success');
+        if (btn) { var row = btn.closest('tr'); if (row) row.remove(); }
+    } else {
+        shNotify('Refused', (d && d.error) || 'could not delete the key', 'error');
+    }
+}
+
 async function shShowRewardKeys(id) {
     var found = findReward(id);
     if (!found) return;
@@ -489,7 +506,7 @@ async function shShowRewardKeys(id) {
         rows = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
             + '<tr style="color:#8888aa;text-align:left"><th style="padding:6px">Key</th>'
             + '<th style="padding:6px">Issued</th><th style="padding:6px">Ends</th>'
-            + '<th style="padding:6px">State</th></tr>';
+            + '<th style="padding:6px">State</th><th style="padding:6px"></th></tr>';
         var now = Date.now();
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i] || {};
@@ -502,7 +519,10 @@ async function shShowRewardKeys(id) {
                 + '<td style="padding:6px;white-space:nowrap">' + shRewardTime(Number(k.at) || 0) + '</td>'
                 + '<td style="padding:6px;white-space:nowrap">' + shRewardTime(Number(k.expires) || 0) + '</td>'
                 + '<td style="padding:6px;color:' + colour + '">' + state
-                + (k.hwid ? ' · 🔒 ' + escapeHtml(String(k.hwid).slice(0, 12)) : '') + '</td></tr>';
+                + (k.hwid ? ' · 🔒 ' + escapeHtml(String(k.hwid).slice(0, 12)) : '') + '</td>'
+                + '<td style="padding:6px"><button class="btn-sm btn-sm-danger" '
+                + 'onclick="shDeleteRewardKey(this,\'' + String(k.key || '').replace(/'/g, "\\'") + '\')">Delete</button></td>'
+                + '</tr>';
         }
         rows += '</table>';
     }
@@ -1225,6 +1245,7 @@ window.renderProviderSettings = renderProviderSettings;
 window.shTestProvider = shTestProvider;
 window.shSaveWhitelist = shSaveWhitelist;
 window.shShowRewardKeys = shShowRewardKeys;
+  window.shDeleteRewardKey = shDeleteRewardKey;
 window.moveCheckpoint = moveCheckpoint;
 window.deleteCheckpoint = deleteCheckpoint;
 window.editCheckpointUI = editCheckpointUI;
