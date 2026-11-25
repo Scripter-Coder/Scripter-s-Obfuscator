@@ -4720,9 +4720,27 @@ async function ensureScriptRow(state, id, opts, now) {
 // foreign key and is not consulted by consumeSession() — a license is a
 // credential, not a property of one script. The license -> loader binding the
 // gate needs lives on `sessions.script_id`, recorded at mint time.
+// Reconcile the KV license map into D1, but ONLY when it actually changed.
+//
+// loadLicenses() is called on every session mint, every auth and every
+// delivery - hundreds of times a minute on a busy site. The old version
+// rewrote ALL licenses (an ensureUserRow + an upsert per key) every single
+// call: ~380 D1 writes each time. On a 190-key catalogue that is why a
+// session mint took 9-17s and why the daily D1 row-write quota was blown
+// (the gate then refused everything with "nosession").
+//
+// The map is a JSON blob in KV with a single `kv.get`. We hash its raw text
+// and cache the hash per isolate. A read with an unchanged fingerprint is a
+// no-op. A write (saveLicenses) always forces a real sync, so the gate still
+// sees every change immediately - the correctness property is preserved.
 async function syncLicensesToD1(env, map) {
     const state = stateFor(env);
     if (!state) return;
+    const raw = JSON.stringify(map || {});
+    // Fingerprint of the exact bytes we would write. Cheap and stable.
+    let fp = 0;
+    for (let i = 0; i < raw.length; i++) fp = (fp * 33 + raw.charCodeAt(i)) >>> 0;
+    if (env.__licFp === fp) return; // unchanged since last sync - skip ~380 writes
     const now = Date.now();
     for (const key of Object.keys(map || {})) {
         const r = map[key] || {};
@@ -4753,6 +4771,7 @@ async function syncLicensesToD1(env, map) {
             Number(r.createdAt) || now
         );
     }
+    env.__licFp = fp;
 }
 
 // A script's authorization-relevant facts, read for a delivery decision.
