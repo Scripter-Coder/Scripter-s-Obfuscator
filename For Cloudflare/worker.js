@@ -4926,6 +4926,41 @@ async function loadLicenses(env) {
         const raw = await env.LOADERS_KV.get(KV_LICENSES_KEY);
         map = raw ? JSON.parse(raw) : {};
     } catch (e) { map = {}; }
+
+    // MERGE MISSING KEYS FROM D1 (the authoritative gate store).
+    //
+    // The KV map is a SINGLE JSON blob written whole. Two reward claims that
+    // arrive together read it, each add their own key, and each write the whole
+    // blob back - so the second write loses the first key. The ledger row and
+    // the D1 licenses row are per-key and survive; only the KV mirror loses it.
+    // Result: the owner's panel shows both keys (it merges the ledger) but the
+    // keycard / keycheck reads KV and calls the lost key "invalid".
+    //
+    // The architecture promise is that D1 is what the gate trusts. Restore any
+    // D1 license row that is missing from the KV view before returning, so a
+    // key that was legitimately issued and stored in D1 always validates.
+    // Cached by fingerprint below (syncLicensesToD1 keeps the writes cheap).
+    if (stateFor(env)) {
+        try {
+            const rows = await qAll(env.SH_DB,
+                'SELECT key,script_id,hwid,expires_at,revoked_at,revoke_reason,executions,last_auth_at FROM licenses');
+            const list = Array.isArray(rows) ? rows : ((rows && rows.results) || []);
+            for (const r of list) {
+                const k = String(r.key || '');
+                if (!k || map[k]) continue; // only fill gaps; KV wins for present keys
+                map[k] = {
+                    scriptId: String(r.script_id || ''),
+                    hwid: String(r.hwid || ''),
+                    expiresAt: Number(r.expires_at) || 0,
+                    banned: !!r.revoked_at,
+                    banReason: String(r.revoke_reason || ''),
+                    executions: Number(r.executions) || 0,
+                    lastAuthAt: Number(r.last_auth_at) || 0
+                };
+            }
+        } catch (e) { /* a D1 read failure must not hide the KV keys */ }
+    }
+
     // Reconcile into D1. Cheap (one write per changed row) and it means the
     // gate is never reading a license it has not just confirmed.
     //
@@ -7739,14 +7774,24 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     ledger = changesOf(del);
                 }
             } catch (e) { /* the ledger may not be configured */ }
-            if (!map[key] && !ledger) {
+            // Also delete the authoritative D1 license row. loadLicenses() now
+            // merges D1 keys back into the KV view, so a D1 row left behind here
+            // would resurrect a key the owner just deleted.
+            let d1rows = 0;
+            if (stateFor(env)) {
+                try {
+                    const del = await q(env.SH_DB, 'DELETE FROM licenses WHERE key=?', key);
+                    d1rows = changesOf(del);
+                } catch (e) { /* KV + ledger delete still stand */ }
+            }
+            if (!map[key] && !ledger && !d1rows) {
                 return jsonResponse({ ok: false, error: 'no such key' }, 404);
             }
             if (map[key]) {
                 delete map[key];
                 await saveLicenses(env, map);
             }
-            return jsonResponse({ ok: true, ledgerRows: ledger });
+            return jsonResponse({ ok: true, ledgerRows: ledger, d1Rows: d1rows });
         }
 
         // OWNER: EDIT A LICENSE ON THE SERVER.
