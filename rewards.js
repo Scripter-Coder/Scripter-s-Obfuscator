@@ -214,7 +214,7 @@ function renderRewardsTab() {
     var cpsMax = plan.checkpoints === Infinity ? '∞' : plan.checkpoints;
     var cpsUsed = totalCheckpointsUsed(d);
     statsRow.innerHTML =
-        '<div class="stat-card"><div class="stat-label">👥 Registered Visitors</div><div class="stat-value">' + (d.visitors || 0) + ' <span class="max">/ ' + visitorsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.visitors === Infinity ? 2 : Math.min(100, (d.visitors || 0) / plan.visitors * 100)) + '%"></div></div></div>' +
+        '<div class="stat-card"><div class="stat-label">👥 Registered Visitors</div><div class="stat-value"><span id="registeredVisitorsCount">' + (d.visitors || 0) + '</span> <span class="max">/ ' + visitorsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.visitors === Infinity ? 2 : Math.min(100, (d.visitors || 0) / plan.visitors * 100)) + '%"></div></div></div>' +
         '<div class="stat-card"><div class="stat-label">🛤️ Total Checkpoints</div><div class="stat-value">' + cpsUsed + ' <span class="max">/ ' + cpsMax + '</span></div><div class="stat-bar"><div class="fill" style="width:' + (plan.checkpoints === Infinity ? 2 : Math.min(100, cpsUsed / plan.checkpoints * 100)) + '%"></div></div></div>';
 
     // THE WHITELIST.

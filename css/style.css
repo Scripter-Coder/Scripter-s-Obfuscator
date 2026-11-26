@@ -2745,3 +2745,49 @@ select option {
 
 
 
+
+/* ============ Users Keys: scrollable list ============ */
+.keys-list-scroll {
+    max-height: 60vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #8b5cf6 rgba(255,255,255,.05);
+}
+.keys-list-scroll::-webkit-scrollbar { width: 9px; }
+.keys-list-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,.04); border-radius: 8px; }
+.keys-list-scroll::-webkit-scrollbar-thumb { background: #8b5cf6; border-radius: 8px; }
+
+/* ============ Leaderboard ============ */
+.lb-pill {
+    background: rgba(255,255,255,.06); color: #c4b5fd; border: 1px solid rgba(139,92,246,.3);
+    padding: 6px 14px; border-radius: 99px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.lb-pill.active { background: linear-gradient(90deg,#8b5cf6,#6d28d9); color: #fff; border-color: #8b5cf6; }
+.lb-table { display: flex; flex-direction: column; gap: 6px; }
+.lb-row {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    background: rgba(20,20,35,.7); border: 1px solid rgba(255,255,255,.07);
+    border-left-width: 3px; border-radius: 10px;
+}
+.lb-rank { font-size: 18px; font-weight: 800; min-width: 24px; text-align: center; }
+.lb-avatar {
+    display: flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border-radius: 50%; border: 2px solid #8b5cf6;
+    background: radial-gradient(circle at 35% 30%, #8b5cf6, rgba(10,10,20,.9));
+    color: #fff; font-weight: 800; font-size: 16px;
+}
+.lb-name { flex: 1; font-size: 15px; font-weight: 700; }
+.lb-value { font-size: 16px; font-weight: 800; color: #fff; }
+
+/* ============ Level rank glow animations ============ */
+@keyframes shGlowBronze { 0%,100% { box-shadow: 0 0 10px #cd7f32, inset 0 0 8px #cd7f32; } 50% { box-shadow: 0 0 22px #cd7f32, inset 0 0 16px #cd7f32; } }
+@keyframes shGlowRed { 0%,100% { box-shadow: 0 0 12px #ff5b5b, inset 0 0 10px #ff5b5b; } 50% { box-shadow: 0 0 26px #ff5b5b, inset 0 0 18px #ff5b5b; } }
+@keyframes shGlowCyan { 0%,100% { box-shadow: 0 0 14px #22d3ee, inset 0 0 10px #22d3ee; } 50% { box-shadow: 0 0 32px #22d3ee, inset 0 0 20px #22d3ee; } }
+@keyframes shGlowDarkRed { 0%,100% { box-shadow: 0 0 14px #8b1a1a, inset 0 0 12px #8b1a1a; } 50% { box-shadow: 0 0 34px #ff2a2a, inset 0 0 22px #ff2a2a; } }
+@keyframes shGlowPurple { 0%,100% { box-shadow: 0 0 18px #a855f7, inset 0 0 12px #a855f7; } 50% { box-shadow: 0 0 40px #a855f7, inset 0 0 24px #a855f7; } }
+@keyframes shGlowYellow { 0%,100% { box-shadow: 0 0 20px #ffd700, inset 0 0 14px #ffd700; } 50% { box-shadow: 0 0 46px #ffd700, inset 0 0 28px #ffd700; } }
+@keyframes shGlowDark { 0%,100% { box-shadow: 0 0 18px #444, inset 0 0 16px #000; } 50% { box-shadow: 0 0 40px #888, inset 0 0 26px #222; } }
+@keyframes shGlowGreen { 0%,100% { box-shadow: 0 0 24px #22c55e, inset 0 0 16px #22c55e; } 50% { box-shadow: 0 0 54px #22c55e, inset 0 0 32px #22c55e; } }
+@keyframes shGlowOrange { 0%,100% { box-shadow: 0 0 28px #f97316, inset 0 0 18px #f97316; } 50% { box-shadow: 0 0 64px #f97316, inset 0 0 38px #f97316; } }
+@keyframes shGlowGold { 0%,100% { box-shadow: 0 0 34px #ffcf40, inset 0 0 22px #ffcf40; } 50% { box-shadow: 0 0 78px #ffcf40, inset 0 0 48px #fff2a0; } }

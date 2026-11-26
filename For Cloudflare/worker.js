@@ -5942,6 +5942,68 @@ async function handleRequest(request, env, ctx) {
             return jsonResponse(out);
         }
 
+        // ---------- XP / LEADERBOARD (cross-world, client-agnostic) ----------
+        // XP is earned in the dashboard (projects, keys, scripts, executions,
+        // obfuscations, threats, visitors). Each account's XP profile is stored
+        // under one KV key so the leaderboard can rank every user worldwide.
+        const XP_KV_PREFIX = 'sh_xp_';
+
+        // POST /sh/xp : the signed-in account writes its own XP profile.
+        if (url.pathname === '/sh/xp' && request.method === 'POST') {
+            let body = {};
+            try { body = await request.json(); } catch (e) { return jsonResponse({ ok: false, error: 'bad json' }, 400); }
+            const tok = String(body.userToken || (request.headers && request.headers.get('X-SH-User-Token')) || '');
+            const ident = await verifyUserToken(tok, env);
+            if (!ident) return jsonResponse({ ok: false, error: 'Not authorized.' }, 401);
+            const uid = d1UserId(ident.email || ident.username || String(ident));
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+            const prev = await env.LOADERS_KV.get(XP_KV_PREFIX + uid);
+            let rec = {};
+            try { rec = prev ? JSON.parse(prev) : {}; } catch (e) { rec = {}; }
+            rec.name = String(body.name || rec.name || ident.username || '').slice(0, 60);
+            rec.xp = Math.max(0, Number(body.xp) || 0);
+            rec.level = Math.max(1, Number(body.level) || 1);
+            rec.money = Math.max(0, Number(body.money) || 0);
+            rec.projects = Math.max(0, Number(body.projects) || 0);
+            rec.scripts = Math.max(0, Number(body.scripts) || 0);
+            rec.executions = Math.max(0, Number(body.executions) || 0);
+            rec.obfuscations = Math.max(0, Number(body.obfuscations) || 0);
+            rec.decorations = Array.isArray(body.decorations) ? body.decorations.slice(0, 40) : (rec.decorations || []);
+            rec.equipped = String(body.equipped || rec.equipped || '').slice(0, 60);
+            rec.updatedAt = Date.now();
+            await env.LOADERS_KV.put(XP_KV_PREFIX + uid, JSON.stringify(rec));
+            return jsonResponse({ ok: true, xp: rec.xp, level: rec.level });
+        }
+
+        // GET /sh/leaderboard : public, read-only top users by a metric.
+        if (url.pathname === '/sh/leaderboard' && request.method === 'GET') {
+            if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
+            const metric = String(url.searchParams.get('metric') || 'xp').slice(0, 20);
+            const allowed = ['xp', 'money', 'projects', 'scripts', 'executions', 'obfuscations'];
+            const key = allowed.indexOf(metric) !== -1 ? metric : 'xp';
+            const page = await env.LOADERS_KV.list({ prefix: XP_KV_PREFIX, limit: 10000 });
+            const out = [];
+            for (const k of (page.keys || [])) {
+                try {
+                    const raw = await env.LOADERS_KV.get(k.name);
+                    if (!raw) continue;
+                    const r = JSON.parse(raw);
+                    out.push({
+                        name: String(r.name || 'Unknown').slice(0, 60),
+                        xp: Number(r.xp) || 0,
+                        level: Number(r.level) || 1,
+                        money: Number(r.money) || 0,
+                        projects: Number(r.projects) || 0,
+                        scripts: Number(r.scripts) || 0,
+                        executions: Number(r.executions) || 0,
+                        obfuscations: Number(r.obfuscations) || 0
+                    });
+                } catch (e) {}
+            }
+            out.sort((a, b) => (b[key] || 0) - (a[key] || 0));
+            return jsonResponse({ ok: true, metric: key, users: out.slice(0, 10), total: out.length });
+        }
+
         // ---------- POST /sh/kv-repair : ONE-TIME. rebuilds per-email keys FROM the worker's own blob ----------
         //
         // WHY THIS EXISTS, AND WHY IT HAS TO BE THE WORKER THAT RUNS IT
@@ -11149,7 +11211,11 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
             prune(now);
             const perExecutor = {};   // last 60s counts
             const last5s = {};        // last 5s counts (for per-second rate)
+            // "External" is not a real executor - it is a catch-all bucket.
+            // Do not count it in the public executor statistics.
+            const skipExec = (name) => !name || /^unknown$/i.test(name) || /external/i.test(name);
             for (const e of S.events) {
+                if (skipExec(e.executor)) continue;
                 const age = now - e.t;
                 if (age < 60000) perExecutor[e.executor] = (perExecutor[e.executor] || 0) + 1;
                 if (age < 5000) last5s[e.executor] = (last5s[e.executor] || 0) + 1;

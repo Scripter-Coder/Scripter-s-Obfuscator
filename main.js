@@ -2159,26 +2159,26 @@ async function createKey(scriptId, keyType, expiresDays) {
     });
     keyData.keys.push(newKey);
     keyData.used = keyData.keys.filter(k => k.used).length;
-    var sync = await saveKeys(keyData);
-    if (!sync || !sync.ok) {
-        // Still created and still shown - but say plainly that the executor
-        // will not accept it yet, because that is the state it is actually in.
-        showNotification('Key Created - NOT Synced',
-            'Key created: ' + newKey.key + '\n\nThe license server did not accept it, so scripts will reject it as an invalid key. Press Sync Keys to retry.',
-            'error', 12000);
-        return newKey;
-    }
-    if (sync && sync.skipped) {
-        showNotification('Key Created (Local Only)',
-            'Key created: ' + newKey.key + '\n\nOnly the owner account syncs keys to the license server; scripts will not accept this one.',
-            'warning', 12000);
-        return newKey;
-    }
+    // Show the key instantly; mirror to the cloud in the background so the
+    // modal/UI never freezes on a slow network round trip.
+    shAwardXp(20, 'key-created');
     showNotification('Key Created', expires
         ? 'Key active for ' + days + ' day(s): ' + newKey.key
         : 'Unlimited key created: ' + newKey.key, 'success', 6000);
     renderKeys();
     refreshStatsUI();
+    Promise.resolve(saveKeys(keyData)).then(function (sync) {
+        if (!sync) return;
+        if (sync.skipped) {
+            showNotification('Key Created (Local Only)',
+                'Only the owner account syncs keys to the license server; scripts will not accept this one.',
+                'warning', 12000);
+        } else if (!sync.ok) {
+            showNotification('Key Created - NOT Synced',
+                'The license server did not accept it. Press Sync Keys to retry.',
+                'error', 12000);
+        }
+    }).catch(function () {});
     return newKey;
 }
 
@@ -2555,10 +2555,10 @@ function userKeysFiltered() {
     if (q) {
         list = list.filter(function(k) {
             normalizeKey(k);
-            return (k.key || '').toLowerCase().indexOf(q) !== -1 ||
-                   (k.note || '').toLowerCase().indexOf(q) !== -1 ||
-                   (k.discordId || '').toLowerCase().indexOf(q) !== -1 ||
-                   (k.hwid || '').toLowerCase().indexOf(q) !== -1;
+            var hay = [k.key, k.note, k.discordId, k.hwid, k.id, k.projectName, k.projectId,
+                       k.banReason, k.usedBy, k.type, keyStatusOf(k).text]
+                .map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join(' ');
+            return hay.indexOf(q) !== -1;
         });
     }
     // newest first
@@ -2577,7 +2577,10 @@ function renderKeys() {
     var start = userKeysState.page * userKeysState.pageSize;
     var slice = list.slice(start, start + userKeysState.pageSize);
     var rangeEl = document.getElementById('userKeysRange');
-    if (rangeEl) rangeEl.textContent = total === 0 ? '0-0' : (start + 1) + '-' + Math.min(start + userKeysState.pageSize, total);
+    if (rangeEl) rangeEl.textContent = (userKeysState.page + 1) + ' / ' + pages;
+    var totalEl = document.getElementById('userKeysTotal');
+    if (totalEl) totalEl.textContent = total;
+    container.classList.add('keys-list-scroll');
     if (!userKeysState.listVisible) {
         container.innerHTML = '<p style="color:#8888aa; text-align:center; padding:30px 0;">Click "✏️ Edit Users Keys" to show the keys list.</p>';
         return;
@@ -2619,7 +2622,7 @@ function renderKeys() {
         }
         html += '<div class="keys-table-row">' +
             '<span><button onclick="copyText(\'' + k.key + '\')" class="btn-sm btn-sm-primary" title="Copy Key">📋 Copy</button></span>' +
-            '<span style="font-family:monospace; word-break:break-all;">' + k.key + '</span>' +
+            '<span style="font-family:monospace;" title="' + String(k.key).replace(/"/g, '&quot;') + '">' + String(k.key).slice(0, 24) + (String(k.key).length > 24 ? '…' : '') + '</span>' +
             '<span>' + (k.discordId || 'Nothing') + '</span>' +
             '<span style="color:' + st.color + ';">' + st.text + '</span>' +
             '<span>' + (k.note || '-') + (k.serverOnly ? ' <span style="color:#8a6bff;">· ad reward</span>' : '') + '</span>' +
@@ -2745,27 +2748,31 @@ async function confirmAddUserUI() {
     // sync failed, the executor answered `SHERR invalid` and there was no signal
     // on screen that anything had gone wrong. The two outcomes are now
     // distinguishable, and the failure says what to do about it.
-    var sync = await saveKeys(keyData);
-
+    // Close the modal and show the key INSTANTLY. The local copy is written
+    // synchronously inside saveKeys; only the cloud mirror is slow. Never make
+    // the owner stare at a frozen modal for 10-20s waiting on a network call -
+    // sync in the background and report the outcome with a notification.
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     userKeysState.listVisible = true;
     refreshStatsUI();
     renderKeys();
+    shAwardXp(20, 'key-created');
+    showNotification('User Added', 'Key created: ' + newKey.key + '\nSyncing to the license server…', 'success', 6000);
 
-    if (sync && sync.skipped) {
-        showNotification('Key Created (Local Only)',
-            'Key created: ' + newKey.key + '\n\nThis account is not the owner, so the key was not sent to the license server and scripts will NOT accept it.',
-            'warning', 12000);
-        return;
-    }
-    if (!sync || !sync.ok) {
-        showNotification('Key Created - NOT Synced',
-            'Key created: ' + newKey.key + '\n\nThe license server did not accept it, so scripts will reject it as an invalid key. It is saved in this browser only. Press Sync Keys to retry.',
-            'error', 14000);
-        return;
-    }
-    showNotification('User Added', 'Key created and synced: ' + newKey.key, 'success', 6000);
+    // Fire-and-forget cloud sync (saveKeys writes locally first, then mirrors).
+    Promise.resolve(saveKeys(keyData)).then(function (sync) {
+        if (!sync) return;
+        if (sync.skipped) {
+            showNotification('Key Created (Local Only)',
+                'This account is not the owner, so the key was not sent to the license server and scripts will NOT accept it.',
+                'warning', 12000);
+        } else if (!sync.ok) {
+            showNotification('Key Created - NOT Synced',
+                'The license server did not accept it. Scripts will reject it as invalid. Press Sync Keys to retry.',
+                'error', 14000);
+        }
+    }).catch(function () {});
 }
 
 // ---- Users Keys Settings (mass ops) ----
@@ -3141,6 +3148,8 @@ function updateUIForUser(user) {
     // really a session that was never started. Fire-and-forget: signing in must
     // not block on the network.
     try { shEnsureUserToken(); } catch (e) {}
+    try { shStartLiveStatsTimer(); } catch (e) {}
+    try { updateXpUI(); } catch (e) {}
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -3287,7 +3296,9 @@ function computeStats(user) {
     var storageUsedMB = storageBytes / (1024 * 1024);
     return {
         projects: { used: projects.length, max: normalizeMax(plan.projects) },
-        keys: { used: keyData.keys.length, max: normalizeMax(plan.keys) },
+        // Total keys on the list = local keys + reward keys fetched from the
+        // server (not just the ones "you got"/used).
+        keys: { used: (keyData.keys || []).length + (shRewardKeyCache || []).length, max: normalizeMax(plan.keys) },
         scripts: { used: scriptsCount, max: normalizeMax(plan.scripts) },
         storage: { usedMB: storageUsedMB, maxMB: storageMaxMB }
     };
@@ -3361,6 +3372,7 @@ function recordObfuscation() {
     a.obfuscations.push({ t: Date.now() });
     if (a.obfuscations.length > 5000) a.obfuscations = a.obfuscations.slice(-5000);
     saveAnalytics(a);
+    shAwardXp(5, 'obfuscation');
 }
 
 function recordThreat(reason) {
@@ -3414,23 +3426,34 @@ function refreshAnalyticsUI() {
         var _base = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
         if (_base) {
             fetch(_base + '/v3/realtime_stats').then(function(r){ return r.json(); }).then(function(data){
-                if (!data || !data.topScripts) return;
+                if (!data) return;
+                // Total Executions = sum over THIS owner's scripts only.
                 var ids = {};
                 try {
                     var ps = loadProjects();
                     for (var i = 0; i < ps.length; i++) {
                         var scs = ps[i].scripts || [];
-                        for (var j = 0; j < scs.length; j++) { if (scs[j].id) ids[scs[j].id] = true; }
+                        for (var j = 0; j < scs.length; j++) {
+                            if (scs[j].id) ids[scs[j].id] = true;
+                            if (scs[j].loaderId) ids[scs[j].loaderId] = true;
+                        }
                     }
                 } catch (e) {}
                 var sum = 0;
-                for (var k in data.topScripts) { if (ids[k]) sum += (Number(data.topScripts[k]) || 0); }
+                var tops = data.topScripts || {};
+                for (var k in tops) { if (ids[k]) sum += (Number(tops[k]) || 0); }
                 setAnalyticsValue('totalExecutions', sum);
+                // Threats Blocked = the worker's global counter.
+                setAnalyticsValue('totalThreats', Number(data.threatsBlocked) || 0);
+                // Feed the per-owner execution XP (1 XP per execution, counted
+                // from the server's cumulative counter delta tracked locally).
+                shSyncExecXp(sum);
+                // Live executor statistics panel (worldwide, last 60s).
+                shRenderLiveExecutors();
             }).catch(function(){});
         }
     } catch (e) {}
     setAnalyticsValue('totalObfuscations', countSince(a.obfuscations, analyticsState.obfRange));
-    setAnalyticsValue('totalThreats', a.threats.length + localThreats);
     // The endpoint label that used to live here is gone with the Live
         // Executions Chart. This comment is load-bearing: the previous line was
         //
@@ -5533,6 +5556,7 @@ function switchTab(tabName) {
         shLoadRewardKeys().then(function () { renderKeys(); }).catch(function () { });
     }
     if (tabName === 'rewards') { renderRewardsTab(); }
+    if (tabName === 'leaderboard') { shRenderLeaderboard(); }
 }
 
 // ============ CREATE PROJECT ==========
@@ -5600,6 +5624,7 @@ function confirmCreateProject() {
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Success', 'Project "' + name + '" created!', 'success');
+    shAwardXp(5, 'project-created');
     renderProjects();
 }
 
@@ -6497,6 +6522,7 @@ function confirmCreateScript(projectId) {
         if (modal) modal.remove();
         recordObfuscation();
         refreshStatsUI();
+        shAwardXp(8, 'script-created');
         showNotification('Success', 'Script "' + name + '" created with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis Obfuscator (Unavaiable)' : '💎 Default Obfuscator') + '!', 'success');
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
         // The owning project travels with the upload so a license can be bound to it.
@@ -7271,6 +7297,7 @@ function confirmEditProject(projectId) {
     var modal = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
     if (modal) modal.remove();
     showNotification('Success', 'Project updated!', 'success');
+    shAwardXp(2, 'project-edited');
     renderProjects();
 }
 
@@ -7635,6 +7662,7 @@ function confirmEditScript(projectId, scriptId) {
         if (modal) modal.remove();
         recordObfuscation();
         refreshStatsUI();
+        shAwardXp(5, 'script-edited');
         showNotification('Success', 'Script "' + name + '" updated to ' + versionLabel({ version: (prevScript && prevScript.version ? prevScript.version : 1) + 1 }) + ' with ' + (obfuscatorEngine === 'aegis' ? '⚔️ Aegis' : '💎 Default') + ' Obfuscator!', 'success');
         // refresh the hidden-host loader: encrypt with the (new) special key
         // (or upload keyless), kill the old loader link (replaces) so old
@@ -8497,3 +8525,348 @@ window.uploadCustomBackground = uploadCustomBackground;
 window.clearCustomBackground = clearCustomBackground;
 window.applyCustomBackground = applyCustomBackground;
 window.applyTheme = applyTheme;
+
+// ============================================================================
+// XP / LEVELS / LEADERBOARD / DECORATIONS
+// ============================================================================
+// XP is earned in the dashboard for the actions the owner performs. Each
+// account's XP profile is kept locally (per user id) AND mirrored to the worker
+// so the Leaderboard ranks every user worldwide. A level is derived from XP
+// with a fair, gently-rising curve. Reaching special levels unlocks a circle
+// rank style (colour + size + animation) and a decoration for the profile.
+
+// Cumulative XP required to reach a given level. Fair curve:
+// L2 = 10, L3 = 25, then a gentle quadratic. Never punishing.
+function shXpForLevel(level) {
+    if (level <= 1) return 0;
+    if (level === 2) return 10;
+    if (level === 3) return 25;
+    // 25 + sum of 15..(15 + 3*(L-3)) -> grows ~1.5*L^2
+    var xp = 25;
+    for (var l = 4; l <= level; l++) xp += 15 + 3 * (l - 3);
+    return xp;
+}
+function shLevelFromXp(xp) {
+    var lvl = 1;
+    while (lvl < 5000 && shXpForLevel(lvl + 1) <= xp) lvl++;
+    return lvl;
+}
+function shLevelProgress(xp) {
+    var lvl = shLevelFromXp(xp);
+    var cur = shXpForLevel(lvl);
+    var next = shXpForLevel(lvl + 1);
+    var span = next - cur;
+    var pct = span > 0 ? Math.max(0, Math.min(100, ((xp - cur) / span) * 100)) : 100;
+    return { level: lvl, current: xp, base: cur, next: next, need: Math.max(0, next - xp), pct: pct };
+}
+
+// Rank styles at milestone levels. colour, min size (px), glow animation name.
+var SH_RANKS = [
+    { level: 1, name: 'Blue', color: '#3b82f6', size: 44, glow: '' },
+    { level: 5, name: 'Bronze', color: '#cd7f32', size: 50, glow: 'shGlowBronze' },
+    { level: 10, name: 'Red Light', color: '#ff5b5b', size: 56, glow: 'shGlowRed' },
+    { level: 25, name: 'Cyan', color: '#22d3ee', size: 64, glow: 'shGlowCyan' },
+    { level: 50, name: 'Dark Red', color: '#8b1a1a', size: 72, glow: 'shGlowDarkRed' },
+    { level: 75, name: 'Purple', color: '#a855f7', size: 82, glow: 'shGlowPurple' },
+    { level: 100, name: 'Yellow', color: '#ffd700', size: 94, glow: 'shGlowYellow' },
+    { level: 250, name: 'Dark', color: '#1a1a1a', size: 106, glow: 'shGlowDark' },
+    { level: 500, name: 'Green', color: '#22c55e', size: 120, glow: 'shGlowGreen' },
+    { level: 750, name: 'Orange', color: '#f97316', size: 136, glow: 'shGlowOrange' },
+    { level: 1000, name: 'Gold', color: '#ffcf40', size: 154, glow: 'shGlowGold' }
+];
+function shRankFor(level) {
+    var r = SH_RANKS[0];
+    for (var i = 0; i < SH_RANKS.length; i++) if (level >= SH_RANKS[i].level) r = SH_RANKS[i];
+    return r;
+}
+
+// Decorations unlock at milestone levels. id, label, icon, unlock level.
+var SH_DECORATIONS = [
+    { id: 'none', label: 'None', icon: '⚪', level: 1 },
+    { id: 'flame', label: 'Flame Aura', icon: '🔥', level: 5 },
+    { id: 'spark', label: 'Sparkle', icon: '✨', level: 10 },
+    { id: 'ice', label: 'Frost Ring', icon: '❄️', level: 25 },
+    { id: 'crown', label: 'Crown', icon: '👑', level: 50 },
+    { id: 'galaxy', label: 'Galaxy', icon: '🌌', level: 75 },
+    { id: 'sun', label: 'Solar', icon: '☀️', level: 100 },
+    { id: 'shadow', label: 'Shadow', icon: '🌑', level: 250 },
+    { id: 'leaf', label: 'Nature', icon: '🌿', level: 500 },
+    { id: 'fire', label: 'Inferno', icon: '🔥', level: 750 },
+    { id: 'diamond', label: 'Diamond', icon: '💎', level: 1000 }
+];
+
+function shXpKey() { return 'sh_xp_' + (currentUser ? currentUser.id : ''); }
+function shLoadXp() {
+    try {
+        var d = JSON.parse(localStorage.getItem(shXpKey()) || 'null');
+        if (d && typeof d.xp === 'number') return d;
+    } catch (e) {}
+    return { xp: 0, decorations: [], equipped: 'none' };
+}
+function shSaveXp(d) {
+    try { localStorage.setItem(shXpKey(), JSON.stringify(d)); } catch (e) {}
+}
+function shXpUnlocked() {
+    var d = shLoadXp();
+    var lvl = shLevelFromXp(d.xp);
+    var out = [];
+    for (var i = 0; i < SH_DECORATIONS.length; i++) {
+        if (lvl >= SH_DECORATIONS[i].level) out.push(SH_DECORATIONS[i].id);
+    }
+    return out;
+}
+
+// Award XP for an action. 'key-renew' awards half. Silent on failure.
+function shAwardXp(amount, reason) {
+    if (!currentUser) return;
+    var d = shLoadXp();
+    d.xp = (d.xp || 0) + Math.max(0, Number(amount) || 0);
+    shSaveXp(d);
+    updateXpUI();
+    shSyncXpCloud();
+}
+function shSyncXpCloud() {
+    if (!currentUser) return;
+    try {
+        var d = shLoadXp();
+        var stats = computeStats(currentUser);
+        var prog = shLevelProgress(d.xp);
+        var tok = shGetUserToken ? shGetUserToken() : '';
+        if (!tok && shEnsureUserToken) {
+            shEnsureUserToken().then(function (t) { if (t) shPostXp(t, d, prog, stats); });
+        } else if (tok) {
+            shPostXp(tok, d, prog, stats);
+        }
+    } catch (e) {}
+}
+function shPostXp(tok, d, prog, stats) {
+    try {
+        fetch(SH_STATS_ENDPOINT + 'sh/xp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-SH-User-Token': tok },
+            body: JSON.stringify({
+                userToken: tok,
+                name: currentUser.username || currentUser.email || 'User',
+                xp: d.xp, level: prog.level,
+                money: (currentUser.money || 0),
+                projects: stats.projects.used,
+                scripts: stats.scripts.used,
+                executions: (loadAnalytics().executions || []).length,
+                obfuscations: (loadAnalytics().obfuscations || []).length,
+                decorations: d.decorations || [], equipped: d.equipped || 'none'
+            })
+        }).catch(function () {});
+    } catch (e) {}
+}
+
+// Apply rank styling to an avatar element (used in dashboard + leaderboard).
+function shApplyRankStyle(el, xp, scale) {
+    if (!el) return;
+    var prog = shLevelProgress(xp);
+    var rank = shRankFor(prog.level);
+    var d = shLoadXp();
+    var base = rank.size * (scale || 1);
+    el.style.width = base + 'px';
+    el.style.height = base + 'px';
+    el.style.border = '3px solid ' + rank.color;
+    el.style.boxShadow = '0 0 ' + Math.round(base * 0.3) + 'px ' + rank.color + ', inset 0 0 12px ' + rank.color;
+    el.style.background = 'radial-gradient(circle at 35% 30%, ' + rank.color + ' 0%, rgba(10,10,20,0.9) 85%)';
+    if (rank.glow) { el.style.animation = rank.glow + ' 2.4s ease-in-out infinite'; }
+    else { el.style.animation = ''; }
+    el.setAttribute('data-level', prog.level);
+}
+
+// Update the level badge on the dashboard avatar + XP progress card.
+function updateXpUI() {
+    if (!currentUser) return;
+    var d = shLoadXp();
+    var prog = shLevelProgress(d.xp);
+    document.querySelectorAll('.dashboard, #tab-dashboard').forEach(function (root) {
+        var avatar = root.querySelector('#dashAvatar');
+        shApplyRankStyle(avatar, d.xp, 1);
+        var badge = root.querySelector('#shLevelBadge');
+        if (badge) badge.textContent = prog.level;
+        var xpNow = root.querySelector('#shXpNow');
+        if (xpNow) xpNow.textContent = d.xp;
+        var xpNext = root.querySelector('#shXpNext');
+        if (xpNext) xpNext.textContent = prog.next;
+        var xpNeed = root.querySelector('#shXpNeed');
+        if (xpNeed) xpNeed.textContent = prog.need;
+        var xpFill = root.querySelector('#shXpFill');
+        if (xpFill) xpFill.style.width = prog.pct + '%';
+        var rankName = root.querySelector('#shRankName');
+        if (rankName) { var rk = shRankFor(prog.level); rankName.textContent = 'Level ' + prog.level + ' · ' + rk.name; rankName.style.color = rk.color; }
+    });
+}
+
+// Decoration Profile UI.
+function openDecorationUI() {
+    if (!currentUser) return;
+    var d = shLoadXp();
+    var lvl = shLevelFromXp(d.xp);
+    var unlocked = shXpUnlocked();
+    var rows = '';
+    for (var i = 0; i < SH_DECORATIONS.length; i++) {
+        var dec = SH_DECORATIONS[i];
+        var isUnlocked = unlocked.indexOf(dec.id) !== -1;
+        var isEquipped = (d.equipped || 'none') === dec.id;
+        var status = isUnlocked
+            ? (isEquipped ? '<span style="color:#66ff66;">Equipped</span>' : '<span style="color:#8a6bff;">Unlocked</span>')
+            : '<span style="color:#ffb020;">🔒 Level ' + dec.level + ' (' + shXpForLevel(dec.level) + ' XP)</span>';
+        var btn = isUnlocked
+            ? (isEquipped
+                ? '<button class="btn-sm" onclick="shUnequipDecoration()">Unequip</button>'
+                : '<button class="btn-sm btn-sm-primary" onclick="shEquipDecoration(\'' + dec.id + '\')">Equip</button>')
+            : '<button class="btn-sm" disabled>Locked</button>';
+        rows += '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);">'
+            + '<span style="font-size:22px;">' + dec.icon + '</span>'
+            + '<span style="flex:1;color:#fff;">' + dec.label + '<br><small>' + status + '</small></span>'
+            + btn + '</div>';
+    }
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.style.zIndex = '2000';
+    overlay.innerHTML = '<div class="modal" style="max-width:480px;padding:26px;max-height:86vh;overflow-y:auto;">'
+        + '<button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">✕</button>'
+        + '<h2 style="font-size:20px;margin:0 0 6px;">🎨 Decoration Profile</h2>'
+        + '<p class="sub">Level ' + lvl + ' · ' + d.xp + ' XP. Reach higher levels to unlock more decorations.</p>'
+        + rows + '</div>';
+    document.body.appendChild(overlay);
+}
+function shEquipDecoration(id) {
+    var d = shLoadXp();
+    if (shXpUnlocked().indexOf(id) === -1) { showNotification('Locked', 'Reach the required level first.', 'warning'); return; }
+    d.equipped = id;
+    shSaveXp(d);
+    updateXpUI();
+    shSyncXpCloud();
+    var o = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (o) { o.remove(); }
+    openDecorationUI();
+    showNotification('Equipped', 'Decoration applied to your profile.', 'success');
+}
+function shUnequipDecoration() {
+    var d = shLoadXp();
+    d.equipped = 'none';
+    shSaveXp(d);
+    updateXpUI();
+    shSyncXpCloud();
+    var o = document.querySelector('.modal-overlay[style*="z-index: 2000"]');
+    if (o) { o.remove(); }
+    openDecorationUI();
+    showNotification('Unequipped', 'Decoration removed.', 'success');
+}
+
+// Leaderboard.
+var shLeaderMetric = 'xp';
+function shSetLeaderMetric(metric, el) {
+    shLeaderMetric = metric;
+    document.querySelectorAll('.lb-pill').forEach(function (b) { b.classList.remove('active'); });
+    if (el) el.classList.add('active');
+    shRenderLeaderboard();
+}
+function shRenderLeaderboard() {
+    var host = document.getElementById('leaderboardList');
+    if (!host) return;
+    host.innerHTML = '<p style="color:#8888aa;text-align:center;padding:24px;">Loading leaderboard…</p>';
+    try {
+        fetch(SH_STATS_ENDPOINT + 'sh/leaderboard?metric=' + encodeURIComponent(shLeaderMetric), { method: 'GET' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var users = (data && data.users) || [];
+                if (!users.length) { host.innerHTML = '<p style="color:#8888aa;text-align:center;padding:24px;">No entries yet. Be the first!</p>'; return; }
+                var rows = '';
+                for (var i = 0; i < users.length; i++) {
+                    var u = users[i];
+                    var rank = i + 1;
+                    var medal = rank === 1 ? '#ffd700' : rank === 2 ? '#c0c0c0' : rank === 3 ? '#cd7f32' : '#888';
+                    var val = Number(u[shLeaderMetric]) || 0;
+                    var letter = String(u.name || '?').charAt(0).toUpperCase();
+                    rows += '<div class="lb-row" style="border-color:' + medal + ';">'
+                        + '<span class="lb-rank" style="color:' + medal + ';">' + rank + '</span>'
+                        + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + letter + '</span>'
+                        + '<span class="lb-name" style="color:' + medal + ';">' + String(u.name || '?').replace(/</g,'&lt;') + '</span>'
+                        + '<span class="lb-value">' + val.toLocaleString() + '</span>'
+                        + '</div>';
+                }
+                host.innerHTML = '<div class="lb-table">' + rows + '</div>';
+            })
+            .catch(function () { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; });
+    } catch (e) { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; }
+}
+
+// Award 1 XP per execution using the server's cumulative per-owner execution
+// count. We remember the last count we awarded so a refresh never double-counts.
+function shSyncExecXp(totalExec) {
+    if (!currentUser) return;
+    totalExec = Number(totalExec) || 0;
+    var key = 'sh_execxp_' + currentUser.id;
+    var prev = 0;
+    try { prev = parseInt(localStorage.getItem(key) || '0', 10) || 0; } catch (e) {}
+    if (totalExec > prev) {
+        var delta = totalExec - prev;
+        try { localStorage.setItem(key, String(totalExec)); } catch (e) {}
+        shAwardXp(delta, 'execution');
+    }
+}
+
+// Registered Visitors comes from the worker's global counter.
+function shRefreshVisitors() {
+    try {
+        var _base = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
+        fetch(_base + '/v3/realtime_stats', { method: 'GET' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var el = document.getElementById('registeredVisitorsCount');
+                if (el) el.textContent = Number((d && d.totalVisitors) || 0).toLocaleString();
+            }).catch(function () {});
+    } catch (e) {}
+}
+
+// Poll live stats every 5 seconds while signed in.
+function shStartLiveStatsTimer() {
+    if (shLiveTimer) return;
+    shLiveTimer = setInterval(function () {
+        if (!currentUser) return;
+        refreshAnalyticsUI();
+        shRefreshVisitors();
+        shRenderLeaderboard && shRenderLeaderboard();
+    }, 5000);
+}
+
+// Live executor statistics panel (across all ScripterHub scripts worldwide).
+var shLiveTimer = null;
+function shRenderLiveExecutors() {
+    var host = document.getElementById('liveExecutorStats');
+    if (!host) return;
+    try {
+        fetch(SH_STATS_ENDPOINT + 'v3/realtime_stats', { method: 'GET' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var ex = (d && d.executors) || {};
+                var names = Object.keys(ex);
+                if (!names.length) { host.innerHTML = '<div style="color:#8888aa;font-size:12px;padding:6px;">No executions in the last minute.</div>'; return; }
+                names.sort(function (a, b) { return (ex[b].lastMinute || 0) - (ex[a].lastMinute || 0); });
+                var html = '';
+                for (var i = 0; i < names.length; i++) {
+                    var n = names[i];
+                    var c = ex[n].lastMinute || 0;
+                    html += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px;color:#ddd;"><span>' + String(n).replace(/</g,'&lt;') + '</span><span style="color:' + executorColor(i) + ';font-weight:700;">' + c + '</span></div>';
+                }
+                host.innerHTML = html;
+            })
+            .catch(function () {});
+    } catch (e) {}
+}
+
+// XP / leaderboard / decorations / live stats exports
+window.shAwardXp = shAwardXp;
+window.updateXpUI = updateXpUI;
+window.openDecorationUI = openDecorationUI;
+window.shEquipDecoration = shEquipDecoration;
+window.shUnequipDecoration = shUnequipDecoration;
+window.shSetLeaderMetric = shSetLeaderMetric;
+window.shRenderLeaderboard = shRenderLeaderboard;
+window.shRenderLiveExecutors = shRenderLiveExecutors;
+window.shXpForLevel = shXpForLevel;

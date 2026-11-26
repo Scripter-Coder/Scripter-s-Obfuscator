@@ -237,7 +237,10 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
             <div class="dashboard-banner" id="dashBanner"></div>
             
             <div class="dashboard-profile">
-                <div class="profile-avatar" id="dashAvatar">U</div>
+                <div style="position:relative; display:inline-block;">
+                    <div class="profile-avatar" id="dashAvatar">U</div>
+                    <span id="shLevelBadge" style="position:absolute; top:-6px; left:-6px; background:#8b5cf6; color:#fff; font-size:12px; font-weight:800; padding:2px 8px; border-radius:99px; border:2px solid #fff;">1</span>
+                </div>
                 <div class="profile-info">
                     <h2 id="dashUsername">User</h2>
                     <p class="email-row"><span id="dashEmail">user@example.com</span><button type="button" class="btn-email-toggle" onclick="toggleEmail(this)">Hide</button></p>
@@ -349,6 +352,23 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
                 </div>
             </div>
 
+            <div class="stat-card" style="margin:14px 0;">
+                <div class="analytics-header">
+                    <div class="stat-label">⭐ <span id="shRankName">Level 1 · Blue</span></div>
+                    <button class="btn btn-close-dropdown" onclick="openDecorationUI()" style="padding:6px 12px; font-size:12px;">🎨 Decoration Profile</button>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:12px; color:#8888aa; margin:8px 0 4px;">
+                    <span>XP: <strong style="color:#fff;" id="shXpNow">0</strong></span>
+                    <span id="shXpNeed">10</span> XP to next (<span id="shXpNext">10</span>)
+                </div>
+                <div class="stat-bar"><div class="fill" id="shXpFill" style="width:0%; background:linear-gradient(90deg,#8b5cf6,#22d3ee);"></div></div>
+            </div>
+
+            <div class="stat-card" style="margin:14px 0;">
+                <div class="stat-label" style="margin-bottom:10px;">📈 Live Executions (worldwide, last 60s)</div>
+                <div id="liveExecutorStats" style="min-height:24px;"><span style="color:#8888aa;font-size:12px;">Loading…</span></div>
+            </div>
+
             <div class="analytics-grid">
                 <div class="stat-card analytics-card">
                     <div class="analytics-header">
@@ -394,6 +414,7 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
             <button class="tab-btn" data-tab="keys" onclick="switchTab('keys')">🔑 Users Keys</button>
             <button class="tab-btn" data-tab="rewards" onclick="switchTab('rewards')">🎁 Rewards</button>
             <button class="tab-btn" data-tab="credits" onclick="switchTab('credits')">💰 Credits</button>
+            <button class="tab-btn" data-tab="leaderboard" onclick="switchTab('leaderboard')">🏆 Leaderboard</button>
             <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙️ Settings</button>
         </div>
 
@@ -425,13 +446,14 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
     </div>
     <div class="keys-toolbar">
         <div class="keys-search">
-            <input class="sh-input" type="text" id="userKeysSearch" placeholder="Search keys, notes, discord ids...">
+            <input class="sh-input" type="text" id="userKeysSearch" placeholder="Search keys, notes, discord ids..." oninput="userKeysDoSearch()">
             <button class="btn btn-primary" onclick="userKeysDoSearch()">Search</button>
         </div>
         <div class="keys-range">
-            <span style="color:#8888aa; font-size:13px;">Showing Users Keys:</span>
+            <span style="color:#8a6bff; font-size:13px;">Total Keys: <strong style="color:#fff;" id="userKeysTotal">0</strong></span>
+            <span style="color:#8888aa; font-size:13px;">Page</span>
             <button class="btn-sm btn-sm-primary" onclick="userKeysPage(-1)">&lt;</button>
-            <span id="userKeysRange" style="color:#fff; font-size:13px; min-width:70px; text-align:center;">0-0</span>
+            <span id="userKeysRange" style="color:#fff; font-size:13px; min-width:70px; text-align:center;">1 / 1</span>
             <button class="btn-sm btn-sm-primary" onclick="userKeysPage(1)">&gt;</button>
         </div>
     </div>
@@ -514,6 +536,21 @@ wrap.innerHTML = '<div class="credit-avatar-fallback">' + fb + '</div>';
         </div>
 
         <!-- SETTINGS TAB -->
+        <!-- LEADERBOARD TAB -->
+        <div class="tab-content" id="tab-leaderboard" style="display:none;">
+            <h2 style="color:#fff; margin:0 0 4px;">🏆 Leaderboard</h2>
+            <p style="color:#8888aa; margin:0 0 16px; font-size:13px;">Top 10 ScripterHub users worldwide. Choose a metric below.</p>
+            <div class="lb-pills" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+                <button class="lb-pill active" onclick="shSetLeaderMetric('xp', this)">XP</button>
+                <button class="lb-pill" onclick="shSetLeaderMetric('money', this)">Money</button>
+                <button class="lb-pill" onclick="shSetLeaderMetric('projects', this)">Projects</button>
+                <button class="lb-pill" onclick="shSetLeaderMetric('scripts', this)">Scripts</button>
+                <button class="lb-pill" onclick="shSetLeaderMetric('executions', this)">Executions</button>
+                <button class="lb-pill" onclick="shSetLeaderMetric('obfuscations', this)">Obfuscations</button>
+            </div>
+            <div id="leaderboardList" style="max-width:760px;"></div>
+        </div>
+
         <div class="tab-content" id="tab-settings" style="display:none; text-align:center;">
             <h2 style="color:#fff;">⚙️ Settings</h2>
             <div class="settings-danger-zone" style="display:flex; flex-wrap:wrap; gap:12px; justify-content:center;">
