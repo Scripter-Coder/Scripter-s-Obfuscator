@@ -3549,6 +3549,9 @@ function updateDashboardTab(user) {
     }
     setDashEmail(user.email);
     refreshStatsUI();
+    // The avatar's innerHTML was just replaced above, which wipes the rank
+    // style and decoration overlay. Re-apply both after the reset.
+    try { updateXpUI(); } catch (e) {}
 }
 
 function updateTabBar(container, name, used, max) {
@@ -8685,11 +8688,14 @@ function shPostXp(tok, d, prog, stats) {
             body: JSON.stringify({
                 userToken: tok,
                 name: currentUser.username || currentUser.email || 'User',
+                profileImage: currentUser.profileImage || '',
                 xp: d.xp, level: prog.level,
                 money: (currentUser.money || 0),
                 projects: stats.projects.used,
                 scripts: stats.scripts.used,
-                executions: (loadAnalytics().executions || []).length,
+                // Executions now live in the stable timeline (sh_execseries),
+                // not in a.executions, so read the real all-time total there.
+                executions: shExecCountForRange('all'),
                 obfuscations: (loadAnalytics().obfuscations || []).length,
                 decorations: d.decorations || [], equipped: d.equipped || 'none'
             })
@@ -8712,6 +8718,27 @@ function shApplyRankStyle(el, xp, scale) {
     if (rank.glow) { el.style.animation = rank.glow + ' 2.4s ease-in-out infinite'; }
     else { el.style.animation = ''; }
     el.setAttribute('data-level', prog.level);
+    // Render the equipped decoration as a small badge overlay on the circle.
+    // It lives in its own element so a re-render of the avatar's picture/letter
+    // does not wipe it.
+    var equipped = String(d.equipped || 'none');
+    var dec = null;
+    for (var i = 0; i < SH_DECORATIONS.length; i++) {
+        if (SH_DECORATIONS[i].id === equipped) { dec = SH_DECORATIONS[i]; break; }
+    }
+    var old = el.querySelector('.sh-decoration');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    if (dec && dec.id !== 'none' && shXpUnlocked().indexOf(dec.id) !== -1) {
+        var badge = document.createElement('span');
+        badge.className = 'sh-decoration';
+        badge.textContent = dec.icon;
+        badge.title = dec.label;
+        badge.style.cssText = 'position:absolute;right:-6px;bottom:-6px;font-size:' + Math.round(base * 0.38)
+            + 'px;line-height:1;filter:drop-shadow(0 0 6px ' + rank.color + ');';
+        // Make sure the avatar can anchor an absolutely-positioned child.
+        if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+        el.appendChild(badge);
+    }
 }
 
 // Update the level badge on the dashboard avatar + XP progress card.
@@ -8826,9 +8853,15 @@ function shRenderLeaderboard() {
                     if (u) {
                         var val = Number(u[shLeaderMetric]) || 0;
                         var letter = String(u.name || '?').charAt(0).toUpperCase();
+                        var pic = String(u.profileImage || '');
+                        // Use the real profile picture when the account has one,
+                        // otherwise fall back to the initial letter.
+                        var avatar = pic
+                            ? '<img src="' + pic.replace(/"/g, '&quot;') + '" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.style.display=\'none\'">'
+                            : letter;
                         rows += '<div class="lb-row" style="border-color:' + medal + ';">'
                             + '<span class="lb-rank" style="color:' + medal + ';">' + rank + '</span>'
-                            + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + letter + '</span>'
+                            + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + avatar + '</span>'
                             + '<span class="lb-name" style="color:' + medal + ';">' + String(u.name || '?').replace(/</g,'&lt;') + '</span>'
                             + '<span class="lb-value">' + val.toLocaleString() + '</span>'
                             + '</div>';
@@ -8913,7 +8946,7 @@ function shStartLiveStatsTimer() {
         // Only re-render the leaderboard when its tab is actually visible.
         var lb = document.getElementById('tab-leaderboard');
         if (lb && lb.style.display !== 'none') shRenderLeaderboard();
-    }, 5000);
+    }, 15000);
     shFetchChart();
 }
 
