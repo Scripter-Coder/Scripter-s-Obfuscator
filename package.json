@@ -75,7 +75,8 @@
     "test:keycard": "node tools/keycard_test.mjs",
     "test:keygate": "node tools/keygate_test.mjs",
     "test:vault": "node tools/vault_test.mjs",
-    "test:opaque": "node tools/opaque_payload_test.mjs"
+    "test:opaque": "node tools/opaque_payload_test.mjs",
+    "test:requests": "node tools/user_requests_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

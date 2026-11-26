@@ -6350,9 +6350,15 @@ function confirmCreateScript(projectId) {
     var keyTime = document.getElementById('scriptKeyTime').value;
     var keyUnit = document.getElementById('scriptKeyUnit').value;
     var code = document.getElementById('scriptCode').value.trim();
-    // LURAPH V15 BALANCED: 6 VM layers + bytecode mutation - adaptive to keep storage sane.
-    // Small scripts (<5k) get max protection (12 layers + LPH double VM); large scripts (>50k)
-    // are capped at 6 layers with bigger stride to stay under plan limits (friend's 40 MB fix).
+    // STRONGEST BUILD THAT ACTUALLY SHIPS THE VM.
+    // BALANCED ran a 1-round cipher and no handler splitting. SECURE adds a
+    // 2-round cipher, split handlers, heavy control flow, typed/strong constants
+    // and full anti-tamper - but with `ultra: true` the 6.9x wrap multiplier
+    // pushed even a one-line script over the 600 KB budget, so the obfuscator
+    // silently rebuilt it as "layers only" (NO bytecode VM) - weaker AND bigger.
+    // SECURE with ultra OFF keeps the VM, stays ~113 KB for a tiny script, and
+    // loads in the same time as the old BALANCED build. `fastLoad` caps the
+    // runtime layer/cipher work so the executor never stalls on decryption.
     var _codeLen = code.length;
     var obfuscationIntensity;
     if (_codeLen < 5000) obfuscationIntensity = 6;
@@ -6464,8 +6470,12 @@ function confirmCreateScript(projectId) {
         }
     }
     var obfOptions = {
+        profile: 'SECURE',
+        fastLoad: true,
         intensity: obfuscationIntensity,
-        ultra: true,
+        // ultra is OFF on purpose: it makes the artifact ~7x larger, blows the
+        // 600 KB budget and silently drops the bytecode VM (weaker + slower).
+        ultra: false,
         antiTamper: antiTamper,
         fullAntiTamper: fullAntiTamper,
         vmPass: vmPass,
@@ -7611,8 +7621,12 @@ function confirmEditScript(projectId, scriptId) {
         }
     }
     var obfOptions = {
+        profile: 'SECURE',
+        fastLoad: true,
         intensity: obfuscationIntensity,
-        ultra: true,
+        // ultra is OFF on purpose: it makes the artifact ~7x larger, blows the
+        // 600 KB budget and silently drops the bytecode VM (weaker + slower).
+        ultra: false,
         antiTamper: antiTamper,
         fullAntiTamper: fullAntiTamper,
         vmPass: vmPass,
@@ -8976,7 +8990,9 @@ function shStartLiveStatsTimer() {
         if (!currentUser) return;
         refreshAnalyticsUI();
         shRefreshVisitors();
-        shFetchChart();
+        // The chart has its OWN 60-second clock (shChartTimer below). Polling it
+        // here at 15s made the worldwide series redraw four times as often as
+        // the worker produces new buckets, which just churned the canvas.
         // Keep the account's XP profile on the worker so it appears on the
         // leaderboard even if the login-time sync missed a token.
         shSyncXpCloud();
@@ -8984,11 +9000,21 @@ function shStartLiveStatsTimer() {
         var lb = document.getElementById('tab-leaderboard');
         if (lb && lb.style.display !== 'none') shRenderLeaderboard();
     }, 15000);
+    // Live Executions Chart: 60-second refresh. The worker aggregates executions
+    // into 5-second buckets, but redrawing every 15 seconds showed the same data
+    // three times and made the lines flicker. One read a minute matches the cadence
+    // people actually read the chart at and keeps the legend/tooltip stable.
+    if (!shChartTimer) {
+        shChartTimer = setInterval(function () {
+            if (currentUser && !shChartPaused) shFetchChart();
+        }, 60000);
+    }
     shFetchChart();
 }
 
 // Live executor statistics panel (across all ScripterHub scripts worldwide).
 var shLiveTimer = null;
+var shChartTimer = null;
 function shRenderLiveExecutors() {
     var host = document.getElementById('liveExecutorStats');
     if (!host) return;
@@ -9132,11 +9158,13 @@ function shDrawChartOn(canvas) {
         for (var n in ex) names[n] = true;
     }
     var nameList = Object.keys(names);
-    // Grid + fixed log-scale axis labels: 100k, 10k, 1k, 100, 0 (top -> bottom).
-    // Values are mapped onto this scale so small and huge execution counts are
-    // both visible, matching the look of a Luarmor-style chart.
-    var AXIS = [100000, 10000, 1000, 100, 0];
-    var AXIS_LABEL = ['100k', '10k', '1k', '100', '0'];
+    // Fixed decade axis, read BOTTOM TO TOP:
+    //   0, 10, 100, 1k, 10k, 100k, 1m
+    // The array below is top-to-bottom only because canvas Y grows downwards.
+    // Every label gets a grid line, so a reader can see exactly where a line
+    // sits instead of guessing between two unlabelled decades.
+    var AXIS = [1000000, 100000, 10000, 1000, 100, 10, 0];
+    var AXIS_LABEL = ['1m', '100k', '10k', '1k', '100', '10', '0'];
     ctx.strokeStyle = 'rgba(255,255,255,.07)';
     ctx.fillStyle = '#666';
     ctx.font = '10px sans-serif';
@@ -9145,20 +9173,18 @@ function shDrawChartOn(canvas) {
         ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
         ctx.fillText(AXIS_LABEL[g], 2, gy - 2);
     }
-    // Map a value onto the fixed log axis. 0 sits at the bottom; each decade
-    // above 100 is evenly spaced up to 100k.
+    // Map a value onto the fixed decade axis. 0 is the bottom line, 10 the next
+    // one up, and every decade after that is evenly spaced up to 1m. Values
+    // above 1m clamp to the top rather than drawing outside the plot.
     function valToY(v) {
         v = Number(v) || 0;
         var plotH = h - 40, plotTop = 10;
-        if (v <= 0) return plotTop + plotH;
-        var pos;
-        if (v <= 100) {
-            pos = 4 - (v / 100); // between "100" (index 3) and "0" (index 4)
-        } else {
-            var decades = Math.log10(v / 100); // 0 at 100, 3 at 100k
-            pos = 3 - Math.max(0, Math.min(3, decades));
-        }
-        return plotTop + (pos / (AXIS.length - 1)) * plotH;
+        var steps = AXIS.length - 1; // 6 gaps: 0->10->100->1k->10k->100k->1m
+        var pos; // 0 at the bottom, 6 at the top
+        if (v <= 0) pos = 0;
+        else if (v <= 10) pos = v / 10;
+        else pos = 1 + Math.min(steps - 1, Math.log10(v / 10));
+        return plotTop + ((steps - pos) / steps) * plotH;
     }
     // Draw a line per executor (and a total line) using the fixed axis.
     var n = series.length;
@@ -9239,6 +9265,11 @@ function shRecordExecSample(total) {
     total = Number(total) || 0;
     var s = shLoadExecSeries();
     var last = s.length ? s[s.length - 1] : null;
+    // The worker counts are cumulative, so they must NEVER go down. On a fresh
+    // isolate /v3/realtime_stats can briefly report 0 before its KV counters
+    // load; writing that 0 here is what made "Total Executions" reset to zero
+    // on every reload. Keep the highest value ever seen for this account.
+    if (last && total < last.total) total = last.total;
     // Only append when the total actually changes (or on first sample).
     if (!last || last.total !== total || Date.now() - last.t > 60000) {
         s.push({ t: Date.now(), total: total });

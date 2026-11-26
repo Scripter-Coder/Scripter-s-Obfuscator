@@ -5875,8 +5875,12 @@ export default {
 async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
 
-        // load persisted stat counters once per isolate (fire-and-forget)
-        loadStatsOnce(env);
+        // Load persisted stat counters BEFORE any route reads them. Fire-and-
+        // forget here meant the first /v3/realtime_stats after a worker restart
+        // answered with an empty perScript map, the dashboard recorded a 0
+        // sample, and "Total Executions" read 0 again. The guard inside makes
+        // this a no-op once the counters are in memory.
+        await loadStatsOnce(env);
 
         // CORS preflight
         if (request.method === 'OPTIONS') {
@@ -6018,7 +6022,10 @@ async function handleRequest(request, env, ctx) {
         if (url.pathname === '/sh/leaderboard' && request.method === 'GET') {
             if (!env.LOADERS_KV) return jsonResponse({ ok: false, error: 'KV not bound' }, 500);
             const metric = String(url.searchParams.get('metric') || 'xp').slice(0, 20);
-            const allowed = ['xp', 'money', 'projects', 'scripts', 'executions', 'obfuscations'];
+            // `level` is a first-class metric: it is derived from XP client-side
+            // and mirrored onto every XP record by /sh/xp, so ranking by it is a
+            // plain numeric sort on the field already returned to the dashboard.
+            const allowed = ['xp', 'money', 'projects', 'scripts', 'executions', 'obfuscations', 'level'];
             const key = allowed.indexOf(metric) !== -1 ? metric : 'xp';
             // Cloudflare KV list() caps limit at 1000. 10000 threw
             // "KV GET failed: 400 Invalid key_count_limit of 10000" and the
@@ -8397,7 +8404,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const t0 = parseInt(String(url.searchParams.get('t') || ''), 10);
             const key = String(url.searchParams.get('k') || '').slice(0, 200);
             const hwid = String(url.searchParams.get('h') || '').slice(0, 300);
-            const result = { key, hwid, scriptId: id, executor: sniffExecutor(ua), reason: '' };
+            const result = { key, hwid, scriptId: id, executor: executorFrom(request, ua), reason: '' };
             let body = 'SHERR gone';
             if (!Number.isFinite(t0) || !key || !hwid) {
                 result.reason = 'missing params';
@@ -8838,7 +8845,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     sessionId: session.sid, transport, reason: 'minted', ip, at: now
                 }));
 
-                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.events.push({ t: now, executor: executorFrom(request, ua), scriptId: id });
                 S.totalExecutions++;
                 S.perScript[id] = (S.perScript[id] || 0) + 1;
                 prune(now);
@@ -8983,7 +8990,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 if (!script) return refuse(DENY.NO_SCRIPT);
 
                 // Count the execution and bump the license counter.
-                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.events.push({ t: now, executor: executorFrom(request, ua), scriptId: id });
                 S.totalExecutions++;
                 S.perScript[id] = (S.perScript[id] || 0) + 1;
                 prune(now);
@@ -9434,7 +9441,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     }
                 }
                 const body = 'SHK ' + sk.t0 + ' ' + sk.chk + ' ' + sk.paddedKey.join(' ');
-                S.events.push({ t: now, executor: sniffExecutor(ua), scriptId: id });
+                S.events.push({ t: now, executor: executorFrom(request, ua), scriptId: id });
                 S.totalExecutions++;
                 S.perScript[id] = (S.perScript[id] || 0) + 1;
                 prune(now);
@@ -9625,7 +9632,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 return scriptPageResponse(id, script, pageBase);
             }
 
-            S.events.push({ t: Date.now(), executor: sniffExecutor(ua), scriptId: id });
+            S.events.push({ t: Date.now(), executor: executorFrom(request, ua), scriptId: id });
             S.totalExecutions++;
             S.perScript[id] = (S.perScript[id] || 0) + 1;
             prune(Date.now());
@@ -11354,9 +11361,34 @@ function prune(now) {
     while (S.events.length && S.events[0].t < now - WINDOW_MS) S.events.shift();
 }
 
+// Executor names as they are actually reported by identifyexecutor(). The list
+// is kept in sync with the public tracker (weao.xyz): Real, Solara, Wave, Delta,
+// Xeno, Synapse Z, etc. It used to contain a handful of old names plus "Roblox",
+// so every modern executor fell through to "Roblox" (from the hard-coded
+// "Roblox/570 Delta Executor" User-Agent) and the live chart showed one line
+// labelled Roblox. Longest names are tested first so "Synapse Z" is not reported
+// as "Synapse" and "Vega X" as "Vega".
+const SH_EXECUTOR_NAMES = [
+    'Synapse Z', 'SirHurt', 'Matrix Hub', 'DX9WARE V2', 'MacSploit', 'Vega X',
+    'Potassium', 'Photon', 'Melatonin', 'Opiumware', 'Lynx', 'Solara', 'Wave',
+    'Volt', 'Velocity', 'Delta', 'Volcano', 'Serotonin', 'Lumen', 'Matcha',
+    'Xeno', 'Seliware', 'Severe', 'Madium', 'Madius', 'Axis', 'Isaeva', 'Lucid',
+    'Athena', 'Real', 'Synapse', 'Krnl', 'Script-Ware', 'ScriptWare', 'Fluxus',
+    'Electron', 'Oxygen', 'Valyse', 'Vega', 'Calamari', 'Sirius', 'Hydrogen',
+    'Abracadabra'
+];
 function sniffExecutor(ua) {
-    const m = ua.match(/Synapse|Krnl|Script[- ]?Ware|Fluxus|Electron|Oxygen|Valyse|Vega|Calamari|Xeno|Sirius|Wave|Delta|Solara|Hydrogen|Abracadabra|Roblox/i);
-    return m ? m[0] : 'Unknown';
+    const s = String(ua || '').toLowerCase();
+    const names = SH_EXECUTOR_NAMES.slice().sort((a, b) => b.length - a.length);
+    for (const n of names) if (s.indexOf(n.toLowerCase()) !== -1) return n;
+    return 'Unknown';
+}
+// The loader sends the REAL identifyexecutor() value in X-SH-Executor. Prefer it:
+// a hard-coded User-Agent can only ever label a build, never the executor that
+// is actually running it. Falls back to UA sniffing for older loadstrings.
+function executorFrom(request, ua) {
+    const h = String((request && request.headers && request.headers.get('X-SH-Executor')) || '').trim().slice(0, 80);
+    return h || sniffExecutor(ua);
 }
 
 async function sha256Hex(str) {
@@ -11589,6 +11621,10 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         // the owner saw for "the script doesnt accept my key".
         + ' if r=="project" then return "This license is for a different project than this script. Make a key for this project, or bind the key to All projects." end\n'
         + ' if r=="killswitch" then return "The owner has disabled this script." end\n'
+        // A rate-limit is a transient state, not a refusal of the key. The
+        // loader retries once on its own; if it still sees this, the honest
+        // instruction is to wait and re-execute rather than to paste a new key.
+        + ' if r=="busy" then return "Too many requests. Wait a moment then re-execute the script - your key is fine." end\n'
         + ' return "Denied: "..r\n'
         + 'end\n'
         // ---- transport
@@ -11603,34 +11639,59 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         // so a bootstrap that only ever spoke POST would silently fail on every
         // executor without `request`. The server records which transport was
         // used, so the weak path stays visible instead of being averaged in.
+        // The real executor name (identifyexecutor()) is captured below and sent
+        // as X-SH-Executor. The hard-coded User-Agent alone cannot identify the
+        // executor - it is a build constant - which is why the live chart used
+        // to show every run as "Roblox".
+        + 'local EXNAME=""\n'
         + 'local function E(s) s=tostring(s or "") return (s:gsub("[^%w%-._~]",function(c) return string.format("%%%02X",string.byte(c)) end)) end\n'
         + 'local function QS(t) local o={} for k,v in pairs(t) do o[#o+1]=E(k).."="..E(v) end return table.concat(o,"&") end\n'
-        + 'local function GET(url)\n'
-        + ' if request then\n'
-        + '  local ok,r=pcall(function() return request({Url=url,Method="GET",'
+        // Spamming the execute button used to surface as "Could not reach the
+        // license server": the mint is rate-limited, request() comes back with
+        // an empty body, and the game:HttpGet fallback fails on the 429 too.
+        // The happy path is untouched - it still makes exactly one request.
+        // Only failures pay for a short, BOUNDED retry, and a rate-limit body
+        // is translated into a SHERR the loader can explain to the user.
+        + 'local function BODY(r)\n'
+        + ' local b=(type(r)=="table" and type(r.Body)=="string" and r.Body~="") and r.Body or ((type(r)=="string" and r~="") and r or nil)\n'
+        + ' if b and b:find("Too many requests",1,true) then return "SHERR busy\\n" end\n'
+        + ' return b\n'
+        + 'end\n'
+        + 'local function NAP() pcall(function() if task and task.wait then task.wait(0.2) end end) end\n'
+        + 'local function GET(url,tries)\n'
+        + ' for _=1,(tries or 3) do\n'
+        + '  if request then\n'
         // The executor User-Agent. A bare request() call sends none, and the
         // worker answers a request with no UA like a BROWSER - which means the
         // metadata page instead of the bytes, and loadstring() then fails on
         // perfectly good input. game:HttpGet stamps a genuine Roblox UA, but a
         // request() call does not, so the header is set here too. It is one
         // header and it is the difference between working and not.
-        + 'Headers={["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header"}}) end)\n'
-        + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
-        + ' end\n'
-        + ' if game and game.HttpGet then\n'
-        + '  local ok,r=pcall(function() return game:HttpGet(url,true) end)\n'
-        + '  if ok and type(r)=="string" and r~="" then return r end\n'
+        + '   local ok,r=pcall(function() return request({Url=url,Method="GET",'
+        + 'Headers={["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header",["X-SH-Executor"]=EXNAME}}) end)\n'
+        + '   if ok then local b=BODY(r) if b then return b end end\n'
+        + '  end\n'
+        + '  if game and game.HttpGet then\n'
+        + '   local ok,r=pcall(function() return game:HttpGet(url,true) end)\n'
+        + '   if ok then local b=BODY(r) if b then return b end end\n'
+        + '  end\n'
+        + '  NAP()\n'
         + ' end\n'
         + ' return nil\n'
         + 'end\n'
         + 'local function CALL(path,q)\n'
         + ' local u=BASE..path..(q and ("?"..q) or "")\n'
-        + ' if request then\n'
-        + '  local ok,r=pcall(function() return request({Url=u,Method="POST",'
-        + 'Headers={["Content-Type"]="application/json",["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header"}}) end)\n'
-        + '  if ok and type(r)=="table" and type(r.Body)=="string" and r.Body~="" then return r.Body end\n'
+        + ' for _=1,3 do\n'
+        + '  if request then\n'
+        + '   local ok,r=pcall(function() return request({Url=u,Method="POST",'
+        + 'Headers={["Content-Type"]="application/json",["User-Agent"]="Roblox/570 Delta Executor",["X-SH-Transport"]="header",["X-SH-Executor"]=EXNAME}}) end)\n'
+        + '   if ok then local b=BODY(r) if b then return b end end\n'
+        + '  end\n'
+        + '  local b=GET(u,1)\n'
+        + '  if b then return b end\n'
+        + '  NAP()\n'
         + ' end\n'
-        + ' return GET(u)\n'
+        + ' return nil\n'
         + 'end\n'
         // ---- 1. license + hardware fingerprint
         + 'local K=G and G.ScripterHubKey\n'
@@ -11657,6 +11718,9 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         + ' if ok and type(v)=="string" and v~="" then HW=v end\n'
         + 'end\n'
         + 'local HW2=(identifyexecutor and (pcall(identifyexecutor) and identifyexecutor())) or ""\n'
+        // Report the real executor to the stats worker. Strip anything that is
+        // not a word/space so it is safe to place inside a header value.
+        + 'if HW2~="" then EXNAME=tostring(HW2):gsub("[^%w%s%-_.]","") end\n'
         + 'if HW==nil or HW=="" then HW=HW2 end\n'
         + 'if KEYED and (type(K)~="string" or K=="") then\n'
         + ' DIE("License required: run getgenv().ScripterHubKey = \\"YOUR_KEY\\" then re-execute.")\n'
@@ -11664,7 +11728,7 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         + 'end\n'
         // ---- 2. mint a session. proof, not payload.
         + 'local resp=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),h2=tostring(HW2),u=tostring(G.ScripterHubUser or "")}))\n'
-        + 'if type(resp)~="string" then DIE("Could not reach the license server.") return end\n'
+        + 'if type(resp)~="string" then DIE("Could not reach the license server. Check your connection/executor, then re-execute.") return end\n'
         + 'if resp:sub(1,6)=="SHERR " then DIE(DENYMSG(resp:sub(7):gsub("%s+$",""))) return end\n'
         + 'local S,N=resp:match("^SHS (%S+) (%S+) %S+")\n'
         + 'if not S or not N then DIE("Bad response from the license server.") return end\n'
@@ -11711,7 +11775,10 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         // recovery path is exactly the kind of thing a substring check hides.
         + 'local rsn=(type(body)=="string") and body:match("^SHERR (%S+)") or nil\n'
         + 'if rsn=="nonce" then\n'
-        + '  local r2=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),u=tostring(G.ScripterHubUser or "")}))\n'
+        // h2 travels on the retry too. Without it a key locked to the executor
+        // name is rejected on the recovery path even though the same key was
+        // accepted on the first mint - reported to the user as "invalid".
+        + '  local r2=CALL("/sh/session",QS({id=ID,k=K or "",h=tostring(HW),h2=tostring(HW2),u=tostring(G.ScripterHubUser or "")}))\n'
         // NOT `local S2,N2 = (cond) and r2:match(...) or nil`.
         //
         // Lua's `and` truncates a multiple-value expression to ONE value, so
@@ -11943,5 +12010,6 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
 // ===========================================================================
 export {
     createState, changesOf, SESSION_TTL_CEILING_MS, DEFAULT_SESSION_TTL_MS, windowStart,
-    encryptAtRest, decryptAtRest, tryDecryptAtRest, isEncrypted, kekConfigured, _resetKekCache
+    encryptAtRest, decryptAtRest, tryDecryptAtRest, isEncrypted, kekConfigured, _resetKekCache,
+    sniffExecutor, executorFrom
 };

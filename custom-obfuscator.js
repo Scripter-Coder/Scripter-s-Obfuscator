@@ -1683,6 +1683,20 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
     if (profName === 'OPAL') profName = 'FAST';
     var prof = resolveProfile(profName);
     options._profile = prof;
+    // ---- INSTANT LOAD -------------------------------------------------------
+    // `fastLoad` buys protection with STATIC complexity (VM, split handlers,
+    // opaque control flow, server-held vault, decoys) instead of runtime work.
+    // The two runtime knobs are capped here so an executor never spends seconds
+    // peeling layers or grinding a high-round cipher before the script starts:
+    //   * ultra wraps the artifact ~7x, blows the 600 KB budget and makes the
+    //     obfuscator fall back to "layers only" - weaker AND slower. Off.
+    //   * 2 cipher rounds are enough to defeat byte-frequency peeling; the old
+    //     16-round setting only multiplied load time.
+    if (options.fastLoad === true) {
+        options.ultra = false;
+        if (options.cipherRounds == null) options.cipherRounds = Math.min(2, prof.cipherRounds || 2);
+        else options.cipherRounds = Math.min(2, options.cipherRounds);
+    }
     // propagate profile's real params to loader/VM (measurable diffs, not stubs)
     if (options.cipherRounds == null) options.cipherRounds = prof.cipherRounds;
     if (options.stride == null) options.stride = prof.stride;
@@ -1718,6 +1732,10 @@ function applyCustomObfuscatorCore(code, options, debugInfo) {
             else if (intensity >= 10 && options.ultra !== false) intensity = Math.max(intensity, 20);
         }
     }
+    // Each layer costs ~1.5 ms of executor time. Eight is well under a
+    // frame's worth of work and keeps the artifact small enough for the VM
+    // budget, so the script starts as soon as the bytes arrive.
+    if (options.fastLoad === true && intensity > 8) intensity = 8;
 
     // ---- SIZE-AWARE INTENSITY BUDGET -------------------------------------
     //
