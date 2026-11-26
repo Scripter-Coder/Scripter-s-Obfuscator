@@ -4898,6 +4898,9 @@ function uploadProfileImage() {
                 var userData = { ...users[key] };
                 delete userData.password;
                 updateUIForUser(userData);
+                // Push the new image to the XP profile immediately so the
+                // leaderboard avatar updates without waiting for the 15s poll.
+                try { shSyncXpCloud(); } catch (e) {}
                 showNotification('Success', 'Profile image updated successfully!', 'success');
                 input.value = '';
                 break;

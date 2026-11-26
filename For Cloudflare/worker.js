@@ -5996,7 +5996,10 @@ async function handleRequest(request, env, ctx) {
             try { rec = prev ? JSON.parse(prev) : {}; } catch (e) { rec = {}; }
             rec.name = String(body.name || rec.name || ident.username || '').slice(0, 60);
             // Profile picture so the leaderboard can show the real avatar.
-            rec.profileImage = String(body.profileImage || rec.profileImage || '').slice(0, 2000);
+            // A base64 profile picture is tens of thousands of characters.
+            // Truncating to 2000 produced a corrupt data URL that failed to
+            // render. Use the same cap as user records.
+            rec.profileImage = String(body.profileImage || rec.profileImage || '').slice(0, SH_IMAGE_CAP);
             rec.xp = Math.max(0, Number(body.xp) || 0);
             rec.level = Math.max(1, Number(body.level) || 1);
             rec.money = Math.max(0, Number(body.money) || 0);
@@ -6036,7 +6039,7 @@ async function handleRequest(request, env, ctx) {
                     const r = JSON.parse(raw);
                     out.push({
                         name: String(r.name || 'Unknown').slice(0, 60),
-                        profileImage: String(r.profileImage || '').slice(0, 2000),
+                        profileImage: String(r.profileImage || '').slice(0, SH_IMAGE_CAP),
                         equipped: String(r.equipped || '').slice(0, 60),
                         xp: Number(r.xp) || 0,
                         level: Number(r.level) || 1,
