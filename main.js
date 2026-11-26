@@ -9101,6 +9101,38 @@ function shDrawChartOn(canvas) {
         }
         legend.innerHTML = html;
     }
+    // Hover tooltip: map the mouse X to a time bucket and show that bucket's
+    // total and per-executor counts, so hovering the purple/colored lines
+    // actually tells you how many executions each executor had.
+    if (!canvas._shHoverBound) {
+        canvas._shHoverBound = true;
+        canvas.addEventListener('mousemove', function (ev) {
+            var s = shChartSeries || [];
+            if (!s.length) return;
+            var rect = canvas.getBoundingClientRect();
+            var x = ev.clientX - rect.left;
+            var idx = Math.max(0, Math.min(s.length - 1, Math.round((x / (rect.width || 1)) * (s.length - 1))));
+            var b = s[idx];
+            var tip = document.getElementById('liveChartTooltip');
+            if (!tip) {
+                tip = document.createElement('div');
+                tip.id = 'liveChartTooltip';
+                tip.style.cssText = 'position:fixed;z-index:99999;pointer-events:none;background:#141026;border:1px solid #8b5cf6;border-radius:8px;padding:8px 10px;color:#fff;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.6);';
+                document.body.appendChild(tip);
+            }
+            var lines = ['<strong>' + new Date(b.t).toLocaleTimeString() + '</strong> — Total: ' + (b.total || 0)];
+            var ex = b.executors || {};
+            for (var name in ex) lines.push('<span style="color:' + shChartColors[Object.keys(ex).indexOf(name) % shChartColors.length] + ';">● ' + String(name).replace(/</g, '&lt;') + ': ' + ex[name] + '</span>');
+            tip.innerHTML = lines.join('<br>');
+            tip.style.left = (ev.clientX + 14) + 'px';
+            tip.style.top = (ev.clientY + 14) + 'px';
+            tip.style.display = 'block';
+        });
+        canvas.addEventListener('mouseleave', function () {
+            var tip = document.getElementById('liveChartTooltip');
+            if (tip) tip.style.display = 'none';
+        });
+    }
 }
 window.shToggleLiveChart = shToggleLiveChart;
 window.shFetchChart = shFetchChart;

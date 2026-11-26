@@ -3164,6 +3164,29 @@ const KV_SKEY_PREFIX = 'sh_skey_';     // sh_skey_<10 digits>   -> split-key rec
 // The token lives ~90 seconds (short-lived), is bound to key+hwid, and
 // is verified with a constant-time compare before any key bytes move.
 const KV_LICENSES_KEY = 'sh_licenses';
+// Deleted-key tombstones. A key removed here stays gone even if a stale KV
+// read of the single sh_licenses blob would otherwise resurrect it through
+// the D1 re-sync. A delete adds the key; loadLicenses/get filters them out.
+const KV_DELETED_KEYS = 'sh_deleted_keys';
+async function loadDeletedKeys(env) {
+    if (!env.LOADERS_KV) return {};
+    try {
+        const raw = await env.LOADERS_KV.get(KV_DELETED_KEYS);
+        const arr = raw ? JSON.parse(raw) : [];
+        const m = {};
+        if (Array.isArray(arr)) for (const k of arr) m[String(k)] = true;
+        return m;
+    } catch (e) { return {}; }
+}
+async function addDeletedKey(env, key) {
+    if (!env.LOADERS_KV || !key) return;
+    try {
+        const m = await loadDeletedKeys(env);
+        m[key] = true;
+        const arr = Object.keys(m).slice(-5000);
+        await env.LOADERS_KV.put(KV_DELETED_KEYS, JSON.stringify(arr));
+    } catch (e) {}
+}
 const KV_KILLSWITCH_KEY = 'sh_killswitch';
 const AUTH_TOKEN_TTL_MS = 90 * 1000;        // 90-second short-lived auth token
 const HWID_RESET_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 1 HWID reset per day
@@ -4930,6 +4953,12 @@ async function loadLicenses(env) {
         const raw = await env.LOADERS_KV.get(KV_LICENSES_KEY);
         map = raw ? JSON.parse(raw) : {};
     } catch (e) { map = {}; }
+    // Never resurrect a key the owner deleted. This filter runs on EVERY
+    // read, so a stale KV blob or a lingering D1 row cannot bring it back.
+    try {
+        const deleted = await loadDeletedKeys(env);
+        for (const k of Object.keys(deleted)) if (map[k]) delete map[k];
+    } catch (e) {}
 
     // MERGE MISSING KEYS FROM D1 (the authoritative gate store).
     //
@@ -4963,6 +4992,11 @@ async function loadLicenses(env) {
                 };
             }
         } catch (e) { /* a D1 read failure must not hide the KV keys */ }
+        // D1 rows for deleted keys must not be re-merged back into the view.
+        try {
+            const deleted = await loadDeletedKeys(env);
+            for (const k of Object.keys(deleted)) if (map[k]) delete map[k];
+        } catch (e) {}
     }
 
     // Reconcile into D1. Cheap (one write per changed row) and it means the
@@ -5981,9 +6015,19 @@ async function handleRequest(request, env, ctx) {
             const metric = String(url.searchParams.get('metric') || 'xp').slice(0, 20);
             const allowed = ['xp', 'money', 'projects', 'scripts', 'executions', 'obfuscations'];
             const key = allowed.indexOf(metric) !== -1 ? metric : 'xp';
-            const page = await env.LOADERS_KV.list({ prefix: XP_KV_PREFIX, limit: 10000 });
+            // Cloudflare KV list() caps limit at 1000. 10000 threw
+            // "KV GET failed: 400 Invalid key_count_limit of 10000" and the
+            // whole leaderboard returned 500 with no users. Page through
+            // instead so every account is included.
+            const outKeys = [];
+            let cursor = null;
+            do {
+                const page = await env.LOADERS_KV.list({ prefix: XP_KV_PREFIX, limit: 1000, cursor: cursor || undefined });
+                for (const k of (page.keys || [])) outKeys.push(k);
+                cursor = page.list_complete ? null : page.cursor;
+            } while (cursor);
             const out = [];
-            for (const k of (page.keys || [])) {
+            for (const k of outKeys) {
                 try {
                     const raw = await env.LOADERS_KV.get(k.name);
                     if (!raw) continue;
@@ -7681,6 +7725,8 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // one, reset its HWID or extend it - those routes edit the map in
             // place - it just cannot delete one by accident.
             let kept = 0;
+            let deletedKeys = {};
+            try { deletedKeys = await loadDeletedKeys(env); } catch (e) {}
             try {
                 // THE REWARD KEYS ARE REBUILT FROM THE LEDGER, NOT CARRIED OVER
                 // FROM THE KV COPY.
@@ -7722,6 +7768,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     for (const row of list) {
                         const k = String(row.key_text || '');
                         if (!k) continue;
+                        if (deletedKeys[k]) continue; // never resurrect a deleted key
                         if (Object.prototype.hasOwnProperty.call(out, k)) continue;
                         const lock = lockOf[k] || null;
                         const reward = await loadReward(env, String(row.rid || ''));
@@ -7871,6 +7918,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 delete map[key];
                 await saveLicenses(env, map);
             }
+            // Tombstone the key so stale KV reads / D1 rows cannot resurrect it.
+            // We reached here only after confirming the key existed somewhere.
+            await addDeletedKey(env, key);
             return jsonResponse({ ok: true, ledgerRows: ledger, d1Rows: d1rows });
         }
 
