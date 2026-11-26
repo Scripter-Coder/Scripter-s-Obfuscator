@@ -2434,16 +2434,25 @@ function shServerKeyAction(key, action) {
 function shServerKeyDelete(key) {
     if (!key) return;
     if (!confirm('Delete this key completely?\n\nThe visitor loses it, and it is gone from the reward ledger too. This cannot be undone.')) return;
-    shOwnerApi('sh/license-delete', { token: shOwnerToken(), key: key })
+    // Remove the row from the screen INSTANTLY. The old version waited on
+    // shOwnerApi (token mint + up to a 45s timeout) before touching the UI, so
+    // a single delete froze the page. Sync in the background instead.
+    var row = null;
+    try {
+        var btns = document.querySelectorAll('.keys-table-row button[onclick*="shServerKeyDelete"]');
+        for (var i = 0; i < btns.length; i++) {
+            if (String(btns[i].getAttribute('onclick') || '').indexOf(key) !== -1) { row = btns[i].closest('tr') || btns[i].closest('.keys-table-row'); break; }
+        }
+    } catch (e) {}
+    if (row && row.parentNode) row.parentNode.removeChild(row);
+    showNotification('Deleting', 'Removing the key…', 'info', 3000);
+    Promise.resolve(shOwnerApi('sh/license-delete', { token: shOwnerToken(), key: key }))
         .then(function (d) {
-            if (d && d.ok) {
-                showNotification('Deleted', 'The key is gone.', 'success');
-            } else {
-                showNotification('Refused', (d && d.error) || 'the server refused the delete', 'warning', 6000);
-            }
+            if (d && d.ok) showNotification('Deleted', 'The key is gone.', 'success');
+            else showNotification('Refused', (d && d.error) || 'the server refused the delete', 'warning', 6000);
             return shLoadRewardKeys();
         })
-        .then(function () { renderKeys(); })
+        .then(function () { renderKeys(); refreshStatsUI(); })
         .catch(function () { showNotification('Network', 'could not reach the reward server', 'error', 5000); });
 }
 
@@ -2806,6 +2815,8 @@ function openUserKeysSettingsUI() {
                     <button onclick="exportKeysJson()" class="btn btn-close-dropdown" style="flex:1;">🗄️ Export JSON</button>
                     <button onclick="deleteUnusedKeys()" class="btn btn-danger" style="flex:1;">🗑️ Delete Unused</button>
                 </div>
+                <button onclick="shCleanupInfiniteKeys()" class="btn btn-danger" style="margin-top:8px; width:100%;">🧹 Delete All ∞ (Unlimited) Keys</button>
+                <div class="field-hint" style="margin-top:4px;">Removes keys with no expiry (∞ days). Keys with a numeric day count are kept.</div>
             </div>
             <div class="settings-block">
                 <h3>📤 Import Users</h3>
@@ -3152,12 +3163,13 @@ function updateUIForUser(user) {
     // not block on the network.
     try { shEnsureUserToken(); } catch (e) {}
     try { shStartLiveStatsTimer(); } catch (e) {}
+    try { shFetchChart(); } catch (e) {}
     try { updateXpUI(); } catch (e) {}
     // Push any XP the account already had (earned on this device before cloud
     // sync existed) up to the worker so it shows on the leaderboard.
     try { shSyncXpCloud(); } catch (e) {}
-    // One-time purge of keys with unlimited (∞) days.
-    try { shCleanupInfiniteKeys(); } catch (e) {}
+    // Key purge is MANUAL only (button in the Keys tab) - never auto-delete a
+    // user's keys on login.
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -3423,7 +3435,9 @@ function setExecRange(range, btn) {
     analyticsState.execRange = range;
     if (btn) btn.parentElement.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
     if (btn) btn.classList.add('active');
-    refreshAnalyticsUI();
+    // Recompute from the stable local timeline only - no network fetch, so the
+    // number cannot flicker between a local 0 and a server value when spamming.
+    setAnalyticsValue('totalExecutions', shExecCountForRange(range));
 }
 
 function setObfRange(range, btn) {
@@ -3440,9 +3454,6 @@ function setAnalyticsValue(id, text) {
 function refreshAnalyticsUI() {
     if (!currentUser) return;
     var a = loadAnalytics();
-    var localThreats = 0;
-    try { localThreats = (JSON.parse(localStorage.getItem('sh_threats_local') || '[]')).length; } catch (e) {}
-    setAnalyticsValue('totalExecutions', countSince(a.executions, analyticsState.execRange));
     try {
         var _base = (window.SH_STATS_ENDPOINT || '').replace(/\/+$/, '');
         if (_base) {
@@ -3463,7 +3474,11 @@ function refreshAnalyticsUI() {
                 var sum = 0;
                 var tops = data.topScripts || {};
                 for (var k in tops) { if (ids[k]) sum += (Number(tops[k]) || 0); }
-                setAnalyticsValue('totalExecutions', sum);
+                // Record a time-stamped sample so the Per Day/Week/Month/Year
+                // pills can be answered from a stable local timeline instead of
+                // flickering between a local 0 and the server all-time sum.
+                shRecordExecSample(sum);
+                setAnalyticsValue('totalExecutions', shExecCountForRange(analyticsState.execRange));
                 // Threats Blocked = the worker's global counter.
                 setAnalyticsValue('totalThreats', Number(data.threatsBlocked) || 0);
                 // Feed the per-owner execution XP (1 XP per execution, counted
@@ -5568,7 +5583,9 @@ function switchTab(tabName) {
     for (var i = 0; i < contents.length; i++) { contents[i].style.display = 'none'; }
     var target = document.getElementById('tab-' + tabName);
     if (target) { target.style.display = 'block'; }
-    if (tabName === 'dashboard') { if (currentUser) { refreshStatsUI(); } }
+    if (tabName === 'dashboard') {
+        if (currentUser) { refreshStatsUI(); shFetchChart(); }
+    }
     if (tabName === 'scripts') { renderProjects(); }
     if (tabName === 'keys') {
         renderKeys();
@@ -8827,12 +8844,23 @@ function shRenderLeaderboard() {
                 // Show your own position even if you are outside the top 10.
                 var me = data && data.me;
                 var meHtml = '';
+                // Always show a "your position" line. If the server has not
+                // ranked the account yet, fall back to the local XP/level and
+                // say so, instead of showing nothing.
+                var localD = shLoadXp();
+                var localProg = shLevelProgress(localD.xp);
                 if (me && me.rank) {
                     meHtml = '<div class="lb-me" style="margin-top:14px;padding:12px 16px;background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.35);border-radius:10px;">'
                         + '<span style="color:#c4b5fd;">Your position:</span> <strong style="color:#fff;">#' + me.rank + '</strong>'
                         + ' <span style="color:#8888aa;">of ' + total + ' ranked users</span>'
                         + ' <span style="color:#8a6bff;">· Level ' + (me.level || 1) + '</span>'
                         + ' <span style="color:#fff;">· ' + (Number(me.value) || 0).toLocaleString() + ' ' + shLeaderMetric + '</span>'
+                        + '</div>';
+                } else {
+                    meHtml = '<div class="lb-me" style="margin-top:14px;padding:12px 16px;background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.35);border-radius:10px;">'
+                        + '<span style="color:#c4b5fd;">Your position:</span> <strong style="color:#fff;">Unranked yet</strong>'
+                        + ' <span style="color:#8888aa;">· Level ' + localProg.level + ' · ' + localD.xp.toLocaleString() + ' XP</span>'
+                        + ' <span style="color:#ffb020;">· syncing to leaderboard…</span>'
                         + '</div>';
                 }
                 host.innerHTML = '<div class="lb-table">' + rows + '</div>' + meHtml;
@@ -8852,7 +8880,9 @@ function shSyncExecXp(totalExec) {
     if (totalExec > prev) {
         var delta = totalExec - prev;
         try { localStorage.setItem(key, String(totalExec)); } catch (e) {}
-        shAwardXp(delta, 'execution');
+        // Each execution is worth a fixed XP amount so a few runs actually
+        // level you up quickly. 6 executions * 10 = 60 XP (levels 2->5).
+        shAwardXp(delta * 10, 'execution');
     }
 }
 
@@ -8877,6 +8907,9 @@ function shStartLiveStatsTimer() {
         refreshAnalyticsUI();
         shRefreshVisitors();
         shFetchChart();
+        // Keep the account's XP profile on the worker so it appears on the
+        // leaderboard even if the login-time sync missed a token.
+        shSyncXpCloud();
         // Only re-render the leaderboard when its tab is actually visible.
         var lb = document.getElementById('tab-leaderboard');
         if (lb && lb.style.display !== 'none') shRenderLeaderboard();
@@ -8999,8 +9032,17 @@ function shFetchChart() {
 }
 
 function shDrawChart() {
-    var canvas = document.getElementById('liveChartCanvas');
-    if (!canvas) return;
+    // The dashboard is cloned into #tab-dashboard, so there are TWO canvases
+    // with the same id. getElementById() returns the hidden original, which is
+    // why the chart appeared blank. Draw into every visible canvas.
+    var canvases = document.querySelectorAll('#liveChartCanvas');
+    if (!canvases.length) return;
+    for (var ci = 0; ci < canvases.length; ci++) {
+        shDrawChartOn(canvases[ci]);
+    }
+}
+
+function shDrawChartOn(canvas) {
     var ctx = canvas.getContext('2d');
     if (!ctx) return;
     var w = canvas.width = canvas.clientWidth || 600;
@@ -9062,3 +9104,38 @@ function shDrawChart() {
 }
 window.shToggleLiveChart = shToggleLiveChart;
 window.shFetchChart = shFetchChart;
+
+// Stable execution timeline. Each time the worker's cumulative execution count
+// for this owner grows, store { t, total } samples locally. Range pills are
+// answered by taking the newest sample before the range start and subtracting
+// it from the latest total - so the number never flickers or double-counts.
+function shExecSeriesKey() { return 'sh_execseries_' + (currentUser ? currentUser.id : ''); }
+function shLoadExecSeries() {
+    try {
+        var s = JSON.parse(localStorage.getItem(shExecSeriesKey()) || '[]');
+        return Array.isArray(s) ? s : [];
+    } catch (e) { return []; }
+}
+function shRecordExecSample(total) {
+    total = Number(total) || 0;
+    var s = shLoadExecSeries();
+    var last = s.length ? s[s.length - 1] : null;
+    // Only append when the total actually changes (or on first sample).
+    if (!last || last.total !== total || Date.now() - last.t > 60000) {
+        s.push({ t: Date.now(), total: total });
+        if (s.length > 5000) s = s.slice(-5000);
+        try { localStorage.setItem(shExecSeriesKey(), JSON.stringify(s)); } catch (e) {}
+    }
+}
+function shExecCountForRange(range) {
+    var s = shLoadExecSeries();
+    if (!s.length) return 0;
+    var latest = s[s.length - 1].total;
+    if (range === 'all') return latest;
+    var since = rangeStartMs(range);
+    var baseline = 0;
+    for (var i = 0; i < s.length; i++) {
+        if (s[i].t < since) baseline = s[i].total; else break;
+    }
+    return Math.max(0, latest - baseline);
+}
