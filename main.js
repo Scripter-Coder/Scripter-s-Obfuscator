@@ -2095,7 +2095,10 @@ function getScriptForLoader(scriptId) { return null; }
 // Length is 1000 characters, mixing numbers, letters, symbols, emojis, glitched
 // combining marks and gaster-style symbols for a long, visually noisy key.
 function generateKey() {
-    return shGenerateKey(1000, { unicode: true });
+    // Alphanumeric only. The old `unicode: true` produced emoji-only keys that
+    // were hard to read, broke copy/paste between executors, and made the Keys
+    // table look like gibberish. Entropy comes from length, not character mix.
+    return shGenerateKey(1000, { unicode: false });
 }
 
 // ============ KEYS SYSTEM ============
@@ -3150,6 +3153,11 @@ function updateUIForUser(user) {
     try { shEnsureUserToken(); } catch (e) {}
     try { shStartLiveStatsTimer(); } catch (e) {}
     try { updateXpUI(); } catch (e) {}
+    // Push any XP the account already had (earned on this device before cloud
+    // sync existed) up to the worker so it shows on the leaderboard.
+    try { shSyncXpCloud(); } catch (e) {}
+    // One-time purge of keys with unlimited (∞) days.
+    try { shCleanupInfiniteKeys(); } catch (e) {}
     var signupBtn = document.getElementById('signupBtn');
     var loginBtn = document.getElementById('loginBtn');
     var navbarUser = document.getElementById('navbarUser');
@@ -3324,7 +3332,21 @@ function setStatBar(root, name, used, max) {
 
 function refreshStatsUI() {
     if (!currentUser) return;
+    // The Keys stat counts local + reward keys. The reward keys live only on
+    // the server, so make sure they are loaded before computing the count;
+    // otherwise the dashboard shows just the local keys (e.g. "2").
+    if (typeof shLoadRewardKeys === 'function') {
+        shLoadRewardKeys().then(function () { paintStatsUI(computeStats(currentUser)); }).catch(function () {});
+    }
     var stats = computeStats(currentUser);
+    paintStatsUI(stats);
+    refreshAnalyticsUI();
+}
+
+// Paint the four plan stat cards from a precomputed stats object. Split out
+// so refreshStatsUI can repaint after an async reward-key fetch without
+// re-triggering the whole analytics chain.
+function paintStatsUI(stats) {
     // main dashboard + cloned tab dashboard both carry the same ids
     document.querySelectorAll('.dashboard, #tab-dashboard').forEach(function(root) {
         setStatValue(root, 'projects', stats.projects.used, stats.projects.max === Infinity ? '∞' : stats.projects.max);
@@ -3336,7 +3358,6 @@ function refreshStatsUI() {
         setStatBar(root, 'scripts', stats.scripts.used, stats.scripts.max);
         setStatBar(root, 'storage', stats.storage.usedMB, stats.storage.maxMB);
     });
-    refreshAnalyticsUI();
 }
 var analyticsState = { execRange: 'all', obfRange: 'all' };
 
@@ -8771,26 +8792,50 @@ function shRenderLeaderboard() {
     if (!host) return;
     host.innerHTML = '<p style="color:#8888aa;text-align:center;padding:24px;">Loading leaderboard…</p>';
     try {
-        fetch(SH_STATS_ENDPOINT + 'sh/leaderboard?metric=' + encodeURIComponent(shLeaderMetric), { method: 'GET' })
+        var meName = currentUser ? (currentUser.username || currentUser.email || '') : '';
+        fetch(SH_STATS_ENDPOINT + 'sh/leaderboard?metric=' + encodeURIComponent(shLeaderMetric)
+            + '&me=' + encodeURIComponent(meName), { method: 'GET' })
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 var users = (data && data.users) || [];
-                if (!users.length) { host.innerHTML = '<p style="color:#8888aa;text-align:center;padding:24px;">No entries yet. Be the first!</p>'; return; }
+                var total = Number((data && data.total) || users.length) || 0;
                 var rows = '';
-                for (var i = 0; i < users.length; i++) {
-                    var u = users[i];
+                // Always show exactly 10 rows. Real users first, then "???"
+                // slots so a partially-filled board never looks broken.
+                for (var i = 0; i < 10; i++) {
                     var rank = i + 1;
                     var medal = rank === 1 ? '#ffd700' : rank === 2 ? '#c0c0c0' : rank === 3 ? '#cd7f32' : '#888';
-                    var val = Number(u[shLeaderMetric]) || 0;
-                    var letter = String(u.name || '?').charAt(0).toUpperCase();
-                    rows += '<div class="lb-row" style="border-color:' + medal + ';">'
-                        + '<span class="lb-rank" style="color:' + medal + ';">' + rank + '</span>'
-                        + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + letter + '</span>'
-                        + '<span class="lb-name" style="color:' + medal + ';">' + String(u.name || '?').replace(/</g,'&lt;') + '</span>'
-                        + '<span class="lb-value">' + val.toLocaleString() + '</span>'
+                    var u = users[i];
+                    if (u) {
+                        var val = Number(u[shLeaderMetric]) || 0;
+                        var letter = String(u.name || '?').charAt(0).toUpperCase();
+                        rows += '<div class="lb-row" style="border-color:' + medal + ';">'
+                            + '<span class="lb-rank" style="color:' + medal + ';">' + rank + '</span>'
+                            + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + letter + '</span>'
+                            + '<span class="lb-name" style="color:' + medal + ';">' + String(u.name || '?').replace(/</g,'&lt;') + '</span>'
+                            + '<span class="lb-value">' + val.toLocaleString() + '</span>'
+                            + '</div>';
+                    } else {
+                        rows += '<div class="lb-row" style="border-color:#333;opacity:.55;">'
+                            + '<span class="lb-rank" style="color:#555;">' + rank + '</span>'
+                            + '<span class="lb-avatar" style="border-color:#444;box-shadow:none;">?</span>'
+                            + '<span class="lb-name" style="color:#666;">???</span>'
+                            + '<span class="lb-value" style="color:#555;">—</span>'
+                            + '</div>';
+                    }
+                }
+                // Show your own position even if you are outside the top 10.
+                var me = data && data.me;
+                var meHtml = '';
+                if (me && me.rank) {
+                    meHtml = '<div class="lb-me" style="margin-top:14px;padding:12px 16px;background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.35);border-radius:10px;">'
+                        + '<span style="color:#c4b5fd;">Your position:</span> <strong style="color:#fff;">#' + me.rank + '</strong>'
+                        + ' <span style="color:#8888aa;">of ' + total + ' ranked users</span>'
+                        + ' <span style="color:#8a6bff;">· Level ' + (me.level || 1) + '</span>'
+                        + ' <span style="color:#fff;">· ' + (Number(me.value) || 0).toLocaleString() + ' ' + shLeaderMetric + '</span>'
                         + '</div>';
                 }
-                host.innerHTML = '<div class="lb-table">' + rows + '</div>';
+                host.innerHTML = '<div class="lb-table">' + rows + '</div>' + meHtml;
             })
             .catch(function () { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; });
     } catch (e) { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; }
@@ -8831,8 +8876,12 @@ function shStartLiveStatsTimer() {
         if (!currentUser) return;
         refreshAnalyticsUI();
         shRefreshVisitors();
-        shRenderLeaderboard && shRenderLeaderboard();
+        shFetchChart();
+        // Only re-render the leaderboard when its tab is actually visible.
+        var lb = document.getElementById('tab-leaderboard');
+        if (lb && lb.style.display !== 'none') shRenderLeaderboard();
     }, 5000);
+    shFetchChart();
 }
 
 // Live executor statistics panel (across all ScripterHub scripts worldwide).
@@ -8870,3 +8919,146 @@ window.shSetLeaderMetric = shSetLeaderMetric;
 window.shRenderLeaderboard = shRenderLeaderboard;
 window.shRenderLiveExecutors = shRenderLiveExecutors;
 window.shXpForLevel = shXpForLevel;
+
+// One-time purge of keys with unlimited (∞) days. Keys that carry a numeric
+// expiry (even a huge one like 80000 days) are kept. Only keys with no expiry
+// at all are removed. Runs once per account, guarded by a flag, so a lifetime
+// key the owner deliberately creates later is not silently deleted again.
+async function shCleanupInfiniteKeys() {
+    if (!currentUser) return;
+    var flag = 'sh_inf_cleanup_' + currentUser.id + '_v1';
+    try { if (localStorage.getItem(flag) === '1') return; } catch (e) {}
+
+    // 1) Local keys with no expiry.
+    var removedLocal = 0;
+    try {
+        var kd = loadKeys();
+        var before = (kd.keys || []).length;
+        kd.keys = (kd.keys || []).filter(function (k) {
+            // keep keys that have a real expiry date
+            return !!(k && k.expires && Number(k.expires) > 0);
+        });
+        removedLocal = before - kd.keys.length;
+        kd.used = kd.keys.filter(function (k) { return k.used; }).length;
+        if (removedLocal > 0) {
+            try { localStorage.setItem('keys_' + currentUser.id, JSON.stringify(kd)); } catch (e) {}
+        }
+    } catch (e) {}
+
+    // 2) Server reward keys with expiresAt 0 (∞). Delete each by key text.
+    var removedServer = 0;
+    try {
+        var cache = await shLoadRewardKeys();
+        for (var i = 0; i < cache.length; i++) {
+            var rk = cache[i];
+            if (!Number(rk.expires) || Number(rk.expires) <= 0) {
+                try {
+                    var d = await window.shOwnerApi('sh/license-delete', { key: rk.key });
+                    if (d && d.ok) removedServer++;
+                } catch (e) {}
+            }
+        }
+    } catch (e) {}
+
+    try { localStorage.setItem(flag, '1'); } catch (e) {}
+    // Re-render so the list reflects the purge.
+    try { renderKeys(); } catch (e) {}
+    try { refreshStatsUI(); } catch (e) {}
+    if (removedLocal + removedServer > 0) {
+        showNotification('Cleanup done', 'Removed ' + (removedLocal + removedServer) + ' key(s) with unlimited (∞) days.', 'success', 6000);
+    }
+}
+window.shCleanupInfiniteKeys = shCleanupInfiniteKeys;
+
+// ============ LIVE EXECUTIONS CHART (canvas, luarmor-style) ============
+var shChartPaused = false;
+var shChartSeries = [];
+var shChartColors = ['#6c3bff','#00bfff','#66ff66','#ff66cc','#ffd700','#ff8844','#00ccaa','#ff4444'];
+
+function shToggleLiveChart() {
+    shChartPaused = !shChartPaused;
+    var btn = document.getElementById('liveChartPauseBtn');
+    if (btn) btn.textContent = shChartPaused ? '▶ Resume' : '⏸ Pause';
+    if (!shChartPaused) shFetchChart();
+}
+
+// Fetch the time-bucketed series from the worker (all ScripterHub executions,
+// worldwide) and redraw. Called by the 5-second poll.
+function shFetchChart() {
+    if (shChartPaused) return;
+    try {
+        fetch(SH_STATS_ENDPOINT + 'v3/exec_series', { method: 'GET' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d && Array.isArray(d.series)) {
+                    shChartSeries = d.series;
+                    shDrawChart();
+                }
+            }).catch(function () {});
+    } catch (e) {}
+}
+
+function shDrawChart() {
+    var canvas = document.getElementById('liveChartCanvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    var w = canvas.width = canvas.clientWidth || 600;
+    var h = canvas.height = 220;
+    ctx.clearRect(0, 0, w, h);
+
+    var series = shChartSeries;
+    if (!series.length) {
+        ctx.fillStyle = '#8888aa'; ctx.font = '13px sans-serif';
+        ctx.fillText('No executions yet in the last 5 minutes.', 10, h / 2);
+        return;
+    }
+    // Collect executor names across all buckets.
+    var names = {};
+    for (var i = 0; i < series.length; i++) {
+        var ex = series[i].executors || {};
+        for (var n in ex) names[n] = true;
+    }
+    var nameList = Object.keys(names);
+    // Grid + axis labels.
+    ctx.strokeStyle = 'rgba(255,255,255,.07)';
+    ctx.fillStyle = '#666';
+    ctx.font = '10px sans-serif';
+    var maxTotal = 1;
+    for (var i = 0; i < series.length; i++) if (series[i].total > maxTotal) maxTotal = series[i].total;
+    for (var g = 0; g <= 4; g++) {
+        var gy = 10 + (g / 4) * (h - 40);
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+        ctx.fillText(String(Math.round(maxTotal * (4 - g) / 4)), 2, gy - 2);
+    }
+    // Draw a line per executor (and a total line).
+    var plotH = h - 40, plotTop = 10, n = series.length;
+    function lineFor(getVal, color, width) {
+        ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.beginPath();
+        for (var i = 0; i < n; i++) {
+            var x = (i / (n - 1 || 1)) * w;
+            var y = plotTop + plotH - (getVal(series[i]) / maxTotal) * plotH;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+    // Total line (white, thicker).
+    lineFor(function (b) { return b.total || 0; }, 'rgba(255,255,255,.85)', 2);
+    // Per-executor lines.
+    for (var k = 0; k < nameList.length; k++) {
+        (function (name) {
+            lineFor(function (b) { return (b.executors && b.executors[name]) || 0; }, shChartColors[k % shChartColors.length], 1.5);
+        })(nameList[k]);
+    }
+    // Legend.
+    var legend = document.getElementById('liveChartLegend');
+    if (legend) {
+        var html = '<span style="color:#fff;">● Total</span>';
+        for (var k = 0; k < nameList.length; k++) {
+            html += '<span style="color:' + shChartColors[k % shChartColors.length] + ';">● ' + String(nameList[k]).replace(/</g, '&lt;') + '</span>';
+        }
+        legend.innerHTML = html;
+    }
+}
+window.shToggleLiveChart = shToggleLiveChart;
+window.shFetchChart = shFetchChart;

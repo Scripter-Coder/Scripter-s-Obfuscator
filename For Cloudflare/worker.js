@@ -6001,7 +6001,21 @@ async function handleRequest(request, env, ctx) {
                 } catch (e) {}
             }
             out.sort((a, b) => (b[key] || 0) - (a[key] || 0));
-            return jsonResponse({ ok: true, metric: key, users: out.slice(0, 10), total: out.length });
+            // Only accounts that have actually earned XP (level 2+) appear.
+            // Level-1 users are hidden so empty accounts do not fill the board.
+            const ranked = out.filter(function (u) { return (u.level || 1) >= 2; });
+            // Optional caller identity -> report their rank even if outside the top 10.
+            const meName = String(url.searchParams.get('me') || '').trim().toLowerCase().slice(0, 60);
+            let me = null;
+            if (meName) {
+                for (let i = 0; i < ranked.length; i++) {
+                    if (String(ranked[i].name || '').trim().toLowerCase() === meName) {
+                        me = { rank: i + 1, name: ranked[i].name, level: ranked[i].level, value: Number(ranked[i][key]) || 0 };
+                        break;
+                    }
+                }
+            }
+            return jsonResponse({ ok: true, metric: key, users: ranked.slice(0, 10), total: ranked.length, me: me });
         }
 
         // ---------- POST /sh/kv-repair : ONE-TIME. rebuilds per-email keys FROM the worker's own blob ----------
@@ -11242,6 +11256,32 @@ if (url.pathname === '/sh/reward/complete' && request.method === 'POST') {
                 updatedAt: now
             };
             return new Response(JSON.stringify(out), { headers: CORS_HEADERS });
+        }
+
+        // ---------- GET /v3/exec_series : time-bucketed execution series for the live chart ----------
+        // Luarmor-style chart: executions (worldwide, all ScripterHub scripts)
+        // grouped into 5-second buckets over the last 5 minutes. The dashboard
+        // polls this every 5 seconds and redraws the line chart.
+        if (url.pathname === '/v3/exec_series') {
+            const now = Date.now();
+            prune(now);
+            const BUCKET_MS = 5000;
+            const N = 60; // 60 buckets * 5s = 5 minutes
+            const oldest = now - N * BUCKET_MS;
+            const buckets = new Array(N);
+            for (let i = 0; i < N; i++) buckets[i] = { t: oldest + i * BUCKET_MS, total: 0, executors: {} };
+            const skipExec = (name) => !name || /^unknown$/i.test(name) || /external/i.test(name);
+            for (const e of S.events) {
+                if (!e || skipExec(e.executor)) continue;
+                const idx = Math.floor((e.t - oldest) / BUCKET_MS);
+                if (idx < 0 || idx >= N) continue;
+                buckets[idx].total++;
+                buckets[idx].executors[e.executor] = (buckets[idx].executors[e.executor] || 0) + 1;
+            }
+            return new Response(JSON.stringify({
+                ok: true, bucketMs: BUCKET_MS, windowMs: N * BUCKET_MS,
+                series: buckets, updatedAt: now
+            }), { headers: CORS_HEADERS });
         }
 
         // ---------- GET / : status page ----------
