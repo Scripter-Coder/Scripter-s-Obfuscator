@@ -2361,11 +2361,15 @@ async function issueRewardKey(env, reward, ses) {
     const now = Date.now();
     const hours = reward.keyDurationH || 1;
     const key = mintLicenseKey(192);
-    // An extendable key is minted with the cap as its ceiling and the earned
-    // duration as its starting point, so "+6h" in the visitor's table cannot
-    // walk past maxHours.
+    // An extendable key is minted with a ceiling and the earned duration as
+    // its starting point. "Max Hours" is the EXTENSION BUDGET ON TOP of the
+    // base key duration (the field is labelled "Max hours a user can have by
+    // extending"), not a total-lifetime ceiling. Treating it as a total cap
+    // made a 24h key with a 24h budget expire exactly at the cap, so the +6h
+    // hammer could never add any time ("maximum time reached"). The ceiling is
+    // therefore base duration + extension budget, measured from issue.
     const capMs = reward.allowExtending && reward.maxHours
-        ? reward.maxHours * 3600000 : 0;
+        ? ((reward.keyDurationH || 1) + reward.maxHours) * 3600000 : 0;
 
     // THE EXACTLY-ONCE PART COMES FIRST.
     //
@@ -10112,7 +10116,10 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             if (!row) return jsonResponse({ ok: false, error: 'That key is not one of yours.' }, 403);
 
             const hours = Math.min(Math.max(Number(r.extHours) || 6, 0.05), 168);
-            const capMs = r.maxHours ? r.maxHours * 3600000 : 0;
+            // "Max Hours" is the extension budget ON TOP of the base key
+            // duration (see issueRewardKey). A 24h key with a 24h budget caps
+            // at 48h from issue, so the +6h hammer has room to work.
+            const capMs = r.maxHours ? ((r.keyDurationH || 1) + r.maxHours) * 3600000 : 0;
             const now = Date.now();
             const at = Number(row.at) || now;
             const expires = Number(row.expires) || 0;
