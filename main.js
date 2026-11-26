@@ -9062,24 +9062,41 @@ function shDrawChartOn(canvas) {
         for (var n in ex) names[n] = true;
     }
     var nameList = Object.keys(names);
-    // Grid + axis labels.
+    // Grid + fixed log-scale axis labels: 100k, 10k, 1k, 100, 0 (top -> bottom).
+    // Values are mapped onto this scale so small and huge execution counts are
+    // both visible, matching the look of a Luarmor-style chart.
+    var AXIS = [100000, 10000, 1000, 100, 0];
+    var AXIS_LABEL = ['100k', '10k', '1k', '100', '0'];
     ctx.strokeStyle = 'rgba(255,255,255,.07)';
     ctx.fillStyle = '#666';
     ctx.font = '10px sans-serif';
-    var maxTotal = 1;
-    for (var i = 0; i < series.length; i++) if (series[i].total > maxTotal) maxTotal = series[i].total;
-    for (var g = 0; g <= 4; g++) {
-        var gy = 10 + (g / 4) * (h - 40);
+    for (var g = 0; g < AXIS.length; g++) {
+        var gy = 10 + (g / (AXIS.length - 1)) * (h - 40);
         ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
-        ctx.fillText(String(Math.round(maxTotal * (4 - g) / 4)), 2, gy - 2);
+        ctx.fillText(AXIS_LABEL[g], 2, gy - 2);
     }
-    // Draw a line per executor (and a total line).
-    var plotH = h - 40, plotTop = 10, n = series.length;
+    // Map a value onto the fixed log axis. 0 sits at the bottom; each decade
+    // above 100 is evenly spaced up to 100k.
+    function valToY(v) {
+        v = Number(v) || 0;
+        var plotH = h - 40, plotTop = 10;
+        if (v <= 0) return plotTop + plotH;
+        var pos;
+        if (v <= 100) {
+            pos = 4 - (v / 100); // between "100" (index 3) and "0" (index 4)
+        } else {
+            var decades = Math.log10(v / 100); // 0 at 100, 3 at 100k
+            pos = 3 - Math.max(0, Math.min(3, decades));
+        }
+        return plotTop + (pos / (AXIS.length - 1)) * plotH;
+    }
+    // Draw a line per executor (and a total line) using the fixed axis.
+    var n = series.length;
     function lineFor(getVal, color, width) {
         ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.beginPath();
         for (var i = 0; i < n; i++) {
             var x = (i / (n - 1 || 1)) * w;
-            var y = plotTop + plotH - (getVal(series[i]) / maxTotal) * plotH;
+            var y = valToY(getVal(series[i]));
             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
         ctx.stroke();
