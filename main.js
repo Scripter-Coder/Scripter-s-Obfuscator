@@ -8658,6 +8658,48 @@ function shXpUnlocked() {
 }
 
 // Award XP for an action. 'key-renew' awards half. Silent on failure.
+
+// Build an animated decoration ring around an avatar. The ring is placed in
+// a position:relative WRAPPER around the avatar so overflow:hidden on the
+// avatar never clips it. `getAvatarWrap` returns that wrapper for an element.
+function shAvatarWrap(el) {
+    if (!el) return null;
+    var p = el.parentElement;
+    // The dashboard avatar is already inside a dedicated relative wrapper.
+    if (p && getComputedStyle(p).position === 'relative') return p;
+    // Leaderboard avatars are inline spans - wrap them on the fly.
+    if (el.dataset.shWrapped) return el.parentElement;
+    var wrap = document.createElement('span');
+    wrap.className = 'sh-avatar-wrap';
+    wrap.style.cssText = 'position:relative;display:inline-flex;align-items:center;justify-content:center;';
+    if (el.parentNode) el.parentNode.replaceChild(wrap, el);
+    wrap.appendChild(el);
+    el.dataset.shWrapped = '1';
+    return wrap;
+}
+
+function shApplyDecorationRing(el, equipped, size) {
+    if (!el) return;
+    var wrap = shAvatarWrap(el);
+    if (!wrap) return;
+    // Remove any previous ring.
+    var old = wrap.querySelector('.sh-deco-ring');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    if (!equipped || equipped === 'none') return;
+    var valid = false;
+    for (var i = 0; i < SH_DECORATIONS.length; i++) {
+        if (SH_DECORATIONS[i].id === equipped) { valid = true; break; }
+    }
+    if (!valid) return;
+    var ring = document.createElement('span');
+    ring.className = 'sh-deco-ring sh-deco-' + equipped;
+    var s = (size || 40) + 12;
+    ring.style.cssText = 'width:' + s + 'px;height:' + s + 'px;left:50%;top:50%;'
+        + 'transform:translate(-50%,-50%);';
+    ring.innerHTML = '<span class="sh-deco-core"></span><span class="sh-deco-orbit"></span>';
+    wrap.appendChild(ring);
+}
+
 function shAwardXp(amount, reason) {
     if (!currentUser) return;
     var d = shLoadXp();
@@ -8718,27 +8760,9 @@ function shApplyRankStyle(el, xp, scale) {
     if (rank.glow) { el.style.animation = rank.glow + ' 2.4s ease-in-out infinite'; }
     else { el.style.animation = ''; }
     el.setAttribute('data-level', prog.level);
-    // Render the equipped decoration as a small badge overlay on the circle.
-    // It lives in its own element so a re-render of the avatar's picture/letter
-    // does not wipe it.
+    // Animated decoration ring around the circle (only if unlocked).
     var equipped = String(d.equipped || 'none');
-    var dec = null;
-    for (var i = 0; i < SH_DECORATIONS.length; i++) {
-        if (SH_DECORATIONS[i].id === equipped) { dec = SH_DECORATIONS[i]; break; }
-    }
-    var old = el.querySelector('.sh-decoration');
-    if (old && old.parentNode) old.parentNode.removeChild(old);
-    if (dec && dec.id !== 'none' && shXpUnlocked().indexOf(dec.id) !== -1) {
-        var badge = document.createElement('span');
-        badge.className = 'sh-decoration';
-        badge.textContent = dec.icon;
-        badge.title = dec.label;
-        badge.style.cssText = 'position:absolute;right:-6px;bottom:-6px;font-size:' + Math.round(base * 0.38)
-            + 'px;line-height:1;filter:drop-shadow(0 0 6px ' + rank.color + ');';
-        // Make sure the avatar can anchor an absolutely-positioned child.
-        if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
-        el.appendChild(badge);
-    }
+    shApplyDecorationRing(el, shXpUnlocked().indexOf(equipped) !== -1 ? equipped : 'none', base);
 }
 
 // Update the level badge on the dashboard avatar + XP progress card.
@@ -8859,9 +8883,12 @@ function shRenderLeaderboard() {
                         var avatar = pic
                             ? '<img src="' + pic.replace(/"/g, '&quot;') + '" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.style.display=\'none\'">'
                             : letter;
+                        var uLevel = Number(u.level) || 1;
+                        var uRank = shRankFor(uLevel);
+                        var uEquipped = String(u.equipped || 'none');
                         rows += '<div class="lb-row" style="border-color:' + medal + ';">'
                             + '<span class="lb-rank" style="color:' + medal + ';">' + rank + '</span>'
-                            + '<span class="lb-avatar" style="border-color:' + medal + ';box-shadow:0 0 12px ' + medal + ';">' + avatar + '</span>'
+                            + '<span class="sh-avatar-wrap"><span class="lb-avatar sh-lb-avatar" data-equipped="' + uEquipped.replace(/"/g,'&quot;') + '" data-size="38" style="border-color:' + uRank.color + ';box-shadow:0 0 12px ' + uRank.color + ';position:relative;">' + avatar + '</span></span>'
                             + '<span class="lb-name" style="color:' + medal + ';">' + String(u.name || '?').replace(/</g,'&lt;') + '</span>'
                             + '<span class="lb-value">' + val.toLocaleString() + '</span>'
                             + '</div>';
@@ -8897,6 +8924,13 @@ function shRenderLeaderboard() {
                         + '</div>';
                 }
                 host.innerHTML = '<div class="lb-table">' + rows + '</div>' + meHtml;
+                // Apply the animated decoration ring to each leaderboard avatar.
+                // The rank ring is already styled inline; this adds the decoration.
+                var lbAvatars = host.querySelectorAll('.sh-lb-avatar');
+                for (var a = 0; a < lbAvatars.length; a++) {
+                    var av = lbAvatars[a];
+                    shApplyDecorationRing(av, av.getAttribute('data-equipped') || 'none', Number(av.getAttribute('data-size')) || 38);
+                }
             })
             .catch(function () { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; });
     } catch (e) { host.innerHTML = '<p style="color:#ff6b6b;text-align:center;padding:24px;">Could not load the leaderboard.</p>'; }

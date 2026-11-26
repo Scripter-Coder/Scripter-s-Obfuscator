@@ -6037,6 +6037,7 @@ async function handleRequest(request, env, ctx) {
                     out.push({
                         name: String(r.name || 'Unknown').slice(0, 60),
                         profileImage: String(r.profileImage || '').slice(0, 2000),
+                        equipped: String(r.equipped || '').slice(0, 60),
                         xp: Number(r.xp) || 0,
                         level: Number(r.level) || 1,
                         money: Number(r.money) || 0,

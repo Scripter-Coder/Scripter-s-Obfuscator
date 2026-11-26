@@ -2791,3 +2791,146 @@ select option {
 @keyframes shGlowGreen { 0%,100% { box-shadow: 0 0 24px #22c55e, inset 0 0 16px #22c55e; } 50% { box-shadow: 0 0 54px #22c55e, inset 0 0 32px #22c55e; } }
 @keyframes shGlowOrange { 0%,100% { box-shadow: 0 0 28px #f97316, inset 0 0 18px #f97316; } 50% { box-shadow: 0 0 64px #f97316, inset 0 0 38px #f97316; } }
 @keyframes shGlowGold { 0%,100% { box-shadow: 0 0 34px #ffcf40, inset 0 0 22px #ffcf40; } 50% { box-shadow: 0 0 78px #ffcf40, inset 0 0 48px #fff2a0; } }
+
+/* ============ Profile circle decorations (animated rings) ============
+   A decoration is an absolutely-positioned overlay that surrounds the
+   avatar circle. It is rendered into a position:relative WRAPPER around the
+   avatar so overflow:hidden on the avatar itself never clips it. */
+.sh-deco-ring {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 1;
+    /* centered on the avatar: inset is set inline from the avatar size */
+}
+.sh-deco-ring .sh-deco-core {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+}
+.sh-deco-ring .sh-deco-orbit {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+}
+
+/* flame: pulsing orange/red ring with rising sparks */
+.sh-deco-flame .sh-deco-core {
+    border: 3px solid #ff6a00;
+    box-shadow: 0 0 14px #ff4500, inset 0 0 10px #ff4500;
+    animation: shDecoPulse 1.6s ease-in-out infinite;
+}
+.sh-deco-flame .sh-deco-orbit {
+    border-top: 3px solid #ffb300;
+    border-right: 3px solid transparent;
+    animation: shDecoSspin 3s linear infinite;
+}
+/* spark: twinkling white ring */
+.sh-deco-spark .sh-deco-core {
+    border: 2px dashed #fff;
+    box-shadow: 0 0 12px #fff, inset 0 0 8px #c4b5fd;
+    animation: shDecoTwinkle 1.4s ease-in-out infinite;
+}
+.sh-deco-spark .sh-deco-orbit {
+    border-bottom: 2px solid #a855f7;
+    animation: shDecoSspin 4s linear infinite reverse;
+}
+/* ice: cyan crystalline ring */
+.sh-deco-ice .sh-deco-core {
+    border: 3px double #7dd3fc;
+    box-shadow: 0 0 16px #22d3ee, inset 0 0 10px #22d3ee;
+    animation: shDecoPulse 2.2s ease-in-out infinite;
+}
+.sh-deco-ice .sh-deco-orbit {
+    border-left: 3px solid #e0f2fe;
+    animation: shDecoSspin 5s linear infinite;
+}
+/* crown: golden rotating ring with studs */
+.sh-deco-crown .sh-deco-core {
+    border: 4px solid #ffd700;
+    box-shadow: 0 0 18px #ffc400, inset 0 0 12px #ffc400;
+    animation: shDecoPulse 2s ease-in-out infinite;
+}
+.sh-deco-crown .sh-deco-orbit {
+    border-top: 4px dotted #fff2a0;
+    border-bottom: 4px dotted #fff2a0;
+    animation: shDecoSspin 6s linear infinite;
+}
+/* galaxy: purple/blue swirling conic ring */
+.sh-deco-galaxy .sh-deco-core {
+    border: 3px solid transparent;
+    background: conic-gradient(from 0deg, #a855f7, #22d3ee, #a855f7) border-box;
+    -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: shDecoSspin 4s linear infinite;
+}
+.sh-deco-galaxy .sh-deco-orbit {
+    border-right: 2px solid #c084fc;
+    animation: shDecoSspin 3s linear infinite reverse;
+}
+/* sun: rotating golden rays */
+.sh-deco-sun .sh-deco-core {
+    border: 2px solid #ffd700;
+    box-shadow: 0 0 24px #ffb300, inset 0 0 14px #ffd700;
+    animation: shDecoPulse 1.8s ease-in-out infinite;
+}
+.sh-deco-sun .sh-deco-orbit {
+    border: 3px dashed #ffcf40;
+    animation: shDecoSspin 8s linear infinite;
+}
+/* shadow: dark pulsing ring */
+.sh-deco-shadow .sh-deco-core {
+    border: 4px solid #1a1a1a;
+    box-shadow: 0 0 18px #000, inset 0 0 16px #000;
+    animation: shDecoPulse 2.6s ease-in-out infinite;
+}
+.sh-deco-shadow .sh-deco-orbit {
+    border-top: 3px solid #555;
+    animation: shDecoSspin 7s linear infinite reverse;
+}
+/* leaf: green vine ring */
+.sh-deco-leaf .sh-deco-core {
+    border: 3px solid #22c55e;
+    box-shadow: 0 0 14px #16a34a, inset 0 0 10px #16a34a;
+    animation: shDecoPulse 2.4s ease-in-out infinite;
+}
+.sh-deco-leaf .sh-deco-orbit {
+    border-left: 3px dashed #86efac;
+    border-right: 3px dashed #86efac;
+    animation: shDecoSspin 9s linear infinite;
+}
+/* fire: intense inferno ring */
+.sh-deco-fire .sh-deco-core {
+    border: 4px solid #ff2d00;
+    box-shadow: 0 0 26px #ff3d00, inset 0 0 18px #ff6a00;
+    animation: shDecoPulse 1.2s ease-in-out infinite;
+}
+.sh-deco-fire .sh-deco-orbit {
+    border-top: 4px solid #ffcc00;
+    border-bottom: 4px solid #ff4500;
+    animation: shDecoSspin 2.2s linear infinite;
+}
+/* diamond: sparkling cyan faceted ring */
+.sh-deco-diamond .sh-deco-core {
+    border: 3px solid #67e8f9;
+    box-shadow: 0 0 20px #22d3ee, inset 0 0 14px #a5f3fc;
+    animation: shDecoTwinkle 1.6s ease-in-out infinite;
+}
+.sh-deco-diamond .sh-deco-orbit {
+    border: 2px dashed #e0f2fe;
+    animation: shDecoSspin 5s linear infinite reverse;
+}
+
+@keyframes shDecoPulse {
+    0%, 100% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.07); filter: brightness(1.4); }
+}
+@keyframes shDecoSspin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@keyframes shDecoTwinkle {
+    0%, 100% { opacity: .7; box-shadow: 0 0 8px currentColor; }
+    50% { opacity: 1; box-shadow: 0 0 20px currentColor, 0 0 34px currentColor; }
+}
