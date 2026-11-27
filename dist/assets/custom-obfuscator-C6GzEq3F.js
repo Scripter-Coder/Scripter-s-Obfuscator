@@ -1293,21 +1293,28 @@ function buildLoader(src, layerCount, options) {
             // BEFORE executing the loadstring (same UX as Luarmor)
             out.push(' local ' + LK + '=(getgenv and getgenv()) or _G');
             out.push(' ' + LK + '=' + LK + '.ScripterHubKey');
-            // ---- multi-signal HWID: never trust a single value ----
+            // ---- STABLE HWID, IDENTICAL TO THE BOOTSTRAP AND THE KEY CARD ----
+            //
+            // This used to fold gethwid + clientId + PLACE ID + JOB ID +
+            // executor name + UserId into a djb2 digest. game.JobId changes on
+            // every server join, so the digest changed on every execution: the
+            // first run locked the key to digest A, the next presented digest B
+            // and got SHERR hwid. Worse, the bootstrap (/sh/session) and the key
+            // card (/sh/keycheck) send the RAW stable id, so the two paths could
+            // never agree on what a key was locked to - reported by users as
+            // "a valid key that works in one place and not the other".
+            //
+            // Use the same source and the same wire value everywhere: the
+            // executor environment id, then the Roblox client id, then gethwid.
             out.push(' local ' + HW + '=""');
-            // executor hwid (if present)
-            out.push(' pcall(function() if gethwid then ' + HW + '=tostring(gethwid()) end end)');
-            // Roblox analytics client id (stable per install)
-            out.push(' pcall(function() local s=game:GetService("RbxAnalyticsService") ' + HW + '=' + HW + '.."|"..tostring(s:GetClientId()) end)');
-            // place + job id context
-            out.push(' pcall(function() ' + HW + '=' + HW + '.."|"..tostring(game.PlaceId)..":"..tostring(game.JobId) end)');
-            // executor name (identifyexecutor) + local player id
-            out.push(' pcall(function() if identifyexecutor then ' + HW + '=' + HW + '.."|"..tostring(identifyexecutor()) end end)');
-            out.push(' pcall(function() local p=game:GetService("Players").LocalPlayer ' + HW + '=' + HW + '.."|"..tostring(p.UserId) end)');
-            // fold the raw signals into a short stable digest (djb2-style)
-            out.push(' local ' + HD + '=5381');
-            out.push(' for ' + TX + '=1,#' + HW + ' do ' + HD + '=(' + HD + '*33+string.byte(' + HW + ',' + TX + '))%4294967296 end');
-            out.push(' ' + HW + '=tostring(' + HD + ')');
+            out.push(' pcall(function() local g=(getgenv and getgenv()) or _G if type(g.ScripterHubHwid)=="string" and g.ScripterHubHwid~="" then ' + HW + '=g.ScripterHubHwid end end)');
+            out.push(' if ' + HW + '=="" then pcall(function() local s=game:GetService("RbxAnalyticsService") ' + HW + '=tostring(s:GetClientId()) end) end');
+            out.push(' if ' + HW + '=="" then pcall(function() if gethwid then ' + HW + '=tostring(gethwid()) end end) end');
+            out.push(' if ' + HW + '=="" then ' + HW + '="?" end');
+            // identifyexecutor() is a NAME, not an id - but older locks used it,
+            // so send it as the second id exactly like /sh/session does.
+            out.push(' local ' + HD + '=""');
+            out.push(' pcall(function() if identifyexecutor then ' + HD + '=tostring(identifyexecutor()) end end)');
             // if no key is set: print + notify + abort (NO fallback path)
             out.push(' if type(' + LK + ')~="string" or #' + LK + '==0 then');
             out.push('  pcall(function() game:GetService("StarterGui"):SetCore("SendNotification",{Title="ScripterHub",Text="License key required! Set getgenv().ScripterHubKey and re-execute.",Duration=7}) end)');
@@ -1323,7 +1330,7 @@ function buildLoader(src, layerCount, options) {
             // same base with /sh/auth. Built by string-replace at
             // generation time (baked into the file, never dynamic).
             var authUrl = options.splitKey.url.replace(/\/sh\/k$/, '/sh/auth') + '/' + options.splitKey.id;
-            out.push('  local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&t=' + t0 + '")');
+            out.push('  local ok1,' + AU + '=pcall(' + GO + ',game,' + JSON.stringify(authUrl + '?k=') + ' .. ' + LK + ' .. "&h=" .. ' + HW + ' .. "&h2=" .. ' + HD + ' .. "&t=' + t0 + '")');
             out.push('  if not ok1 or type(' + AU + ')~="string" then pcall(function() warn("[ScripterHub] Auth server not reachable") print("[ScripterHub] Auth failed - server not reachable") end) return end');
             // verdict to genv for the payload's API globals
             out.push('  local ' + SGV2 + '="invalid"');

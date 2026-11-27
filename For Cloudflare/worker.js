@@ -3076,6 +3076,16 @@ const CORS_HEADERS = {
 // sliding window of execution events (kept 10 minutes in memory)
 const WINDOW_MS = 10 * 60 * 1000;
 
+// "Threats Blocked" is a bypass counter, NOT a count of things that went
+// wrong. Counting every wrong/expired key and every browser that opens a
+// loadstring link made it jump for no security-relevant reason - owners read
+// that number as "someone attacked me" and it was really "somebody mistyped a
+// key". Only these reasons represent an attempt to bypass the gate.
+const THREAT_REASONS = new Set(['nonce', 'stale', 't0', 'grant', 'forge', 'tamper', 'replay']);
+function countThreat(reason) {
+    if (THREAT_REASONS.has(String(reason || ''))) S.threatsBlocked++;
+}
+
 // persistent-ish state on globalThis (survives between requests in the same isolate)
 const S = globalThis.__shStats || (globalThis.__shStats = {
     events: [],        // { t, executor, scriptId }
@@ -3228,6 +3238,10 @@ const USERS_KV_KEY = 'sh_users_db';    // LEGACY single-entry table. Read-only n
                                         // un-migrated deployment still finds its accounts.
 const USER_PREFIX = 'sh_user_';        // sh_user_<lowercased email> -> one user record
 const UNAME_PREFIX = 'sh_uname_';      // sh_uname_<lowercased username> -> the email that owns it
+// XP / leaderboard records are keyed by the SAME d1UserId() as user records.
+// They must be deleted WITH the account: the leaderboard reads these keys, not
+// the user table, so a stale one keeps a deleted account on the board forever.
+const XP_KV_PREFIX = 'sh_xp_';
 const USERS_LIST_MAX = 1000;           // KV list() caps a page at 1000 keys.
 
 // The key a user record lives under. Emails are case-insensitive in practice
@@ -3648,6 +3662,10 @@ async function deleteUserRecord(env, email, record) {
     const id = d1UserId(email);
     if (!id) return;
     try { await env.LOADERS_KV.delete(userKvKey(id)); } catch (e) { /* already gone */ }
+    // The leaderboard is a projection of sh_xp_<id>, NOT of the user table.
+    // Leaving this behind is why a deleted account kept appearing in the top 10
+    // after it was gone from the Users panel.
+    try { await env.LOADERS_KV.delete(XP_KV_PREFIX + id); } catch (e) { /* already gone */ }
     // The username comes from the record the caller already read. A delete with
     // no record in hand (the owner's route) leaves the index entry alone
     // rather than scanning the table for it - the cost of a scan is the whole
@@ -4832,6 +4850,9 @@ async function scriptAuthz(env, id) {
         projectId: String((meta && meta.projectId) || ''),
         projectName: String((meta && meta.projectName) || ''),
         visibility: String((meta && meta.visibility) || 'anyone'),
+        // Status prints before the artifact runs (Silent Mode turns them off).
+        silentMode: !!(meta && meta.silentMode === true),
+        etaSeconds: Math.max(1, Number((meta && meta.etaSeconds) || 2)),
         raw: meta || {}
     };
 }
@@ -5984,8 +6005,6 @@ async function handleRequest(request, env, ctx) {
         // XP is earned in the dashboard (projects, keys, scripts, executions,
         // obfuscations, threats, visitors). Each account's XP profile is stored
         // under one KV key so the leaderboard can rank every user worldwide.
-        const XP_KV_PREFIX = 'sh_xp_';
-
         // POST /sh/xp : the signed-in account writes its own XP profile.
         if (url.pathname === '/sh/xp' && request.method === 'POST') {
             let body = {};
@@ -6038,8 +6057,44 @@ async function handleRequest(request, env, ctx) {
                 for (const k of (page.keys || [])) outKeys.push(k);
                 cursor = page.list_complete ? null : page.cursor;
             } while (cursor);
+            // A leaderboard is a PROJECTION of the user table, not a separate
+            // source of truth. Accounts deleted before deleteUserRecord() began
+            // removing their XP record still leave one behind, so read the set
+            // of live account ids with ONE paged list (not one get per user) and
+            // drop any orphan. Without this, "fedfege" stays in the top 10 after
+            // the account is gone from the Users panel.
+            let liveIds = null;
+            try {
+                liveIds = new Set();
+                let ucursor = null;
+                do {
+                    const page = await env.LOADERS_KV.list({ prefix: USER_PREFIX, limit: 1000, cursor: ucursor || undefined });
+                    for (const k of (page.keys || [])) liveIds.add(k.name.slice(USER_PREFIX.length));
+                    ucursor = page.list_complete ? null : page.cursor;
+                } while (ucursor);
+            } catch (e) { liveIds = null; } // never hide ranks because the check failed
+            // A few XP records were written with a username-derived id rather
+            // than an email-derived one. D1 is the second source of truth for
+            // those; accepting an id from EITHER store avoids hiding a real user.
+            let d1Ids = null;
+            try {
+                const state = stateFor(env);
+                if (state) {
+                    d1Ids = new Set();
+                    const rows = await qAll(env.SH_DB, 'SELECT id FROM users');
+                    const list = Array.isArray(rows) ? rows : ((rows && rows.results) || []);
+                    for (const r of list) d1Ids.add(String(r.id || ''));
+                }
+            } catch (e) { d1Ids = null; }
             const out = [];
             for (const k of outKeys) {
+                const uid = k.name.slice(XP_KV_PREFIX.length);
+                if (liveIds && d1Ids && !liveIds.has(uid) && !d1Ids.has(uid)) {
+                    // Orphaned XP record: the account no longer exists. Purge it
+                    // so the board stays correct on all future reads too.
+                    await env.LOADERS_KV.delete(k.name).catch(function () {});
+                    continue;
+                }
                 try {
                     const raw = await env.LOADERS_KV.get(k.name);
                     if (!raw) continue;
@@ -6581,7 +6636,9 @@ async function handleRequest(request, env, ctx) {
                     visibility: readVisibility(body),
                     webKey: !!cipher,
                     projectId: String(body.projectId || '').slice(0, 60),
-                    projectName: String(body.projectName || '').slice(0, 120)
+                    projectName: String(body.projectName || '').slice(0, 120),
+                    silentMode: body.silentMode === true,
+                    etaSeconds: Math.max(1, Math.min(3600, Number(body.etaSeconds) || 2))
                 }), { expirationTtl: LOADER_TTL });
                 mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: false });
                 if (cipher) {
@@ -6684,7 +6741,13 @@ try {
                 // silently does nothing on exactly the scripts it was meant
                 // to protect - the key-system ones.
                 projectId: String(body.projectId || '').slice(0, 60),
-                projectName: String(body.projectName || '').slice(0, 120)
+                projectName: String(body.projectName || '').slice(0, 120),
+                // Silent Mode is enforced by the generated in-game bootstrap,
+                // which is the only place that can print BEFORE the artifact is
+                // compiled and run. Old scripts have no field -> status prints
+                // stay ON, which is the documented default.
+                silentMode: body.silentMode === true,
+                etaSeconds: Math.max(1, Math.min(3600, Number(body.etaSeconds) || 2))
             }), { expirationTtl: LOADER_TTL });
             mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: body.authRequired === true });
             // optional: kill an OLD loader (key rotation / re-upload on edit)
@@ -7623,6 +7686,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 let username = null;
                 try { username = (JSON.parse(await env.LOADERS_KV.get(name)) || {}).username; } catch (e) { /* unreadable */ }
                 try { await env.LOADERS_KV.delete(name); } catch (e) { /* already gone */ }
+                // Same projection as the single delete: without this, a bulk
+                // clear removes the account but leaves it ranked on the board.
+                try { await env.LOADERS_KV.delete(XP_KV_PREFIX + d1UserId(email)); } catch (e) { /* already gone */ }
                 await releaseUsernameIndex(env, email, username);
                 await removeUserFromLegacyBlob(env, email);
                 removed++;
@@ -8404,6 +8470,10 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const t0 = parseInt(String(url.searchParams.get('t') || ''), 10);
             const key = String(url.searchParams.get('k') || '').slice(0, 200);
             const hwid = String(url.searchParams.get('h') || '').slice(0, 300);
+            // The executor name is a SECOND id. Older locks were made with it,
+            // and /sh/session already honours it - /sh/auth has to as well or
+            // the same key is valid on one route and "hwid" on the other.
+            const hwid2 = String(url.searchParams.get('h2') || '').slice(0, 300);
             const result = { key, hwid, scriptId: id, executor: executorFrom(request, ua), reason: '' };
             let body = 'SHERR gone';
             if (!Number.isFinite(t0) || !key || !hwid) {
@@ -8421,7 +8491,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     // different one is refused here as well as at the gate.
                     // Both paths classify, and a binding enforced in only one of
                     // them is a binding with a hole in it.
-                    const verdict = classifyLicense(lic[key], hwid, Date.now(), meta.projectId);
+                    const verdict = classifyLicense(lic[key], hwid, Date.now(), meta.projectId, hwid2);
                     if (verdict.code === 'ok') {
                         // first run locks the key to this hardware
                         if (!lic[key].hwid) { lic[key].hwid = hwid; }
@@ -8441,7 +8511,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                     result.reason = 'no auth required for this script';
                 }
             }
-            if (!result.ok) S.threatsBlocked++;
+            if (!result.ok) countThreat(result.reason);
             ctx.waitUntil(notifyAuthDiscord(env, result));
             return new Response(body, {
                 status: 200,
@@ -8664,7 +8734,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const userEmail = String(body.u || url.searchParams.get('u') || '').slice(0, 100);
 
                 const deny = async (reason, extra) => {
-                    S.threatsBlocked++;
+                    countThreat(reason);
                     if (state) {
                         try {
                             await state.audit({
@@ -8952,7 +9022,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
                 const transport = request.method === 'POST' && request.headers.get('Authorization') ? 'header' : 'url';
 
                 const refuse = async (reason, status) => {
-                    S.threatsBlocked++;
+                    countThreat(reason);
                     if (state) {
                         try {
                             await state.audit({
@@ -9612,7 +9682,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             const isExecutor = EXECUTOR_UA.test(ua);
 
             const script = await scriptAuthz(env, id);
-            if (!script) { S.threatsBlocked++; return methodNotAllowed(); }
+            if (!script) return methodNotAllowed(); // a missing script is not an attack
 
             // Server-side visibility. This used to exist only as a
             // localStorage flag in the browser, so "private" hid a script in
@@ -9627,7 +9697,9 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             }
 
             if (!isExecutor) {
-                S.threatsBlocked++;
+                // A browser opening a loadstring link is the EXPECTED way a
+                // visitor lands on the metadata page. It is not a blocked
+                // bypass attempt and must not inflate the threat counter.
                 const pageBase = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
                 return scriptPageResponse(id, script, pageBase);
             }
@@ -9641,7 +9713,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // The init layer (L2). No ciphertext, no key, no script-derived
             // material - just _bsdata0, the cdn link and the handshake.
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-            return new Response(luaSessionBootstrap(id, base, script.keyless, !!script.hasVault), {
+            return new Response(luaSessionBootstrap(id, base, script.keyless, !!script.hasVault, !!script.silentMode, script.etaSeconds), {
                 status: 200,
                 headers: {
                     'Content-Type': 'text/plain; charset=utf-8',
@@ -11531,8 +11603,20 @@ function scriptPageResponse(id, script, base) {
 // deliberately the weaker of the two (15s, URL-borne), matching D5. Both are
 // recorded server-side, so the share of traffic on the weak path stays visible
 // instead of being silently averaged in.
-function luaSessionBootstrap(id, base, keyless, hasVault) {
+function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds) {
     const KEYED = keyless ? 'false' : 'true';
+    // Status output belongs here, not inside the artifact: this layer runs
+    // BEFORE the artifact is fetched, compiled and executed, so it is the only
+    // place that can announce the phases in the right order. Silent Mode
+    // suppresses it completely. Build the human-readable estimate once here.
+    const statusOn = silentMode !== true;
+    const sec = Math.max(1, Math.round(Number(etaSeconds) || 2));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    const etaBits = [];
+    if (h) etaBits.push(h + (h === 1 ? ' hour' : ' hours'));
+    if (m) etaBits.push(m + (m === 1 ? ' minute' : ' minutes'));
+    if (s || !etaBits.length) etaBits.push(s + (s === 1 ? ' second' : ' seconds'));
+    const etaText = etaBits.join(' ');
     // The cdn link. It is a route on THIS worker, not on a third-party CDN:
     // the artifact must stay behind the same atomic gate (D12), so "cdn" here
     // means "the file-shaped address of the delivery route", not "a public
@@ -11548,6 +11632,16 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
     return '-- Do not save this file\n'
         + '-- Always use the loadstring\n'
         + '-- ScripterHub session loader (init layer) | ' + id + ' | no script material in this file\n'
+        // Silent Mode is OFF by default: these prints are the visible progress
+        // the owner asked for. Every one is pcall'd so a restricted executor
+        // cannot turn a cosmetic print into a failed load.
+        + (statusOn
+            ? ('local function SHSTATUS(t) pcall(function() print("[ScripterHub] "..t) end) end\n'
+                + 'SHSTATUS("Script Sucessfully Executed ✅")\n'
+                + 'SHSTATUS("Checking Security Checks 🔄️")\n'
+                + 'SHSTATUS("Loading Script... (Will take approximately ' + etaText + ') ✅⌛")\n'
+                + 'SHSTATUS("Note: if script wont load or has error the print will appear 💡")\n')
+            : '')
         // Nothing above the code tells a FREE user to set anything. D1 required
         // an account for the keyless tier; making users paste their email into an
         // executor costs privacy and friction, and the gate ALSO demanded a signed
@@ -11965,6 +12059,9 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         + ' local why=tostring(ferr or "loadstring returned no function and no error")\n'
         + ' local size=(type(src)=="string") and #src or -1\n'
         + ' DIE("Load failed: the delivered source is "..size.." bytes and did not compile. "..why)\n'
+        + (statusOn
+            ? ' pcall(function() print("[ScripterHub] Detected error in script... Reason: "..string.format("%q", why)) print("Note: if you believe that something wrong with script join discord server and create a ticket and then report that issue to devs/scripter and we will check yours/scripts issue") end)\n'
+            : '')
         + ' return\n'
         + 'end\n'
         // Surface payload errors instead of swallowing them.
@@ -11991,7 +12088,16 @@ function luaSessionBootstrap(id, base, keyless, hasVault) {
         // every script except the id, and it is the same exposure Luarmor has
         // and accepts.
         + 'local ran,perr=pcall(fn,ID)\n'
-        + 'if not ran then DIE("The script itself failed: "..tostring(perr)) end\n'
+        + 'if not ran then\n'
+        + ' DIE("The script itself failed: "..tostring(perr))\n'
+        // The exact error format requested by the owner. string.format("%q")
+        // quotes and escapes the reason so a Lua error containing a quote or a
+        // newline cannot break the print or forge another status line.
+        + (statusOn
+            ? ' pcall(function() print("[ScripterHub] Detected error in script... Reason: "..string.format("%q", tostring(perr))) print("Note: if you believe that something wrong with script join discord server and create a ticket and then report that issue to devs/scripter and we will check yours/scripts issue") end)\n'
+            : '')
+        + 'end\n'
+        + (statusOn ? 'SHSTATUS("Script Loaded Enjoy ✅✅")\n' : '')
         + 'return true\n';
 }
 

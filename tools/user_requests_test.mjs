@@ -127,6 +127,103 @@ check('axis labels run 0, 10, 100, 1k, 10k, 100k, 1m', () => {
     });
 }
 
+// -----------------------------------------------------------------------------
+console.log('[7] full key-system pass...');
+// -----------------------------------------------------------------------------
+check('the in-file /sh/auth HWID is stable (no place/job id)', () => {
+    assert.ok(!/HW\s*=\s*HW\s*\.\.\|"\.\.tostring\(game\.PlaceId\)/.test(obfSrc),
+        'the loader still folds game.JobId into the hardware id');
+    assert.match(obfSrc, /g\.ScripterHubHwid/);
+});
+check('/sh/auth honours the second hardware id', () => {
+    assert.match(workerSrc, /classifyLicense\(lic\[key\], hwid, Date\.now\(\), meta\.projectId, hwid2\)/);
+});
+check('free+key scripts publish their project too', () => {
+    assert.match(mainSrc, /keyless: true,[\s\S]{0,400}silentMode: !!silentMode/);
+    assert.match(mainSrc, /payload\.projectId = String\(freeProject\.id/);
+});
+check('ordinary key failures no longer inflate Threats Blocked', () => {
+    assert.match(workerSrc, /function countThreat\(reason\)/);
+    assert.match(workerSrc, /const deny = async \(reason, extra\) => \{\s*countThreat\(reason\)/);
+    assert.ok(!/if \(!isExecutor\) \{\s*S\.threatsBlocked\+\+/.test(workerSrc),
+        'a browser opening a loadstring link is still counted as a threat');
+});
+check('a cumulative execution total has an independent high-water mark', () => {
+    assert.match(mainSrc, /function shExecMaxKey\(\)/);
+    assert.match(mainSrc, /Math\.max\(s\[s\.length - 1\]\.total, shExecHighWater\(\)\)/);
+});
+
+// -----------------------------------------------------------------------------
+console.log('[8] Silent Mode progress + error output...');
+// -----------------------------------------------------------------------------
+check('Silent Mode is published with the script', () => {
+    assert.match(mainSrc, /silentMode: !!silentMode, etaSeconds: etaSeconds/);
+    assert.match(workerSrc, /silentMode: body\.silentMode === true/);
+});
+check('non-silent scripts get the five status prints', () => {
+    for (const line of [
+        'Script Sucessfully Executed', 'Checking Security Checks',
+        'Loading Script... (Will take approximately', 'Note: if script wont load or has error',
+        'Script Loaded Enjoy'
+    ]) assert.ok(workerSrc.includes(line), 'missing status line: ' + line);
+});
+check('runtime failures print the requested reason + support note', () => {
+    assert.match(workerSrc, /Detected error in script\.\.\. Reason: /);
+    assert.match(workerSrc, /if you believe that something wrong with script join discord server/);
+});
+check('Silent Mode suppresses ALL of it', () => {
+    assert.match(workerSrc, /const statusOn = silentMode !== true/);
+    assert.match(workerSrc, /\(statusOn \? 'SHSTATUS\("Script Loaded Enjoy/);
+});
+
+// -----------------------------------------------------------------------------
+console.log('[9] deleted users leave the leaderboard (functional)...');
+// -----------------------------------------------------------------------------
+{
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec(fs.readFileSync(p('migrations/0001_init.sql'), 'utf8'));
+    const store = new Map();
+    const kv = {
+        async get(k) { return store.has(k) ? store.get(k) : null; },
+        async put(k, v) { store.set(k, String(v)); },
+        async delete(k) { store.delete(k); },
+        async list(o) {
+            const keys = [...store.keys()].filter(k => k.startsWith(o.prefix || ''))
+                .map(name => ({ name }));
+            return { keys, list_complete: true, cursor: undefined };
+        }
+    };
+    const env = {
+        LOADERS_KV: kv, SH_DB: db, SH_SETUP_TOKEN: 'T', SH_SESSION_SECRET: 'S',
+        SH_BASE_URL: 'https://test.workers.dev'
+    };
+    const mod = await import(pathToFileURL(p('For Cloudflare/worker.js')).href);
+    const call = async (url) => {
+        const r = await mod.default.fetch(new Request('https://test.workers.dev' + url), env, { waitUntil() {} });
+        return r.json();
+    };
+    const uid = 'u-fedfege';
+    store.set('sh_user_' + uid, JSON.stringify({ username: 'fedfege' }));
+    store.set('sh_xp_' + uid, JSON.stringify({ name: 'fedfege', xp: 9000, level: 42 }));
+    store.set('sh_xp_u-alive', JSON.stringify({ name: 'alive', xp: 100, level: 5 }));
+    store.set('sh_user_u-alive', JSON.stringify({ username: 'alive' }));
+    let board = await call('/sh/leaderboard?metric=level');
+    check('a live account is ranked by level', () => {
+        assert.ok(board.users.some(u => u.name === 'fedfege'), JSON.stringify(board).slice(0, 200));
+    });
+    // Simulate the old stale state: the account is gone, its XP record isn't.
+    store.delete('sh_user_' + uid);
+    board = await call('/sh/leaderboard?metric=level');
+    check('a deleted account is NOT ranked', () => {
+        assert.ok(!board.users.some(u => u.name === 'fedfege'), JSON.stringify(board).slice(0, 200));
+        assert.ok(board.users.some(u => u.name === 'alive'), 'live rival must survive');
+    });
+    check('the orphan XP record is purged on that read', () => {
+        assert.strictEqual(store.has('sh_xp_' + uid), false);
+    });
+}
+
 console.log('========================================================================');
 console.log(`USER REQUESTS   ${pass} passed, ${fail} failed`);
 console.log('========================================================================');

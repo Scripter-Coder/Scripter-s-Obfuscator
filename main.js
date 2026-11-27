@@ -554,10 +554,13 @@ async function shEnsureUserToken(force) {
 // consumed in several places that expect a plain string.
 var shVaultB64 = '';
 
-async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth) {
+async function shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth, silentMode, etaSeconds) {
     if (shRateGuard('upload', SH_RATE.upload.max, SH_RATE.upload.window, 'Too Many Uploads')) return;
     try {
         const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
+        // The in-game status prints show an honest loading estimate. Measured
+        // build/load time is ~1.5 s fixed plus ~1 s per 100 KB of artifact.
+        const etaSeconds = Math.max(1, Math.round(1.5 + obfCode.length / 100000));
         const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
         const wantId = (obfResult && typeof obfResult === 'object' && obfResult.wantId) ? obfResult.wantId : '';
         // auth: prefer the USER session token (no owner code prompt for
@@ -605,7 +608,17 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // byte-identical to an "Anyone" one's and the server had no policy
             // to enforce. Anything unrecognised falls back to 'anyone'
             // server-side, so a malformed value can never over-restrict.
-            payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
+            payload = { token: token, userToken: userToken, name: name, user: user, keyless: true, plainCode: obfCode, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility(), silentMode: !!silentMode, etaSeconds: etaSeconds };
+            // A script can be BOTH "free for everyone" and "require key".
+            // The gate must still know its project, or a key bound to that
+            // project is refused with `SHERR project` because the worker sees
+            // no project on the script at all. The keyed branch below already
+            // sends these; the keyless branch used to drop them.
+            var freeProject = (typeof window !== 'undefined' && window.__shUploadProject) || null;
+            if (freeProject) {
+                payload.projectId = String(freeProject.id || '');
+                payload.projectName = String(freeProject.name || '');
+            }
             // THE GATE IS SENT EVEN IN THE FREE BRANCH.
             //
             // The free branch is taken when "Free For Everyone" is ticked. It
@@ -619,7 +632,7 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             // owner asked for.
             if (requireAuth) payload.authRequired = true;
         } else {
-            payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility() };
+            payload = { token: token, userToken: userToken, name: name, user: user, cipher: cipher, keyHash: keyHash, replaces: replaces || '', normalCode: normalCode || '', visibility: shServerVisibility(), silentMode: !!silentMode, etaSeconds: etaSeconds };
             // plainCode GOES TO THE SERVER FOR A KEYED SCRIPT TOO.
             //
             // It used to be sent only for a keyless one, so the worker had nothing
@@ -745,9 +758,9 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
             sessionStorage.removeItem('sh_raw_token');
             shClearUserToken(); // both stores, not just this tab's
             const ok2 = await shLoginRaw();
-            if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth);
+            if (ok2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth, silentMode, etaSeconds);
             const userToken2 = await shEnsureUserToken();
-            if (userToken2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth);
+            if (userToken2) return await shUploadLoader(name, user, obfResult, normalCode, specialKey, replaces, keyless, requireAuth, silentMode, etaSeconds);
         }
         return d;
     } catch (e) {
@@ -6581,7 +6594,7 @@ function confirmCreateScript(projectId) {
         // also push to the hidden loader host (loadstring system) — silent, non-blocking
         // The owning project travels with the upload so a license can be bound to it.
         window.__shUploadProject = { id: projectId, name: projects[projectIndex].name };
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless, requireKey).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, '', isKeyless, requireKey, silentMode).then(function(d) {
             if (d.ok) {
                 try {
                     var projects = loadProjects();
@@ -7244,7 +7257,7 @@ var _genProjectName = '';
         }
     } catch (e) { _genProjectName = ''; }
     window.__shUploadProject = { id: projectId, name: _genProjectName };
-    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless, !!script.requireKey).then(function(d) {
+    shUploadLoader(script.name, currentUser ? currentUser.username : 'unknown', uploadArg, script.originalCode || '', script.specialKey, '', isKeyless, !!script.requireKey, !!script.silentMode).then(function(d) {
         if (!d.ok) {
             showNotification('Loadstring Failed', d.error || 'Upload failed. Is the worker + KV deployed?', 'error', 7000);
             return;
@@ -7744,7 +7757,7 @@ function confirmEditScript(projectId, scriptId) {
             }
         } catch (e) { editProjectName = ''; }
         window.__shUploadProject = { id: projectId, name: editProjectName };
-        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless, requireKey).then(function(d) {
+        shUploadLoader(name, currentUser ? currentUser.username : 'unknown', result, code, specialKey, oldLoaderId, isKeyless, requireKey, silentMode).then(function(d) {
             if (d.ok) {
                 var projects2 = loadProjects();
                 outer2: for (var pi2 = 0; pi2 < projects2.length; pi2++) {
@@ -9255,6 +9268,13 @@ window.shFetchChart = shFetchChart;
 // answered by taking the newest sample before the range start and subtracting
 // it from the latest total - so the number never flickers or double-counts.
 function shExecSeriesKey() { return 'sh_execseries_' + (currentUser ? currentUser.id : ''); }
+// A separate high-water mark survives even if the sample timeline is trimmed
+// or a fresh timeline is written. Cumulative counts never go backwards, so a
+// transient 0 from a just-restarted worker can never show up as a reset.
+function shExecMaxKey() { return 'sh_execmax_' + (currentUser ? currentUser.id : ''); }
+function shExecHighWater() {
+    try { return parseInt(localStorage.getItem(shExecMaxKey()) || '0', 10) || 0; } catch (e) { return 0; }
+}
 function shLoadExecSeries() {
     try {
         var s = JSON.parse(localStorage.getItem(shExecSeriesKey()) || '[]');
@@ -9268,8 +9288,12 @@ function shRecordExecSample(total) {
     // The worker counts are cumulative, so they must NEVER go down. On a fresh
     // isolate /v3/realtime_stats can briefly report 0 before its KV counters
     // load; writing that 0 here is what made "Total Executions" reset to zero
-    // on every reload. Keep the highest value ever seen for this account.
+    // on every reload. Keep the highest value ever seen for this account in
+    // BOTH the timeline and the independent high-water mark.
+    var high = shExecHighWater();
     if (last && total < last.total) total = last.total;
+    if (total < high) total = high;
+    if (total > high) { try { localStorage.setItem(shExecMaxKey(), String(total)); } catch (e) {} }
     // Only append when the total actually changes (or on first sample).
     if (!last || last.total !== total || Date.now() - last.t > 60000) {
         s.push({ t: Date.now(), total: total });
@@ -9280,7 +9304,7 @@ function shRecordExecSample(total) {
 function shExecCountForRange(range) {
     var s = shLoadExecSeries();
     if (!s.length) return 0;
-    var latest = s[s.length - 1].total;
+    var latest = Math.max(s[s.length - 1].total, shExecHighWater());
     if (range === 'all') return latest;
     var since = rangeStartMs(range);
     var baseline = 0;
