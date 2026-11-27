@@ -380,6 +380,16 @@ local function formatTimeLeft(expiryTimestamp, hasKey)
     if not hasKey then
         return "NOKEY", "-", "-", "-", "-"
     end
+    -- EXPLICIT EXPIRED STATE.
+    --
+    -- The expired branches used to pass 0 with hasKey=true. 0 is the SENTINEL
+    -- FOR A LIFETIME KEY, so the panel showed "LIFETIME ACCESS (Never Expires)"
+    -- in green immediately after the "Key Expired" error. An expired key must
+    -- never be displayed as a lifetime one - that is exactly the report:
+    -- "it says expired but updates my stats to Lifetime Access".
+    if expiryTimestamp == "EXPIRED" then
+        return "EXPIRED", "0", "0", "0", "0"
+    end
     if not expiryTimestamp or expiryTimestamp == 0 or expiryTimestamp == "0"
         or expiryTimestamp == "LIFETIME" then
         return "LIFETIME", "\226\136\158", "\226\136\158", "\226\136\158", "\226\136\158"
@@ -1033,7 +1043,7 @@ elseif keyVerified then
     if keyExpiry and keyExpiry > 0 then
         if os.time() > keyExpiry then
             status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-            updateCountdownDisplay(countdownElements, 0, true)
+            updateCountdownDisplay(countdownElements, "EXPIRED", true)
             keyVerified = false
         else
             updateCountdownDisplay(countdownElements, keyExpiry, true)
@@ -1067,7 +1077,7 @@ local function startCountdown(expiry)
             if os.time() > keyExpiry then
                 keyVerified = false
                 status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-                updateCountdownDisplay(countdownElements, 0, true)
+                updateCountdownDisplay(countdownElements, "EXPIRED", true)
                 break
             end
             task.wait(1)
@@ -1143,7 +1153,7 @@ local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...
     else
         if validation.code == "EXPIRED" then
             status.setText("\226\157\140 Key Expired! Get a new key from Links tab")
-            updateCountdownDisplay(countdownElements, 0, true)
+            updateCountdownDisplay(countdownElements, "EXPIRED", true)
         elseif validation.code == "HWID" then
             status.setText("\240\159\148\146 HWID Locked! This key is on another machine.")
         elseif validation.code == "BANNED" then

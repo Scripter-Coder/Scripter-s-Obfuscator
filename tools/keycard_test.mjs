@@ -92,6 +92,16 @@ console.log('THE CARD IS PUBLISHED UNDER BOTH DEPLOYMENTS');
     check('and the build copies public/ verbatim', /copyPublicDir:\s*true/.test(
         fs.readFileSync('vite.config.js', 'utf8')),
         'the build does not copy public/');
+
+    // An expired key used to be reported as "LIFETIME ACCESS" in the same
+    // breath as the expired error: 0 is the lifetime sentinel, and all three
+    // expired branches passed it with hasKey=true. Pin the explicit state.
+    check('an expired key has its own display state',
+        /expiryTimestamp == "EXPIRED"/.test(src));
+    check('all three expired branches use it',
+        (src.match(/updateCountdownDisplay\(countdownElements, "EXPIRED", true\)/g) || []).length === 3);
+    check('no expired branch passes the lifetime sentinel',
+        !/updateCountdownDisplay\(countdownElements, 0, true\)/.test(src));
 }
 
 console.log('THE KEY CARD PARSES');
