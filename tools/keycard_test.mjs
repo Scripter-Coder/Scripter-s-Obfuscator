@@ -102,6 +102,10 @@ console.log('THE CARD IS PUBLISHED UNDER BOTH DEPLOYMENTS');
         (src.match(/updateCountdownDisplay\(countdownElements, "EXPIRED", true\)/g) || []).length === 3);
     check('no expired branch passes the lifetime sentinel',
         !/updateCountdownDisplay\(countdownElements, 0, true\)/.test(src));
+    check('the panel itself refuses LIFETIME while the status says expired',
+        /shStatusLabel\.label\.Text, "Expired"\) and status == "LIFETIME"/.test(src));
+    check('valid lifetime keys set the text before repainting the panel',
+        (src.match(/status\.setText\("\\226\\156\\133 Key Active! LIFETIME access granted"\)\s*updateCountdownDisplay\(countdownElements, nil, true\)/g) || []).length === 2);
 }
 
 console.log('THE KEY CARD PARSES');

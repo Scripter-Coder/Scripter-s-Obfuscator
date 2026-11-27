@@ -813,8 +813,22 @@ local function createCountdownTimer(parent)
     }
 end
 
+-- Forward declaration: the status label is created later, but the display
+-- function below must be able to read it (see the guard immediately after).
+local shStatusLabel = nil
+
 local function updateCountdownDisplay(countdownElements, expiry, hasKey)
     local status, days, hours, minutes, seconds = formatTimeLeft(expiry, hasKey)
+
+    -- SINGLE SOURCE OF TRUTH FOR "EXPIRED".
+    -- Any caller that passes 0 (the lifetime sentinel) or nil while the status
+    -- label says the key expired used to paint "LIFETIME ACCESS" in green right
+    -- underneath the red expired error. Override it here so NO call path can
+    -- produce that contradiction, including any future one.
+    if shStatusLabel and shStatusLabel.label and
+        string.find(shStatusLabel.label.Text, "Expired") and status == "LIFETIME" then
+        status, days, hours, minutes, seconds = "EXPIRED", "0", "0", "0", "0"
+    end
 
     if status == "NOKEY" then
         countdownElements.statusLabel.Text = "Status: No key on this device yet"
@@ -1034,6 +1048,7 @@ createLabel(welcomeContent, "Hello " .. playerName .. "!", 18, Color3.fromRGB(10
 
 local countdownElements = createCountdownTimer(welcomeContent)
 local status = createStatusLabel(welcomeContent, "\226\154\160\239\184\143 No key found | Enter your key below")
+shStatusLabel = status
 
 -- Update status based on saved key
 if isWhitelisted then
@@ -1051,8 +1066,10 @@ elseif keyVerified then
             status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
         end
     else
-        updateCountdownDisplay(countdownElements, nil, true)
+        -- Text FIRST: updateCountdownDisplay reads the status label to guard
+        -- against a stale "Expired" message overriding a real lifetime key.
         status.setText("\226\156\133 Key Active! LIFETIME access granted")
+        updateCountdownDisplay(countdownElements, nil, true)
     end
 end
 
@@ -1147,8 +1164,10 @@ local keyInput = createTextboxWithButton(welcomeContent, "Enter your key here...
             local daysLeft = math.floor((expiryValue - os.time()) / 86400)
             status.setText("\226\156\133 Key Active! " .. daysLeft .. " days remaining")
         else
-            updateCountdownDisplay(countdownElements, nil, true)
+            -- Text FIRST so the expired guard cannot reject a valid lifetime
+            -- key on the strength of a previous error message.
             status.setText("\226\156\133 Key Active! LIFETIME access granted")
+            updateCountdownDisplay(countdownElements, nil, true)
         end
     else
         if validation.code == "EXPIRED" then
