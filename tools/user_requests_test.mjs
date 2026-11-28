@@ -227,9 +227,15 @@ console.log('[9] deleted users leave the leaderboard (functional)...');
 // -----------------------------------------------------------------------------
 console.log('[10] honest load ETA + nosession recovery...');
 // -----------------------------------------------------------------------------
-check('the in-game ETA never promises less than ~6 seconds', () => {
+check('the publisher keeps an honest size-based estimate', () => {
     assert.match(mainSrc, /const etaSeconds = Math\.max\(6,/);
     assert.match(workerSrc, /etaSeconds: Math\.max\(6,/);
+});
+check('the in-game ETA is computed from the bytes actually delivered', () => {
+    assert.match(workerSrc, /SHFMT\(3\.5\+\(#body\/1024\)\*0\.016\)/);
+});
+check('the loader reports the measured elapsed time too', () => {
+    assert.match(workerSrc, /SHSTATUS\("Finished in "..SHFMT\(SHNOW\(\)-SH_T0\)/);
 });
 check('a fresh session is minted for nosession / stale too', () => {
     assert.match(workerSrc, /rsn=="nonce" or rsn=="nosession" or rsn=="no-session" or rsn=="stale"/);

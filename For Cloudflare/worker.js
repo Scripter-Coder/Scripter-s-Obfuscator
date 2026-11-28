@@ -9715,7 +9715,7 @@ if (url.pathname === '/sh/user-me' && request.method === 'GET') {
             // The init layer (L2). No ciphertext, no key, no script-derived
             // material - just _bsdata0, the cdn link and the handshake.
             const base = (env.SH_BASE_URL || url.origin).replace(/\/+$/, '');
-            return new Response(luaSessionBootstrap(id, base, script.keyless, !!script.hasVault, !!script.silentMode, script.etaSeconds), {
+            return new Response(luaSessionBootstrap(id, base, script.keyless, !!script.hasVault, !!script.silentMode), {
                 status: 200,
                 headers: {
                     'Content-Type': 'text/plain; charset=utf-8',
@@ -11605,20 +11605,14 @@ function scriptPageResponse(id, script, base) {
 // deliberately the weaker of the two (15s, URL-borne), matching D5. Both are
 // recorded server-side, so the share of traffic on the weak path stays visible
 // instead of being silently averaged in.
-function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds) {
+function luaSessionBootstrap(id, base, keyless, hasVault, silentMode) {
     const KEYED = keyless ? 'false' : 'true';
     // Status output belongs here, not inside the artifact: this layer runs
-    // BEFORE the artifact is fetched, compiled and executed, so it is the only
-    // place that can announce the phases in the right order. Silent Mode
-    // suppresses it completely. Build the human-readable estimate once here.
+    // BEFORE the artifact is compiled and executed. Silent Mode suppresses it.
+    // The ETA is NOT guessed here any more - the loader computes it from the
+    // real number of bytes it just downloaded, and reports the measured time
+    // when the script finishes.
     const statusOn = silentMode !== true;
-    const sec = Math.max(1, Math.round(Number(etaSeconds) || 2));
-    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-    const etaBits = [];
-    if (h) etaBits.push(h + (h === 1 ? ' hour' : ' hours'));
-    if (m) etaBits.push(m + (m === 1 ? ' minute' : ' minutes'));
-    if (s || !etaBits.length) etaBits.push(s + (s === 1 ? ' second' : ' seconds'));
-    const etaText = etaBits.join(' ');
     // The cdn link. It is a route on THIS worker, not on a third-party CDN:
     // the artifact must stay behind the same atomic gate (D12), so "cdn" here
     // means "the file-shaped address of the delivery route", not "a public
@@ -11639,9 +11633,20 @@ function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds
         // cannot turn a cosmetic print into a failed load.
         + (statusOn
             ? ('local function SHSTATUS(t) pcall(function() print("[ScripterHub] "..t) end) end\n'
+                // SHFMT renders seconds as hours/minutes/seconds, used for BOTH
+                // the estimate (computed from the real delivered byte count)
+                // and the measured elapsed time at the end.
+                + 'local function SHFMT(sec) sec=math.max(1,math.ceil(sec or 1)) local h=math.floor(sec/3600) '
+                + 'local m=math.floor((sec%3600)/60) local s=sec%60 local o={} '
+                + 'if h>0 then o[#o+1]=h..(h==1 and " hour" or " hours") end '
+                + 'if m>0 then o[#o+1]=m..(m==1 and " minute" or " minutes") end '
+                + 'if s>0 or #o==0 then o[#o+1]=s..(s==1 and " second" or " seconds") end '
+                + 'return table.concat(o," ") end\n'
+                + 'local function SHNOW() local ok,v=pcall(tick) if ok and type(v)=="number" then return v end return os.time() end\n'
+                + 'local SH_T0=SHNOW()\n'
                 + 'SHSTATUS("Script Sucessfully Executed ✅")\n'
                 + 'SHSTATUS("Checking Security Checks 🔄️")\n'
-                + 'SHSTATUS("Loading Script... (Will take approximately ' + etaText + ') ✅⌛")\n'
+                + 'SHSTATUS("Loading Script... fetching your script ✅⌛")\n'
                 + 'SHSTATUS("Note: if script wont load or has error the print will appear 💡")\n')
             : '')
         // Nothing above the code tells a FREE user to set anything. D1 required
@@ -11899,6 +11904,11 @@ function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds
         + 'end\n'
         + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
         + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'
+        // The estimate is computed HERE, from the bytes actually delivered -
+        // not from a publisher-side guess. ~3.5 s of fixed round trips plus
+        // ~16 s per MB of Roblox compile/VM work (measured on this platform).
+        // A one-line script and a 3 MB hub now report very different waits.
+        + (statusOn ? 'SHSTATUS("Loading Script... (Will take approximately "..SHFMT(3.5+(#body/1024)*0.016)..") ✅⌛")\n' : '')
         // ---- 4. assemble the payload
         + 'local SK, B\n'
         // CH marks a chained delivery. Its parts are stored as plain obfuscated
@@ -12111,6 +12121,9 @@ function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds
             : '')
         + 'end\n'
         + (statusOn ? 'SHSTATUS("Script Loaded Enjoy ✅✅")\n' : '')
+        // Close the loop: tell the visitor what the load ACTUALLY took, so the
+        // estimate above can be checked instead of being taken on faith.
+        + (statusOn ? 'SHSTATUS("Finished in "..SHFMT(SHNOW()-SH_T0).." ✅")\n' : '')
         + 'return true\n';
 }
 
