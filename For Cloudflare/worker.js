@@ -4852,7 +4852,9 @@ async function scriptAuthz(env, id) {
         visibility: String((meta && meta.visibility) || 'anyone'),
         // Status prints before the artifact runs (Silent Mode turns them off).
         silentMode: !!(meta && meta.silentMode === true),
-        etaSeconds: Math.max(1, Number((meta && meta.etaSeconds) || 2)),
+        // Old scripts have no value published: 2 s was the old optimistic
+        // default and users saw "2 seconds" while the load really took ~6.
+        etaSeconds: Math.max(6, Number((meta && meta.etaSeconds) || 6)),
         raw: meta || {}
     };
 }
@@ -6638,7 +6640,7 @@ async function handleRequest(request, env, ctx) {
                     projectId: String(body.projectId || '').slice(0, 60),
                     projectName: String(body.projectName || '').slice(0, 120),
                     silentMode: body.silentMode === true,
-                    etaSeconds: Math.max(1, Math.min(3600, Number(body.etaSeconds) || 2))
+                    etaSeconds: Math.max(6, Math.min(3600, Number(body.etaSeconds) || 6))
                 }), { expirationTtl: LOADER_TTL });
                 mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: false });
                 if (cipher) {
@@ -6747,7 +6749,7 @@ try {
                 // compiled and run. Old scripts have no field -> status prints
                 // stay ON, which is the documented default.
                 silentMode: body.silentMode === true,
-                etaSeconds: Math.max(1, Math.min(3600, Number(body.etaSeconds) || 2))
+                etaSeconds: Math.max(6, Math.min(3600, Number(body.etaSeconds) || 6))
             }), { expirationTtl: LOADER_TTL });
             mirrorScript(env, id, { name, user, visibility: readVisibility(body), authRequired: body.authRequired === true });
             // optional: kill an OLD loader (key rotation / re-upload on edit)
@@ -11868,7 +11870,11 @@ function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds
         // never fired and the test caught it. An off-by-one in a security
         // recovery path is exactly the kind of thing a substring check hides.
         + 'local rsn=(type(body)=="string") and body:match("^SHERR (%S+)") or nil\n'
-        + 'if rsn=="nonce" then\n'
+        // A slow executor used to get SHERR nosession / no-session / stale and
+        // simply stop: its 45-60s session had expired between the mint and the
+        // artifact fetch. Same class as a spent nonce - the caller already
+        // proved it may have a session, so mint ONE fresh pair and retry.
+        + 'if rsn=="nonce" or rsn=="nosession" or rsn=="no-session" or rsn=="stale" then\n'
         // h2 travels on the retry too. Without it a key locked to the executor
         // name is rejected on the recovery path even though the same key was
         // accepted on the first mint - reported to the user as "invalid".
@@ -11882,7 +11888,14 @@ function luaSessionBootstrap(id, base, keyless, hasVault, silentMode, etaSeconds
         // lines up is written that way for exactly this reason.
         + '  local S2,N2=nil,nil\n'
         + '  if type(r2)=="string" then S2,N2=r2:match("^SHS (%S+) (%S+) %S+") end\n'
-        + '  if S2 and N2 then S,N=S2,N2; body=GET(CDN.."?s="..S.."&n="..N) end\n'
+        + '  if S2 and N2 then\n'
+        + '   S,N=S2,N2\n'
+        // The vault is bound to the OLD session too, so it must be fetched
+        // again under the fresh pair or the artifact will run with no strings.
+        + (hasVault ? ('   local VB2=GET(BASE.."/sh/vault/"..ID.."?s="..S.."&n="..N)\n'
+            + '   if type(VB2)=="string" and VB2~="" and VB2:sub(1,4)~="SHERR" then G.__SH_VAULT_B64=VB2; _G.__SH_VAULT_B64=VB2 end\n') : '')
+        + '   body=GET(CDN.."?s="..S.."&n="..N)\n'
+        + '  end\n'
         + 'end\n'
         + 'if type(body)~="string" then DIE("Delivery failed.") return end\n'
         + 'if body:sub(1,6)=="SHERR " then DIE(DENYMSG(body:sub(7):gsub("%s+$",""))) return end\n'

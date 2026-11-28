@@ -224,6 +224,20 @@ console.log('[9] deleted users leave the leaderboard (functional)...');
     });
 }
 
+// -----------------------------------------------------------------------------
+console.log('[10] honest load ETA + nosession recovery...');
+// -----------------------------------------------------------------------------
+check('the in-game ETA never promises less than ~6 seconds', () => {
+    assert.match(mainSrc, /const etaSeconds = Math\.max\(6,/);
+    assert.match(workerSrc, /etaSeconds: Math\.max\(6,/);
+});
+check('a fresh session is minted for nosession / stale too', () => {
+    assert.match(workerSrc, /rsn=="nonce" or rsn=="nosession" or rsn=="no-session" or rsn=="stale"/);
+});
+check('the retry refetches the vault under the new session', () => {
+    assert.match(workerSrc, /VB2=GET\(BASE\.\."\/sh\/vault\/"/);
+});
+
 console.log('========================================================================');
 console.log(`USER REQUESTS   ${pass} passed, ${fail} failed`);
 console.log('========================================================================');

@@ -558,9 +558,13 @@ async function shUploadLoader(name, user, obfResult, normalCode, specialKey, rep
     if (shRateGuard('upload', SH_RATE.upload.max, SH_RATE.upload.window, 'Too Many Uploads')) return;
     try {
         const obfCode = (obfResult && typeof obfResult === 'object') ? obfResult.code : obfResult;
-        // The in-game status prints show an honest loading estimate. Measured
-        // build/load time is ~1.5 s fixed plus ~1 s per 100 KB of artifact.
-        const etaSeconds = Math.max(1, Math.round(1.5 + obfCode.length / 100000));
+        // The in-game status prints show an honest loading estimate. The
+        // artifact is small (~116 KB for a one-liner) but the loader makes
+        // THREE sequential worker round trips (session -> vault -> artifact)
+        // before Roblox can even compile it. Measured end to end that is
+        // ~6 s, not the ~2 s a build-only estimate promised. The floor is for
+        // a tiny script on a good connection; size adds to it from there.
+        const etaSeconds = Math.max(6, Math.round(5 + obfCode.length / 100000));
         const splitKey = (obfResult && typeof obfResult === 'object' && obfResult.splitKey) ? obfResult.splitKey : null;
         const wantId = (obfResult && typeof obfResult === 'object' && obfResult.wantId) ? obfResult.wantId : '';
         // auth: prefer the USER session token (no owner code prompt for
